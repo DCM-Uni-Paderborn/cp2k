@@ -91,6 +91,7 @@ MODULE torch_api
    PUBLIC :: torch_model_promote_float32
    PUBLIC :: torch_model_get_attr, torch_model_read_metadata
    PUBLIC :: torch_cuda_device_count, torch_cuda_is_available
+   PUBLIC :: torch_model_feature_clamps
    PUBLIC :: torch_allow_tf32, torch_model_freeze, torch_model_freeze_preserving_method, &
              torch_use_cuda
 
@@ -1231,6 +1232,53 @@ CONTAINS
       MARK_USED(model)
 #endif
    END SUBROUTINE torch_model_freeze_preserving_method
+
+! **************************************************************************************************
+!> \brief Read constant clamp bounds of unscaled dictionary-feature samples from a copied method graph.
+!> \param model Loaded TorchScript model.
+!> \param method_name Exported method to inspect.
+!> \param feature Dictionary key of the unscaled feature.
+!> \param values Unique finite bounds. Unsupported feature transformations are excluded.
+! **************************************************************************************************
+   SUBROUTINE torch_model_feature_clamps(model, method_name, feature, values)
+      TYPE(torch_model_type), INTENT(IN)                 :: model
+      CHARACTER(len=*), INTENT(IN)                       :: method_name, feature
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: values(:)
+
+#if defined(__LIBTORCH)
+      INTEGER(kind=C_INT)                               :: count, copied
+      REAL(kind=C_DOUBLE)                               :: unused(1)
+
+      INTERFACE
+         FUNCTION torch_c_model_feature_clamps(model, method_name, feature, capacity, values) RESULT(count) &
+            BIND(C, name="torch_c_model_feature_clamps")
+            IMPORT :: C_CHAR, C_DOUBLE, C_INT, C_PTR
+            TYPE(C_PTR), VALUE                           :: model
+            CHARACTER(kind=C_CHAR), DIMENSION(*)          :: method_name, feature
+            INTEGER(kind=C_INT), VALUE                    :: capacity
+            REAL(kind=C_DOUBLE), DIMENSION(*)             :: values
+            INTEGER(kind=C_INT)                           :: count
+         END FUNCTION torch_c_model_feature_clamps
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(model%c_ptr))
+      count = torch_c_model_feature_clamps(model%c_ptr, TRIM(method_name)//C_NULL_CHAR, &
+                                           TRIM(feature)//C_NULL_CHAR, 0_C_INT, unused)
+      CPASSERT(count >= 0)
+      ALLOCATE (values(count))
+      IF (count > 0) THEN
+         copied = torch_c_model_feature_clamps(model%c_ptr, TRIM(method_name)//C_NULL_CHAR, &
+                                               TRIM(feature)//C_NULL_CHAR, count, values)
+         CPASSERT(copied == count)
+      END IF
+#else
+      CPABORT("CP2K was compiled without Torch library.")
+      MARK_USED(model)
+      MARK_USED(method_name)
+      MARK_USED(feature)
+      MARK_USED(values)
+#endif
+   END SUBROUTINE torch_model_feature_clamps
 
    #:set typenames = ['int64', 'double', 'string']
    #:set types_f = ['INTEGER(kind=int_8)', 'REAL(dp)', 'CHARACTER(LEN=default_string_length)']

@@ -75,6 +75,7 @@ MODULE qs_skala_scf
         skala_density_samples_end, skala_density_samples_get, skala_fft_domain, &
         skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
+   USE skala_gpw_functional,            ONLY: native_skala_spin_floors
    USE skala_orbital_constraints,       ONLY: &
         skala_constrained_stationarity, skala_constraint_chart_create, &
         skala_constraint_chart_restore, skala_constraint_chart_type, skala_cusp_admissibility, &
@@ -182,6 +183,7 @@ CONTAINS
 !> \param state Owned orbital charts, borrowing a QS environment that must outlive this state.
 !> \param qs_env Native USPP or PAW environment with initialized MOs and normalization operators.
 !> \param valid Whether every active block has a positive complete charge metric.
+!> \param thermal Include the original finite-temperature occupation variables when enabled.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_create(state, qs_env, valid, thermal)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
@@ -1946,10 +1948,11 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: crossing_density_floor
       LOGICAL, INTENT(IN), OPTIONAL                      :: admit_crossings
 
-      INTEGER                                            :: m
+      INTEGER                                            :: i, m
       LOGICAL                                            :: valid
       REAL(dp), ALLOCATABLE                              :: coordinate_scales(:), density_floors(:), &
                                                             gradient(:), origin(:)
+      TYPE(mp_comm_type)                                 :: comm
       TYPE(physical_constraints_context)                 :: context
       TYPE(section_vals_type), POINTER                   :: functional_section, xc_section
       TYPE(xc_rho_cflags_type)                           :: needs
@@ -1973,6 +1976,13 @@ CONTAINS
          ALLOCATE (context%density_floors, &
                    SOURCE=xc_functionals_spin_floors(functional_section, SIZE(state%orbitals, 2) == 2, &
                                                      section_get_rval(xc_section, "DENSITY_CUTOFF")))
+         CALL comm%set_handle(state%para_env%get_handle())
+         density_floors = native_skala_spin_floors(xc_section, comm)
+         DO i = 1, SIZE(density_floors)
+            IF (ALL(context%density_floors /= density_floors(i))) THEN
+               context%density_floors = [context%density_floors, density_floors(i)]
+            END IF
+         END DO
          IF (context%kinetic_boundaries .AND. ALL(context%density_floors /= 0.0_dp)) THEN
             ! Native tau components retain their sign boundaries alongside spin-density floors.
             CALL MOVE_ALLOC(context%density_floors, density_floors)
@@ -3041,17 +3051,6 @@ CONTAINS
    END SUBROUTINE check_native_stall
 
 ! **************************************************************************************************
-!> \brief Keep numerical curvature probes within one physical branch.
-!>        A threshold crossing requires a smaller probe, not a minimum classification.
-!>        The ordinary minimization retains its complete boundary admission checks.
-!> \param first Accepted feasible coordinates.
-!> \param last Restored curvature probe.
-!> \param curve Current independent/dependent coordinate partition.
-!> \param context Native physical state and admission settings.
-!> \param smooth Whether no new threshold is crossed.
-!> \param interrupted Whether a boundary or external stop requires caller handling.
-! **************************************************************************************************
-! **************************************************************************************************
 !> \brief Invert current frozen-Hamiltonian occupation curvature in the fixed search coordinates.
 !>        The original number projection remains in the Hessian product. Only the positive
 !>        diagonal inverse is used here. Zero-response variables retain unit inverse.
@@ -3132,6 +3131,17 @@ CONTAINS
       END SELECT
    END SUBROUTINE evaluate_native_preconditioner
 
+! **************************************************************************************************
+!> \brief Keep numerical curvature probes within one physical branch.
+!>        A threshold crossing requires a smaller probe, not a minimum classification.
+!>        The ordinary minimization retains its complete boundary admission checks.
+!> \param first Accepted feasible coordinates.
+!> \param last Restored curvature probe.
+!> \param curve Current independent/dependent coordinate partition.
+!> \param context Native physical state and admission settings.
+!> \param smooth Whether no new threshold is crossed.
+!> \param interrupted Whether a boundary or external stop requires caller handling.
+! **************************************************************************************************
    SUBROUTINE check_native_curvature(first, last, curve, context, smooth, interrupted)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
@@ -3154,6 +3164,17 @@ CONTAINS
       END IF
    END SUBROUTINE check_native_curvature
 
+! **************************************************************************************************
+!> \brief Detect physical descriptor crossings on one native orbital segment.
+!> \param first Accepted feasible coordinates.
+!> \param last Proposed segment endpoint.
+!> \param curve Current independent/dependent coordinate partition.
+!> \param context Native physical state and admission settings.
+!> \param interrupted Whether a crossing, rechart or external stop requires caller handling.
+!> \param crossed Whether any physical threshold is crossed.
+!> \param restore_operator Restore the accepted native operator after checking the segment.
+!> \param classify_candidates Classify and admit detected roots when true.
+! **************************************************************************************************
    SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator, classify_candidates)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
@@ -3362,10 +3383,12 @@ CONTAINS
    END SUBROUTINE evaluate_physical_input
 
 ! **************************************************************************************************
-!> rief Append dimensionless auxiliary-energy coordinates to the retained native orbital charts.
+!> \brief Append dimensionless auxiliary-energy coordinates to the retained native orbital charts.
 !>        The original finite-temperature setup determines maximum occupation, particle counts
 !>        and whether the two spin channels share a chemical potential. Global band ordering
 !>        permits ragged retained spaces and includes each positive k-point weight once.
+!> \param state Native orbital state receiving the thermal particle-number groups.
+!> \param offset Running coordinate count, increased by the thermal band count.
 ! **************************************************************************************************
    SUBROUTINE initialize_thermal_state(state, offset)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
@@ -3452,10 +3475,12 @@ CONTAINS
    END SUBROUTINE initialize_thermal_state
 
 ! **************************************************************************************************
-!> rief Solve the original weighted Fermi constraint in every particle-number group.
+!> \brief Solve the original weighted Fermi constraint in every particle-number group.
 !>        Frozen positive scale factors precondition the auxiliary-energy coordinates.
 !>        The physical Fermi problem and Fisher covectors are independent of these factors.
 !>        Smearkp accepts one band per weighted column, preserving ragged block counts.
+!> \param state Native state with frozen references and coordinate scales.
+!> \param coordinate Dimensionless auxiliary-energy coordinates.
 ! **************************************************************************************************
    SUBROUTINE update_thermal_state(state, coordinate)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
@@ -3519,7 +3544,12 @@ CONTAINS
    END SUBROUTINE initialize_thermal_scales
 
 ! **************************************************************************************************
-!> rief Store unweighted diagonal expectations for one owned retained orbital block.
+!> \brief Store unweighted diagonal expectations for one owned retained orbital block.
+!> \param state Current normalized native orbitals and global band layout.
+!> \param OPERATOR AO operator acting on the retained orbitals.
+!> \param local Owned k-point block.
+!> \param spin Spin component of the retained block.
+!> \param values Global unweighted band expectations, updated for this owned block.
 ! **************************************************************************************************
    SUBROUTINE thermal_expectations(state, OPERATOR, local, spin, values)
       TYPE(qs_skala_scf_type), INTENT(IN)                :: state
@@ -3541,10 +3571,15 @@ CONTAINS
    END SUBROUTINE thermal_expectations
 
 ! **************************************************************************************************
-!> rief Include the complete fixed-N response of thermal occupations in a covector.
+!> \brief Include the complete fixed-N response of thermal occupations in a covector.
 !>        Subtract auxiliary energies only for the free-energy gradient, which includes entropy.
 !>        Descriptor normals have no entropy contribution. The same global group projection
 !>        enforces the original particle/spin counts in both cases.
+!> \param state Current thermal occupations, response factors and particle-number groups.
+!> \param expectations Unweighted band expectations of the differentiated operator.
+!> \param entropy Include the thermal entropy contribution in the free-energy covector.
+!> \param derivative Covector in the dimensionless auxiliary-energy coordinates.
+!> \param physical Optional covector normalized by the physical Fermi response.
 ! **************************************************************************************************
    SUBROUTINE thermal_covector(state, expectations, entropy, derivative, physical)
       TYPE(qs_skala_scf_type), INTENT(IN)                :: state

@@ -45,7 +45,8 @@ MODULE skala_gpw_functional
         skala_gpw_feature_build_atom_subchunk_bounds, skala_gpw_feature_release, &
         skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, &
         smooth_partition_atomic_weight_scale_derivative
-   USE skala_torch_api,                 ONLY: skala_torch_model_descriptor_limits,&
+   USE skala_torch_api,                 ONLY: skala_torch_model_density_floors,&
+                                              skala_torch_model_descriptor_limits,&
                                               skala_torch_model_get_exc,&
                                               skala_torch_model_load,&
                                               skala_torch_model_release,&
@@ -93,6 +94,7 @@ MODULE skala_gpw_functional
                                                             grid_weights_t, kin_t
    END TYPE skala_gapw_atom_cuda_tensor_cache_type
 
+   PUBLIC :: native_skala_spin_floors
    PUBLIC :: build_vxc_from_feature_grads, ensure_native_skala_grid_scope, get_gauxc_section, &
              skala_gapw_atom_composite_energy, skala_gapw_atom_vxc_of_r, &
              native_skala_gapw_atom_composite_requested, &
@@ -3451,6 +3453,49 @@ CONTAINS
       DEALLOCATE (selected_devices)
 
    END FUNCTION configure_native_grid_cuda
+
+! **************************************************************************************************
+!> \brief Share the current model's spin-density clamp bounds, including ranks with no atom rows.
+!> \param xc_section Current functional settings. A native evaluation must already have loaded the model.
+!> \param group Communicator of the native density samples.
+!> \return Physical density bounds. Empty for functionals using another evaluator.
+! **************************************************************************************************
+   FUNCTION native_skala_spin_floors(xc_section, group) RESULT(floors)
+      TYPE(section_vals_type), INTENT(IN), POINTER       :: xc_section
+      TYPE(mp_comm_type), INTENT(IN)                     :: group
+      REAL(dp), ALLOCATABLE                              :: floors(:)
+
+      CHARACTER(len=default_path_length)                 :: model_path
+      INTEGER                                            :: count, owner
+      LOGICAL                                            :: fp64
+      REAL(dp), ALLOCATABLE                              :: local_floors(:)
+      TYPE(section_vals_type), POINTER                   :: gauxc_section
+
+      IF (.NOT. xc_section_uses_native_skala_evaluator(xc_section)) THEN
+         ALLOCATE (floors(0))
+         RETURN
+      END IF
+      CALL get_skala_model_path(xc_section, model_path)
+      gauxc_section => get_gauxc_section(xc_section)
+      CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_MODEL_FP64", l_val=fp64)
+      owner = HUGE(owner)
+      IF (cached_model_loaded) THEN
+         IF (TRIM(cached_model_path) == TRIM(model_path) .AND. (cached_model_fp64 .EQV. fp64)) THEN
+            owner = group%mepos
+         END IF
+      END IF
+      CALL group%min(owner)
+      CPASSERT(owner < group%num_pe)
+      count = 0
+      IF (group%mepos == owner) THEN
+         local_floors = skala_torch_model_density_floors(cached_model)
+         count = SIZE(local_floors)
+      END IF
+      CALL group%max(count)
+      ALLOCATE (floors(count), SOURCE=0.0_dp)
+      IF (group%mepos == owner) floors(:) = local_floors
+      IF (count > 0) CALL group%sum(floors)
+   END FUNCTION native_skala_spin_floors
 
 ! **************************************************************************************************
 !> \brief Load and cache the TorchScript SKALA model.

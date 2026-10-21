@@ -26,7 +26,10 @@
 #include <cblas.h>
 #endif
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <unordered_set>
 
 #include <cfenv>
 #include <climits>
@@ -365,6 +368,145 @@ static void promote_model_float32(torch::jit::Module &model) {
   }
   for (auto child : model.children()) {
     promote_model_float32(child);
+  }
+}
+
+// Follow unchanged feature samples through layouts, not through feature
+// transforms. The boolean mask permits the protocol's ragged padding without
+// accepting density masks.
+class TorchFeatureLayout {
+public:
+  TorchFeatureLayout(torch::jit::Value *dictionary, const std::string &feature)
+      : dictionary_(dictionary), feature_(feature) {}
+
+  bool raw(torch::jit::Value *value) {
+    const auto found = raw_.find(value);
+    if (found != raw_.end()) {
+      return found->second;
+    }
+    raw_[value] = false;
+    auto *node = value->node();
+    const std::string kind = node->kind().toQualString();
+    bool result = false;
+    if (kind == "aten::__getitem__" && node->input(0) == dictionary_) {
+      const auto key = torch::jit::toIValue(node->input(1));
+      result = key && key->isString() && key->toStringRef() == feature_;
+    } else if (is_layout(kind) && floating_cast(node)) {
+      result = raw(node->input(0));
+    } else if (kind == "aten::mul") {
+      result = (raw(node->input(0)) && mask(node->input(1))) ||
+               (raw(node->input(1)) && mask(node->input(0)));
+    }
+    raw_[value] = result;
+    return result;
+  }
+
+private:
+  static bool is_layout(const std::string &kind) {
+    static const std::unordered_set<std::string> kinds = {
+        "aten::view",         "aten::reshape", "aten::permute",
+        "aten::transpose",    "aten::numpy_T", "aten::t",
+        "aten::contiguous",   "aten::clone",   "aten::detach",
+        "aten::slice",        "aten::select",  "aten::index",
+        "aten::index_select", "aten::gather",  "aten::unsqueeze",
+        "aten::squeeze",      "aten::flatten", "aten::expand",
+        "aten::broadcast_to", "aten::to"};
+    return kinds.count(kind) != 0;
+  }
+
+  static bool floating_cast(torch::jit::Node *node) {
+    const auto *schema = node->maybeSchema();
+    if (schema == nullptr) {
+      return true;
+    }
+    const auto &arguments = schema->arguments();
+    for (size_t i = 0; i < arguments.size() && i < node->inputs().size(); ++i) {
+      if (arguments[i].name() == "dtype") {
+        const auto dtype = torch::jit::toIValue(node->input(i));
+        // Native features are double. Narrowing or integer conversion changes
+        // their values.
+        if (!dtype ||
+            (!dtype->isNone() &&
+             (!dtype->isInt() ||
+              dtype->toInt() != static_cast<int64_t>(torch::kFloat64)))) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  static bool is_comparison(const std::string &kind) {
+    return kind == "aten::lt" || kind == "aten::le" || kind == "aten::gt" ||
+           kind == "aten::ge" || kind == "aten::eq" || kind == "aten::ne";
+  }
+
+  bool shape(torch::jit::Value *value) {
+    const auto found = shape_.find(value);
+    if (found != shape_.end()) {
+      return found->second;
+    }
+    shape_[value] = false;
+    auto *node = value->node();
+    const std::string kind = node->kind().toQualString();
+    bool result = kind == "prim::Constant" || kind == "aten::size";
+    if (kind == "aten::__getitem__" && node->input(0) == dictionary_) {
+      const auto key = torch::jit::toIValue(node->input(1));
+      result = key && key->isString() &&
+               (key->toStringRef() == "atomic_grid_sizes" ||
+                key->toStringRef() == "atomic_grid_size_bound_shape");
+    } else if (kind == "aten::__getitem__" &&
+               node->input(0)->type()->kind() == c10::TypeKind::ListType) {
+      result = shape(node->input(0)) && shape(node->input(1));
+    } else if (is_layout(kind) || is_comparison(kind) ||
+               kind == "prim::ListConstruct" || kind == "prim::NumToTensor" ||
+               kind == "aten::Int" || kind == "aten::ScalarImplicit" ||
+               kind == "aten::add" || kind == "aten::sub" ||
+               kind == "aten::mul" || kind == "aten::arange" ||
+               kind == "aten::cumsum") {
+      result = std::all_of(
+          node->inputs().begin(), node->inputs().end(),
+          [this](torch::jit::Value *input) { return shape(input); });
+    }
+    shape_[value] = result;
+    return result;
+  }
+
+  bool mask(torch::jit::Value *value) {
+    auto *node = value->node();
+    const std::string kind = node->kind().toQualString();
+    if (is_comparison(kind)) {
+      return shape(value);
+    }
+    return is_layout(kind) && mask(node->input(0));
+  }
+
+  torch::jit::Value *dictionary_;
+  std::string feature_;
+  std::unordered_map<torch::jit::Value *, bool> raw_, shape_;
+};
+
+static void feature_clamps(torch::jit::Block *block, TorchFeatureLayout &layout,
+                           std::vector<double> &values) {
+  for (auto *node : block->nodes()) {
+    const std::string kind = node->kind().toQualString();
+    if ((kind == "aten::clamp" || kind == "aten::clamp_min" ||
+         kind == "aten::clamp_max") &&
+        layout.raw(node->input(0))) {
+      for (size_t i = 1; i < node->inputs().size(); ++i) {
+        const auto value = torch::jit::toIValue(node->input(i));
+        if (value && (value->isDouble() || value->isInt())) {
+          const double bound =
+              value->isDouble() ? value->toDouble() : value->toInt();
+          if (std::isfinite(bound)) {
+            values.push_back(bound);
+          }
+        }
+      }
+    }
+    for (auto *nested : node->blocks()) {
+      feature_clamps(nested, layout, values);
+    }
   }
 }
 
@@ -802,6 +944,39 @@ void torch_c_model_load_with_metadata(torch_c_model_t **model_out,
   *model_out = model;
   copy_string_to_c_buffer(extra_files[key1], content1, length1);
   copy_string_to_c_buffer(extra_files[key2], content2, length2);
+}
+
+/*******************************************************************************
+ * \brief Read constant clamp bounds of unscaled dictionary-feature samples.
+ *        Unsupported data transformations are excluded. Inspect a copied graph;
+ *        neither model state nor the executable method is changed.
+ ******************************************************************************/
+int torch_c_model_feature_clamps(torch_c_model_t *model,
+                                 const char *method_name, const char *feature,
+                                 const int capacity, double values[]) {
+  assert(capacity >= 0);
+  const auto method = model->find_method(method_name);
+  if (!method) {
+    return 0;
+  }
+  const auto graph = method->graph()->copy();
+  torch::jit::Inline(*graph);
+  if (graph->inputs().size() != 2 ||
+      graph->inputs()[1]->type()->kind() != c10::TypeKind::DictType) {
+    return 0;
+  }
+  TorchFeatureLayout layout(graph->inputs()[1], feature);
+  std::vector<double> bounds;
+  feature_clamps(graph->block(), layout, bounds);
+  std::sort(bounds.begin(), bounds.end());
+  bounds.erase(std::unique(bounds.begin(), bounds.end()), bounds.end());
+  assert(bounds.size() <= INT_MAX);
+  const int count = static_cast<int>(bounds.size());
+  if (capacity != 0) {
+    assert(capacity >= count);
+    std::copy(bounds.begin(), bounds.end(), values);
+  }
+  return count;
 }
 
 /*******************************************************************************

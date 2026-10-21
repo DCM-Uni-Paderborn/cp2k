@@ -19,7 +19,7 @@ MODULE skala_torch_api
    USE string_utilities, ONLY: uppercase
    USE torch_api, ONLY: &
       torch_dict_clone_detached, torch_dict_get, torch_dict_insert, torch_dict_release, torch_dict_type, &
-      torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
+      torch_model_disable_parameter_gradients, torch_model_feature_clamps, torch_model_forward_mol_tensor, &
       torch_model_freeze_preserving_method, torch_model_load_with_metadata, torch_model_release, &
       torch_model_remap_device_constants, torch_model_promote_float32, torch_model_type, &
       torch_tensor_backward_scalar, torch_tensor_data_ptr, torch_tensor_from_array, torch_tensor_grad, &
@@ -37,12 +37,14 @@ MODULE skala_torch_api
    PUBLIC :: skala_torch_model_get_exc, skala_torch_model_get_exc_density
    PUBLIC :: skala_torch_model_density_limits, skala_torch_model_descriptor_limits
    PUBLIC :: skala_torch_model_needs_feature, skala_torch_model_protocol_version
+   PUBLIC :: skala_torch_model_density_floors
 
    TYPE skala_torch_model_type
       PRIVATE
       INTEGER                                            :: protocol_version = -1
       CHARACTER(len=default_string_length), ALLOCATABLE, &
          DIMENSION(:)                                    :: features
+      REAL(dp), ALLOCATABLE                              :: density_floors(:)
       TYPE(torch_model_type)                             :: torch_model
    END TYPE skala_torch_model_type
 
@@ -80,6 +82,7 @@ CONTAINS
       IF (use_fp64) CALL torch_model_promote_float32(model%torch_model)
       ! Preserve the exported SKALA entry point while folding constant model state.
       CALL torch_model_freeze_preserving_method(model%torch_model, "get_exc_density")
+      CALL torch_model_feature_clamps(model%torch_model, "get_exc_density", "density", model%density_floors)
 
    END SUBROUTINE skala_torch_model_load
 
@@ -92,9 +95,23 @@ CONTAINS
 
       CALL torch_model_release(model%torch_model)
       IF (ALLOCATED(model%features)) DEALLOCATE (model%features)
+      IF (ALLOCATED(model%density_floors)) DEALLOCATE (model%density_floors)
       model%protocol_version = -1
 
    END SUBROUTINE skala_torch_model_release
+
+! **************************************************************************************************
+!> \brief Return the loaded model's constant clamp bounds for each physical spin density.
+!> \param model Loaded model.
+!> \return Bounds in atomic density units, excluding clamps on transformed features or indices.
+! **************************************************************************************************
+   FUNCTION skala_torch_model_density_floors(model) RESULT(floors)
+      TYPE(skala_torch_model_type), INTENT(IN)           :: model
+      REAL(dp), ALLOCATABLE                              :: floors(:)
+
+      CPASSERT(ALLOCATED(model%density_floors))
+      floors = model%density_floors
+   END FUNCTION skala_torch_model_density_floors
 
 ! **************************************************************************************************
 !> \brief Check whether a loaded SKALA model requests a feature.
