@@ -55,9 +55,10 @@ MODULE skala_gpw_functional
    USE torch_api,                       ONLY: &
         torch_cuda_device_count, torch_cuda_is_available, torch_dict_create, torch_dict_insert, &
         torch_dict_release, torch_dict_type, torch_tensor_backward_scalar, torch_tensor_data_ptr, &
-        torch_tensor_from_array, torch_tensor_grad, torch_tensor_grad_batch3, torch_tensor_narrow, &
-        torch_tensor_release, torch_tensor_reset_from_array, torch_tensor_to_device_leaf, &
-        torch_tensor_type, torch_use_cuda
+        torch_tensor_from_array, torch_tensor_grad, torch_tensor_grad_batch3, &
+        torch_tensor_hessian_product3, torch_tensor_narrow, torch_tensor_release, &
+        torch_tensor_reset_from_array, torch_tensor_to_device_leaf, torch_tensor_type, &
+        torch_use_cuda
    USE xc_input_constants,              ONLY: skala_gapw_atom_composite_grid,&
                                               skala_gapw_common_grid,&
                                               skala_gapw_cp2k_default,&
@@ -1192,6 +1193,13 @@ CONTAINS
 !> \param density_constraints Selected physical descriptor derivatives of the KS environment.
 !> \param constraint_domain Exact atomic or interpolated-background evaluation identifier.
 !> \param atomic_ids Global atom identifiers in the order of atomic_grid_sizes.
+!> \param density_direction Joint density direction on a differentiable model branch.
+!> \param grad_direction Matching density-gradient direction.
+!> \param kin_direction Matching kinetic-density direction.
+!> \param density_response_out Response of the weighted density covector.
+!> \param grad_response_out Response of the weighted density-gradient covector.
+!> \param kin_response_out Response of the weighted kinetic-density covector.
+!>        Responses require first derivatives and no selected nonsmooth descriptor limits.
 ! **************************************************************************************************
    SUBROUTINE skala_gapw_atom_composite_energy(xc_section, group, density, grad, kin, &
                                                grid_coords, grid_weights, atomic_grid_weights, &
@@ -1199,7 +1207,9 @@ CONTAINS
                                                density_grad_out, grad_grad_out, kin_grad_out, &
                                                grid_coord_grad_out, grid_weight_grad_out, &
                                                atomic_grid_weight_grad_out, atom_coord_grad_out, &
-                                               density_constraints, constraint_domain, atomic_ids)
+                                               density_constraints, constraint_domain, atomic_ids, &
+                                               density_direction, grad_direction, kin_direction, &
+                                               density_response_out, grad_response_out, kin_response_out)
       TYPE(section_vals_type), POINTER                   :: xc_section
 
       CLASS(mp_comm_type), INTENT(IN)                    :: group
@@ -1218,6 +1228,10 @@ CONTAINS
                                                                          atomic_grid_weight_grad_out
       TYPE(skala_density_constraints_type), OPTIONAL, POINTER :: density_constraints
       INTEGER, INTENT(IN), OPTIONAL                      :: constraint_domain, atomic_ids(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: density_direction(:, :), grad_direction(:, :, :), &
+                                                            kin_direction(:, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL        :: density_response_out(:, :), &
+                                                             grad_response_out(:, :, :), kin_response_out(:, :)
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER :: atom_begin, atom_count, chunk_max_rows, chunk_row_count, chunk_row_start, &
@@ -1229,7 +1243,7 @@ CONTAINS
                                                             selected_descriptors(:)
       INTEGER(KIND=int_8), ALLOCATABLE, DIMENSION(:, :)  :: atomic_grid_size_bound_shape
       LOGICAL :: active_rank, capture_jumps, native_grid_atom_chunks, native_grid_use_cuda, &
-                 need_coordinate_derivatives, need_derivatives, use_constraints
+                 need_coordinate_derivatives, need_derivatives, need_response, use_constraints
       LOGICAL, ALLOCATABLE                               :: selected_applied(:)
       REAL(KIND=dp)                                      :: chunk_exc, probes(2), tolerances(2)
       REAL(dp), ALLOCATABLE                              :: selected_weights(:), selected_targets(:), selected_limits(:, :), &
@@ -1260,6 +1274,11 @@ CONTAINS
       TYPE(torch_tensor_type), POINTER                   :: atomic_coords_t, atomic_grid_weights_t, &
                                                             density_t, grad_t, grid_coords_t, &
                                                             grid_weights_t, kin_t
+      TYPE(torch_tensor_type)                            :: response_fields(3), response_directions(3), response_tensors(3)
+      REAL(dp), ALLOCATABLE                              :: density_direction_buffer(:, :), &
+                                                            grad_direction_buffer(:, :, :), kin_direction_buffer(:, :)
+      REAL(dp), POINTER                                  :: density_response(:, :), grad_response(:, :, :), kin_response(:, :)
+      INTEGER                                            :: component
 
       CPASSERT(ASSOCIATED(xc_section))
       CPASSERT(SIZE(density, 1) == SIZE(grid_weights))
@@ -1276,6 +1295,23 @@ CONTAINS
       need_derivatives = PRESENT(density_grad_out)
       CPASSERT(PRESENT(grad_grad_out) .EQV. need_derivatives)
       CPASSERT(PRESENT(kin_grad_out) .EQV. need_derivatives)
+      need_response = PRESENT(density_response_out)
+      CPASSERT(PRESENT(grad_response_out) .EQV. need_response)
+      CPASSERT(PRESENT(kin_response_out) .EQV. need_response)
+      CPASSERT(PRESENT(density_direction) .EQV. need_response)
+      CPASSERT(PRESENT(grad_direction) .EQV. need_response)
+      CPASSERT(PRESENT(kin_direction) .EQV. need_response)
+      IF (need_response) THEN
+         CPASSERT(need_derivatives)
+         CPASSERT(ALL(SHAPE(density_direction) == SHAPE(density)))
+         CPASSERT(ALL(SHAPE(grad_direction) == SHAPE(grad)))
+         CPASSERT(ALL(SHAPE(kin_direction) == SHAPE(kin)))
+         ALLOCATE (density_response_out(SIZE(density, 1), 2), &
+                   grad_response_out(SIZE(density, 1), 3, 2), kin_response_out(SIZE(density, 1), 2))
+         density_response_out = 0.0_dp
+         grad_response_out = 0.0_dp
+         kin_response_out = 0.0_dp
+      END IF
       need_coordinate_derivatives = PRESENT(grid_coord_grad_out)
       CPASSERT(PRESENT(grid_weight_grad_out) .EQV. need_coordinate_derivatives)
       CPASSERT(PRESENT(atomic_grid_weight_grad_out) .EQV. need_coordinate_derivatives)
@@ -1312,6 +1348,9 @@ CONTAINS
          END IF
       END IF
 
+      IF (need_response) THEN
+         CPASSERT(.NOT. use_constraints)
+      END IF
       CALL get_skala_model_path(xc_section, model_path)
       gauxc_section => get_gauxc_section(xc_section)
       CPASSERT(ASSOCIATED(gauxc_section))
@@ -1436,6 +1475,31 @@ CONTAINS
                                            exc_tensor, chunk_exc)
             CALL timestop(phase_handle)
             exc = exc + chunk_exc
+            IF (need_response) THEN
+               ! The three primitive fields enter the same nonlocal energy graph.
+               ! Differentiate them jointly before the ordinary backward releases it.
+               ! Keep contiguous buffers alive while Torch borrows their storage.
+               density_direction_buffer = density_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :)
+               grad_direction_buffer = grad_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :, :)
+               kin_direction_buffer = kin_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :)
+               CALL torch_tensor_from_array(response_directions(1), density_direction_buffer)
+               CALL torch_tensor_from_array(response_directions(2), grad_direction_buffer)
+               CALL torch_tensor_from_array(response_directions(3), kin_direction_buffer)
+               response_fields = [density_chunk_t, grad_chunk_t, kin_chunk_t]
+               CALL torch_tensor_hessian_product3(exc_tensor, response_fields, response_directions, response_tensors)
+               NULLIFY (density_response, grad_response, kin_response)
+               CALL torch_tensor_data_ptr(response_tensors(1), density_response)
+               CALL torch_tensor_data_ptr(response_tensors(2), grad_response)
+               CALL torch_tensor_data_ptr(response_tensors(3), kin_response)
+               density_response_out(chunk_row_start:chunk_row_start + chunk_row_count - 1, :) = density_response
+               grad_response_out(chunk_row_start:chunk_row_start + chunk_row_count - 1, :, :) = grad_response
+               kin_response_out(chunk_row_start:chunk_row_start + chunk_row_count - 1, :) = kin_response
+               DO component = 1, 3
+                  CALL torch_tensor_release(response_tensors(component))
+                  CALL torch_tensor_release(response_directions(component))
+               END DO
+               DEALLOCATE (density_direction_buffer, grad_direction_buffer, kin_direction_buffer)
+            END IF
             IF (need_derivatives) THEN
                CALL timeset("skala_atom_torch_backward", phase_handle)
                CALL torch_tensor_backward_scalar(exc_tensor)

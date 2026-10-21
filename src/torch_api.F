@@ -79,6 +79,7 @@ MODULE torch_api
    PUBLIC :: torch_tensor_reset_from_array
    PUBLIC :: torch_tensor_data_ptr, torch_tensor_backward, torch_tensor_backward_scalar
    PUBLIC :: torch_tensor_grad, torch_tensor_grad_batch3
+   PUBLIC :: torch_tensor_hessian_product3
    PUBLIC :: torch_tensor_to_device_leaf
    PUBLIC :: torch_tensor_item_double, torch_tensor_weighted_sum
    PUBLIC :: torch_dict_type, torch_dict_clone, torch_dict_create, torch_dict_insert
@@ -388,6 +389,57 @@ CONTAINS
       MARK_USED(tensor)
 #endif
    END SUBROUTINE torch_tensor_backward_scalar
+
+! **************************************************************************************************
+!> \brief Joint Hessian product of a scalar tensor with three input-field directions.
+!>        Returns independent CPU tensors and retains the original backward graph.
+!>        Does not accumulate input gradients or define derivatives at a nonsmooth tie.
+!> \param tensor Scalar energy tensor.
+!> \param fields Three differentiable inputs, which may be views of larger leaves.
+!> \param directions Matching input directions, in the original input units.
+!> \param response Directional derivatives of the three weighted input covectors.
+! **************************************************************************************************
+   SUBROUTINE torch_tensor_hessian_product3(tensor, fields, directions, response)
+      TYPE(torch_tensor_type), INTENT(IN)                :: tensor, fields(3), directions(3)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: response(3)
+
+#if defined(__LIBTORCH)
+      INTEGER                                            :: i
+      TYPE(C_PTR)                                        :: input_pointers(3), direction_pointers(3), &
+                                                            output_pointers(3)
+
+      INTERFACE
+         SUBROUTINE torch_c_tensor_hessian_product3(tensor, fields, directions, response) &
+            BIND(C, name="torch_c_tensor_hessian_product3")
+            IMPORT :: C_PTR
+            TYPE(C_PTR), VALUE                           :: tensor
+            TYPE(C_PTR), INTENT(IN)                      :: fields(3), directions(3)
+            TYPE(C_PTR), INTENT(INOUT)                   :: response(3)
+         END SUBROUTINE torch_c_tensor_hessian_product3
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(tensor%c_ptr))
+      DO i = 1, 3
+         CPASSERT(C_ASSOCIATED(fields(i)%c_ptr))
+         CPASSERT(C_ASSOCIATED(directions(i)%c_ptr))
+         CPASSERT(.NOT. C_ASSOCIATED(response(i)%c_ptr))
+         input_pointers(i) = fields(i)%c_ptr
+         direction_pointers(i) = directions(i)%c_ptr
+      END DO
+      output_pointers = C_NULL_PTR
+      CALL torch_c_tensor_hessian_product3(tensor%c_ptr, input_pointers, direction_pointers, output_pointers)
+      DO i = 1, 3
+         CPASSERT(C_ASSOCIATED(output_pointers(i)))
+         response(i)%c_ptr = output_pointers(i)
+      END DO
+#else
+      CPABORT("CP2K compiled without the Torch library.")
+      MARK_USED(tensor)
+      MARK_USED(fields)
+      MARK_USED(directions)
+      MARK_USED(response)
+#endif
+   END SUBROUTINE torch_tensor_hessian_product3
 
 ! **************************************************************************************************
 !> \brief Moves a tensor to the active Torch device and makes it an autograd leaf.

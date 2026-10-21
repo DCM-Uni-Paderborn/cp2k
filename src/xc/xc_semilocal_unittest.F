@@ -51,6 +51,11 @@ PROGRAM xc_semilocal_unittest
    USE xc_libxc, ONLY: libxc_density_floor, libxc_spin_polarized_eval, &
                        libxc_spin_unpolarized_eval
 #endif
+#if defined (__LIBTORCH)
+   USE torch_api, ONLY: torch_tensor_type, torch_tensor_from_array, torch_tensor_weighted_sum, &
+                        torch_tensor_hessian_product3, torch_tensor_backward_scalar, torch_tensor_grad, &
+                        torch_tensor_data_ptr, torch_tensor_narrow, torch_tensor_release, torch_use_cuda
+#endif
 
    IMPLICIT NONE
    INTEGER, PARAMETER :: labels(5) = [deriv_rhoa, deriv_rhob, deriv_norm_drho, deriv_norm_drhoa, deriv_norm_drhob]
@@ -112,6 +117,9 @@ PROGRAM xc_semilocal_unittest
    CALL check_libxc_individual_floor()
    CALL check_libxc_floor_limits()
    CALL check_libxc_spin_powers()
+#endif
+#if defined (__LIBTORCH)
+   CALL check_model_field_response()
 #endif
    CALL section_vals_release(functional)
    CALL section_release(specification)
@@ -1108,5 +1116,70 @@ CONTAINS
       CALL xc_dset_release(derivatives)
       CALL xc_rho_set_release(rho_set)
    END SUBROUTINE evaluate_tpss_point
+
+#if defined (__LIBTORCH)
+! **************************************************************************************************
+!> \brief Mixed field curvature, an unused input, and retained ordinary gradients.
+!>        The weighted energy sum(x*y) has joint response (dy,dx,0).
+! **************************************************************************************************
+   SUBROUTINE check_model_field_response()
+      INTEGER                                            :: i
+      REAL(dp)                                           :: expected(2, 3), expected_gradient(2, 3)
+      REAL(dp), ALLOCATABLE                              :: motion(:, :), values(:, :)
+      REAL(dp), POINTER                                  :: result(:, :)
+      TYPE(torch_tensor_type)                            :: derivative, directions(3), fields(3), &
+                                                            motion_tensor, response(3), scalar, &
+                                                            values_tensor
+
+      values = RESHAPE([1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp], [2, 3])
+      motion = RESHAPE([0.2_dp, -0.7_dp, -0.3_dp, 0.4_dp, 0.8_dp, 0.5_dp], [2, 3])
+      expected(:, 1) = motion(:, 2)
+      expected(:, 2) = motion(:, 1)
+      expected(:, 3) = 0.0_dp
+      expected_gradient = 0.0_dp
+      expected_gradient(:, 1) = values(:, 2)
+      expected_gradient(:, 2) = values(:, 1)
+      CALL torch_use_cuda(.FALSE.)
+      CALL torch_tensor_from_array(values_tensor, values, requires_grad=.TRUE.)
+      CALL torch_tensor_from_array(motion_tensor, motion)
+      DO i = 1, 3
+         CALL torch_tensor_narrow(values_tensor, 0, i - 1, 1, fields(i))
+         CALL torch_tensor_narrow(motion_tensor, 0, i - 1, 1, directions(i))
+      END DO
+      CALL torch_tensor_weighted_sum(fields(1), fields(2), scalar)
+      CALL torch_tensor_hessian_product3(scalar, fields, directions, response)
+      ! Returned storage must not alias borrowed direction buffers.
+      motion = motion + 1.0_dp
+      DO i = 1, 3
+         NULLIFY (RESULT)
+         CALL torch_tensor_data_ptr(response(i), RESULT)
+         IF (MAXVAL(ABS(RESULT(:, 1) - expected(:, i))) > 1e-14_dp) ERROR STOP 'Joint model-field Hessian response failed'
+         CALL torch_tensor_release(response(i))
+      END DO
+      CALL torch_tensor_backward_scalar(scalar)
+      CALL torch_tensor_grad(values_tensor, derivative)
+      NULLIFY (RESULT)
+      CALL torch_tensor_data_ptr(derivative, RESULT)
+      IF (MAXVAL(ABS(RESULT - expected_gradient)) > 1e-14_dp) ERROR STOP 'Response changed ordinary model gradients'
+      CALL torch_tensor_release(derivative)
+      CALL torch_tensor_release(scalar)
+      CALL torch_tensor_weighted_sum(fields(1), directions(1), scalar)
+      CALL torch_tensor_hessian_product3(scalar, fields, directions, response)
+      DO i = 1, 3
+         NULLIFY (RESULT)
+         CALL torch_tensor_data_ptr(response(i), RESULT)
+         IF (MAXVAL(ABS(RESULT)) > 1e-14_dp) ERROR STOP 'A linear model term has a nonzero second response'
+         CALL torch_tensor_release(response(i))
+      END DO
+      CALL torch_tensor_release(scalar)
+      DO i = 1, 3
+         CALL torch_tensor_release(directions(i))
+         CALL torch_tensor_release(fields(i))
+      END DO
+      CALL torch_tensor_release(values_tensor)
+      CALL torch_tensor_release(motion_tensor)
+      CALL torch_use_cuda(.TRUE.)
+   END SUBROUTINE check_model_field_response
+#endif
 
 END PROGRAM xc_semilocal_unittest

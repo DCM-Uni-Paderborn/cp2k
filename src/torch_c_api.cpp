@@ -15,6 +15,7 @@
 #endif
 #include <c10/core/DeviceGuard.h>
 #include <torch/csrc/api/include/torch/cuda.h>
+#include <torch/csrc/autograd/autograd.h>
 #include <torch/csrc/jit/passes/freeze_module.h>
 #include <torch/csrc/jit/passes/inliner.h>
 #include <torch/csrc/jit/runtime/graph_executor.h>
@@ -754,6 +755,53 @@ void torch_c_tensor_backward_scalar(const torch_c_tensor_t *tensor) {
   get_device_with_guard(guard);
   TorchDifferentialGuard differential_guard(tensor->is_cuda());
   tensor->backward();
+}
+
+/*******************************************************************************
+ * \brief Differentiate a scalar tensor twice along three joint input
+ * directions. Return independent CPU tensors without accumulating input
+ * gradients. Keep the original energy graph for its ordinary backward
+ * evaluation.
+ ******************************************************************************/
+void torch_c_tensor_hessian_product3(
+    const torch_c_tensor_t *tensor, const torch_c_tensor_t *const fields[3],
+    const torch_c_tensor_t *const directions[3],
+    torch_c_tensor_t *response[3]) {
+  TorchFloatingPointMaskGuard fpe_guard;
+  c10::OptionalDeviceGuard guard;
+  get_device_with_guard(guard);
+  TorchDifferentialGuard differential_guard(tensor->is_cuda());
+  assert(tensor->numel() == 1);
+  std::vector<torch::Tensor> variables, tangents;
+  for (int i = 0; i < 3; ++i) {
+    assert(fields[i] != nullptr && directions[i] != nullptr);
+    assert(response[i] == nullptr && fields[i]->requires_grad());
+    assert(fields[i]->sizes() == directions[i]->sizes());
+    variables.push_back(*fields[i]);
+    tangents.push_back(
+        directions[i]->to(fields[i]->device(), fields[i]->scalar_type()));
+  }
+  std::vector<torch::Tensor> products(3);
+  if (tensor->requires_grad()) {
+    const auto gradients =
+        torch::autograd::grad({*tensor}, variables, {}, true, true, true);
+    auto contraction = torch::zeros({}, tensor->options());
+    for (int i = 0; i < 3; ++i) {
+      if (gradients[i].defined() && gradients[i].requires_grad()) {
+        contraction = contraction + (gradients[i] * tangents[i]).sum();
+      }
+    }
+    if (contraction.requires_grad()) {
+      products = torch::autograd::grad({contraction}, variables, {}, true,
+                                       false, true);
+    }
+  }
+  for (int i = 0; i < 3; ++i) {
+    const auto product =
+        products[i].defined() ? products[i] : torch::zeros_like(variables[i]);
+    response[i] =
+        new torch_c_tensor_t(product.detach().cpu().contiguous().clone());
+  }
 }
 
 /*******************************************************************************
