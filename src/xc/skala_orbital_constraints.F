@@ -22,7 +22,8 @@ MODULE skala_orbital_constraints
    PUBLIC :: skala_orbital_chart_type, skala_orbital_chart_create, skala_orbital_chart_release, &
              skala_orbital_chart_size, skala_orbital_chart_evaluate, skala_orbital_chart_derivative, &
              skala_orbital_chart_set_occupations, skala_orbital_chart_precondition, skala_orbital_chart_scales, &
-             skala_orbital_chart_response_inverse
+             skala_orbital_chart_response_inverse, skala_orbital_chart_density_response, &
+             skala_orbital_chart_operator_response
 
    TYPE skala_orbital_chart_type
       PRIVATE
@@ -119,6 +120,13 @@ MODULE skala_orbital_constraints
          CLASS(*), INTENT(INOUT) :: context
          LOGICAL, INTENT(OUT) :: smooth, interrupted
       END SUBROUTINE orbital_curvature_segment
+! **************************************************************************************************
+!> \brief ...
+!> \param coordinate ...
+!> \param context ...
+!> \param inverse_diagonal ...
+!> \param available ...
+! **************************************************************************************************
       SUBROUTINE orbital_preconditioner(coordinate, context, inverse_diagonal, available)
          IMPORT :: dp
          REAL(dp), INTENT(IN) :: coordinate(:)
@@ -145,6 +153,7 @@ CONTAINS
 !> \param metric_weight Positive k-point weight for the physical occupied-orbital tangent norm.
 !> \param complete_space Append the missing zero-occupation directions of a positive charge metric.
 !>        By default only the supplied orbital span is retained.
+!> \param variable_occupations ...
 ! **************************************************************************************************
    SUBROUTINE skala_orbital_chart_create(coefficients, metric, occupations, complex_orbitals, chart, valid, &
                                          metric_weight, complete_space, variable_occupations)
@@ -291,7 +300,7 @@ CONTAINS
       floor = 64.0_dp*EPSILON(1.0_dp)*MAX(MAXVAL(chart%coordinate_scale), temperature*chart%metric_weight)
       WHERE (chart%coordinate_scale > 0.0_dp)
          chart%coordinate_scale = 1.0_dp/SQRT(MAX(chart%coordinate_scale, floor))
-      ELSEWHERE
+      ELSE WHERE
          chart%coordinate_scale = 1.0_dp
       END WHERE
       chart%evaluated = .FALSE.
@@ -547,6 +556,143 @@ CONTAINS
    END SUBROUTINE skala_orbital_chart_derivative
 
 ! **************************************************************************************************
+!> \brief Differentiate the unweighted AO density in the evaluated original-metric Cayley chart.
+!>        The charge metric and coordinate scales are fixed. The caller applies k weights once.
+!>        Occupation directions are independent physical occupation changes, not band energies.
+!> \param chart Evaluated orbital chart in the original normalization metric.
+!> \param direction Real coordinate direction, including independent imaginary orbital rotations.
+!> \param response Hermitian AO density response without a k-point weight.
+!> \param occupations_direction Optional physical occupation direction for a variable-occupation chart.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_density_response(chart, direction, response, occupations_direction)
+      TYPE(skala_orbital_chart_type), INTENT(IN)         :: chart
+      REAL(dp), INTENT(IN)                               :: direction(:)
+      COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: occupations_direction(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: coefficients_direction(:, :), &
+                                                            generator(:, :), weighted(:, :)
+      INTEGER                                            :: i, n, nao
+
+      CPASSERT(chart%evaluated)
+      n = SIZE(chart%base, 2)
+      nao = SIZE(chart%base, 1)
+      CPASSERT(ALL(SHAPE(response) == [nao, nao]))
+      CALL orbital_generator_direction(chart, direction, generator)
+      coefficients_direction = MATMUL(chart%base, MATMUL(chart%inverse, MATMUL(generator, chart%inverse)))
+      weighted = coefficients_direction
+      DO i = 1, n
+         weighted(:, i) = chart%occupations(i)*weighted(:, i)
+      END DO
+      response = MATMUL(weighted, CONJG(TRANSPOSE(chart%coefficients)))
+      response = response + CONJG(TRANSPOSE(response))
+      IF (PRESENT(occupations_direction)) THEN
+         CPASSERT(chart%variable_occupations)
+         CPASSERT(SIZE(occupations_direction) == n)
+         CPASSERT(ALL(ieee_is_finite(occupations_direction)))
+         weighted = chart%coefficients
+         DO i = 1, n
+            weighted(:, i) = occupations_direction(i)*weighted(:, i)
+         END DO
+         response = response + MATMUL(weighted, CONJG(TRANSPOSE(chart%coefficients)))
+      END IF
+   END SUBROUTINE skala_orbital_chart_density_response
+
+! **************************************************************************************************
+!> \brief Differentiate the coordinate covector of an original Hermitian AO expectation.
+!>        Retain both Cayley inverse responses and the curvature of the orbital map.
+!>        The caller supplies identically weighted operators and their electronic response.
+!>        Occupation and operator changes are retained together. The charge metric and
+!>        coordinate scales stay fixed. Entropy and moving constraint normals remain separate.
+!> \param chart Evaluated orbital chart.
+!> \param direction Real coordinate direction.
+!> \param OPERATOR Original Hermitian AO operator, including the caller's k-point weight.
+!> \param operator_direction Response of the same weighted AO operator.
+!> \param response Coordinate-covector response in the original fixed chart.
+!> \param occupations_direction Optional physical occupation response.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_operator_response(chart, direction, OPERATOR, operator_direction, response, &
+                                                    occupations_direction)
+      TYPE(skala_orbital_chart_type), INTENT(IN)         :: chart
+      REAL(dp), INTENT(IN)                               :: direction(:)
+      COMPLEX(dp), INTENT(IN)                            :: operator(:, :), operator_direction(:, :)
+      REAL(dp), INTENT(OUT)                              :: response(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: occupations_direction(:)
+
+      COMPLEX(dp), ALLOCATABLE :: generator(:, :), h0(:, :), h0_direction(:, :), &
+         inverse_direction(:, :), transformed(:, :), transformed_direction(:, :), work(:, :)
+      INTEGER                                            :: a, b, i, n, nao
+
+      CPASSERT(chart%evaluated)
+      n = SIZE(chart%base, 2)
+      nao = SIZE(chart%base, 1)
+      CPASSERT(ALL(SHAPE(OPERATOR) == [nao, nao]))
+      CPASSERT(ALL(SHAPE(operator_direction) == [nao, nao]))
+      CPASSERT(SIZE(response) == SIZE(chart%coordinate))
+      CALL orbital_generator_direction(chart, direction, generator)
+      inverse_direction = 0.5_dp*MATMUL(chart%inverse, MATMUL(generator, chart%inverse))
+      h0 = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(OPERATOR, chart%base))
+      h0_direction = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(operator_direction, chart%base))
+      transformed = MATMUL(CONJG(TRANSPOSE(chart%rotation)), h0)
+      transformed_direction = 2.0_dp*MATMUL(CONJG(TRANSPOSE(inverse_direction)), h0) + &
+                              MATMUL(CONJG(TRANSPOSE(chart%rotation)), h0_direction)
+      IF (PRESENT(occupations_direction)) THEN
+         CPASSERT(chart%variable_occupations)
+         CPASSERT(SIZE(occupations_direction) == n)
+         CPASSERT(ALL(ieee_is_finite(occupations_direction)))
+      END IF
+      DO i = 1, n
+         transformed_direction(i, :) = chart%occupations(i)*transformed_direction(i, :)
+         IF (PRESENT(occupations_direction)) THEN
+            transformed_direction(i, :) = transformed_direction(i, :) + occupations_direction(i)*transformed(i, :)
+         END IF
+         transformed(i, :) = chart%occupations(i)*transformed(i, :)
+      END DO
+      work = MATMUL(inverse_direction, MATMUL(transformed, chart%inverse)) + &
+             MATMUL(chart%inverse, MATMUL(transformed_direction, chart%inverse)) + &
+             MATMUL(chart%inverse, MATMUL(transformed, inverse_direction))
+      DO i = 1, SIZE(response)
+         a = chart%pairs(1, i)
+         b = chart%pairs(2, i)
+         IF (chart%component(i) == 1) THEN
+            response(i) = 2.0_dp*REAL(work(b, a) - work(a, b), dp)
+         ELSE
+            response(i) = -2.0_dp*AIMAG(work(b, a) + work(a, b))
+         END IF
+         response(i) = chart%coordinate_scale(i)*response(i)
+      END DO
+   END SUBROUTINE skala_orbital_chart_operator_response
+
+! **************************************************************************************************
+!> \brief Form the anti-Hermitian generator direction with the fixed original coordinate scales.
+!> \param chart ...
+!> \param direction ...
+!> \param generator ...
+! **************************************************************************************************
+   SUBROUTINE orbital_generator_direction(chart, direction, generator)
+      TYPE(skala_orbital_chart_type), INTENT(IN)         :: chart
+      REAL(dp), INTENT(IN)                               :: direction(:)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: generator(:, :)
+
+      COMPLEX(dp)                                        :: element
+      INTEGER                                            :: a, b, i, n
+
+      CPASSERT(SIZE(direction) == SIZE(chart%coordinate))
+      CPASSERT(ALL(ieee_is_finite(direction)))
+      n = SIZE(chart%base, 2)
+      ALLOCATE (generator(n, n), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      DO i = 1, SIZE(direction)
+         a = chart%pairs(1, i)
+         b = chart%pairs(2, i)
+         element = CMPLX(direction(i), 0.0_dp, dp)
+         IF (chart%component(i) == 2) element = CMPLX(0.0_dp, direction(i), dp)
+         element = chart%coordinate_scale(i)*element
+         generator(a, b) = generator(a, b) + element
+         generator(b, a) = generator(b, a) - CONJG(element)
+      END DO
+   END SUBROUTINE orbital_generator_direction
+
+! **************************************************************************************************
 !> \brief Solve tangential orbital stationarity while reevaluating the physical constraints.
 !>        Coordinates describe a differentiable chart of normalized orbitals. QR selects dependent
 !>        coordinates, and physical Newton corrections restore every supplied constraint. The
@@ -573,12 +719,12 @@ CONTAINS
 !> \param retain_progress Return the last accepted feasible coordinates on failure, default false.
 !> \param check_stalled_segment Optional first-feasible-trial check after unsuccessful backtracking
 !>        or an unresolved energy change above the gradient tolerance.
-!> \param precondition Optional current positive diagonal inverse for coupled steps.
-!>        The returned inverse stays fixed throughout each Newton solve.
-!> \param curvature_steps Attempt coupled inexact Newton directions at every iteration, default false.
-!> \param check_curvature_segment Optional branch check of every restored Hessian probe.
 !> \param coordinate_scales Optional constant diagonal map to original coordinates for stopping tests.
 !>        Search directions use optimizer coordinates. The original unscaled gradient bound is retained.
+!> \param curvature_steps Attempt coupled inexact Newton directions at every iteration, default false.
+!> \param check_curvature_segment Optional branch check of every restored Hessian probe.
+!> \param precondition Optional current positive diagonal inverse for coupled steps.
+!>        The returned inverse stays fixed throughout each Newton solve.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
@@ -1458,6 +1604,7 @@ CONTAINS
 !> \param changes ...
 !> \param history ...
 !> \param direction ...
+!> \param diagonal ...
 ! **************************************************************************************************
    SUBROUTINE bfgs_direction(gradient, steps, changes, history, direction, diagonal)
       REAL(dp), INTENT(IN)                               :: gradient(:), steps(:, :), changes(:, :)
