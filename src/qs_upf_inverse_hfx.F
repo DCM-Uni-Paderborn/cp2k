@@ -3120,13 +3120,12 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: batch_delta(:, :), delta(:, :), &
                                                             gaussian(:, :), phi(:, :), &
                                                             weighted(:, :, :, :)
-      INTEGER                                            :: atom, aux, first, hi, ia, image, index, ir, j, &
-                                                            kind, last, lo, nang, nao, nimage, np, nproj, &
-                                                            nrow, nsupport, row, single_image(3, 1), &
-                                                            zero(3, 1)
-      INTEGER, ALLOCATABLE                               :: selected_images(:)
+      INTEGER :: atom, aux, first, hi, ia, image, index, ir, j, kind, last, lo, max_ao, nang, nao, &
+         nimage, np, nproj, nrow, nsupport, row, single_image(3, 1), zero(3, 1)
       INTEGER(int_8)                                     :: gaussian_words, support_words, words
-      LOGICAL                                            :: cached_gaussian, cached_support, collect_support
+      INTEGER, ALLOCATABLE                               :: selected_images(:)
+      LOGICAL                                            :: cached_gaussian, cached_support, &
+                                                            collect_support
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
       REAL(dp), ALLOCATABLE                              :: local_points(:, :), potential(:, :), &
                                                             weights(:)
@@ -3200,6 +3199,34 @@ CONTAINS
             field_budget = field_budget - INT(gaussian_words)
          END IF
       END IF
+      ! Fill a new Gaussian cache in one point batch when the existing scratch limit permits it.
+      ! The contractions below retain their original radial-row order.
+      batch_points(1:3, 1:nang*nrow) => coordinates
+      single_image(:, 1) = ao_image
+      IF (.NOT. cached_gaussian .AND. ALLOCATED(gaussian_fields)) THEN
+         max_ao = MAXVAL(frame%ao_last - frame%ao_first + 1)
+         gaussian_words = words + INT(nang, int_8)*INT(nrow, int_8)* &
+                          (2_int_8*INT(MAX(0, max_ao - np), int_8) + INT(max_ao + 3, int_8))
+         IF (gaussian_words <= INT(max_cached_lattice_field_words, int_8)) THEN
+            ALLOCATE (batch_delta(nang*nrow, MAX(np, max_ao)))
+            gaussian_fields = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO atom = 1, SIZE(frame%bases)
+               first = frame%ao_first(atom)
+               last = frame%ao_last(atom)
+               lo = MAX(first, ao_range(1))
+               hi = MIN(last, ao_range(2))
+               IF (hi < lo) CYCLE
+               CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, batch_points, &
+                                                   frame%positions(:, atom), frame%cell, single_image, &
+                                                   [0.0_dp, 0.0_dp, 0.0_dp], batch_delta(:, :last - first + 1))
+               DO row = 1, nrow
+                  gaussian_fields(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1, row) = &
+                     2.0_dp*batch_delta((row - 1)*nang + 1:row*nang, lo - first + 1:hi - first + 1)
+               END DO
+            END DO
+            cached_gaussian = .TRUE.
+         END IF
+      END IF
       ALLOCATE (delta(nang, MAX(np, nproj)), &
                 gaussian(nang, MAXVAL(frame%ao_last - frame%ao_first + 1)), phi(nang, nao))
       IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
@@ -3246,7 +3273,6 @@ CONTAINS
             CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
          END DO
       END DO
-      batch_points(1:3, 1:nang*nrow) => coordinates
       nimage = SIZE(coefficient_images, 2)
       IF (cached_support) THEN
          nimage = SIZE(support_indices)
@@ -3278,9 +3304,9 @@ CONTAINS
             ! The original fields are independent at each quadrature point. Evaluate one
             ! complete image batch, retaining the radial-row order of every contraction.
             IF (.NOT. ALLOCATED(batch_delta)) ALLOCATE (batch_delta(nang*nrow, np))
-            CALL qs_upf_inverse_lattice_delta_fields(frame, batch_points, single_image(:, 1), batch_delta)
+            CALL qs_upf_inverse_lattice_delta_fields(frame, batch_points, single_image(:, 1), batch_delta(:, :np))
             DO row = 1, nrow
-               delta(:, :np) = batch_delta((row - 1)*nang + 1:row*nang, :)
+               delta(:, :np) = batch_delta((row - 1)*nang + 1:row*nang, :np)
                DO aux = 1, fields%nfunction
                   CALL field_product(weighted(:, :, aux, row), delta(:, :np), entry%values(:, :, aux), &
                                      .TRUE., .TRUE., .FALSE.)
