@@ -85,6 +85,7 @@ MODULE qs_upf_inverse_xc
    PUBLIC :: qs_upf_inverse_frame_ref_type, qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_xc_evaluate, qs_upf_inverse_xc_response, qs_upf_inverse_xc_model_response
    PUBLIC :: qs_upf_inverse_xc_grid_evaluate, qs_upf_inverse_xc_grid_response
+   PUBLIC :: qs_upf_inverse_xc_grid_model_response
    PUBLIC :: qs_upf_inverse_xc_pw_fields, qs_upf_inverse_xc_pw_adjoint, qs_upf_inverse_xc_pw_response
 
 CONTAINS
@@ -1172,10 +1173,8 @@ CONTAINS
 
       INTEGER                                            :: atom, axis, np, ns, spin, stride
       INTEGER, ALLOCATABLE                               :: atomic_sizes(:)
-      REAL(dp), ALLOCATABLE                              :: background(:, :), covectors(:, :), &
-                                                            gradient(:, :, :), &
-                                                            integration_weights(:), tau(:, :), &
-                                                            values(:, :)
+      REAL(dp), ALLOCATABLE                              :: background(:, :), gradient(:, :, :), &
+                                                            tau(:, :), values(:, :)
       TYPE(skala_density_constraints_type), POINTER      :: selected_constraints
 
       np = SIZE(points, 2)
@@ -1202,7 +1201,7 @@ CONTAINS
       stride = 4
       IF (PRESENT(kinetic)) stride = 5
       CPASSERT(SIZE(fields, 4) == stride*ns)
-      ALLOCATE (values(np, stride*ns), covectors(np, stride*ns), background(np, ns), gradient(np, 3, ns))
+      ALLOCATE (values(np, stride*ns), background(np, ns), gradient(np, 3, ns))
       IF (PRESENT(kinetic)) ALLOCATE (tau(np, ns))
       CALL interpolate_native_grid_batch(fields, grid, cell, points, values, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
       DO spin = 1, ns
@@ -1245,7 +1244,120 @@ CONTAINS
             RETURN
          END IF
       END IF
-      ALLOCATE (integration_weights(np))
+      CALL xc_grid_adjoint(state, points, weights, fields, grid, cell, comm, grid_adjoint)
+   END SUBROUTINE qs_upf_inverse_xc_grid_evaluate
+
+! **************************************************************************************************
+!> \brief Fixed-geometry Skala response of the atomic residual and its native-grid interpolation.
+!>        Both field maps and both adjoints use the original quadrature and partition weights.
+!>        The returned grid covector is globally replicated and already contains those weights.
+!>        Frozen-core fields have zero electronic response. This is not a complete KS kernel.
+!> \param frames ...
+!> \param augmentation ...
+!> \param matrices_direction Unweighted Hermitian occupation-matrix direction, indexed (AO,AO,k,spin).
+!> \param kweights Mesh weights applied once in the exact atomic field map.
+!> \param points Local atomic evaluation points, including empty MPI owners.
+!> \param weights Original signed integration measure.
+!> \param state Exact atomic fields from the unperturbed original functional.
+!> \param fields Globally assembled unperturbed native density, gradients and kinetic density.
+!> \param fields_direction Matching primitive-field direction, with frozen-core contributions held fixed.
+!> \param grid ...
+!> \param cell ...
+!> \param xc_section ...
+!> \param comm ...
+!> \param response Atomic model covector responses and globally reduced direct AO operators.
+!> \param grid_adjoint Negative background response after the original interpolation transpose.
+!>        The caller still applies the native spectral-gradient transpose and orbital-field map.
+!> \param kinetic ...
+!> \param atom_grid ...
+!> \param paw_reconstruction ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_grid_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
+                                                    state, fields, fields_direction, grid, cell, xc_section, comm, &
+                                                    response, grid_adjoint, kinetic, atom_grid, paw_reconstruction)
+      TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:), points(:, :), weights(:)
+      TYPE(qs_upf_inverse_xc_type), INTENT(IN)           :: state
+      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :), &
+                                                            fields_direction(:, :, :, :)
+      TYPE(pw_grid_type), INTENT(IN), POINTER            :: grid
+      TYPE(cell_type), INTENT(IN), POINTER               :: cell
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+      TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: response
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: grid_adjoint(:, :, :, :)
+      TYPE(upf_inverse_kinetic_type), INTENT(IN)         :: kinetic(:)
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: paw_reconstruction(:)
+
+      INTEGER                                            :: axis, np, ns, spin
+      REAL(dp), ALLOCATABLE :: background(:, :), background_direction(:, :), gradient(:, :, :), &
+         gradient_direction(:, :, :), tau(:, :), tau_direction(:, :), values(:, :), &
+         values_direction(:, :)
+
+      CPASSERT(state%kinetic)
+      CPASSERT(ALLOCATED(state%density))
+      np = SIZE(points, 2)
+      ns = SIZE(state%density, 2)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      CPASSERT(SIZE(fields, 4) == 5*ns)
+      CPASSERT(ALL(SHAPE(fields_direction) == SHAPE(fields)))
+      ALLOCATE (values(np, 5*ns), values_direction(np, 5*ns), background(np, ns), background_direction(np, ns), &
+                gradient(np, 3, ns), gradient_direction(np, 3, ns), tau(np, ns), tau_direction(np, ns))
+      CALL interpolate_native_grid_batch(fields, grid, cell, points, values, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
+      CALL interpolate_native_grid_batch(fields_direction, grid, cell, points, values_direction, &
+                                         wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
+      DO spin = 1, ns
+         background(:, spin) = values(:, 5*(spin - 1) + 1)
+         background_direction(:, spin) = values_direction(:, 5*(spin - 1) + 1)
+         DO axis = 1, 3
+            gradient(:, axis, spin) = values(:, 5*(spin - 1) + 1 + axis)
+            gradient_direction(:, axis, spin) = values_direction(:, 5*(spin - 1) + 1 + axis)
+         END DO
+         tau(:, spin) = values(:, 5*spin)
+         tau_direction(:, spin) = values_direction(:, 5*spin)
+      END DO
+      CALL qs_upf_inverse_xc_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
+                                            state, background, gradient, tau, background_direction, gradient_direction, &
+                                            tau_direction, xc_section, comm, response, kinetic, atom_grid, paw_reconstruction)
+      CALL xc_grid_adjoint(response, points, weights, fields, grid, cell, comm, grid_adjoint)
+   END SUBROUTINE qs_upf_inverse_xc_grid_model_response
+
+! **************************************************************************************************
+!> \brief Shared original transpose for first atomic covectors and their fixed-geometry responses.
+!>        Native Skala covectors already carry the signed quadrature. Semilocal covectors do not.
+!> \param state Atomic background covectors with their original weighting convention.
+!> \param points Local atomic evaluation points.
+!> \param weights Original signed integration measure.
+!> \param fields Native-grid fields defining the output shape.
+!> \param grid ...
+!> \param cell ...
+!> \param comm ...
+!> \param grid_adjoint Globally replicated native-grid covector.
+! **************************************************************************************************
+   SUBROUTINE xc_grid_adjoint(state, points, weights, fields, grid, cell, comm, grid_adjoint)
+      TYPE(qs_upf_inverse_xc_type), INTENT(IN)           :: state
+      REAL(dp), INTENT(IN)                               :: points(:, :), weights(:), &
+                                                            fields(:, :, :, :)
+      TYPE(pw_grid_type), INTENT(IN), POINTER            :: grid
+      TYPE(cell_type), INTENT(IN), POINTER               :: cell
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: grid_adjoint(:, :, :, :)
+
+      INTEGER                                            :: axis, np, ns, spin, stride
+      REAL(dp), ALLOCATABLE                              :: covectors(:, :), integration_weights(:)
+
+      np = SIZE(points, 2)
+      CPASSERT(SIZE(weights) == np)
+      CPASSERT(ALLOCATED(state%background_vdensity))
+      ns = SIZE(state%background_vdensity, 2)
+      stride = 4
+      IF (state%kinetic) stride = 5
+      CPASSERT(SIZE(fields, 4) == stride*ns)
+      ALLOCATE (integration_weights(np), covectors(np, stride*ns))
       integration_weights(:) = weights
       IF (state%weighted_adjoint) integration_weights = 1.0_dp
       DO spin = 1, ns
@@ -1253,13 +1365,13 @@ CONTAINS
          DO axis = 1, 3
             covectors(:, stride*(spin - 1) + 1 + axis) = integration_weights*state%background_vgradient(:, axis, spin)
          END DO
-         IF (PRESENT(kinetic)) covectors(:, stride*spin) = integration_weights*state%background_vtau(:, spin)
+         IF (state%kinetic) covectors(:, stride*spin) = integration_weights*state%background_vtau(:, spin)
       END DO
-      ALLOCATE (grid_adjoint(SIZE(fields, 1), SIZE(fields, 2), SIZE(fields, 3), SIZE(fields, 4)))
+      ALLOCATE (grid_adjoint, MOLD=fields)
       grid_adjoint = 0.0_dp
       CALL native_grid_batch_adjoint(covectors, grid, cell, points, grid_adjoint, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
       CALL comm%sum(grid_adjoint)
-   END SUBROUTINE qs_upf_inverse_xc_grid_evaluate
+   END SUBROUTINE xc_grid_adjoint
 
 ! **************************************************************************************************
 !> \brief Retain the physical inputs of the exact and background atomic Skala evaluations.
