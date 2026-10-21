@@ -63,6 +63,7 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_kinetic_collocate,&
                                               qs_upf_inverse_kinetic_integrate,&
                                               qs_upf_inverse_kinetic_operator
+   USE qs_upf_inverse_gth_local,        ONLY: qs_upf_inverse_gth_local_paw
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
                                               qs_upf_inverse_paw_density_fourier,&
                                               qs_upf_inverse_paw_local_operator,&
@@ -1226,7 +1227,88 @@ CONTAINS
                         11.0_dp*REAL(restricted(1, 1), dp)), 'PAW scalar-field charge transpose', 3.e-13_dp)
          CALL qs_upf_inverse_paw_density_fourier(kind, projected, g(:, :0), position, 11.0_dp, density(:0, :))
       END ASSOCIATE
+      CALL check_gth_paw_local(kind)
    END SUBROUTINE check_paw_density_fourier
+
+! **************************************************************************************************
+   SUBROUTINE check_gth_paw_local(paw_kind)
+      TYPE(paw_kind_type), INTENT(IN)                    :: paw_kind
+
+      COMPLEX(dp)                                        :: derivative(2, 2), dw(2, 2), &
+                                                            matrix(2, 2), minus(2, 2), plus(2, 2)
+      INTEGER                                            :: atom
+      REAL(dp)                                           :: cell_motion(3, 3), core, core_minus, &
+                                                            core_plus, dcore, motion(3, 3), step
+      TYPE(atomic_kind_type), TARGET                     :: atom_kinds(3)
+      TYPE(particle_type)                                :: particles(3)
+      TYPE(paw_kind_type)                                :: paw(2)
+      TYPE(qs_kind_type)                                 :: kinds(2)
+      TYPE(qs_upf_inverse_type)                          :: frame, shifted
+
+      paw(1) = paw_kind
+      ALLOCATE (paw(1)%xcgrid%directions(3, 6), SOURCE=0.0_dp)
+      DO atom = 1, 3
+         paw(1)%xcgrid%directions(atom, 2*atom - 1:2*atom) = [1.0_dp, -1.0_dp]
+         atom_kinds(atom)%kind_number = 1
+         particles(atom)%atomic_kind => atom_kinds(atom)
+      END DO
+      atom_kinds(2)%kind_number = 2
+      ALLOCATE (kinds(2)%gth_potential)
+      kinds(2)%gth_potential%nexp_ppl = 2
+      kinds(2)%gth_potential%alpha_ppl = 0.47_dp
+      ALLOCATE (kinds(2)%gth_potential%cexp_ppl(2))
+      kinds(2)%gth_potential%cexp_ppl = [-1.4_dp, 0.3_dp]
+      frame%center_atoms = [1, 3]
+      frame%center_kinds = [1, 1]
+      frame%projector_first = [1, 2]
+      frame%projector_last = [1, 2]
+      frame%positions = RESHAPE([0.1_dp, -0.2_dp, 0.3_dp, 0.7_dp, 0.4_dp, -0.6_dp, &
+                                 -0.5_dp, 0.8_dp, 0.2_dp], [3, 3])
+      frame%cell = RESHAPE([2.2_dp, 0.1_dp, 0.0_dp, 0.2_dp, 2.3_dp, 0.1_dp, 0.0_dp, -0.1_dp, 2.1_dp], [3, 3])
+      frame%images = RESHAPE([0, 0, 0, 1, -1, 0], [3, 2])
+      frame%coefficients = RESHAPE([CMPLX(0.7_dp, 0.1_dp, dp), CMPLX(-0.2_dp, 0.3_dp, dp), &
+                                    CMPLX(0.4_dp, -0.2_dp, dp), CMPLX(0.1_dp, 0.5_dp, dp)], [2, 2])
+      dw = 0.13_dp*CONJG(frame%coefficients)
+      motion = 0.17_dp*frame%positions
+      cell_motion = 0.11_dp*TRANSPOSE(frame%cell)
+      matrix = 0.0_dp
+      derivative = 0.0_dp
+      core = 0.0_dp
+      dcore = 0.0_dp
+      CALL qs_upf_inverse_gth_local_paw(frame, kinds, particles, paw, matrix, core, derivative, dcore, &
+                                        dw, motion, cell_motion)
+      step = 1.e-5_dp
+      shifted = frame
+      shifted%positions = frame%positions + step*motion
+      shifted%cell = frame%cell + step*cell_motion
+      shifted%coefficients = frame%coefficients + step*dw
+      plus = 0.0_dp
+      core_plus = 0.0_dp
+      CALL qs_upf_inverse_gth_local_paw(shifted, kinds, particles, paw, plus, core_plus)
+      shifted%positions = frame%positions - step*motion
+      shifted%cell = frame%cell - step*cell_motion
+      shifted%coefficients = frame%coefficients - step*dw
+      minus = 0.0_dp
+      core_minus = 0.0_dp
+      CALL qs_upf_inverse_gth_local_paw(shifted, kinds, particles, paw, minus, core_minus)
+      CALL check(MAXVAL(ABS((plus - minus)/(2.0_dp*step) - derivative)), 'GTH PAW local AO response', 2.e-9_dp)
+      CALL check(ABS((core_plus - core_minus)/(2.0_dp*step) - dcore), 'GTH PAW local core response', 2.e-9_dp)
+      derivative = 0.0_dp
+      dcore = 0.0_dp
+      motion = 0.23_dp
+      cell_motion = 0.0_dp
+      dw = 0.0_dp
+      CALL qs_upf_inverse_gth_local_paw(frame, kinds, particles, paw, response=derivative, core_response=dcore, &
+                                        coefficients_response=dw, atom_response=motion, cell_response=cell_motion)
+      CALL check(MAX(MAXVAL(ABS(derivative)), ABS(dcore)), 'GTH PAW local rigid translation', 1.e-14_dp)
+      kinds(2)%ghost = .TRUE.
+      plus = matrix
+      core_plus = core
+      CALL qs_upf_inverse_gth_local_paw(frame, kinds, particles, paw, plus, core_plus)
+      CALL check(MAX(MAXVAL(ABS(plus - matrix)), ABS(core_plus - core)), 'GTH PAW local empty selection', 1.e-14_dp)
+      DEALLOCATE (kinds(2)%gth_potential%cexp_ppl)
+      DEALLOCATE (kinds(2)%gth_potential)
+   END SUBROUTINE check_gth_paw_local
 ! **************************************************************************************************
 !> \brief Atomic hard-projector orientation, full kinetic matrix and exact NC reduction.
 ! **************************************************************************************************

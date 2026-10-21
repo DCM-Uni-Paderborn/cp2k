@@ -22,6 +22,7 @@ MODULE qs_upf_inverse_gth_local
    USE kpoint_types,                    ONLY: kpoint_type
    USE mathlib,                         ONLY: invmat
    USE particle_types,                  ONLY: particle_type
+   USE paw_types,                       ONLY: paw_kind_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_kind_types,                   ONLY: qs_kind_type
@@ -33,9 +34,11 @@ MODULE qs_upf_inverse_gth_local
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_gaussian_operator,&
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_response
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_local_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_background_type,&
-                                              qs_upf_inverse_grid_type
+                                              qs_upf_inverse_grid_type,&
+                                              qs_upf_inverse_type
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
@@ -44,8 +47,141 @@ MODULE qs_upf_inverse_gth_local
    PUBLIC :: qs_upf_inverse_gth_local_matrix, qs_upf_inverse_gth_local_geometry
    PUBLIC :: qs_upf_inverse_gth_local_active, qs_upf_inverse_gth_local_field
    PUBLIC :: qs_upf_inverse_gth_local_residual
+   PUBLIC :: qs_upf_inverse_gth_local_paw
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Add the physical PAW density and frozen-core coupling to original local GTH fields.
+!>        The valence operator is W^dagger A W, where A is the original AE-minus-compensated-PS
+!>        scalar-field transpose. Atomic radial nodes, directions and weights move rigidly with
+!>        their PAW center. Only relative centers and physical image vectors enter the field
+!>        response. There is no grid-volume, Bloch-phase or atomic-rule Jacobian contribution.
+!> \param frame Original centers, fixed physical images and reconstruction coefficients W.
+!> \param kinds Original native scalar GTH datasets, without fitting or additional truncation.
+!> \param particles Original atom-to-kind mapping in the frame's atom order.
+!> \param paw Prepared original PAW density products and frozen AE-core densities by kind.
+!> \param operator Optional existing AO operator, incremented without spin or k-point weights.
+!> \param core_energy Optional existing frozen-core constant, incremented once outside spin/k loops.
+!> \param response Optional existing AO operator response, including both responses of W.
+!> \param core_response Optional existing frozen-core response, independent of W and valence density.
+!> \param coefficients_response Required with response, complete derivative of W.
+!> \param atom_response Required with either response, Cartesian motion of every physical atom.
+!> \param cell_response Required with either response, motion of the physical image lattice.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_gth_local_paw(frame, kinds, particles, paw, OPERATOR, core_energy, response, &
+                                           core_response, coefficients_response, atom_response, cell_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(particle_type), INTENT(IN)                    :: particles(:)
+      TYPE(paw_kind_type), INTENT(IN)                    :: paw(:)
+      COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: operator(:, :)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: core_energy
+      COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: response(:, :)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: core_response
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: weighted(:, :)
+      INTEGER                                            :: active, atom, center_atom, gth_kind, &
+                                                            image, ir, kind, n, na, nr, p, q
+      LOGICAL                                            :: geometry, values_requested
+      REAL(dp)                                           :: center(3), core, dcore, motion(3)
+      REAL(dp), ALLOCATABLE :: displacement(:, :), field(:, :), field_response(:, :), &
+         gradient(:, :), matrix(:, :), matrix_response(:, :), values(:)
+      TYPE(gth_local_fields_type), ALLOCATABLE           :: fields(:)
+      LOGICAL                                            :: selected(SIZE(kinds))
+
+      CPASSERT(SIZE(paw) == SIZE(kinds))
+      CPASSERT(ALL(SHAPE(frame%positions) == [3, SIZE(particles)]))
+      CPASSERT(SIZE(frame%images, 1) == 3)
+      geometry = PRESENT(response) .OR. PRESENT(core_response)
+      values_requested = PRESENT(OPERATOR) .OR. PRESENT(core_energy)
+      CPASSERT(values_requested .OR. geometry)
+      n = SIZE(frame%coefficients, 2)
+      IF (PRESENT(OPERATOR)) THEN
+         CPASSERT(ALL(SHAPE(OPERATOR) == [n, n]))
+      END IF
+      IF (PRESENT(response)) THEN
+         CPASSERT(ALL(SHAPE(response) == [n, n]))
+         CPASSERT(PRESENT(coefficients_response))
+         CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
+      END IF
+      IF (geometry) THEN
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
+         CPASSERT(PRESENT(cell_response))
+      END IF
+      selected = .FALSE.
+      ALLOCATE (fields(SIZE(kinds)))
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%gth_potential)) CYCLE
+         CALL gth_local_fields_init(kinds(kind)%gth_potential, fields(kind))
+         selected(kind) = ANY(fields(kind)%nterm > 0)
+      END DO
+      IF (.NOT. ANY(selected)) RETURN
+      DO active = 1, SIZE(frame%center_atoms)
+         kind = frame%center_kinds(active)
+         IF (.NOT. paw(kind)%active) CYCLE
+         center_atom = frame%center_atoms(active)
+         p = frame%projector_first(active)
+         q = frame%projector_last(active)
+         CPASSERT(q - p + 1 == paw(kind)%onecenter%nproj)
+         ASSOCIATE (grid => paw(kind)%xcgrid)
+            na = grid%na
+            nr = grid%nr
+            ALLOCATE (displacement(3, na), values(na), field(na, nr), matrix(q - p + 1, q - p + 1))
+            field = 0.0_dp
+            IF (geometry) ALLOCATE (gradient(na, 3), field_response(na, nr), SOURCE=0.0_dp)
+            DO atom = 1, SIZE(particles)
+               CPASSERT(ASSOCIATED(particles(atom)%atomic_kind))
+               gth_kind = particles(atom)%atomic_kind%kind_number
+               CPASSERT(gth_kind >= 1 .AND. gth_kind <= SIZE(kinds))
+               IF (.NOT. selected(gth_kind)) CYCLE
+               DO image = 1, SIZE(frame%images, 2)
+                  center = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+                  IF (geometry) THEN
+                     motion = atom_response(:, center_atom) - atom_response(:, atom) - &
+                              MATMUL(cell_response, REAL(frame%images(:, image), dp))
+                  END IF
+                  DO ir = 1, nr
+                     displacement = grid%r(ir)*grid%directions + &
+                                    SPREAD(frame%positions(:, center_atom) - center, 2, na)
+                     IF (geometry) THEN
+                        CALL gth_local_fields_evaluate(fields(gth_kind), displacement, values, gradient)
+                        field_response(:, ir) = field_response(:, ir) + MATMUL(gradient, motion)
+                     ELSE
+                        CALL gth_local_fields_evaluate(fields(gth_kind), displacement, values)
+                     END IF
+                     field(:, ir) = field(:, ir) + values
+                  END DO
+               END DO
+            END DO
+         END ASSOCIATE
+         CALL qs_upf_inverse_paw_local_operator(paw(kind), field, matrix, core)
+         IF (PRESENT(core_energy)) core_energy = core_energy + core
+         IF (PRESENT(OPERATOR) .OR. PRESENT(response)) THEN
+            weighted = MATMUL(CMPLX(matrix, 0.0_dp, dp), frame%coefficients(p:q, :))
+            IF (PRESENT(OPERATOR)) THEN
+               OPERATOR = OPERATOR + MATMUL(CONJG(TRANSPOSE(frame%coefficients(p:q, :))), weighted)
+            END IF
+         END IF
+         IF (geometry) THEN
+            ALLOCATE (matrix_response, MOLD=matrix)
+            CALL qs_upf_inverse_paw_local_operator(paw(kind), field_response, matrix_response, dcore)
+            IF (PRESENT(core_response)) core_response = core_response + dcore
+            IF (PRESENT(response)) THEN
+               response = response + MATMUL(CONJG(TRANSPOSE(coefficients_response(p:q, :))), weighted) + &
+                          MATMUL(CONJG(TRANSPOSE(frame%coefficients(p:q, :))), &
+                                 MATMUL(CMPLX(matrix_response, 0.0_dp, dp), frame%coefficients(p:q, :)) + &
+                                 MATMUL(CMPLX(matrix, 0.0_dp, dp), coefficients_response(p:q, :)))
+            END IF
+            DEALLOCATE (gradient, field_response, matrix_response)
+         END IF
+         DEALLOCATE (displacement, values, field, matrix)
+      END DO
+   END SUBROUTINE qs_upf_inverse_gth_local_paw
 
 ! **************************************************************************************************
 !> \brief Whether any physical GTH center has native local Gaussian terms.
