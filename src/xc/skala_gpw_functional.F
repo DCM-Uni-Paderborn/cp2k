@@ -1703,11 +1703,11 @@ CONTAINS
          IF (descriptor == skala_density_descriptor) THEN
             CALL skala_torch_model_descriptor_limits(cached_model, inputs, "density", density, &
                                                      active, probes(descriptor), negative, positive, branches=branches, &
-                                                     targets=active_targets)
+                                                     targets=active_targets, adjacent=cached_model_fp64)
          ELSE
             CALL skala_torch_model_descriptor_limits(cached_model, inputs, "kin", kinetic, &
                                                      active, probes(descriptor), negative, positive, branches=branches, &
-                                                     targets=active_targets)
+                                                     targets=active_targets, adjacent=cached_model_fp64)
          END IF
          DO c = 1, SIZE(rows)
             IF (.NOT. selected(c)) CYCLE
@@ -2455,12 +2455,12 @@ CONTAINS
          IF (descriptor == skala_density_descriptor) THEN
             CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "density", features%density, &
                                                      active, probes(descriptor), negative, positive, branches=branches, &
-                                                     targets=active_targets)
+                                                     targets=active_targets, adjacent=cached_model_fp64)
             covector => density_grad
          ELSE
             CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "kin", features%kin, &
                                                      active, probes(descriptor), negative, positive, branches=branches, &
-                                                     targets=active_targets)
+                                                     targets=active_targets, adjacent=cached_model_fp64)
             covector => kin_grad
          END IF
          DO c = 1, n

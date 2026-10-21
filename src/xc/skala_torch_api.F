@@ -228,8 +228,10 @@ CONTAINS
 !> \param positive New owned weighted density covector on the positive side.
 !> \param energies Complete discrete energies of the two limit evaluations.
 !> \param targets Optional physical target per selected feature entry, zero by default.
+!> \param adjacent Use adjacent double-precision branch values, false by default.
 ! **************************************************************************************************
-   SUBROUTINE skala_torch_model_density_limits(model, inputs, density, active, probe, negative, positive, energies, targets)
+   SUBROUTINE skala_torch_model_density_limits(model, inputs, density, active, probe, negative, positive, energies, &
+                                               targets, adjacent)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       REAL(dp), INTENT(IN)                               :: density(:, :)
@@ -238,29 +240,34 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
       REAL(dp), INTENT(OUT)                              :: energies(2)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjacent
 
       CALL skala_torch_model_descriptor_limits(model, inputs, "density", density, active, probe, &
-                                               negative, positive, energies, targets=targets)
+                                               negative, positive, energies, targets=targets, adjacent=adjacent)
    END SUBROUTINE skala_torch_model_density_limits
 
 ! **************************************************************************************************
 !> \brief Evaluate original-model one-sided covectors of a physical density or kinetic density.
 !>        Other features are detached and unchanged. Original input gradients are not accumulated.
-!>        The caller supplies physical targets and verifies convergence in probe magnitude.
+!>        Literal probes allow independent convergence checks. Adjacent double-precision values
+!>        isolate nearby targets without crossing a second boundary. Zero uses the smallest normal
+!>        signed values to preserve its side through device transfers. This mode requires model
+!>        arithmetic that retains double-precision features.
 !> \param model Original loaded model.
 !> \param inputs Complete original feature dictionary, including its integration weights.
 !> \param feature Dictionary key, density or kin.
 !> \param values Original full two-spin physical descriptor layout.
 !> \param active One-based feature row and spin indices, shape (2, number of selected samples).
-!> \param probe Positive physical descriptor magnitude for the one-sided limit.
+!> \param probe Positive physical descriptor magnitude for literal probes.
 !> \param negative New owned weighted descriptor covector on the negative side.
 !> \param positive New owned weighted descriptor covector on the positive side.
 !> \param energies Optional complete discrete energies. Requesting them evaluates both branches.
 !> \param branches Optional negative/positive branch selection. Unrequested covectors are zero.
 !> \param targets Optional physical target per selected feature entry, zero by default.
+!> \param adjacent Use adjacent branch values instead of literal probes, false by default.
 ! **************************************************************************************************
    SUBROUTINE skala_torch_model_descriptor_limits(model, inputs, feature, values, active, probe, &
-                                                  negative, positive, energies, branches, targets)
+                                                  negative, positive, energies, branches, targets, adjacent)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       CHARACTER(len=*), INTENT(IN)                       :: feature
@@ -271,9 +278,10 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: energies(2)
       LOGICAL, INTENT(IN), OPTIONAL                      :: branches(2)
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: adjacent
 
       INTEGER                                            :: branch, sample
-      LOGICAL                                            :: needed(2)
+      LOGICAL                                            :: local_limit, needed(2)
       REAL(dp)                                           :: energy, TARGET
       REAL(dp), ALLOCATABLE                              :: branch_values(:, :)
       REAL(dp), POINTER                                  :: derivative(:, :)
@@ -296,6 +304,8 @@ CONTAINS
       negative = 0.0_dp
       positive = 0.0_dp
       needed = .TRUE.
+      local_limit = .FALSE.
+      IF (PRESENT(adjacent)) local_limit = adjacent
       IF (PRESENT(branches)) needed = branches
       IF (PRESENT(energies)) needed = .TRUE.
       CPASSERT(ANY(needed))
@@ -305,7 +315,11 @@ CONTAINS
          DO sample = 1, SIZE(active, 2)
             TARGET = 0.0_dp
             IF (PRESENT(targets)) TARGET = targets(sample)
-            branch_values(active(1, sample), active(2, sample)) = TARGET + REAL(2*branch - 3, dp)*probe
+            IF (local_limit) THEN
+               branch_values(active(1, sample), active(2, sample)) = descriptor_adjacent(TARGET, 2*branch - 3)
+            ELSE
+               branch_values(active(1, sample), active(2, sample)) = TARGET + REAL(2*branch - 3, dp)*probe
+            END IF
          END DO
          CALL torch_dict_clone_detached(inputs, branch_inputs, feature)
          CALL torch_tensor_from_array(descriptor_t, branch_values, requires_grad=.TRUE.)
@@ -332,6 +346,31 @@ CONTAINS
       END DO
       DEALLOCATE (branch_values)
    END SUBROUTINE skala_torch_model_descriptor_limits
+
+! **************************************************************************************************
+!> \brief Select a representable side of a double-precision descriptor boundary.
+!> \param center Physical boundary value.
+!> \param side Negative or positive side, minus or plus one.
+!> \return Adjacent value, or the smallest signed normal value at zero.
+! **************************************************************************************************
+   FUNCTION descriptor_adjacent(center, side) RESULT(value)
+      REAL(dp), INTENT(IN)                               :: center
+      INTEGER, INTENT(IN)                                :: side
+      REAL(dp)                                           :: value
+
+      CPASSERT(ABS(side) == 1)
+      IF (center == 0.0_dp) THEN
+         value = REAL(side, dp)*TINY(0.0_dp)
+      ELSE
+         value = NEAREST(center, REAL(side, dp))
+      END IF
+      CPASSERT(ABS(value) < HUGE(0.0_dp))
+      IF (side < 0) THEN
+         CPASSERT(value < center)
+      ELSE
+         CPASSERT(value > center)
+      END IF
+   END FUNCTION descriptor_adjacent
 
 ! **************************************************************************************************
 !> \brief Parse a TorchScript extra_files JSON list of feature names.
