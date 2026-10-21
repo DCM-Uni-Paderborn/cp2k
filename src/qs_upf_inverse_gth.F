@@ -17,17 +17,30 @@ MODULE qs_upf_inverse_gth
                                               gth_projector_fields_type,&
                                               gth_projector_overlap
    USE kinds,                           ONLY: dp
+   USE libgrpp,                         ONLY: libgrpp_init
    USE particle_types,                  ONLY: particle_type
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_build_ae
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_overlap
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
    USE upf_inverse,                     ONLY: upf_inverse_delta_init
-   USE upf_projector_integrals,         ONLY: upf_projector_type
+   USE upf_projector_integrals,         ONLY: upf_projector_angular_init,&
+                                              upf_projector_type
+   USE upf_types,                       ONLY: atom_upfpot_type,&
+                                              upf_radial_weights
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_gth_nonlocal
+   PUBLIC :: qs_upf_inverse_gth_core_type, qs_upf_inverse_gth_core_init, qs_upf_inverse_gth_core_nonlocal
+
+   TYPE qs_upf_inverse_gth_core_type
+      LOGICAL :: initialized = .FALSE., available = .FALSE.
+      CHARACTER(LEN=256) :: reason = 'Original PAW core orbitals have not been initialized'
+      TYPE(upf_projector_type) :: orbitals
+      REAL(dp), ALLOCATABLE :: occupations(:)
+   END TYPE qs_upf_inverse_gth_core_type
 
 CONTAINS
 
@@ -220,4 +233,148 @@ CONTAINS
          DEALLOCATE (overlap, weighted)
       END DO
    END SUBROUTINE qs_upf_inverse_gth_nonlocal
+! **************************************************************************************************
+!> \brief Keep signed original AE core orbitals and their spin-summed magnetic-state occupations.
+!>        Reuse the original-data closed-core assignment and charge checks. The angular overlap
+!>        service integrates these orbitals on their full original radial mesh without a fit,
+!>        normalization change, or additional tail truncation. No model-core kinetic field is needed.
+!> \param pot Original scalar PAW data with complete compatible signed occupied core waves.
+!> \param degree Largest Cartesian Gaussian degree, including requested geometry derivatives.
+!> \param core Owned original-data cache, including an explicit unavailable-data reason.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_gth_core_init(pot, degree, core)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      INTEGER, INTENT(IN)                                :: degree
+      TYPE(qs_upf_inverse_gth_core_type), INTENT(OUT)    :: core
+
+      INTEGER                                            :: i, j, nr, nshell, p
+      INTEGER, ALLOCATABLE                               :: angular(:), selected(:), shells(:)
+      REAL(dp), ALLOCATABLE                              :: tau_ae(:), weights(:)
+
+      core%initialized = .TRUE.
+      CALL paw_core_kinetic_build_ae(pot, tau_ae, core%available, core%reason, selected)
+      IF (.NOT. core%available) RETURN
+      DEALLOCATE (tau_ae)
+      nshell = COUNT(selected > 0)
+      IF (nshell == 0) RETURN
+      nr = SIZE(pot%r)
+      ALLOCATE (angular(nshell), shells(nshell))
+      j = 0
+      DO i = 1, SIZE(selected)
+         IF (selected(i) == 0) CYCLE
+         j = j + 1
+         shells(j) = i
+         angular(j) = pot%paw%gipaw_core_orbitals%angular_momenta(i)
+      END DO
+      CALL upf_projector_angular_init(angular, degree, core%orbitals)
+      CALL libgrpp_init()
+      ALLOCATE (core%orbitals%r, SOURCE=pot%r)
+      core%orbitals%radius = MAXVAL(pot%r)
+      ALLOCATE (core%orbitals%weighted_beta(nr, nshell), core%occupations(core%orbitals%nproj))
+      weights = upf_radial_weights(pot)*pot%r
+      DO j = 1, nshell
+         i = shells(j)
+         ! The original file stores u(r). The radial overlap measure for R=u/r is w*r*u.
+         core%orbitals%weighted_beta(:, j) = weights*pot%paw%gipaw_core_orbitals%wfc(:, i)
+      END DO
+      DO p = 1, core%orbitals%nproj
+         j = core%orbitals%radial_index(p)
+         core%occupations(p) = REAL(selected(shells(j)), dp)/REAL(2*angular(j) + 1, dp)
+      END DO
+   END SUBROUTINE qs_upf_inverse_gth_core_init
+
+! **************************************************************************************************
+!> \brief Add the original frozen PAW core expectation of the GTH nonlocal one-body operator.
+!>        Each physical projector image contributes its own quadratic expectation. Images are not
+!>        combined coherently, and no valence occupation, spin, k-point weight, or inverse map enters.
+!>        This constant has no valence Hamiltonian contribution. Its geometry response moves both
+!>        atomic centers and the image lattice, with the original radial measure held fixed.
+!> \param frame Original positions, cell, and complete fixed physical projector image list.
+!> \param kinds Original scalar GTH and PAW datasets.
+!> \param particles Original atom-to-kind mapping in the frame's atom order.
+!> \param cores Prepared original PAW core caches, indexed by kind.
+!> \param energy Existing energy, incremented once independently of valence spin and k-point loops.
+!> \param response Optional existing joint geometry response, incremented in place.
+!> \param atom_response Required with response, motion of every physical atom.
+!> \param cell_response Required with response, motion of the image lattice vectors.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_gth_core_nonlocal(frame, kinds, particles, cores, energy, response, &
+                                               atom_response, cell_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(particle_type), INTENT(IN)                    :: particles(:)
+      TYPE(qs_upf_inverse_gth_core_type), INTENT(IN)     :: cores(:)
+      REAL(dp), INTENT(INOUT)                            :: energy
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: doverlap(:, :), overlap(:, :), &
+                                                            weighted(:, :)
+      INTEGER                                            :: atom, core_atom, core_kind, image, kind, &
+                                                            ncore, nf
+      TYPE(gth_projector_fields_type), ALLOCATABLE, &
+         TARGET                                          :: projectors(:)
+      TYPE(gto_basis_set_type)                           :: native_basis
+
+      CPASSERT(SIZE(cores) == SIZE(kinds))
+      CPASSERT(ALL(SHAPE(frame%positions) == [3, SIZE(particles)]))
+      CPASSERT(SIZE(frame%images, 1) == 3)
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(ALL(SHAPE(atom_response) == [3, SIZE(particles)]))
+         CPASSERT(PRESENT(cell_response))
+      END IF
+      ALLOCATE (projectors(SIZE(kinds)))
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%gth_potential)) CYCLE
+         IF (kinds(kind)%gth_potential%nppnl == 0) CYCLE
+         CALL gth_projector_fields_init(kinds(kind)%gth_potential, projectors(kind))
+      END DO
+      DO atom = 1, SIZE(particles)
+         CPASSERT(ASSOCIATED(particles(atom)%atomic_kind))
+         kind = particles(atom)%atomic_kind%kind_number
+         CPASSERT(kind >= 1 .AND. kind <= SIZE(kinds))
+         nf = projectors(kind)%nfunction
+         IF (nf == 0) CYCLE
+         CALL gth_projector_basis(projectors(kind), native_basis)
+         DO core_atom = 1, SIZE(particles)
+            CPASSERT(ASSOCIATED(particles(core_atom)%atomic_kind))
+            core_kind = particles(core_atom)%atomic_kind%kind_number
+            CPASSERT(core_kind >= 1 .AND. core_kind <= SIZE(kinds))
+            IF (kinds(core_kind)%ghost) CYCLE
+            IF (.NOT. ASSOCIATED(kinds(core_kind)%sgp_potential)) CYCLE
+            IF (.NOT. ALLOCATED(kinds(core_kind)%sgp_potential%upf_data)) CYCLE
+            IF (.NOT. kinds(core_kind)%sgp_potential%upf_data%is_paw) CYCLE
+            CPASSERT(cores(core_kind)%initialized)
+            IF (.NOT. cores(core_kind)%available) THEN
+               CPABORT('Original PAW core orbitals are unavailable: '//TRIM(cores(core_kind)%reason))
+            END IF
+            ncore = cores(core_kind)%orbitals%nproj
+            IF (ncore == 0) CYCLE
+            ALLOCATE (overlap(ncore, nf), weighted(ncore, nf))
+            IF (PRESENT(response)) ALLOCATE (doverlap(ncore, nf))
+            DO image = 1, SIZE(frame%images, 2)
+               IF (PRESENT(response)) THEN
+                  CALL qs_upf_inverse_atomic_overlap(native_basis, cores(core_kind)%orbitals, &
+                                                     frame%positions(:, core_atom), frame%positions(:, atom), frame%cell, &
+                                                     frame%images(:, image:image), [0.0_dp, 0.0_dp, 0.0_dp], overlap, doverlap, &
+                                                     atom_response(:, core_atom), atom_response(:, atom), cell_response)
+               ELSE
+                  CALL qs_upf_inverse_atomic_overlap(native_basis, cores(core_kind)%orbitals, &
+                                                     frame%positions(:, core_atom), frame%positions(:, atom), frame%cell, &
+                                                     frame%images(:, image:image), [0.0_dp, 0.0_dp, 0.0_dp], overlap)
+               END IF
+               weighted = MATMUL(overlap, projectors(kind)%coupling)
+               energy = energy + SUM(cores(core_kind)%occupations*REAL(SUM(CONJG(overlap)*weighted, DIM=2), dp))
+               IF (PRESENT(response)) THEN
+                  response = response + 2.0_dp*SUM(cores(core_kind)%occupations* &
+                                                   REAL(SUM(CONJG(doverlap)*weighted, DIM=2), dp))
+               END IF
+            END DO
+            DEALLOCATE (overlap, weighted)
+            IF (ALLOCATED(doverlap)) DEALLOCATE (doverlap)
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_gth_core_nonlocal
 END MODULE qs_upf_inverse_gth
