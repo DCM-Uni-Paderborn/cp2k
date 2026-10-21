@@ -53,7 +53,7 @@ MODULE qs_upf_inverse_paw
    PUBLIC :: qs_upf_inverse_paw_init, qs_upf_inverse_paw_evaluate, qs_upf_inverse_paw_response
    PUBLIC :: qs_upf_inverse_paw_core_prepare
    PUBLIC :: qs_upf_inverse_paw_collocate, qs_upf_inverse_paw_operator
-   PUBLIC :: qs_upf_inverse_paw_density_fourier
+   PUBLIC :: qs_upf_inverse_paw_density_fourier, qs_upf_inverse_paw_local_operator
 
 CONTAINS
 
@@ -132,6 +132,56 @@ CONTAINS
          END DO
       END ASSOCIATE
    END SUBROUTINE qs_upf_inverse_paw_density_fourier
+
+! **************************************************************************************************
+!> \brief Couple a scalar field to the PAW AE-minus-compensated-PS valence correction and AE core.
+!>        The returned projector operator has no spin or k-point weight. The frozen-core energy
+!>        is counted once, independently of the valence density. The supplied field contains no
+!>        radial or angular integration weights. A field response gives the explicit derivative
+!>        on the same atom-centered rule. The inverse coefficient response remains with the caller.
+!> \param kind Original PAW radial products, magnetic-projector mapping and atom-centered rule.
+!> \param potential Scalar field, indexed by angular point and radial node.
+!> \param operator New real symmetric valence projector operator.
+!> \param core_energy Frozen AE-core coupling, without subtracting the XC model core.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_paw_local_operator(kind, potential, OPERATOR, core_energy)
+      TYPE(paw_kind_type), INTENT(IN)                    :: kind
+      REAL(dp), INTENT(IN)                               :: potential(:, :)
+      REAL(dp), INTENT(OUT)                              :: OPERATOR(:, :), core_energy
+
+      INTEGER                                            :: ir, l, lm, p, pair, q
+      REAL(dp), ALLOCATABLE                              :: harmonics(:), radial(:, :), weighted(:)
+
+      CPASSERT(kind%active)
+      ASSOCIATE (grid => kind%xcgrid, onecenter => kind%onecenter)
+         CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+         CPASSERT(ALL(SHAPE(potential) == [grid%na, grid%nr]))
+         CPASSERT(ALL(SHAPE(OPERATOR) == [onecenter%nproj, onecenter%nproj]))
+         CPASSERT(ALL(ieee_is_finite(potential)))
+         ALLOCATE (harmonics(SIZE(onecenter%gaunt, 3)), weighted(grid%na))
+         ALLOCATE (radial(grid%npair, SIZE(harmonics)), SOURCE=0.0_dp)
+         core_energy = 0.0_dp
+         DO ir = 1, grid%nr
+            IF (grid%wr(ir) == 0.0_dp) CYCLE
+            weighted = grid%wa*potential(:, ir)
+            core_energy = core_energy + grid%wr(ir)*grid%core(ir, 1)*SUM(weighted)
+            IF (ir > grid%nval) CYCLE
+            harmonics = MATMUL(TRANSPOSE(grid%harmonics), weighted)
+            DO lm = 1, SIZE(harmonics)
+               l = INT(SQRT(REAL(lm - 1, dp)))
+               radial(:, lm) = radial(:, lm) + grid%wr(ir)*harmonics(lm)* &
+                               (grid%radial(ir, :, l, 1) - grid%radial(ir, :, l, 2))
+            END DO
+         END DO
+         OPERATOR = 0.0_dp
+         DO q = 1, onecenter%nproj
+            DO p = 1, onecenter%nproj
+               pair = onecenter%pair_index(p, q)
+               OPERATOR(p, q) = SUM(onecenter%gaunt(p, q, :)*radial(pair, :))
+            END DO
+         END DO
+      END ASSOCIATE
+   END SUBROUTINE qs_upf_inverse_paw_local_operator
 
 ! **************************************************************************************************
 !> \brief Closed-core exchange with the same physical interactions as the native valence exchange.

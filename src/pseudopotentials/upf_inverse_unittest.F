@@ -65,6 +65,7 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
                                               qs_upf_inverse_paw_density_fourier,&
+                                              qs_upf_inverse_paw_local_operator,&
                                               qs_upf_inverse_paw_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type
@@ -1170,7 +1171,9 @@ CONTAINS
       COMPLEX(dp)                                        :: density(3, 2), expected, phase, &
                                                             projected(1, 1, 2), restricted(3, 1)
       INTEGER                                            :: ig, spin
-      REAL(dp)                                           :: g(3, 3), norm_g, position(3), radial(4)
+      REAL(dp)                                           :: core_energy, g(3, 3), &
+                                                            local_operator(1, 1), norm_g, &
+                                                            position(3), potential(6, 4), radial(4)
       TYPE(paw_kind_type)                                :: kind
 
       kind%active = .TRUE.
@@ -1181,10 +1184,13 @@ CONTAINS
       ALLOCATE (kind%onecenter%gaunt(1, 1, 1), SOURCE=1.0_dp/SQRT(fourpi))
       ASSOCIATE (grid => kind%xcgrid)
          grid%nr = 4
+         grid%na = 6
          grid%nval = 4
          grid%npair = 1
          grid%lmax = 0
          ALLOCATE (grid%r(4), grid%wr(4), grid%core(4, 2), grid%radial(4, 1, 0:0, 2))
+         ALLOCATE (grid%wa(6), SOURCE=fourpi/6.0_dp)
+         ALLOCATE (grid%harmonics(6, 1), SOURCE=1.0_dp/SQRT(fourpi))
          grid%r = [0.0_dp, 0.2_dp, 0.6_dp, 1.1_dp]
          grid%wr = [0.0_dp, 0.11_dp, 0.21_dp, 0.31_dp]
          grid%core(:, 1) = 0.4_dp*EXP(-grid%r)
@@ -1212,6 +1218,12 @@ CONTAINS
          projected(:, :, 1) = SUM(projected, DIM=3)
          CALL qs_upf_inverse_paw_density_fourier(kind, projected(:, :, :1), g, position, 11.0_dp, restricted)
          CALL check(MAXVAL(ABS(restricted(:, 1) - SUM(density, DIM=2))), 'PAW Fourier spin sum', 3.e-13_dp)
+         ! The scalar-field transpose must reproduce the existing Fourier zero mode, including the AE core once.
+         grid%core(:, 2) = 0.13_dp*EXP(-2.0_dp*grid%r)
+         potential = 1.0_dp
+         CALL qs_upf_inverse_paw_local_operator(kind, potential, local_operator, core_energy)
+         CALL check(ABS(REAL(projected(1, 1, 1), dp)*local_operator(1, 1) + core_energy - &
+                        11.0_dp*REAL(restricted(1, 1), dp)), 'PAW scalar-field charge transpose', 3.e-13_dp)
          CALL qs_upf_inverse_paw_density_fourier(kind, projected, g(:, :0), position, 11.0_dp, density(:0, :))
       END ASSOCIATE
    END SUBROUTINE check_paw_density_fourier
