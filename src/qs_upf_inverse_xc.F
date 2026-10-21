@@ -83,7 +83,7 @@ MODULE qs_upf_inverse_xc
    END TYPE qs_upf_inverse_frame_ref_type
 
    PUBLIC :: qs_upf_inverse_frame_ref_type, qs_upf_inverse_xc_type
-   PUBLIC :: qs_upf_inverse_xc_evaluate, qs_upf_inverse_xc_response
+   PUBLIC :: qs_upf_inverse_xc_evaluate, qs_upf_inverse_xc_response, qs_upf_inverse_xc_model_response
    PUBLIC :: qs_upf_inverse_xc_grid_evaluate, qs_upf_inverse_xc_grid_response
    PUBLIC :: qs_upf_inverse_xc_pw_fields, qs_upf_inverse_xc_pw_adjoint, qs_upf_inverse_xc_pw_response
 
@@ -128,7 +128,6 @@ CONTAINS
          background_gradient(:, :, :), core_density(:, :), core_gradient(:, :, :)
       TYPE(section_vals_type), POINTER                   :: xc_section
       LOGICAL, INTENT(IN)                                :: lsd
-      LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: state
       REAL(dp), INTENT(OUT)                              :: energy
@@ -141,17 +140,14 @@ CONTAINS
          OPTIONAL                                        :: paw_reconstruction(:)
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
+      LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
 
-      COMPLEX(dp), ALLOCATABLE :: cached_gradient(:, :, :, :), cached_soft(:, :, :), &
-         kinetic_operator(:, :), orbital_gradient(:, :, :), partial(:, :), projected(:, :), &
-         qoperator(:, :), soft(:, :)
-      INTEGER                                            :: block, hi, ik, lo, m, nao, nk, np, &
-                                                            nproj, nspin, spin
-      LOGICAL                                            :: energy_only, geometry_fields, store_fields
-      REAL(dp), ALLOCATABLE :: ebackground(:), gradient(:, :), integration_weights(:), &
-         reconstruction_density(:), reconstruction_gradient(:, :), rho(:), tau(:), &
-         tau_augmentation(:)
-      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      COMPLEX(dp), ALLOCATABLE                           :: cached_gradient(:, :, :, :), &
+                                                            cached_soft(:, :, :)
+      INTEGER                                            :: nao, nk, np, nspin
+      LOGICAL                                            :: energy_only, geometry_fields, &
+                                                            store_fields
+      REAL(dp), ALLOCATABLE                              :: ebackground(:), integration_weights(:)
 
       energy_only = .FALSE.
       IF (PRESENT(just_energy)) energy_only = just_energy
@@ -177,7 +173,6 @@ CONTAINS
          CPASSERT(ALL(SHAPE(background_tau) == [np, nspin]))
          CPASSERT(ALL(SHAPE(core_tau) == [np, nspin]))
       END IF
-      block = qs_upf_inverse_block_size(frames(1)%frame)
       geometry_fields = .FALSE.
       IF (PRESENT(atom_grid)) THEN
          geometry_fields = ALLOCATED(atom_grid%inverse_values)
@@ -199,71 +194,19 @@ CONTAINS
          END IF
       END IF
       IF (store_fields) ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
-      ALLOCATE (soft(block, nao), orbital_gradient(block, nao, 3), partial(nao, nao), &
-                state%operators(nao, nao, nk, nspin), state%density(np, nspin), &
+      ALLOCATE (state%operators(nao, nao, nk, nspin), state%density(np, nspin), &
                 state%density_gradient(np, 3, nspin), state%energy_density(np), &
                 state%vdensity(np, nspin), state%vgradient(np, 3, nspin), &
                 state%background_vdensity(np, nspin), state%background_vgradient(np, 3, nspin), &
                 state%tau(np, nspin), state%vtau(np, nspin), state%background_vtau(np, nspin), &
-                rho(np), gradient(np, 3), tau(np), tau_augmentation(np), ebackground(np))
-      IF (state%paw_reconstruction) ALLOCATE (reconstruction_density(np), reconstruction_gradient(np, 3))
+                ebackground(np))
       state%density(:, :) = core_density
       state%density_gradient(:, :, :) = core_gradient
       state%tau = 0.0_dp
       IF (state%kinetic) state%tau(:, :) = core_tau
-      DO ik = 1, nk
-         CPASSERT(ASSOCIATED(frames(ik)%frame))
-         frame => frames(ik)%frame
-         CPASSERT(SIZE(frame%coefficients, 2) == nao)
-         DO lo = 1, np, block
-            hi = MIN(np, lo + block - 1)
-            m = hi - lo + 1
-            IF (geometry_fields) THEN
-               soft(:m, :) = atom_grid%inverse_values(lo:hi, :, ik)
-               orbital_gradient(:m, :, :) = atom_grid%inverse_gradients(lo:hi, :, :, ik)
-            ELSE
-               CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
-            END IF
-            IF (store_fields) THEN
-               cached_soft(lo:hi, :, ik) = soft(:m, :)
-               cached_gradient(lo:hi, :, :, ik) = orbital_gradient(:m, :, :)
-            END IF
-            DO spin = 1, nspin
-               CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
-                                               matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
-               state%density(lo:hi, spin) = state%density(lo:hi, spin) + kweights(ik)*rho(lo:hi)
-               state%density_gradient(lo:hi, :, spin) = state%density_gradient(lo:hi, :, spin) + &
-                                                        kweights(ik)*gradient(lo:hi, :)
-               IF (state%kinetic) state%tau(lo:hi, spin) = state%tau(lo:hi, spin) + kweights(ik)*tau(lo:hi)
-            END DO
-         END DO
-         nproj = SIZE(frame%coefficients, 1)
-         ALLOCATE (projected(nproj, nproj))
-         DO spin = 1, nspin
-            rho = 0.0_dp
-            gradient = 0.0_dp
-            CALL upf_inverse_projector_density(frame%coefficients, matrices(:, :, ik, spin), projected)
-            CALL qs_upf_inverse_augmentation_collocate(frame, augmentation, projected, rho, gradient, points)
-            IF (state%paw_reconstruction) THEN
-               CALL qs_upf_inverse_paw_collocate(frame, paw_reconstruction, augmentation, points, matrices(:, :, ik, spin), &
-                                                 reconstruction_density, reconstruction_gradient)
-               rho(:) = rho + reconstruction_density
-               gradient(:, :) = gradient + reconstruction_gradient
-            END IF
-            state%density(:, spin) = state%density(:, spin) + kweights(ik)*rho
-            state%density_gradient(:, :, spin) = state%density_gradient(:, :, spin) + kweights(ik)*gradient
-            IF (state%kinetic) THEN
-               CALL qs_upf_inverse_kinetic_collocate(frame, kinetic, points, matrices(:, :, ik, spin), tau_augmentation)
-               IF (state%paw_reconstruction) THEN
-                  CALL qs_upf_inverse_kinetic_collocate(frame, paw_reconstruction, points, matrices(:, :, ik, spin), &
-                                                        reconstruction_density)
-                  tau_augmentation(:) = tau_augmentation + reconstruction_density
-               END IF
-               state%tau(:, spin) = state%tau(:, spin) + kweights(ik)*tau_augmentation
-            END IF
-         END DO
-         DEALLOCATE (projected)
-      END DO
+      CALL collocate_xc_fields(frames, augmentation, matrices, kweights, points, state%density, &
+                               state%density_gradient, state%tau, kinetic, paw_reconstruction, atom_grid, &
+                               cached_soft, cached_gradient)
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_samples_only(density_constraints)) THEN
@@ -317,18 +260,303 @@ CONTAINS
          state%operators = CMPLX(0.0_dp, 0.0_dp, dp)
          RETURN
       END IF
+      CALL integrate_xc_fields(frames, augmentation, points, integration_weights, state%vdensity, &
+                               state%vgradient, state%vtau, comm, state%operators, kinetic, paw_reconstruction, &
+                               atom_grid, cached_soft, cached_gradient)
+   END SUBROUTINE qs_upf_inverse_xc_evaluate
+
+! **************************************************************************************************
+!> \brief Apply the complete atomic Skala XC kernel at fixed geometry and feature layout.
+!>        Differentiate both exact and background functionals, retaining their signed adjoints.
+!>        Frozen-core fields in state have zero occupation-matrix response. This is a branchwise
+!>        electronic response, not a geometry derivative or a selected nonsmooth limiting covector.
+!> \param frames ...
+!> \param augmentation ...
+!> \param matrices_direction Unweighted Hermitian occupation-matrix direction.
+!> \param kweights Mesh weights applied once in the field map, not in the returned AO operators.
+!> \param points ...
+!> \param weights ...
+!> \param state Exact primitive fields from the original unperturbed functional.
+!> \param background_density ...
+!> \param background_gradient ...
+!> \param background_tau ...
+!> \param background_density_direction ...
+!> \param background_gradient_direction ...
+!> \param background_tau_direction ...
+!> \param xc_section ...
+!> \param comm ...
+!> \param response Primitive-field directions, weighted covector responses and direct AO kernel.
+!>        The negative background covectors still require the caller's interpolation transpose.
+!> \param kinetic ...
+!> \param atom_grid ...
+!> \param paw_reconstruction ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
+                                               state, background_density, background_gradient, background_tau, &
+                                               background_density_direction, background_gradient_direction, &
+                                               background_tau_direction, xc_section, comm, response, kinetic, &
+                                               atom_grid, paw_reconstruction)
+      TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:), points(:, :), weights(:)
+      TYPE(qs_upf_inverse_xc_type), INTENT(IN)           :: state
+      REAL(dp), INTENT(IN) :: background_density(:, :), background_gradient(:, :, :), &
+         background_tau(:, :), background_density_direction(:, :), &
+         background_gradient_direction(:, :, :), background_tau_direction(:, :)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+      TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: response
+      TYPE(upf_inverse_kinetic_type), INTENT(IN)         :: kinetic(:)
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: paw_reconstruction(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: cached_gradient(:, :, :, :), &
+                                                            cached_soft(:, :, :)
+      INTEGER                                            :: nao, nk, np, ns
+      LOGICAL                                            :: geometry_fields
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: integration_weights(:)
+      TYPE(qs_upf_inverse_xc_type)                       :: fields
+
+      CPASSERT(xc_section_uses_native_skala_evaluator(xc_section))
+      CPASSERT(state%kinetic)
+      CPASSERT(ALLOCATED(state%density))
+      CPASSERT(ALLOCATED(state%density_gradient) .AND. ALLOCATED(state%tau))
+      nk = SIZE(frames)
+      CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
+      CPASSERT(ALL(kweights >= 0.0_dp))
+      CPASSERT(ABS(SUM(kweights) - 1.0_dp) <= 128.0_dp*EPSILON(1.0_dp)*nk)
+      CPASSERT(ASSOCIATED(frames(1)%frame))
+      nao = SIZE(frames(1)%frame%coefficients, 2)
+      np = SIZE(points, 2)
+      ns = SIZE(state%density, 2)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      CPASSERT(ALL(SHAPE(matrices_direction) == [nao, nao, nk, ns]))
+      CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(weights) == np)
+      CPASSERT(ALL(SHAPE(state%density) == [np, ns]))
+      CPASSERT(ALL(SHAPE(state%density_gradient) == [np, 3, ns]))
+      CPASSERT(ALL(SHAPE(state%tau) == [np, ns]))
+      CPASSERT(ALL(SHAPE(background_density) == [np, ns]))
+      CPASSERT(ALL(SHAPE(background_gradient) == [np, 3, ns]))
+      CPASSERT(ALL(SHAPE(background_tau) == [np, ns]))
+      CPASSERT(ALL(SHAPE(background_density_direction) == [np, ns]))
+      CPASSERT(ALL(SHAPE(background_gradient_direction) == [np, 3, ns]))
+      CPASSERT(ALL(SHAPE(background_tau_direction) == [np, ns]))
+      CPASSERT(state%paw_reconstruction .EQV. PRESENT(paw_reconstruction))
+      CPASSERT(ALL(SHAPE(atom_grid%points) == SHAPE(points)))
+      CPASSERT(ALL(atom_grid%points == points))
+      geometry_fields = ALLOCATED(atom_grid%inverse_values)
+      CPASSERT(geometry_fields .EQV. ALLOCATED(atom_grid%inverse_gradients))
+      IF (geometry_fields) THEN
+         CPASSERT(ALL(SHAPE(atom_grid%inverse_values) == [np, nao, nk]))
+         CPASSERT(ALL(SHAPE(atom_grid%inverse_gradients) == [np, nao, 3, nk]))
+      ELSE IF (np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes) THEN
+         ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
+      END IF
+      response%kinetic = .TRUE.
+      response%paw_reconstruction = PRESENT(paw_reconstruction)
+      response%weighted_adjoint = .TRUE.
+      ALLOCATE (response%density(np, ns), response%density_gradient(np, 3, ns), response%tau(np, ns), &
+                response%vdensity(np, ns), response%vgradient(np, 3, ns), response%vtau(np, ns), &
+                response%background_vdensity(np, ns), response%background_vgradient(np, 3, ns), &
+                response%background_vtau(np, ns), response%operators(nao, nao, nk, ns))
+      response%density = 0.0_dp
+      response%density_gradient = 0.0_dp
+      response%tau = 0.0_dp
+      CALL collocate_xc_fields(frames, augmentation, matrices_direction, kweights, points, response%density, &
+                               response%density_gradient, response%tau, kinetic, paw_reconstruction, atom_grid, &
+                               cached_soft, cached_gradient)
+      fields%density = state%density
+      fields%density_gradient = state%density_gradient
+      fields%tau = state%tau
+      ALLOCATE (fields%energy_density(np), fields%vdensity(np, ns), fields%vgradient(np, 3, ns), fields%vtau(np, ns), &
+                fields%background_vdensity(np, ns), fields%background_vgradient(np, 3, ns), fields%background_vtau(np, ns))
+      CALL evaluate_skala_residual(xc_section, comm, fields, background_density, background_gradient, &
+                                   background_tau, points, weights, atom_grid, frames(1)%frame%positions, energy, &
+                                   just_energy=.FALSE., field_response=response, &
+                                   background_density_direction=background_density_direction, &
+                                   background_gradient_direction=background_gradient_direction, &
+                                   background_tau_direction=background_tau_direction)
+      ALLOCATE (integration_weights(np), SOURCE=1.0_dp)
+      CALL integrate_xc_fields(frames, augmentation, points, integration_weights, response%vdensity, &
+                               response%vgradient, response%vtau, comm, response%operators, kinetic, paw_reconstruction, &
+                               atom_grid, cached_soft, cached_gradient)
+   END SUBROUTINE qs_upf_inverse_xc_model_response
+
+! **************************************************************************************************
+!> \brief Add the linear occupation-matrix contribution to the exact atomic primitive fields.
+!>        The caller seeds frozen-core fields before this sum. Cache only fixed orbital fields.
+!> \param frames ...
+!> \param augmentation ...
+!> \param matrices Unweighted Hermitian matrices, including signed response directions.
+!> \param kweights Mesh weights applied once to the summed fields.
+!> \param points ...
+!> \param density ...
+!> \param density_gradient ...
+!> \param kinetic_density ...
+!> \param kinetic ...
+!> \param paw_reconstruction ...
+!> \param atom_grid ...
+!> \param cached_soft Optional storage shared with the following operator transpose.
+!> \param cached_gradient ...
+! **************************************************************************************************
+   SUBROUTINE collocate_xc_fields(frames, augmentation, matrices, kweights, points, density, density_gradient, &
+                                  kinetic_density, kinetic, paw_reconstruction, atom_grid, cached_soft, cached_gradient)
+      TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:), points(:, :)
+      REAL(dp), INTENT(INOUT)                            :: density(:, :), &
+                                                            density_gradient(:, :, :), &
+                                                            kinetic_density(:, :)
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:), paw_reconstruction(:)
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN), &
+         OPTIONAL                                        :: atom_grid
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cached_soft(:, :, :), &
+                                                            cached_gradient(:, :, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: orbital_gradient(:, :, :), &
+                                                            projected(:, :), soft(:, :)
+      INTEGER                                            :: block, hi, ik, lo, m, nao, nk, np, &
+                                                            nproj, nspin, spin
+      LOGICAL                                            :: geometry_fields
+      REAL(dp), ALLOCATABLE :: gradient(:, :), reconstruction_density(:), &
+         reconstruction_gradient(:, :), rho(:), tau(:), tau_augmentation(:)
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+
+      nk = SIZE(frames)
+      nao = SIZE(matrices, 1)
+      np = SIZE(points, 2)
+      nspin = SIZE(matrices, 4)
+      block = qs_upf_inverse_block_size(frames(1)%frame)
+      geometry_fields = .FALSE.
+      IF (PRESENT(atom_grid)) geometry_fields = ALLOCATED(atom_grid%inverse_values)
+      CPASSERT(PRESENT(cached_soft) .EQV. PRESENT(cached_gradient))
+      ALLOCATE (soft(block, nao), orbital_gradient(block, nao, 3), rho(np), gradient(np, 3), &
+                tau(np), tau_augmentation(np))
+      IF (PRESENT(paw_reconstruction)) ALLOCATE (reconstruction_density(np), reconstruction_gradient(np, 3))
       DO ik = 1, nk
+         CPASSERT(ASSOCIATED(frames(ik)%frame))
          frame => frames(ik)%frame
-         nproj = SIZE(frame%coefficients, 1)
-         ALLOCATE (qoperator(nproj, nproj), kinetic_operator(nao, nao))
-         state%operators(:, :, ik, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+         CPASSERT(SIZE(frame%coefficients, 2) == nao)
          DO lo = 1, np, block
             hi = MIN(np, lo + block - 1)
             m = hi - lo + 1
             IF (geometry_fields) THEN
                soft(:m, :) = atom_grid%inverse_values(lo:hi, :, ik)
                orbital_gradient(:m, :, :) = atom_grid%inverse_gradients(lo:hi, :, :, ik)
-            ELSE IF (store_fields) THEN
+            ELSE
+               CALL qs_upf_inverse_evaluate(frame, points(:, lo:hi), soft(:m, :), orbital_gradient(:m, :, :))
+            END IF
+            IF (PRESENT(cached_soft)) THEN
+               cached_soft(lo:hi, :, ik) = soft(:m, :)
+               cached_gradient(lo:hi, :, :, ik) = orbital_gradient(:m, :, :)
+            END IF
+            DO spin = 1, nspin
+               CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
+                                               matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
+               density(lo:hi, spin) = density(lo:hi, spin) + kweights(ik)*rho(lo:hi)
+               density_gradient(lo:hi, :, spin) = density_gradient(lo:hi, :, spin) + &
+                                                  kweights(ik)*gradient(lo:hi, :)
+               IF (PRESENT(kinetic)) kinetic_density(lo:hi, spin) = kinetic_density(lo:hi, spin) + kweights(ik)*tau(lo:hi)
+            END DO
+         END DO
+         nproj = SIZE(frame%coefficients, 1)
+         ALLOCATE (projected(nproj, nproj))
+         DO spin = 1, nspin
+            rho = 0.0_dp
+            gradient = 0.0_dp
+            CALL upf_inverse_projector_density(frame%coefficients, matrices(:, :, ik, spin), projected)
+            CALL qs_upf_inverse_augmentation_collocate(frame, augmentation, projected, rho, gradient, points)
+            IF (PRESENT(paw_reconstruction)) THEN
+               CALL qs_upf_inverse_paw_collocate(frame, paw_reconstruction, augmentation, points, matrices(:, :, ik, spin), &
+                                                 reconstruction_density, reconstruction_gradient)
+               rho(:) = rho + reconstruction_density
+               gradient(:, :) = gradient + reconstruction_gradient
+            END IF
+            density(:, spin) = density(:, spin) + kweights(ik)*rho
+            density_gradient(:, :, spin) = density_gradient(:, :, spin) + kweights(ik)*gradient
+            IF (PRESENT(kinetic)) THEN
+               CALL qs_upf_inverse_kinetic_collocate(frame, kinetic, points, matrices(:, :, ik, spin), tau_augmentation)
+               IF (PRESENT(paw_reconstruction)) THEN
+                  CALL qs_upf_inverse_kinetic_collocate(frame, paw_reconstruction, points, matrices(:, :, ik, spin), &
+                                                        reconstruction_density)
+                  tau_augmentation(:) = tau_augmentation + reconstruction_density
+               END IF
+               kinetic_density(:, spin) = kinetic_density(:, spin) + kweights(ik)*tau_augmentation
+            END IF
+         END DO
+         DEALLOCATE (projected)
+      END DO
+   END SUBROUTINE collocate_xc_fields
+
+! **************************************************************************************************
+!> \brief Hermitian transpose of the same exact atomic primitive-field map.
+!>        Input covectors include quadrature weights when required. AO operators have no k weight.
+!> \param frames ...
+!> \param augmentation ...
+!> \param points ...
+!> \param integration_weights ...
+!> \param vdensity ...
+!> \param vgradient ...
+!> \param vtau ...
+!> \param comm ...
+!> \param operators ...
+!> \param kinetic ...
+!> \param paw_reconstruction ...
+!> \param atom_grid ...
+!> \param cached_soft ...
+!> \param cached_gradient ...
+! **************************************************************************************************
+   SUBROUTINE integrate_xc_fields(frames, augmentation, points, integration_weights, vdensity, vgradient, vtau, &
+                                  comm, operators, kinetic, paw_reconstruction, atom_grid, cached_soft, cached_gradient)
+      TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      REAL(dp), INTENT(IN)                               :: points(:, :), integration_weights(:), &
+                                                            vdensity(:, :), vgradient(:, :, :), &
+                                                            vtau(:, :)
+      TYPE(mp_comm_type), INTENT(IN)                     :: comm
+      COMPLEX(dp), INTENT(OUT)                           :: operators(:, :, :, :)
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:), paw_reconstruction(:)
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN), &
+         OPTIONAL                                        :: atom_grid
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: cached_soft(:, :, :), &
+                                                            cached_gradient(:, :, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: kinetic_operator(:, :), &
+                                                            orbital_gradient(:, :, :), &
+                                                            partial(:, :), qoperator(:, :), &
+                                                            soft(:, :)
+      INTEGER                                            :: block, hi, ik, lo, m, nao, nk, np, &
+                                                            nproj, nspin, spin
+      LOGICAL                                            :: geometry_fields
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+
+      nk = SIZE(frames)
+      nao = SIZE(operators, 1)
+      np = SIZE(points, 2)
+      nspin = SIZE(operators, 4)
+      block = qs_upf_inverse_block_size(frames(1)%frame)
+      geometry_fields = .FALSE.
+      IF (PRESENT(atom_grid)) geometry_fields = ALLOCATED(atom_grid%inverse_values)
+      CPASSERT(PRESENT(cached_soft) .EQV. PRESENT(cached_gradient))
+      ALLOCATE (soft(block, nao), orbital_gradient(block, nao, 3), partial(nao, nao))
+      DO ik = 1, nk
+         frame => frames(ik)%frame
+         nproj = SIZE(frame%coefficients, 1)
+         ALLOCATE (qoperator(nproj, nproj), kinetic_operator(nao, nao))
+         operators(:, :, ik, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO lo = 1, np, block
+            hi = MIN(np, lo + block - 1)
+            m = hi - lo + 1
+            IF (geometry_fields) THEN
+               soft(:m, :) = atom_grid%inverse_values(lo:hi, :, ik)
+               orbital_gradient(:m, :, :) = atom_grid%inverse_gradients(lo:hi, :, :, ik)
+            ELSE IF (PRESENT(cached_soft)) THEN
                soft(:m, :) = cached_soft(lo:hi, :, ik)
                orbital_gradient(:m, :, :) = cached_gradient(lo:hi, :, :, ik)
             ELSE
@@ -337,37 +565,37 @@ CONTAINS
             DO spin = 1, nspin
                CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), &
                                                orbital_gradient(:m, :, :), orbital_gradient(:m, :, :), &
-                                               integration_weights(lo:hi), state%vdensity(lo:hi, spin), &
-                                               state%vgradient(lo:hi, :, spin), state%vtau(lo:hi, spin), partial)
-               state%operators(:, :, ik, spin) = state%operators(:, :, ik, spin) + partial
+                                               integration_weights(lo:hi), vdensity(lo:hi, spin), &
+                                               vgradient(lo:hi, :, spin), vtau(lo:hi, spin), partial)
+               operators(:, :, ik, spin) = operators(:, :, ik, spin) + partial
             END DO
          END DO
          DO spin = 1, nspin
             ! Point owners can have different block counts, including none.
-            CALL comm%sum(state%operators(:, :, ik, spin))
-            CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, state%vdensity(:, spin), &
-                                                       state%vgradient(:, :, spin), qoperator, points, integration_weights, comm)
-            state%operators(:, :, ik, spin) = state%operators(:, :, ik, spin) + &
-                                              MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(qoperator, frame%coefficients))
-            IF (state%paw_reconstruction) THEN
+            CALL comm%sum(operators(:, :, ik, spin))
+            CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, vdensity(:, spin), &
+                                                       vgradient(:, :, spin), qoperator, points, integration_weights, comm)
+            operators(:, :, ik, spin) = operators(:, :, ik, spin) + &
+                                        MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(qoperator, frame%coefficients))
+            IF (PRESENT(paw_reconstruction)) THEN
                CALL qs_upf_inverse_paw_operator(frame, paw_reconstruction, augmentation, points, integration_weights, &
-                                                state%vdensity(:, spin), state%vgradient(:, :, spin), kinetic_operator, comm)
-               state%operators(:, :, ik, spin) = state%operators(:, :, ik, spin) + kinetic_operator
+                                                vdensity(:, spin), vgradient(:, :, spin), kinetic_operator, comm)
+               operators(:, :, ik, spin) = operators(:, :, ik, spin) + kinetic_operator
             END IF
-            IF (state%kinetic) THEN
-               CALL qs_upf_inverse_kinetic_operator(frame, kinetic, points, integration_weights, state%vtau(:, spin), &
+            IF (PRESENT(kinetic)) THEN
+               CALL qs_upf_inverse_kinetic_operator(frame, kinetic, points, integration_weights, vtau(:, spin), &
                                                     kinetic_operator, comm)
-               state%operators(:, :, ik, spin) = state%operators(:, :, ik, spin) + kinetic_operator
-               IF (state%paw_reconstruction) THEN
+               operators(:, :, ik, spin) = operators(:, :, ik, spin) + kinetic_operator
+               IF (PRESENT(paw_reconstruction)) THEN
                   CALL qs_upf_inverse_kinetic_operator(frame, paw_reconstruction, points, integration_weights, &
-                                                       state%vtau(:, spin), kinetic_operator, comm)
-                  state%operators(:, :, ik, spin) = state%operators(:, :, ik, spin) + kinetic_operator
+                                                       vtau(:, spin), kinetic_operator, comm)
+                  operators(:, :, ik, spin) = operators(:, :, ik, spin) + kinetic_operator
                END IF
             END IF
          END DO
          DEALLOCATE (qoperator, kinetic_operator)
       END DO
-   END SUBROUTINE qs_upf_inverse_xc_evaluate
+   END SUBROUTINE integrate_xc_fields
 
 ! **************************************************************************************************
 !> \brief Difference of complete Skala functionals on the same finite atom quadrature.
@@ -386,10 +614,15 @@ CONTAINS
 !> \param energy Globally reduced difference of the two complete functional evaluations.
 !> \param density_constraints ...
 !> \param just_energy Evaluate the original energy without AO or background derivative assembly.
+!> \param field_response Optional exact primitive direction and resulting signed covector responses.
+!> \param background_density_direction ...
+!> \param background_gradient_direction ...
+!> \param background_tau_direction ...
 ! **************************************************************************************************
    SUBROUTINE evaluate_skala_residual(xc_section, comm, state, background_density, background_gradient, &
                                       background_tau, points, weights, atom_grid, positions, energy, &
-                                      density_constraints, just_energy)
+                                      density_constraints, just_energy, field_response, background_density_direction, &
+                                      background_gradient_direction, background_tau_direction)
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(INOUT)        :: state
@@ -400,9 +633,13 @@ CONTAINS
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       REAL(dp), INTENT(IN)                               :: positions(:, :)
       REAL(dp), INTENT(OUT)                              :: energy
-      LOGICAL, INTENT(IN)                                :: just_energy
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
+      LOGICAL, INTENT(IN)                                :: just_energy
+      TYPE(qs_upf_inverse_xc_type), INTENT(INOUT), &
+         OPTIONAL                                        :: field_response
+      REAL(dp), INTENT(IN), OPTIONAL :: background_density_direction(:, :), &
+         background_gradient_direction(:, :, :), background_tau_direction(:, :)
 
       INTEGER                                            :: atom, local_atom, np, ns, row, spin
       INTEGER(int_8), ALLOCATABLE                        :: sizes(:)
@@ -411,10 +648,18 @@ CONTAINS
       REAL(dp), ALLOCATABLE :: atom_coords(:, :), atom_derivative(:, :), &
          background_atom_derivative(:, :), background_base_derivative(:), &
          background_point_derivative(:, :), background_weight_derivative(:), base_derivative(:), &
-         base_weights(:), coords(:, :), density(:, :), gradient(:, :, :), grid_weights(:), &
-         point_derivative(:, :), tau(:, :), vdensity(:, :), vgradient(:, :, :), vtau(:, :), &
+         base_weights(:), coords(:, :), density(:, :), density_direction(:, :), &
+         density_response(:, :), gradient(:, :, :), gradient_direction(:, :, :), &
+         gradient_response(:, :, :), grid_weights(:), point_derivative(:, :), tau(:, :), &
+         tau_direction(:, :), tau_response(:, :), vdensity(:, :), vgradient(:, :, :), vtau(:, :), &
          weight_derivative(:)
 
+      CPASSERT(PRESENT(background_density_direction) .EQV. PRESENT(field_response))
+      CPASSERT(PRESENT(background_gradient_direction) .EQV. PRESENT(field_response))
+      CPASSERT(PRESENT(background_tau_direction) .EQV. PRESENT(field_response))
+      IF (PRESENT(field_response)) THEN
+         CPASSERT(.NOT. just_energy)
+      END IF
       np = SIZE(weights)
       ns = SIZE(state%density, 2)
       CPASSERT(ns == 1 .OR. ns == 2)
@@ -450,14 +695,31 @@ CONTAINS
          gradient(:, :, spin) = scale*state%density_gradient(:, :, MIN(spin, ns))
          tau(:, spin) = scale*state%tau(:, MIN(spin, ns))
       END DO
+      IF (PRESENT(field_response)) THEN
+         ALLOCATE (density_direction(np, 2), gradient_direction(np, 3, 2), tau_direction(np, 2))
+         DO spin = 1, 2
+            density_direction(:, spin) = scale*field_response%density(:, MIN(spin, ns))
+            gradient_direction(:, :, spin) = scale*field_response%density_gradient(:, :, MIN(spin, ns))
+            tau_direction(:, spin) = scale*field_response%tau(:, MIN(spin, ns))
+         END DO
+      END IF
       IF (just_energy) THEN
          CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
                                                base_weights, sizes, atom_coords, energy)
+      ELSE IF (PRESENT(field_response)) THEN
+         CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
+                                               base_weights, sizes, atom_coords, energy, vdensity, vgradient, vtau, &
+                                               point_derivative, weight_derivative, base_derivative, atom_derivative, &
+                                               density_constraints, skala_atom_domain, local_atoms, &
+                                               density_direction, gradient_direction, tau_direction, &
+                                               density_response, gradient_response, tau_response)
       ELSE
          CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
                                                base_weights, sizes, atom_coords, energy, vdensity, vgradient, vtau, &
                                                point_derivative, weight_derivative, base_derivative, atom_derivative, &
                                                density_constraints, skala_atom_domain, local_atoms)
+      END IF
+      IF (.NOT. just_energy) THEN
          DO spin = 1, ns
             IF (ns == 1) THEN
                state%vdensity(:, spin) = 0.5_dp*SUM(vdensity, DIM=2)
@@ -470,6 +732,24 @@ CONTAINS
             END IF
          END DO
       END IF
+      IF (PRESENT(field_response)) THEN
+         DO spin = 1, ns
+            IF (ns == 1) THEN
+               field_response%vdensity(:, spin) = 0.5_dp*SUM(density_response, DIM=2)
+               field_response%vgradient(:, :, spin) = 0.5_dp*SUM(gradient_response, DIM=3)
+               field_response%vtau(:, spin) = 0.5_dp*SUM(tau_response, DIM=2)
+            ELSE
+               field_response%vdensity(:, spin) = density_response(:, spin)
+               field_response%vgradient(:, :, spin) = gradient_response(:, :, spin)
+               field_response%vtau(:, spin) = tau_response(:, spin)
+            END IF
+         END DO
+         DO spin = 1, 2
+            density_direction(:, spin) = scale*background_density_direction(:, MIN(spin, ns))
+            gradient_direction(:, :, spin) = scale*background_gradient_direction(:, :, MIN(spin, ns))
+            tau_direction(:, spin) = scale*background_tau_direction(:, MIN(spin, ns))
+         END DO
+      END IF
       DO spin = 1, 2
          density(:, spin) = scale*background_density(:, MIN(spin, ns))
          gradient(:, :, spin) = scale*background_gradient(:, :, MIN(spin, ns))
@@ -478,12 +758,22 @@ CONTAINS
       IF (just_energy) THEN
          CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
                                                base_weights, sizes, atom_coords, background_energy)
+      ELSE IF (PRESENT(field_response)) THEN
+         CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
+                                               base_weights, sizes, atom_coords, background_energy, vdensity, vgradient, vtau, &
+                                               background_point_derivative, background_weight_derivative, &
+                                               background_base_derivative, background_atom_derivative, &
+                                               density_constraints, skala_background_domain, local_atoms, &
+                                               density_direction, gradient_direction, tau_direction, &
+                                               density_response, gradient_response, tau_response)
       ELSE
          CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
                                                base_weights, sizes, atom_coords, background_energy, vdensity, vgradient, vtau, &
                                                background_point_derivative, background_weight_derivative, &
                                                background_base_derivative, background_atom_derivative, &
                                                density_constraints, skala_background_domain, local_atoms)
+      END IF
+      IF (.NOT. just_energy) THEN
          DO spin = 1, ns
             IF (ns == 1) THEN
                state%background_vdensity(:, spin) = -0.5_dp*SUM(vdensity, DIM=2)
@@ -493,6 +783,19 @@ CONTAINS
                state%background_vdensity(:, spin) = -vdensity(:, spin)
                state%background_vgradient(:, :, spin) = -vgradient(:, :, spin)
                state%background_vtau(:, spin) = -vtau(:, spin)
+            END IF
+         END DO
+      END IF
+      IF (PRESENT(field_response)) THEN
+         DO spin = 1, ns
+            IF (ns == 1) THEN
+               field_response%background_vdensity(:, spin) = -0.5_dp*SUM(density_response, DIM=2)
+               field_response%background_vgradient(:, :, spin) = -0.5_dp*SUM(gradient_response, DIM=3)
+               field_response%background_vtau(:, spin) = -0.5_dp*SUM(tau_response, DIM=2)
+            ELSE
+               field_response%background_vdensity(:, spin) = -density_response(:, spin)
+               field_response%background_vgradient(:, :, spin) = -gradient_response(:, :, spin)
+               field_response%background_vtau(:, spin) = -tau_response(:, spin)
             END IF
          END DO
       END IF
@@ -852,7 +1155,6 @@ CONTAINS
                                                             core_gradient(:, :, :)
       TYPE(section_vals_type), POINTER                   :: xc_section
       LOGICAL, INTENT(IN)                                :: lsd
-      LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: state
       REAL(dp), INTENT(OUT)                              :: energy
@@ -866,6 +1168,7 @@ CONTAINS
          OPTIONAL                                        :: paw_reconstruction(:)
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
+      LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
 
       INTEGER                                            :: atom, axis, np, ns, spin, stride
       INTEGER, ALLOCATABLE                               :: atomic_sizes(:)
