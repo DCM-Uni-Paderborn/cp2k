@@ -210,8 +210,9 @@ CONTAINS
 !> \param negative New owned weighted density covector on the negative side.
 !> \param positive New owned weighted density covector on the positive side.
 !> \param energies Complete discrete energies of the two limit evaluations.
+!> \param targets Optional physical target per selected feature entry, zero by default.
 ! **************************************************************************************************
-   SUBROUTINE skala_torch_model_density_limits(model, inputs, density, active, probe, negative, positive, energies)
+   SUBROUTINE skala_torch_model_density_limits(model, inputs, density, active, probe, negative, positive, energies, targets)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       REAL(dp), INTENT(IN)                               :: density(:, :)
@@ -219,15 +220,16 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: probe
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
       REAL(dp), INTENT(OUT)                              :: energies(2)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
 
       CALL skala_torch_model_descriptor_limits(model, inputs, "density", density, active, probe, &
-                                               negative, positive, energies)
+                                               negative, positive, energies, targets=targets)
    END SUBROUTINE skala_torch_model_density_limits
 
 ! **************************************************************************************************
 !> \brief Evaluate original-model one-sided covectors of a physical density or kinetic density.
 !>        Other features are detached and unchanged. Original input gradients are not accumulated.
-!>        The caller supplies physical zero constraints and verifies convergence in probe magnitude.
+!>        The caller supplies physical targets and verifies convergence in probe magnitude.
 !> \param model Original loaded model.
 !> \param inputs Complete original feature dictionary, including its integration weights.
 !> \param feature Dictionary key, density or kin.
@@ -238,9 +240,10 @@ CONTAINS
 !> \param positive New owned weighted descriptor covector on the positive side.
 !> \param energies Optional complete discrete energies. Requesting them evaluates both branches.
 !> \param branches Optional negative/positive branch selection. Unrequested covectors are zero.
+!> \param targets Optional physical target per selected feature entry, zero by default.
 ! **************************************************************************************************
    SUBROUTINE skala_torch_model_descriptor_limits(model, inputs, feature, values, active, probe, &
-                                                  negative, positive, energies, branches)
+                                                  negative, positive, energies, branches, targets)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       CHARACTER(len=*), INTENT(IN)                       :: feature
@@ -250,10 +253,11 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: negative(:, :), positive(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: energies(2)
       LOGICAL, INTENT(IN), OPTIONAL                      :: branches(2)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
 
       INTEGER                                            :: branch, sample
       LOGICAL                                            :: needed(2)
-      REAL(dp)                                           :: energy
+      REAL(dp)                                           :: energy, TARGET
       REAL(dp), ALLOCATABLE                              :: branch_values(:, :)
       REAL(dp), POINTER                                  :: derivative(:, :)
       TYPE(torch_dict_type)                              :: branch_inputs
@@ -266,6 +270,10 @@ CONTAINS
       CPASSERT(ALL(active(1, :) >= 1) .AND. ALL(active(1, :) <= SIZE(values, 1)))
       CPASSERT(ALL(active(2, :) >= 1) .AND. ALL(active(2, :) <= 2))
       CPASSERT(probe > 0.0_dp .AND. probe < HUGE(probe))
+      IF (PRESENT(targets)) THEN
+         CPASSERT(SIZE(targets) == SIZE(active, 2))
+         CPASSERT(ALL(ABS(targets) < HUGE(probe)))
+      END IF
       ALLOCATE (branch_values(SIZE(values, 1), 2))
       ALLOCATE (negative(SIZE(values, 1), 2), positive(SIZE(values, 1), 2))
       negative = 0.0_dp
@@ -278,7 +286,9 @@ CONTAINS
          IF (.NOT. needed(branch)) CYCLE
          branch_values(:, :) = values
          DO sample = 1, SIZE(active, 2)
-            branch_values(active(1, sample), active(2, sample)) = REAL(2*branch - 3, dp)*probe
+            TARGET = 0.0_dp
+            IF (PRESENT(targets)) TARGET = targets(sample)
+            branch_values(active(1, sample), active(2, sample)) = TARGET + REAL(2*branch - 3, dp)*probe
          END DO
          CALL torch_dict_clone_detached(inputs, branch_inputs, feature)
          CALL torch_tensor_from_array(descriptor_t, branch_values, requires_grad=.TRUE.)
