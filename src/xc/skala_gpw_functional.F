@@ -409,10 +409,16 @@ CONTAINS
 !> \param just_energy ...
 !> \param atom_force ...
 !> \param density_constraints Selected density subgradients of this KS environment.
+!> \param rho_direction Optional fixed-geometry density direction on a differentiable model branch.
+!> \param rho_direction_g Matching reciprocal density for the original spectral-gradient map.
+!> \param tau_direction Matching kinetic-energy-density direction.
+!> \param vxc_rho_response New density-potential response, with the same weighted adjoint as vxc_rho.
+!> \param vxc_tau_response New kinetic-density-potential response. Selected nonsmooth FFT limits are excluded.
 ! **************************************************************************************************
    SUBROUTINE skala_gpw_eval(vxc_rho, vxc_tau, exc, rho_r, rho_g, tau, xc_section, &
                              weights, pw_pool, particle_set, cell, compute_virial, virial_xc, &
-                             just_energy, atom_force, density_constraints)
+                             just_energy, atom_force, density_constraints, rho_direction, rho_direction_g, &
+                             tau_direction, vxc_rho_response, vxc_tau_response)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: vxc_rho, vxc_tau
       REAL(KIND=dp), INTENT(OUT)                         :: exc
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
@@ -430,6 +436,10 @@ CONTAINS
          OPTIONAL                                        :: atom_force
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
+      TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: rho_direction(:)
+      TYPE(pw_c1d_gs_type), OPTIONAL, POINTER            :: rho_direction_g(:)
+      TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: tau_direction(:), vxc_rho_response(:), &
+                                                            vxc_tau_response(:)
 
       CHARACTER(len=default_path_length)                 :: model_path
       INTEGER :: i, ipt, ispin, iw, j, k, native_grid_atom_chunk_max_rows, &
@@ -439,18 +449,20 @@ CONTAINS
       INTEGER, DIMENSION(2, 3)                           :: bo
       LOGICAL :: has_atom_chunk_work, have_atom_coord_grad, lsd, my_just_energy, &
          native_grid_atom_chunk_routing, native_grid_atom_chunks, native_grid_diagnostics, &
-         native_grid_use_cuda, needs_atom_force, use_atom_subchunks, use_density_constraints
+         native_grid_use_cuda, need_response, needs_atom_force, response_collapsed_rks, &
+         use_atom_subchunks, use_density_constraints
+      REAL(dp), ALLOCATABLE :: density_response(:, :), grad_response(:, :, :), kin_response(:, :), &
+         model_density_direction(:, :), model_grad_direction(:, :, :), model_kin_direction(:, :)
       REAL(KIND=dp)                                      :: density_contraction, tau_contraction
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: density_grad, kin_grad
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: grad_grad
       REAL(KIND=dp), DIMENSION(3, 3)                     :: virial_before
       TYPE(section_vals_type), POINTER                   :: gauxc_section
-      TYPE(skala_gpw_feature_type)                       :: features
-      TYPE(torch_tensor_type)                            :: atom_coord_grad_t, &
-                                                            atomic_grid_weight_grad_t, exc_tensor, &
-                                                            grid_coord_grad_t, grid_weight_grad_t
+      TYPE(skala_gpw_feature_type)                       :: direction_features, features
+      TYPE(torch_tensor_type) :: atom_coord_grad_t, atomic_grid_weight_grad_t, exc_tensor, &
+         grid_coord_grad_t, grid_weight_grad_t, response_tensors(3)
       TYPE(xc_rho_cflags_type)                           :: needs
-      TYPE(xc_rho_set_type)                              :: rho_set
+      TYPE(xc_rho_set_type)                              :: direction_rho_set, rho_set
 
       virial_xc = 0.0_dp
       exc = 0.0_dp
@@ -458,6 +470,36 @@ CONTAINS
       IF (PRESENT(just_energy)) my_just_energy = just_energy
       needs_atom_force = PRESENT(atom_force)
       IF (needs_atom_force) atom_force = 0.0_dp
+      need_response = PRESENT(vxc_rho_response)
+      CPASSERT(PRESENT(vxc_tau_response) .EQV. need_response)
+      CPASSERT(PRESENT(rho_direction) .EQV. need_response)
+      CPASSERT(PRESENT(rho_direction_g) .EQV. need_response)
+      CPASSERT(PRESENT(tau_direction) .EQV. need_response)
+      IF (need_response) THEN
+         CPASSERT(.NOT. my_just_energy)
+         CPASSERT(.NOT. compute_virial)
+         CPASSERT(.NOT. needs_atom_force)
+         CPASSERT(ASSOCIATED(rho_r) .AND. ASSOCIATED(rho_g) .AND. ASSOCIATED(tau))
+         CPASSERT(ASSOCIATED(rho_direction))
+         CPASSERT(ASSOCIATED(rho_direction_g))
+         CPASSERT(ASSOCIATED(tau_direction))
+         CPASSERT(.NOT. ASSOCIATED(vxc_rho_response))
+         CPASSERT(.NOT. ASSOCIATED(vxc_tau_response))
+         CPASSERT(SIZE(rho_direction) == SIZE(rho_r))
+         CPASSERT(SIZE(rho_direction_g) == SIZE(rho_r))
+         CPASSERT(SIZE(tau_direction) == SIZE(rho_r))
+         DO i = 1, SIZE(rho_r)
+            CPASSERT(ASSOCIATED(rho_direction(i)%pw_grid, rho_r(i)%pw_grid))
+            CPASSERT(ASSOCIATED(rho_direction_g(i)%pw_grid, rho_g(i)%pw_grid))
+            CPASSERT(ASSOCIATED(tau_direction(i)%pw_grid, tau(i)%pw_grid))
+         END DO
+         IF (PRESENT(density_constraints)) THEN
+            IF (ASSOCIATED(density_constraints)) THEN
+               i = skala_density_constraints_count(density_constraints, skala_fft_domain)
+               CPASSERT(i == 0)
+            END IF
+         END IF
+      END IF
       have_atom_coord_grad = .FALSE.
       omp_max_threads_restore = omp_get_max_threads()
 
@@ -565,6 +607,37 @@ CONTAINS
          END IF
       END IF
 
+      IF (need_response) THEN
+         ! Capture independent directional storage before the base feature build resets
+         ! the shared dynamic tensors. Both maps use the same fixed geometry and layout.
+         CALL xc_rho_set_create(direction_rho_set, rho_r(1)%pw_grid%bounds_local, &
+                                rho_cutoff=section_get_rval(xc_section, "density_cutoff"), &
+                                drho_cutoff=section_get_rval(xc_section, "gradient_cutoff"), &
+                                tau_cutoff=section_get_rval(xc_section, "tau_cutoff"))
+         CALL xc_rho_set_update(direction_rho_set, rho_direction, rho_direction_g, tau_direction, needs, &
+                                xc_deriv_method_id, xc_rho_smooth_id, pw_pool)
+         CALL skala_gpw_feature_build(direction_features, direction_rho_set, rho_direction, particle_set, cell, &
+                                      requires_grad=.FALSE., weights=weights, use_atom_chunks=native_grid_atom_chunks, &
+                                      route_atom_chunks=native_grid_atom_chunk_routing, atom_partition=native_grid_atom_partition)
+         response_collapsed_rks = direction_features%uses_collapsed_rks_dynamic
+         IF (direction_features%uses_atom_chunks) THEN
+            IF (direction_features%chunk_feature_count > 0) THEN
+               model_density_direction = direction_features%chunk_density
+               model_grad_direction = direction_features%chunk_grad
+               model_kin_direction = direction_features%chunk_kin
+            ELSE
+               i = 2
+               IF (response_collapsed_rks) i = 1
+               ALLOCATE (model_density_direction(0, i), model_grad_direction(0, 3, i), model_kin_direction(0, i))
+            END IF
+         ELSE
+            model_density_direction = direction_features%density
+            model_grad_direction = direction_features%grad
+            model_kin_direction = direction_features%kin
+         END IF
+         CALL skala_gpw_feature_release(direction_features)
+         CALL xc_rho_set_release(direction_rho_set, pw_pool=pw_pool)
+      END IF
       CALL skala_gpw_feature_build(features, rho_set, rho_r, particle_set, cell, &
                                    requires_grad=(.NOT. my_just_energy), weights=weights, &
                                    requires_coordinate_grad=(needs_atom_force .OR. compute_virial), &
@@ -572,6 +645,9 @@ CONTAINS
                                    use_atom_chunks=native_grid_atom_chunks, &
                                    route_atom_chunks=native_grid_atom_chunk_routing, &
                                    atom_partition=native_grid_atom_partition)
+      IF (need_response) THEN
+         CPASSERT(response_collapsed_rks .EQV. features%uses_collapsed_rks_dynamic)
+      END IF
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_DIAGNOSTICS", l_val=native_grid_diagnostics)
       IF (native_grid_diagnostics) THEN
          CALL print_native_grid_diagnostics(features, rho_r(1)%pw_grid%para%group%mepos == 0)
@@ -598,11 +674,20 @@ CONTAINS
       has_atom_chunk_work = .NOT. features%uses_atom_chunks .OR. features%chunk_feature_count > 0
       exc = 0.0_dp
       IF (use_atom_subchunks) THEN
-         CALL evaluate_atom_subchunks(features, rho_r(1)%pw_grid%para%group, &
-                                      native_grid_atom_chunk_max_rows, &
-                                      compute_grads=(.NOT. my_just_energy), exc=exc, &
-                                      density_grad=density_grad, grad_grad=grad_grad, &
-                                      kin_grad=kin_grad, collapse_spin_grads=(nspins == 1))
+         IF (need_response) THEN
+            CALL evaluate_atom_subchunks(features, rho_r(1)%pw_grid%para%group, native_grid_atom_chunk_max_rows, &
+                                         compute_grads=.TRUE., exc=exc, density_grad=density_grad, grad_grad=grad_grad, &
+                                         kin_grad=kin_grad, collapse_spin_grads=(nspins == 1), &
+                                         density_direction=model_density_direction, grad_direction=model_grad_direction, &
+                                         kin_direction=model_kin_direction, density_response=density_response, &
+                                         grad_response=grad_response, kin_response=kin_response)
+         ELSE
+            CALL evaluate_atom_subchunks(features, rho_r(1)%pw_grid%para%group, &
+                                         native_grid_atom_chunk_max_rows, &
+                                         compute_grads=(.NOT. my_just_energy), exc=exc, &
+                                         density_grad=density_grad, grad_grad=grad_grad, &
+                                         kin_grad=kin_grad, collapse_spin_grads=(nspins == 1))
+         END IF
       ELSE IF (has_atom_chunk_work) THEN
          CALL skala_torch_model_get_exc(cached_model, features%inputs, &
                                         features%grid_weights_t, exc_tensor, exc)
@@ -611,6 +696,23 @@ CONTAINS
 
       IF (.NOT. my_just_energy) THEN
          IF (.NOT. use_atom_subchunks) THEN
+            IF (need_response) THEN
+               IF (has_atom_chunk_work) THEN
+                  CALL feature_hessian_product(features, exc_tensor, model_density_direction, model_grad_direction, &
+                                               model_kin_direction, response_tensors)
+               END IF
+               IF (features%uses_atom_chunks) THEN
+                  CALL fetch_and_gather_atom_chunk_grads(features, rho_r(1)%pw_grid%para%group, &
+                                                         density_response, grad_response, kin_response, response_tensors)
+               ELSE
+                  CALL fetch_local_feature_grads(features, density_response, grad_response, kin_response, response_tensors)
+               END IF
+               IF (has_atom_chunk_work) THEN
+                  DO i = 1, 3
+                     CALL torch_tensor_release(response_tensors(i))
+                  END DO
+               END IF
+            END IF
             IF (has_atom_chunk_work) THEN
                CALL timeset("skala_gpw_backward", phase_handle)
                CALL torch_tensor_backward_scalar(exc_tensor)
@@ -724,6 +826,10 @@ CONTAINS
          CALL build_vxc_from_feature_grads(vxc_rho, vxc_tau, rho_r, pw_pool, &
                                            density_grad, grad_grad, kin_grad, &
                                            xc_deriv_method_id)
+         IF (need_response) THEN
+            CALL build_vxc_from_feature_grads(vxc_rho_response, vxc_tau_response, rho_r, pw_pool, &
+                                              density_response, grad_response, kin_response, xc_deriv_method_id)
+         END IF
          CALL timestop(phase_handle)
 
          CALL timeset("skala_gpw_grad_release", phase_handle)
@@ -2166,9 +2272,17 @@ CONTAINS
 !> \param grad_grad ...
 !> \param kin_grad ...
 !> \param collapse_spin_grads ...
+!> \param density_direction Optional matching full-chunk primitive direction.
+!> \param grad_direction ...
+!> \param kin_direction ...
+!> \param density_response New local-grid weighted covector response.
+!> \param grad_response ...
+!> \param kin_response ...
 ! **************************************************************************************************
    SUBROUTINE evaluate_atom_subchunks(features, group, max_rows, compute_grads, exc, &
-                                      density_grad, grad_grad, kin_grad, collapse_spin_grads)
+                                      density_grad, grad_grad, kin_grad, collapse_spin_grads, &
+                                      density_direction, grad_direction, kin_direction, &
+                                      density_response, grad_response, kin_response)
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
 
       CLASS(mp_comm_type), INTENT(IN)                    :: group
@@ -2179,6 +2293,17 @@ CONTAINS
          INTENT(OUT)                                     :: density_grad, kin_grad
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :), &
          INTENT(OUT)                                     :: grad_grad
+
+      REAL(dp), INTENT(IN), OPTIONAL                     :: density_direction(:, :), grad_direction(:, :, :), &
+                                                            kin_direction(:, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL        :: density_response(:, :), grad_response(:, :, :), &
+                                                             kin_response(:, :)
+      REAL(dp), ALLOCATABLE                              :: full_density_response(:, :), full_grad_response(:, :, :), &
+                                                            full_kin_response(:, :)
+      REAL(dp), POINTER                                  :: density_view(:, :), grad_view(:, :, :), kin_view(:, :)
+      TYPE(torch_tensor_type)                            :: response_tensors(3)
+      INTEGER                                            :: component, first, last, ns
+      LOGICAL                                            :: need_response
 
       INTEGER                                            :: isubchunk, nroute_grad_per_point, &
                                                             nroute_recv_points, nroute_send_points, &
@@ -2201,6 +2326,26 @@ CONTAINS
       CALL skala_gpw_atom_subchunk_layout(max_rows, subchunk_atom_begin, subchunk_atom_count, &
                                           subchunk_row_begin, subchunk_row_count)
       nsubchunks = SIZE(subchunk_atom_begin)
+      need_response = PRESENT(density_response)
+      CPASSERT(PRESENT(grad_response) .EQV. need_response)
+      CPASSERT(PRESENT(kin_response) .EQV. need_response)
+      CPASSERT(PRESENT(density_direction) .EQV. need_response)
+      CPASSERT(PRESENT(grad_direction) .EQV. need_response)
+      CPASSERT(PRESENT(kin_direction) .EQV. need_response)
+      IF (need_response) THEN
+         CPASSERT(compute_grads)
+         ns = 2
+         IF (features%uses_collapsed_rks_dynamic) ns = 1
+         CPASSERT(ALL(SHAPE(density_direction) == [features%chunk_feature_count, ns]))
+         CPASSERT(ALL(SHAPE(grad_direction) == [features%chunk_feature_count, 3, ns]))
+         CPASSERT(ALL(SHAPE(kin_direction) == [features%chunk_feature_count, ns]))
+         ALLOCATE (full_density_response(features%chunk_feature_count, ns), &
+                   full_grad_response(features%chunk_feature_count, 3, ns), &
+                   full_kin_response(features%chunk_feature_count, ns))
+         full_density_response = 0.0_dp
+         full_grad_response = 0.0_dp
+         full_kin_response = 0.0_dp
+      END IF
 
       exc = 0.0_dp
       IF (compute_grads) THEN
@@ -2243,6 +2388,23 @@ CONTAINS
                                         subchunk_exc)
          CALL timestop(subphase_handle)
          exc = exc + subchunk_exc
+         IF (need_response) THEN
+            first = subchunk_row_begin(isubchunk)
+            last = first + subchunk_row_count(isubchunk) - 1
+            CALL feature_hessian_product(subchunk, subchunk_exc_tensor, density_direction(first:last, :), &
+                                         grad_direction(first:last, :, :), kin_direction(first:last, :), response_tensors)
+            NULLIFY (density_view, grad_view, kin_view)
+            CALL torch_tensor_data_ptr(response_tensors(1), density_view)
+            CALL torch_tensor_data_ptr(response_tensors(2), grad_view)
+            CALL torch_tensor_data_ptr(response_tensors(3), kin_view)
+            full_density_response(first:last, :) = density_view
+            full_grad_response(first:last, :, :) = grad_view
+            full_kin_response(first:last, :) = kin_view
+            NULLIFY (density_view, grad_view, kin_view)
+            DO component = 1, 3
+               CALL torch_tensor_release(response_tensors(component))
+            END DO
+         END IF
          IF (compute_grads) THEN
             CALL timeset("skala_gpw_atom_subchunk_backward", subphase_handle)
             CALL torch_tensor_backward_scalar(subchunk_exc_tensor)
@@ -2276,9 +2438,58 @@ CONTAINS
                      route_grad_return_recv_displs, route_grad_return_send_counts, &
                      route_grad_return_send_displs, send_grad_buffer)
       END IF
+      IF (need_response) THEN
+         IF (features%chunk_feature_count > 0) THEN
+            CALL torch_tensor_from_array(response_tensors(1), full_density_response)
+            CALL torch_tensor_from_array(response_tensors(2), full_grad_response)
+            CALL torch_tensor_from_array(response_tensors(3), full_kin_response)
+         END IF
+         CALL fetch_and_gather_atom_chunk_grads(features, group, density_response, grad_response, kin_response, &
+                                                response_tensors)
+         IF (features%chunk_feature_count > 0) THEN
+            DO component = 1, 3
+               CALL torch_tensor_release(response_tensors(component))
+            END DO
+         END IF
+      END IF
       DEALLOCATE (subchunk_atom_begin, subchunk_atom_count, subchunk_row_begin, subchunk_row_count)
 
    END SUBROUTINE evaluate_atom_subchunks
+
+! **************************************************************************************************
+!> \brief Joint model Hessian product with independent directions and retained ordinary gradients.
+!> \param features ...
+!> \param energy Weighted original scalar model energy.
+!> \param density_direction ...
+!> \param grad_direction ...
+!> \param kin_direction ...
+!> \param response Independent CPU response tensors, released by the caller.
+! **************************************************************************************************
+   SUBROUTINE feature_hessian_product(features, energy, density_direction, grad_direction, kin_direction, response)
+      TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
+      TYPE(torch_tensor_type), INTENT(IN)                :: energy
+      REAL(dp), INTENT(IN)                               :: density_direction(:, :), &
+                                                            grad_direction(:, :, :), &
+                                                            kin_direction(:, :)
+      TYPE(torch_tensor_type), INTENT(INOUT)             :: response(3)
+
+      INTEGER                                            :: component
+      REAL(dp), ALLOCATABLE                              :: density(:, :), gradient(:, :, :), &
+                                                            kinetic(:, :)
+      TYPE(torch_tensor_type)                            :: directions(3), fields(3)
+
+      fields = [features%density_t, features%grad_t, features%kin_t]
+      density = density_direction
+      gradient = grad_direction
+      kinetic = kin_direction
+      CALL torch_tensor_from_array(directions(1), density)
+      CALL torch_tensor_from_array(directions(2), gradient)
+      CALL torch_tensor_from_array(directions(3), kinetic)
+      CALL torch_tensor_hessian_product3(energy, fields, directions, response)
+      DO component = 1, 3
+         CALL torch_tensor_release(directions(component))
+      END DO
+   END SUBROUTINE feature_hessian_product
 
 ! **************************************************************************************************
 !> \brief Select an automatic atom-subchunk row cap.
@@ -2560,8 +2771,9 @@ CONTAINS
 !> \param density_grad ...
 !> \param grad_grad ...
 !> \param kin_grad ...
+!> \param field_response Optional borrowed weighted response tensors in the same feature layout.
 ! **************************************************************************************************
-   SUBROUTINE fetch_local_feature_grads(features, density_grad, grad_grad, kin_grad)
+   SUBROUTINE fetch_local_feature_grads(features, density_grad, grad_grad, kin_grad, field_response)
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :), &
          INTENT(OUT)                                     :: density_grad
@@ -2569,6 +2781,7 @@ CONTAINS
          INTENT(OUT)                                     :: grad_grad
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :), &
          INTENT(OUT)                                     :: kin_grad
+      TYPE(torch_tensor_type), INTENT(IN), OPTIONAL      :: field_response(3)
 
       INTEGER                                            :: feature_pos, i, j, k, local_row, row
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: density_grad_all, kin_grad_all
@@ -2577,7 +2790,7 @@ CONTAINS
 
       NULLIFY (density_grad_all, grad_grad_all, kin_grad_all)
       CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
-                                  density_grad_all, grad_grad_all, kin_grad_all)
+                                  density_grad_all, grad_grad_all, kin_grad_all, field_response)
       CPASSERT(SIZE(density_grad_all, 1) == features%nflat)
       CPASSERT(SIZE(density_grad_all, 2) == 2)
       CPASSERT(SIZE(grad_grad_all, 1) == features%nflat)
@@ -2612,9 +2825,11 @@ CONTAINS
       END DO
       CPASSERT(local_row == features%nflat_local)
 
-      CALL torch_tensor_release(density_grad_t)
-      CALL torch_tensor_release(grad_grad_t)
-      CALL torch_tensor_release(kin_grad_t)
+      IF (.NOT. PRESENT(field_response)) THEN
+         CALL torch_tensor_release(density_grad_t)
+         CALL torch_tensor_release(grad_grad_t)
+         CALL torch_tensor_release(kin_grad_t)
+      END IF
 
    END SUBROUTINE fetch_local_feature_grads
 
@@ -2624,14 +2839,16 @@ CONTAINS
 !> \param TARGET ...
 !> \param route_to_return_positions ...
 !> \param collapse_spin_grads ...
+!> \param field_response Optional borrowed weighted response tensors in the same feature layout.
 ! **************************************************************************************************
    SUBROUTINE pack_atom_chunk_grads(features, TARGET, route_to_return_positions, &
-                                    collapse_spin_grads)
+                                    collapse_spin_grads, field_response)
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:), &
          INTENT(INOUT)                                   :: target
       LOGICAL, INTENT(IN)                                :: route_to_return_positions
       LOGICAL, INTENT(IN), OPTIONAL                      :: collapse_spin_grads
+      TYPE(torch_tensor_type), INTENT(IN), OPTIONAL      :: field_response(3)
 
       INTEGER                                            :: base, feature_pos, irow, &
                                                             ngrad_buffer_per_point, point_pos, &
@@ -2648,7 +2865,7 @@ CONTAINS
 
       NULLIFY (chunk_density_grad, chunk_grad_grad, chunk_kin_grad)
       CALL get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
-                                  chunk_density_grad, chunk_grad_grad, chunk_kin_grad)
+                                  chunk_density_grad, chunk_grad_grad, chunk_kin_grad, field_response)
       CPASSERT(MOD(SIZE(TARGET), ngrad_buffer_per_point) == 0)
       target_points = SIZE(TARGET)/ngrad_buffer_per_point
       CPASSERT(SIZE(chunk_density_grad, 1) == features%chunk_feature_count)
@@ -2764,9 +2981,11 @@ CONTAINS
 !$OMP END PARALLEL DO
       END IF
 
-      CALL torch_tensor_release(density_grad_t)
-      CALL torch_tensor_release(grad_grad_t)
-      CALL torch_tensor_release(kin_grad_t)
+      IF (.NOT. PRESENT(field_response)) THEN
+         CALL torch_tensor_release(density_grad_t)
+         CALL torch_tensor_release(grad_grad_t)
+         CALL torch_tensor_release(kin_grad_t)
+      END IF
 
    END SUBROUTINE pack_atom_chunk_grads
 
@@ -2859,21 +3078,29 @@ CONTAINS
 !> \param density_grad ...
 !> \param grad_grad ...
 !> \param kin_grad ...
+!> \param field_response Optional borrowed CPU responses. Returned tensor owners remain empty in this case.
 ! **************************************************************************************************
    SUBROUTINE get_feature_grad_views(features, density_grad_t, grad_grad_t, kin_grad_t, &
-                                     density_grad, grad_grad, kin_grad)
+                                     density_grad, grad_grad, kin_grad, field_response)
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
       TYPE(torch_tensor_type), INTENT(INOUT)             :: density_grad_t, grad_grad_t, kin_grad_t
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: density_grad
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: grad_grad
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: kin_grad
+      TYPE(torch_tensor_type), INTENT(IN), OPTIONAL      :: field_response(3)
 
       NULLIFY (density_grad, grad_grad, kin_grad)
-      CALL torch_tensor_grad_batch3(features%density_t, features%grad_t, features%kin_t, &
-                                    density_grad_t, grad_grad_t, kin_grad_t)
-      CALL torch_tensor_data_ptr(density_grad_t, density_grad)
-      CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
-      CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
+      IF (PRESENT(field_response)) THEN
+         CALL torch_tensor_data_ptr(field_response(1), density_grad)
+         CALL torch_tensor_data_ptr(field_response(2), grad_grad)
+         CALL torch_tensor_data_ptr(field_response(3), kin_grad)
+      ELSE
+         CALL torch_tensor_grad_batch3(features%density_t, features%grad_t, features%kin_t, &
+                                       density_grad_t, grad_grad_t, kin_grad_t)
+         CALL torch_tensor_data_ptr(density_grad_t, density_grad)
+         CALL torch_tensor_data_ptr(grad_grad_t, grad_grad)
+         CALL torch_tensor_data_ptr(kin_grad_t, kin_grad)
+      END IF
 
    END SUBROUTINE get_feature_grad_views
 
@@ -2884,10 +3111,12 @@ CONTAINS
 !> \param density_grad ...
 !> \param grad_grad ...
 !> \param kin_grad ...
+!> \param field_response Optional borrowed weighted response tensors in the same feature layout.
 ! **************************************************************************************************
    SUBROUTINE fetch_and_gather_atom_chunk_grads(features, group, density_grad, grad_grad, &
-                                                kin_grad)
+                                                kin_grad, field_response)
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
+      TYPE(torch_tensor_type), INTENT(IN), OPTIONAL      :: field_response(3)
 
       CLASS(mp_comm_type), INTENT(IN)                    :: group
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :), &
@@ -2937,7 +3166,7 @@ CONTAINS
          IF (features%chunk_feature_count > 0) THEN
             CALL timeset("skala_gpw_grad_torch_pack", phase_handle)
             CALL pack_atom_chunk_grads(features, send_grad_buffer, .TRUE., &
-                                       features%uses_collapsed_rks_dynamic)
+                                       features%uses_collapsed_rks_dynamic, field_response)
             CALL timestop(phase_handle)
          END IF
 
@@ -2961,7 +3190,7 @@ CONTAINS
                    global_grad_buffer(ngrad_per_point*features%nflat))
          IF (features%chunk_feature_count > 0) THEN
             CALL timeset("skala_gpw_grad_torch_pack", phase_handle)
-            CALL pack_atom_chunk_grads(features, chunk_grad_buffer, .FALSE.)
+            CALL pack_atom_chunk_grads(features, chunk_grad_buffer, .FALSE., field_response=field_response)
             CALL timestop(phase_handle)
          END IF
 
