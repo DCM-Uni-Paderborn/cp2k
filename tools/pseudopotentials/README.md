@@ -65,6 +65,26 @@ checks have been reviewed. Only qualified prepared data should be added under `d
 distinct filenames and their preparation recorded in `SOURCE`. Original collections remain upstream
 inputs and must not overwrite supplemented data.
 
+## Supplement missing PAW core orbitals
+
+`add_upf_paw_core.py` replaces an incomplete scalar PAW GIPAW core-orbital table with verified
+generator core orbitals. The generator must export the actual selected core states, which need not
+be the first entries of its atomic orbital list.
+
+```bash
+python3 tools/pseudopotentials/add_upf_paw_core.py \
+  /path/to/original-PAW.upf /path/to/generated-complete-core.upf \
+  /path/to/prepared/PAW-complete-core.upf --core-tolerance 1e-9
+```
+
+The radial mesh and quadrature must agree exactly. The explicit tolerance applies to the AE core
+density, shared signed core orbitals up to an overall phase, and reconstruction of the original AE
+core density from normalized closed shells. The core occupations must sum to the original frozen
+electron count and exclude occupied valence states. Only the core-orbital table is replaced. All
+potential, projector, augmentation and valence-wave bytes remain unchanged. This checks the core
+reference independently of regeneration of the valence pseudopotential. It does not infer missing
+USPP model-core kinetic data or establish complete SCF and geometry support.
+
 ## Prepare an explicit USPP model core kinetic density
 
 For tau-dependent XC with NLCC, `add_upf_core_tau.py` can define an auxiliary core model from
