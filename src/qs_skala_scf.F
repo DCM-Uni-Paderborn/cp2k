@@ -2221,9 +2221,10 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: admit_crossings
 
       INTEGER                                            :: i, m
-      LOGICAL                                            :: valid
+      LOGICAL                                            :: coupled_curvature, valid
       REAL(dp), ALLOCATABLE                              :: coordinate_scales(:), density_floors(:), &
-                                                            gradient(:), origin(:)
+                                                            gradient(:), origin(:), response(:), &
+                                                            zero(:)
       TYPE(mp_comm_type)                                 :: comm
       TYPE(physical_constraints_context)                 :: context
       TYPE(section_vals_type), POINTER                   :: functional_section, xc_section
@@ -2287,6 +2288,14 @@ CONTAINS
          context%targets(:) = targets
       END IF
       origin = coordinate
+      coupled_curvature = state%thermal
+      IF (m == 0 .AND. .NOT. coupled_curvature) THEN
+         ! Use available complete analytical curvature before a fixed-occupation
+         ! search stalls. Unsupported kernels retain the ordinary BFGS search.
+         ALLOCATE (zero(SIZE(coordinate)), response(SIZE(coordinate)))
+         zero = 0.0_dp
+         CALL evaluate_native_hessian(coordinate, zero, context, response, coupled_curvature)
+      END IF
       ALLOCATE (coordinate_scales(SIZE(coordinate)))
       CALL qs_skala_scf_coordinate_scales(state, coordinate_scales)
       CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
@@ -2296,7 +2305,7 @@ CONTAINS
                                           check_stop=check_native_stop, stopped=stopped, &
                                           check_segment=check_native_step, retain_progress=retain_progress, &
                                           check_stalled_segment=check_native_stall, coordinate_scales=coordinate_scales, &
-                                          curvature_steps=state%thermal, check_curvature_segment=check_native_curvature, &
+                                          curvature_steps=coupled_curvature, check_curvature_segment=check_native_curvature, &
                                           precondition=evaluate_native_preconditioner, apply_hessian=evaluate_native_hessian)
       IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) THEN
          IF (context%crossings%resolved) THEN
