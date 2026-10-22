@@ -7,8 +7,9 @@
 
 PROGRAM xc_semilocal_unittest
    USE ieee_arithmetic, ONLY: ieee_is_finite
-   USE input_cp2k_xc, ONLY: create_xc_fun_section
-   USE input_section_types, ONLY: section_release, &
+   USE input_cp2k_xc, ONLY: create_xc_fun_section, create_xc_section
+   USE input_section_types, ONLY: section_get_rval, &
+                                  section_release, &
                                   section_type, &
                                   section_vals_create, &
                                   section_vals_get_subs_vals, &
@@ -21,7 +22,7 @@ PROGRAM xc_semilocal_unittest
    USE mathconstants, ONLY: pi
    USE skala_density_constraints, ONLY: skala_density_constraints_type, skala_density_constraints_set, &
                                         skala_density_constraints_reset, skala_fft_domain, skala_last_sample_domain
-   USE xc_atom, ONLY: xc_rho_set_atom_update
+   USE xc_atom, ONLY: xc_rho_set_atom_update, fill_rho_set, vxc_of_r_new, xc_2nd_deriv_of_r
    USE xc_derivative_desc, ONLY: deriv_norm_drho, &
                                  deriv_norm_drhoa, &
                                  deriv_norm_drhob, &
@@ -71,6 +72,7 @@ PROGRAM xc_semilocal_unittest
 
    CALL cp2k_init()
    CALL check_pade_metadata()
+   CALL check_zero_gradient_kernel()
    NULLIFY (specification, functional)
    CALL create_xc_fun_section(specification)
    CALL section_vals_create(functional, specification)
@@ -156,6 +158,130 @@ CONTAINS
       CALL section_vals_release(combination)
       CALL section_release(definition)
    END SUBROUTINE check_pade_metadata
+
+! **************************************************************************************************
+!> \brief Check the Cartesian XC kernel at zero total and zero individual density gradients.
+! **************************************************************************************************
+   SUBROUTINE check_zero_gradient_kernel()
+      REAL(dp), PARAMETER                                :: step = 1.e-4_dp
+
+      INTEGER                                            :: bounds(2, 3), configuration, ns, spin, &
+                                                            trial
+      REAL(dp)                                           :: center_gradient, energies(2), energy, &
+                                                            error, gradient_scale
+      REAL(dp), ALLOCATABLE :: direction(:, :, :, :), grad(:, :, :, :), original(:, :, :, :), &
+         rho(:, :, :), samples(:, :, :), tau(:, :, :), weights(:, :)
+      REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
+      REAL(dp), POINTER                                  :: vg(:, :, :, :)
+      TYPE(section_type), POINTER                        :: definition
+      TYPE(section_vals_type), POINTER                   :: combination, xc
+      TYPE(xc_derivative_set_type)                       :: derivatives
+      TYPE(xc_rho_cflags_type)                           :: needs
+      TYPE(xc_rho_set_type)                              :: delta, fields
+
+      error = 0.0_dp
+      DO configuration = 1, 4
+#if !defined (__LIBXC)
+         IF (configuration == 3) CYCLE
+#endif
+         ns = MIN(configuration, 2)
+         IF (configuration == 4) ns = 1
+         NULLIFY (definition, xc, combination)
+         CALL create_xc_section(definition)
+         CALL section_vals_create(xc, definition)
+         IF (configuration == 3) THEN
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_X_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_C_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         ELSE
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            IF (configuration == 4) THEN
+               CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%PBE%PARAMETRIZATION', i_val=xc_pbe_sol)
+            END IF
+         END IF
+         combination => section_vals_get_subs_vals(xc, 'XC_FUNCTIONAL')
+         needs = xc_functionals_get_needs(combination, ns == 2, calc_potential=.TRUE.)
+         bounds = 1
+         ALLOCATE (rho(1, 1, ns), grad(4, 1, 1, ns), direction(4, 1, 1, ns), original(4, 1, 1, ns), &
+                   tau(1, 1, ns), weights(1, 1), samples(4, ns, 3), vn(1, 1, ns), vt(1, 1, ns), vg(3, 1, 1, ns))
+         weights = 1.0_dp
+         tau = 0.0_dp
+         original = 0.0_dp
+         direction = 0.0_dp
+         direction(1:3, 1, 1, 1) = [0.017_dp, -0.019_dp, 0.023_dp]
+         IF (configuration == 2) THEN
+            original(1:3, 1, 1, 1) = [0.01_dp, 0.02_dp, -0.015_dp]
+            original(1:3, 1, 1, 2) = -original(1:3, 1, 1, 1)
+         END IF
+         IF (ns == 2) THEN
+            direction(1:3, 1, 1, 2) = [-0.011_dp, 0.013_dp, 0.007_dp]
+         END IF
+         gradient_scale = section_get_rval(xc, 'GRADIENT_CUTOFF')
+         IF (configuration == 4) THEN
+            original(1:3, 1, 1, 1) = [0.25_dp*gradient_scale, 0.0_dp, 0.0_dp]
+            direction = 0.0_dp
+            direction(1, 1, 1, 1) = gradient_scale
+         END IF
+         DO spin = 1, ns
+            direction(4, 1, 1, spin) = NORM2(direction(1:3, 1, 1, spin))
+         END DO
+         CALL xc_rho_set_create(delta, bounds, rho_cutoff=section_get_rval(xc, 'DENSITY_CUTOFF'), &
+                                drho_cutoff=section_get_rval(xc, 'GRADIENT_CUTOFF'), tau_cutoff=section_get_rval(xc, 'TAU_CUTOFF'))
+         CALL xc_rho_set_atom_update(delta, needs, ns, bounds)
+         rho = 0.0_dp
+         CALL fill_rho_set(delta, ns == 2, ns, needs, rho, direction, tau, 1, 1)
+         rho = 0.4_dp
+         IF (ns == 2) rho(1, 1, :) = [0.25_dp, 0.15_dp]
+         IF (configuration == 4) rho = 100.0_dp*section_get_rval(xc, 'DENSITY_CUTOFF')
+         IF (configuration == 3) tau = 0.06_dp
+         DO trial = 0, 2
+            grad = original
+            IF (trial == 1) grad(1:3, :, :, :) = grad(1:3, :, :, :) + step*direction(1:3, :, :, :)
+            IF (trial == 2) grad(1:3, :, :, :) = grad(1:3, :, :, :) - step*direction(1:3, :, :, :)
+            DO spin = 1, ns
+               grad(4, 1, 1, spin) = NORM2(grad(1:3, 1, 1, spin))
+            END DO
+            CALL xc_rho_set_create(fields, bounds, rho_cutoff=section_get_rval(xc, 'DENSITY_CUTOFF'), &
+                                 drho_cutoff=section_get_rval(xc, 'GRADIENT_CUTOFF'), tau_cutoff=section_get_rval(xc, 'TAU_CUTOFF'))
+            CALL xc_rho_set_atom_update(fields, needs, ns, bounds)
+            CALL fill_rho_set(fields, ns == 2, ns, needs, rho, grad, tau, 1, 1)
+            CALL xc_dset_create(derivatives, local_bounds=bounds)
+            vn = 0.0_dp
+            vg = 0.0_dp
+            vt = 0.0_dp
+            IF (trial == 0) THEN
+               IF (configuration == 4) THEN
+                  CALL vxc_of_r_new(combination, fields, derivatives, 1, needs, weights, ns == 2, 1, 1, energy, vn, vg, vt)
+                  center_gradient = vg(1, 1, 1, 1)
+                  CALL xc_dset_release(derivatives)
+                  CALL xc_dset_create(derivatives, local_bounds=bounds)
+                  vn = 0.0_dp
+                  vg = 0.0_dp
+                  vt = 0.0_dp
+               END IF
+               CALL xc_2nd_deriv_of_r(fields, delta, xc, derivatives, weights, vn, vg, vt)
+            ELSE
+               CALL vxc_of_r_new(combination, fields, derivatives, 1, needs, weights, ns == 2, 1, 1, energy, vn, vg, vt)
+               energies(trial) = energy
+            END IF
+            samples(1, :, trial + 1) = vn(1, 1, :)
+            DO spin = 1, ns
+               samples(2:4, spin, trial + 1) = vg(:, 1, 1, spin)
+            END DO
+            CALL xc_dset_release(derivatives)
+            CALL xc_rho_set_release(fields)
+         END DO
+         error = MAX(error, MAXVAL(ABS((samples(:, :, 2) - samples(:, :, 3))/(2.0_dp*step) - samples(:, :, 1))))
+         IF (configuration == 4) THEN
+            error = MAX(error, ABS((energies(1) - energies(2))/(2.0_dp*step*gradient_scale) - center_gradient))
+         END IF
+         CALL xc_rho_set_release(delta)
+         CALL section_vals_release(xc)
+         CALL section_release(definition)
+         DEALLOCATE (rho, grad, direction, original, tau, weights, samples, vn, vt, vg)
+      END DO
+      WRITE (*, '(A,ES15.6)') 'Zero-gradient Cartesian XC kernel error:', error
+      IF (error > 3.e-8_dp) ERROR STOP 'The zero-gradient XC kernel is not the original potential derivative'
+   END SUBROUTINE check_zero_gradient_kernel
 
 #if defined (__LIBXC)
 ! **************************************************************************************************

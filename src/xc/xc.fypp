@@ -57,7 +57,8 @@
 !$OMP       PARALLEL WORKSHARE DEFAULT(NONE) SHARED(${darg1}$,gradient_cut,${arg1}$,${v_arg1}$,deriv_data)
                #:for i in range(start1, end1+1)
                   ${v_arg1}$ (${i}$)%array(:, :, :) = ${v_arg1}$ (${i}$)%array(:, :, :) + &
-                                                    deriv_data(:, :, :)*${darg1}$ (:, :, :)/MAX(gradient_cut, ${arg1}$ (:, :, :))**2
+                                                      deriv_data(:, :, :)*${darg1}$ (:, :, :)/ &
+                                                      gradient_norm_divisor(${arg1}$ (:, :, :), gradient_cut)**2
                #:endfor
 !$OMP       END PARALLEL WORKSHARE
             END IF

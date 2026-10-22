@@ -1864,7 +1864,7 @@ CONTAINS
 
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(dr1dr,gradient_cut,norm_drho,v_drho,deriv_data)
          v_drho(:, :, :) = v_drho(:, :, :) + &
-                           deriv_data(:, :, :)*dr1dr(:, :, :)/MAX(gradient_cut, norm_drho(:, :, :))**2
+                           deriv_data(:, :, :)*dr1dr(:, :, :)/gradient_norm_divisor(norm_drho(:, :, :), gradient_cut)**2
 !$OMP END PARALLEL WORKSHARE
       END IF
 
@@ -1916,7 +1916,7 @@ CONTAINS
          DO k = bo(1, 3), bo(2, 3)
             DO j = bo(1, 2), bo(2, 2)
                DO i = bo(1, 1), bo(2, 1)
-                  de = weight*deriv_data1(i, j, k)/MAX(gradient_cut, norm_drho(i, j, k))**2
+                  de = weight*deriv_data1(i, j, k)/gradient_norm_divisor(norm_drho(i, j, k), gradient_cut)**2
                   v_drho(i, j, k) = v_drho(i, j, k) - de*rho1(i, j, k)
                END DO
             END DO
@@ -2028,7 +2028,7 @@ CONTAINS
             DO j = bo(1, 2), bo(2, 2)
                DO i = bo(1, 1), bo(2, 1)
                   ! We introduce a factor of two because we will average between both numerical derivatives
-                  de = 0.5_dp*weight*deriv_data1(i, j, k)/MAX(gradient_cut, norm_drhoa(i, j, k))**2
+                  de = 0.5_dp*weight*deriv_data1(i, j, k)/gradient_norm_divisor(norm_drhoa(i, j, k), gradient_cut)**2
                   v_drhoa(i, j, k) = v_drhoa(i, j, k) - de*drb1drb(i, j, k)
                   v_drhob(i, j, k) = v_drhob(i, j, k) - de*dra1dra(i, j, k)
                END DO
@@ -2266,6 +2266,11 @@ CONTAINS
          IF (gradient_f) THEN
             CALL xc_rho_set_get(rho_set, drhoa=drhoa, drhob=drhob, &
                                 norm_drho=norm_drho, norm_drhoa=norm_drhoa, norm_drhob=norm_drhob)
+            IF (.NOT. do_spinflip) THEN
+               CALL zero_gradient_second_limit(deriv_set, norm_drho, deriv_norm_drho, gradient_cut)
+               CALL zero_gradient_second_limit(deriv_set, norm_drhoa, deriv_norm_drhoa, gradient_cut)
+               CALL zero_gradient_second_limit(deriv_set, norm_drhob, deriv_norm_drhob, gradient_cut)
+            END IF
             IF (do_spinflip) THEN
                CALL xc_rho_set_get(rho1_set, drhoa=drho1a)
                CALL calc_drho_from_a(drho1, drho1a)
@@ -2528,6 +2533,7 @@ CONTAINS
 
          IF (gradient_f) THEN
             CALL xc_rho_set_get(rho_set, drho=drho, norm_drho=norm_drho)
+            CALL zero_gradient_second_limit(deriv_set, norm_drho, deriv_norm_drho, gradient_cut)
             CALL xc_rho_set_get(rho1_set, drho=drho1)
             CALL prepare_dr1dr(dr1dr, drho, drho1)
          END IF
@@ -2635,6 +2641,56 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE xc_calc_2nd_deriv_analytical
+
+! **************************************************************************************************
+!> \brief Restore the isotropic second response at an exactly vanishing density gradient.
+!>        For a smooth rotationally invariant energy, e'(r)/r tends to e''(0). The ordinary norm
+!>        normalization does not recover that limit at r=0. Its diagonal still carries e''(0)
+!>        divided by the square of the gradient cutoff. Recover that limit without changing the
+!>        scalar functional or nonzero-gradient fields. This is idempotent for a reused kernel.
+!>        Use the actual gradient norm, since Libxc can evaluate its norm derivatives at an
+!>        internal positive lower bound even when the original Cartesian gradient is zero.
+!> \param deriv_set Weighted, norm-normalized functional derivatives.
+!> \param norm Original norm of the corresponding total or spin gradient.
+!> \param label Derivative descriptor for that norm.
+!> \param cutoff Original zero-gradient normalization scale.
+! **************************************************************************************************
+   SUBROUTINE zero_gradient_second_limit(deriv_set, norm, label, cutoff)
+      TYPE(xc_derivative_set_type), INTENT(INOUT) :: deriv_set
+      REAL(dp), POINTER, INTENT(IN) :: norm(:, :, :)
+      INTEGER, INTENT(IN) :: label
+      REAL(dp), INTENT(IN) :: cutoff
+
+      TYPE(xc_derivative_type), POINTER :: first, second
+
+      IF (.NOT. ASSOCIATED(norm)) RETURN
+      first => xc_dset_get_derivative(deriv_set, [label])
+      second => xc_dset_get_derivative(deriv_set, [label, label])
+      IF (.NOT. ASSOCIATED(first) .OR. .NOT. ASSOCIATED(second)) RETURN
+      WHERE (norm == 0.0_dp)
+         first%deriv_data = gradient_norm_divisor(0.0_dp, cutoff)**2*second%deriv_data
+      END WHERE
+   END SUBROUTINE zero_gradient_second_limit
+
+! **************************************************************************************************
+!> \brief Normalize a positive gradient at its actual norm, retaining a finite divisor at zero.
+!>        Replacing a small positive norm by the cutoff changes the potential without changing
+!>        the scalar energy. The cutoff only sets the intermediate zero-norm scale, which cancels
+!>        from the finite rotational second-response limit.
+!> \param norm Original density-gradient norm.
+!> \param zero_scale Original gradient cutoff, used only at zero norm.
+!> \return Actual positive norm, or a finite zero-norm divisor.
+! **************************************************************************************************
+   ELEMENTAL FUNCTION gradient_norm_divisor(norm, zero_scale) RESULT(divisor)
+      REAL(dp), INTENT(IN) :: norm, zero_scale
+      REAL(dp) :: divisor
+
+      divisor = norm
+      IF (norm <= 0.0_dp) THEN
+         divisor = zero_scale
+         IF (zero_scale <= 0.0_dp) divisor = 1.0_dp
+      END IF
+   END FUNCTION gradient_norm_divisor
 
 ! **************************************************************************************************
 !> \brief Calculates the third functional derivative of the exchange-correlation functional, E_xc.
@@ -3496,7 +3552,8 @@ CONTAINS
 
 !$OMP             PARALLEL WORKSHARE DEFAULT(NONE) SHARED(dra1dra,gradient_cut,norm_drhoa,v_drhoa,deriv_data)
                      v_drhoa(1)%array(:, :, :) = v_drhoa(1)%array(:, :, :) + &
-                                                 deriv_data(:, :, :)*dra1dra(:, :, :)/MAX(gradient_cut, norm_drhoa(:, :, :))**2
+                                                 deriv_data(:, :, :)*dra1dra(:, :, :)/ &
+                                                 gradient_norm_divisor(norm_drhoa(:, :, :), gradient_cut)**2
 !$OMP             END PARALLEL WORKSHARE
                   END IF
                   !   Beta contribution
@@ -3510,7 +3567,8 @@ CONTAINS
 
 !$OMP             PARALLEL WORKSHARE DEFAULT(NONE) SHARED(drb1drb,gradient_cut,norm_drhob,v_drhob,deriv_data)
                      v_drhob(2)%array(:, :, :) = v_drhob(2)%array(:, :, :) - &
-                                                 deriv_data(:, :, :)*drb1drb(:, :, :)/MAX(gradient_cut, norm_drhob(:, :, :))**2
+                                                 deriv_data(:, :, :)*drb1drb(:, :, :)/ &
+                                                 gradient_norm_divisor(norm_drhob(:, :, :), gradient_cut)**2
 !$OMP             END PARALLEL WORKSHARE
                   END IF
                END IF ! If ALDA0
@@ -4174,19 +4232,20 @@ CONTAINS
                IF (ASSOCIATED(norm_drho)) THEN
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(deriv_att,norm_drho,drho_cutoff)
                   deriv_att%deriv_data(:, :, :) = deriv_att%deriv_data(:, :, :)/ &
-                                                  MAX(norm_drho(:, :, :), drho_cutoff)
+                                                  gradient_norm_divisor(norm_drho(:, :, :), drho_cutoff)
 !$OMP END PARALLEL WORKSHARE
                ELSE IF (ASSOCIATED(drho(1)%array)) THEN
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(deriv_att,drho,drho_cutoff)
                   deriv_att%deriv_data(:, :, :) = deriv_att%deriv_data(:, :, :)/ &
-                                                  MAX(SQRT(drho(1)%array(:, :, :)**2 + &
+                                                  gradient_norm_divisor(SQRT(drho(1)%array(:, :, :)**2 + &
                                                            drho(2)%array(:, :, :)**2 + &
                                                            drho(3)%array(:, :, :)**2), drho_cutoff)
 !$OMP END PARALLEL WORKSHARE
                ELSE IF (ASSOCIATED(drhoa(1)%array) .AND. ASSOCIATED(drhob(1)%array)) THEN
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(deriv_att,drhoa,drhob,drho_cutoff)
                   deriv_att%deriv_data(:, :, :) = deriv_att%deriv_data(:, :, :)/ &
-                                                  MAX(SQRT((drhoa(1)%array(:, :, :) + drhob(1)%array(:, :, :))**2 + &
+                                                  gradient_norm_divisor( &
+                                                  SQRT((drhoa(1)%array(:, :, :) + drhob(1)%array(:, :, :))**2 + &
                                                            (drhoa(2)%array(:, :, :) + drhob(2)%array(:, :, :))**2 + &
                                                            (drhoa(3)%array(:, :, :) + drhob(3)%array(:, :, :))**2), drho_cutoff)
 !$OMP END PARALLEL WORKSHARE
@@ -4197,12 +4256,12 @@ CONTAINS
                IF (ASSOCIATED(norm_drhoa)) THEN
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(deriv_att,norm_drhoa,drho_cutoff)
                   deriv_att%deriv_data(:, :, :) = deriv_att%deriv_data(:, :, :)/ &
-                                                  MAX(norm_drhoa(:, :, :), drho_cutoff)
+                                                  gradient_norm_divisor(norm_drhoa(:, :, :), drho_cutoff)
 !$OMP END PARALLEL WORKSHARE
                ELSE IF (ASSOCIATED(drhoa(1)%array)) THEN
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(deriv_att,drhoa,drho_cutoff)
                   deriv_att%deriv_data(:, :, :) = deriv_att%deriv_data(:, :, :)/ &
-                                                  MAX(SQRT(drhoa(1)%array(:, :, :)**2 + &
+                                                  gradient_norm_divisor(SQRT(drhoa(1)%array(:, :, :)**2 + &
                                                            drhoa(2)%array(:, :, :)**2 + &
                                                            drhoa(3)%array(:, :, :)**2), drho_cutoff)
 !$OMP END PARALLEL WORKSHARE
@@ -4213,12 +4272,12 @@ CONTAINS
                IF (ASSOCIATED(norm_drhob)) THEN
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(deriv_att,norm_drhob,drho_cutoff)
                   deriv_att%deriv_data(:, :, :) = deriv_att%deriv_data(:, :, :)/ &
-                                                  MAX(norm_drhob(:, :, :), drho_cutoff)
+                                                  gradient_norm_divisor(norm_drhob(:, :, :), drho_cutoff)
 !$OMP END PARALLEL WORKSHARE
                ELSE IF (ASSOCIATED(drhob(1)%array)) THEN
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(deriv_att,drhob,drho_cutoff)
                   deriv_att%deriv_data(:, :, :) = deriv_att%deriv_data(:, :, :)/ &
-                                                  MAX(SQRT(drhob(1)%array(:, :, :)**2 + &
+                                                  gradient_norm_divisor(SQRT(drhob(1)%array(:, :, :)**2 + &
                                                            drhob(2)%array(:, :, :)**2 + &
                                                            drhob(3)%array(:, :, :)**2), drho_cutoff)
 !$OMP END PARALLEL WORKSHARE

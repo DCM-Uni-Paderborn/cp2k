@@ -2876,12 +2876,13 @@ ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace,
          IF (SUM(w%rho(:, i)) >= eps_rho) w%rho(:, i) = MAX(w%rho(:, i), libxc_density_floor(eps_rho))
       END DO
       IF (is_gga) THEN
-         ! CP2K works with gradient norms, LibXC with their contractions.
+         ! Use the actual norms in the energy and their contractions. An artificial
+         ! positive floor would change uniform-spin energies and their derivatives.
          DO i = 1, nb
             ii = i0 + i
-            w%nda(i) = MAX(norm_drhoa(ii), EPSILON(0.0_dp)*1.e4_dp)
-            w%ndb(i) = MAX(norm_drhob(ii), EPSILON(0.0_dp)*1.e4_dp)
-            w%nd(i) = MAX(norm_drho(ii), EPSILON(0.0_dp)*1.e4_dp)
+            w%nda(i) = norm_drhoa(ii)
+            w%ndb(i) = norm_drhob(ii)
+            w%nd(i) = norm_drho(ii)
             w%sigma(1, i) = w%nda(i)**2
             w%sigma(3, i) = w%ndb(i)**2
             w%sigma(2, i) = 0.5_dp*(w%nd(i)**2 - w%sigma(1, i) - w%sigma(3, i))

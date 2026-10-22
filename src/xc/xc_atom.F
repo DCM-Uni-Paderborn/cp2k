@@ -93,7 +93,6 @@ CONTAINS
       LOGICAL                                            :: gradient_f, my_only_energy
       REAL(dp)                                           :: my_adiabatic_rescale_factor
       REAL(dp), DIMENSION(:, :, :), POINTER              :: deriv_data
-      REAL(KIND=dp)                                      :: drho_cutoff
       TYPE(xc_derivative_type), POINTER                  :: deriv_att
 
       CALL timeset(routineN, handle)
@@ -115,8 +114,6 @@ CONTAINS
                                rho_set=rho_set, &
                                deriv_set=deriv_set, &
                                deriv_order=deriv_order)
-
-      CALL xc_rho_set_get(rho_set, drho_cutoff=drho_cutoff)
 
       NULLIFY (deriv_data)
 
@@ -171,11 +168,11 @@ CONTAINS
                CALL xc_derivative_get(deriv_att, deriv_data=deriv_data)
 !$OMP PARALLEL DO DEFAULT(NONE) COLLAPSE(2) SCHEDULE(STATIC) &
 !$OMP             PRIVATE(ia, idir, ir) &
-!$OMP             SHARED(deriv_data, drho_cutoff, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
+!$OMP             SHARED(deriv_data, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
                DO ir = 1, nr
                   DO ia = 1, na
                      DO idir = 1, 3
-                        IF (rho_set%norm_drhoa(ia, ir, 1) > drho_cutoff) THEN
+                        IF (rho_set%norm_drhoa(ia, ir, 1) > 0.0_dp) THEN
                            vxg(idir, ia, ir, 1) = rho_set%drhoa(idir)%array(ia, ir, 1)* &
                                                   deriv_data(ia, ir, 1)*w(ia, ir)/ &
                                                   rho_set%norm_drhoa(ia, ir, 1)*my_adiabatic_rescale_factor
@@ -193,11 +190,11 @@ CONTAINS
                CALL xc_derivative_get(deriv_att, deriv_data=deriv_data)
 !$OMP PARALLEL DO DEFAULT(NONE) COLLAPSE(2) SCHEDULE(STATIC) &
 !$OMP             PRIVATE(ia, idir, ir) &
-!$OMP             SHARED(deriv_data, drho_cutoff, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
+!$OMP             SHARED(deriv_data, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
                DO ir = 1, nr
                   DO ia = 1, na
                      DO idir = 1, 3
-                        IF (rho_set%norm_drhob(ia, ir, 1) > drho_cutoff) THEN
+                        IF (rho_set%norm_drhob(ia, ir, 1) > 0.0_dp) THEN
                            vxg(idir, ia, ir, 2) = rho_set%drhob(idir)%array(ia, ir, 1)* &
                                                   deriv_data(ia, ir, 1)*w(ia, ir)/ &
                                                   rho_set%norm_drhob(ia, ir, 1)*my_adiabatic_rescale_factor
@@ -216,11 +213,11 @@ CONTAINS
                CALL xc_derivative_get(deriv_att, deriv_data=deriv_data)
 !$OMP PARALLEL DO DEFAULT(NONE) COLLAPSE(2) SCHEDULE(STATIC) &
 !$OMP             PRIVATE(ia, idir, ir) &
-!$OMP             SHARED(deriv_data, drho_cutoff, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
+!$OMP             SHARED(deriv_data, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
                DO ir = 1, nr
                   DO ia = 1, na
                      DO idir = 1, 3
-                        IF (rho_set%norm_drho(ia, ir, 1) > drho_cutoff) THEN
+                        IF (rho_set%norm_drho(ia, ir, 1) > 0.0_dp) THEN
                            vxg(idir, ia, ir, 1:2) = &
                               vxg(idir, ia, ir, 1:2) + ( &
                               rho_set%drhoa(idir)%array(ia, ir, 1) + &
@@ -240,10 +237,10 @@ CONTAINS
                CALL xc_derivative_get(deriv_att, deriv_data=deriv_data)
 !$OMP PARALLEL DO DEFAULT(NONE) COLLAPSE(2) SCHEDULE(STATIC) &
 !$OMP             PRIVATE(ia, idir, ir) &
-!$OMP             SHARED(deriv_data, drho_cutoff, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
+!$OMP             SHARED(deriv_data, my_adiabatic_rescale_factor, na, nr, rho_set, vxg, w)
                DO ir = 1, nr
                   DO ia = 1, na
-                     IF (rho_set%norm_drho(ia, ir, 1) > drho_cutoff) THEN
+                     IF (rho_set%norm_drho(ia, ir, 1) > 0.0_dp) THEN
                         DO idir = 1, 3
                            vxg(idir, ia, ir, 1) = rho_set%drho(idir)%array(ia, ir, 1)* &
                                                   deriv_data(ia, ir, 1)*w(ia, ir)/ &
