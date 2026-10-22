@@ -4,7 +4,7 @@
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
-!> \brief Fixed-geometry native electronic operator response for the original Skala functional.
+!> \brief Fixed-geometry native electronic operator response for semilocal and native Skala functionals.
 MODULE qs_upf_inverse_scf_response
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
@@ -23,7 +23,8 @@ MODULE qs_upf_inverse_scf_response
                                               pw_env_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_grids,                        ONLY: pw_grid_compare
-   USE pw_methods,                      ONLY: pw_transfer
+   USE pw_methods,                      ONLY: pw_derive,&
+                                              pw_transfer
    USE pw_poisson_types,                ONLY: pw_poisson_analytic,&
                                               pw_poisson_mt,&
                                               pw_poisson_multipole,&
@@ -40,17 +41,24 @@ MODULE qs_upf_inverse_scf_response
                                               qs_rho_type
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_kinetic
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_operator_response
-   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_evaluate
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_evaluate,&
+                                              qs_upf_inverse_paw_xc_kernel
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_model_response,&
                                               qs_upf_inverse_scf_xc_source_adjoint,&
                                               qs_upf_inverse_scf_xc_source_direction
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_field_kernel,&
+                                              qs_upf_inverse_xc_semilocal_kernel_available
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: native_skala_gapw_atom_composite_requested,&
                                               native_skala_gapw_composite_reference,&
                                               skala_gpw_eval,&
                                               xc_section_uses_native_skala_evaluator
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
+   USE xc_input_constants,              ONLY: xc_deriv_pw,&
+                                              xc_rho_no_smooth
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -61,7 +69,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Apply the original electronic KS kernel to a joint spin/k occupation-matrix direction.
-!>        Combine the complete global Skala model response, exact atomic-minus-background response,
+!>        Combine the original global XC response, exact atomic-minus-background response,
 !>        the actual native source transposes, native Hartree and PAW one-center Hartree. Original
 !>        local, nonlocal, kinetic and frozen-core one-body operators have zero density response.
 !>        Their orbital-chart curvature is supplied separately by the caller using the actual KS
@@ -82,8 +90,9 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: atomic(:, :, :, :), hartree(:, :, :), &
                                                             paw(:, :, :, :)
       INTEGER                                            :: n, nk, ns, selected, spin
-      LOGICAL                                            :: atomic_xc, do_hfx, fine, rho_valid, &
-                                                            tau_g_valid, tau_valid, valid
+      LOGICAL                                            :: atomic_xc, do_hfx, fine, model, &
+                                                            rho_valid, tau_g_valid, tau_valid, &
+                                                            use_tau, valid
       REAL(dp)                                           :: energies(3), energy, virial(3, 3)
       REAL(dp), ALLOCATABLE                              :: kweights(:)
       TYPE(cell_type), POINTER                           :: cell
@@ -110,6 +119,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(section_vals_type), POINTER                   :: functional, hf, xc
       TYPE(skala_density_constraints_type), POINTER      :: constraints
+      TYPE(xc_rho_cflags_type)                           :: needs
 
       available = .FALSE.
       CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho, dft_control=control, cell=cell, &
@@ -119,7 +129,18 @@ CONTAINS
       IF (.NOT. ASSOCIATED(state)) RETURN
       IF (.NOT. state%enabled) RETURN
       xc => section_vals_get_subs_vals(qs_env%input, "DFT%XC")
-      IF (.NOT. xc_section_uses_native_skala_evaluator(xc)) RETURN
+      model = xc_section_uses_native_skala_evaluator(xc)
+      IF (.NOT. model) THEN
+         IF (.NOT. qs_upf_inverse_xc_semilocal_kernel_available(xc, control%nspins == 2)) RETURN
+         IF (section_get_ival(xc, 'XC_GRID%XC_DERIV') /= xc_deriv_pw) RETURN
+         IF (section_get_ival(xc, 'XC_GRID%XC_SMOOTH_RHO') /= xc_rho_no_smooth) RETURN
+      END IF
+      functional => section_vals_get_subs_vals(xc, 'XC_FUNCTIONAL')
+      needs = xc_functionals_get_needs(functional, lsd=control%nspins == 2, calc_potential=.TRUE.)
+      use_tau = model .OR. needs%tau .OR. needs%tau_spin
+      IF (use_tau) THEN
+         IF (.NOT. ALLOCATED(state%kinetic_cache)) RETURN
+      END IF
       hf => section_vals_get_subs_vals(xc, "HF")
       CALL section_vals_get(hf, explicit=do_hfx)
       IF (do_hfx .OR. control%do_admm .OR. control%sic_method_id /= sic_none) RETURN
@@ -134,9 +155,14 @@ CONTAINS
       IF (selected /= 0) RETURN
       CALL qs_rho_get(rho, rho_r=native_r, rho_g=native_g, tau_r=native_tau, tau_g=native_tau_g, &
                       rho_g_valid=rho_valid, tau_r_valid=tau_valid, tau_g_valid=tau_g_valid)
-      IF (.NOT. rho_valid .OR. .NOT. tau_valid) RETURN
+      IF (.NOT. rho_valid) RETURN
+      IF (use_tau) THEN
+         IF (.NOT. tau_valid) RETURN
+      END IF
       CPASSERT(ASSOCIATED(native_r) .AND. ASSOCIATED(native_g))
-      CPASSERT(ASSOCIATED(native_tau) .AND. ASSOCIATED(native_tau_g))
+      IF (use_tau) THEN
+         CPASSERT(ASSOCIATED(native_tau) .AND. ASSOCIATED(native_tau_g))
+      END IF
       CALL pw_env_get(pw_env, xc_pw_pool=pool, auxbas_pw_pool=native_pool, poisson_env=poisson)
       IF (.NOT. ASSOCIATED(poisson%green_fft)) RETURN
       ! The response below uses the original Fourier influence function. Other
@@ -168,6 +194,7 @@ CONTAINS
          CALL density(spin)%create(grid)
          CALL density_g(spin)%create(grid)
          CALL kinetic(spin)%create(grid)
+         kinetic(spin)%array = 0.0_dp
          CALL direction(spin)%create(grid)
          CALL direction_g(spin)%create(grid)
          CALL kinetic_direction(spin)%create(grid)
@@ -177,21 +204,23 @@ CONTAINS
          IF (fine) THEN
             CALL pw_transfer(density_g(spin), density(spin))
             CALL pw_transfer(density(spin), density_g(spin))
-            IF (tau_g_valid) THEN
-               CALL pw_transfer(native_tau_g(spin), work_g)
-            ELSE
-               BLOCK
-                  TYPE(pw_c1d_gs_type) :: tau_aux
-                  CALL tau_aux%create(native_tau(spin)%pw_grid)
-                  CALL pw_transfer(native_tau(spin), tau_aux)
-                  CALL pw_transfer(tau_aux, work_g)
-                  CALL tau_aux%release()
-               END BLOCK
+            IF (use_tau) THEN
+               IF (tau_g_valid) THEN
+                  CALL pw_transfer(native_tau_g(spin), work_g)
+               ELSE
+                  BLOCK
+                     TYPE(pw_c1d_gs_type) :: tau_aux
+                     CALL tau_aux%create(native_tau(spin)%pw_grid)
+                     CALL pw_transfer(native_tau(spin), tau_aux)
+                     CALL pw_transfer(tau_aux, work_g)
+                     CALL tau_aux%release()
+                  END BLOCK
+               END IF
+               CALL pw_transfer(work_g, kinetic(spin))
             END IF
-            CALL pw_transfer(work_g, kinetic(spin))
          ELSE
             density(spin)%array = native_r(spin)%array
-            kinetic(spin)%array = native_tau(spin)%array
+            IF (use_tau) kinetic(spin)%array = native_tau(spin)%array
          END IF
       END DO
       IF (ASSOCIATED(core_r)) THEN
@@ -212,7 +241,7 @@ CONTAINS
          CALL transferred_core%release()
          CALL core_g%release()
       END IF
-      CALL qs_upf_inverse_core_kinetic(ks_env, kinetic, 1.0_dp)
+      IF (use_tau) CALL qs_upf_inverse_core_kinetic(ks_env, kinetic, 1.0_dp)
       weights => native_weights
       IF (fine .AND. ASSOCIATED(native_weights)) THEN
          CALL transferred_weights%create(grid)
@@ -224,10 +253,15 @@ CONTAINS
          CALL pw_transfer(direction(spin), direction_g(spin))
       END DO
       NULLIFY (first_rho, first_tau, response_rho, response_tau)
-      CALL skala_gpw_eval(first_rho, first_tau, energy, density, density_g, kinetic, xc, weights, pool, &
-                          particles, cell, .FALSE., virial, density_constraints=constraints, &
-                          rho_direction=direction, rho_direction_g=direction_g, tau_direction=kinetic_direction, &
-                          vxc_rho_response=response_rho, vxc_tau_response=response_tau)
+      IF (model) THEN
+         CALL skala_gpw_eval(first_rho, first_tau, energy, density, density_g, kinetic, xc, weights, pool, &
+                             particles, cell, .FALSE., virial, density_constraints=constraints, &
+                             rho_direction=direction, rho_direction_g=direction_g, tau_direction=kinetic_direction, &
+                             vxc_rho_response=response_rho, vxc_tau_response=response_tau)
+      ELSE
+         CALL semilocal_grid_response(xc, density, density_g, kinetic, direction, direction_g, kinetic_direction, &
+                                      weights, pool, response_rho, response_tau)
+      END IF
       IF (atomic_xc) THEN
          CALL qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, direction, kinetic_direction, xc, &
                                                    atomic, combined_rho, combined_tau)
@@ -272,10 +306,25 @@ CONTAINS
                                              semilocal_xc=.FALSE.)
          END IF
          operators_direction = operators_direction + paw
+         IF (.NOT. ALLOCATED(state%paw_reconstruction)) THEN
+            CPASSERT(.NOT. model)
+            CPASSERT(ALLOCATED(state%paw_density))
+            CPASSERT(state%paw_density_evaluation == state%density_evaluations)
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               CALL qs_upf_inverse_paw_xc_kernel(state%paw, state%bloch%frames, state%paw_density, &
+                                                 matrices_direction, kweights, xc, paw)
+            ELSE
+               CALL qs_upf_inverse_paw_xc_kernel(state%paw, [state%frame], state%paw_density, &
+                                                 matrices_direction, kweights, xc, paw)
+            END IF
+            operators_direction = operators_direction + paw
+         END IF
       END IF
       DO spin = 1, ns
-         CALL pool%give_back_pw(first_rho(spin))
-         CALL pool%give_back_pw(first_tau(spin))
+         IF (model) THEN
+            CALL pool%give_back_pw(first_rho(spin))
+            CALL pool%give_back_pw(first_tau(spin))
+         END IF
          CALL pool%give_back_pw(response_rho(spin))
          CALL pool%give_back_pw(response_tau(spin))
          CALL density(spin)%release()
@@ -287,12 +336,109 @@ CONTAINS
          CALL combined_rho(spin)%release()
          CALL combined_tau(spin)%release()
       END DO
-      DEALLOCATE (first_rho, first_tau, response_rho, response_tau, density, density_g, kinetic, &
+      IF (model) DEALLOCATE (first_rho, first_tau)
+      DEALLOCATE (response_rho, response_tau, density, density_g, kinetic, &
                   direction, direction_g, kinetic_direction)
       IF (fine .AND. ASSOCIATED(native_weights)) CALL transferred_weights%release()
       CALL work_g%release()
       available = .TRUE.
    END SUBROUTINE qs_upf_inverse_scf_electronic_response
+
+! **************************************************************************************************
+!> \brief Native semilocal XC response using local points and the original Fourier gradient transpose.
+!>        Independent density and kinetic-density directions use the original physical fields.
+!>        Point covectors carry the original fixed XC integration weights before the spectral
+!>        transpose. The returned unweighted scalar potentials enter the original AO source map.
+!>        No global descriptor array or accepted native cache is modified.
+!> \param xc Original complete XC section.
+!> \param density Original spin densities, including the fixed core.
+!> \param density_g Matching original reciprocal fields.
+!> \param kinetic Original independent kinetic densities, zero when unused.
+!> \param direction Spin-density directions, with fixed cores.
+!> \param direction_g Matching reciprocal directions.
+!> \param kinetic_direction Independent kinetic-density directions.
+!> \param weights Original fixed XC integration weights, possibly disassociated.
+!> \param pool Original XC-grid pool.
+!> \param potential New pool-owned scalar density-potential responses.
+!> \param kinetic_potential New pool-owned kinetic-potential responses.
+! **************************************************************************************************
+   SUBROUTINE semilocal_grid_response(xc, density, density_g, kinetic, direction, direction_g, kinetic_direction, &
+                                      weights, pool, potential, kinetic_potential)
+      TYPE(section_vals_type), POINTER                   :: xc
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
+      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: density_g(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic(:), direction(:)
+      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: direction_g(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic_direction(:)
+      TYPE(pw_r3d_rs_type), POINTER                      :: weights
+      TYPE(pw_pool_type), POINTER                        :: pool
+      TYPE(pw_r3d_rs_type), POINTER                      :: potential(:), kinetic_potential(:)
+
+      INTEGER                                            :: axis, dims(3), np, ns, orders(3), spin
+      REAL(dp), ALLOCATABLE                              :: dgrad(:, :, :), drho(:, :), dtau(:, :), &
+                                                            grad(:, :, :), rho(:, :), tau(:, :), &
+                                                            vg(:, :, :), vn(:, :), vt(:, :), w(:)
+      TYPE(pw_c1d_gs_type)                               :: derivative_g
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: derivative_r, gradient_r, work_r
+
+      grid => density(1)%pw_grid
+      np = SIZE(density(1)%array)
+      ns = SIZE(density)
+      dims = SHAPE(density(1)%array)
+      ALLOCATE (rho(np, ns), grad(np, 3, ns), tau(np, ns), drho(np, ns), dgrad(np, 3, ns), dtau(np, ns), &
+                vn(np, ns), vg(np, 3, ns), vt(np, ns), w(np))
+      w = 1.0_dp
+      IF (ASSOCIATED(weights)) THEN
+         CPASSERT(pw_grid_compare(weights%pw_grid, grid))
+         w = RESHAPE(weights%array, [np])
+      END IF
+      CALL derivative_g%create(grid)
+      CALL gradient_r%create(grid)
+      CALL work_r%create(grid)
+      CALL derivative_r%create(grid)
+      DO spin = 1, ns
+         CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
+         CPASSERT(ASSOCIATED(direction(spin)%pw_grid, grid))
+         rho(:, spin) = RESHAPE(density(spin)%array, [np])
+         tau(:, spin) = RESHAPE(kinetic(spin)%array, [np])
+         drho(:, spin) = RESHAPE(direction(spin)%array, [np])
+         dtau(:, spin) = RESHAPE(kinetic_direction(spin)%array, [np])
+         DO axis = 1, 3
+            orders = 0
+            orders(axis) = 1
+            derivative_g%array = density_g(spin)%array
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, gradient_r)
+            grad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
+            derivative_g%array = direction_g(spin)%array
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, gradient_r)
+            dgrad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
+         END DO
+      END DO
+      CALL qs_upf_inverse_xc_field_kernel(xc, rho, grad, tau, drho, dgrad, dtau, vn, vg, vt)
+      ALLOCATE (potential(ns), kinetic_potential(ns))
+      DO spin = 1, ns
+         CALL pool%create_pw(potential(spin))
+         CALL pool%create_pw(kinetic_potential(spin))
+         potential(spin)%array = RESHAPE(w*vn(:, spin), dims)
+         kinetic_potential(spin)%array = RESHAPE(w*vt(:, spin), dims)
+         DO axis = 1, 3
+            work_r%array = RESHAPE(w*vg(:, axis, spin), dims)
+            CALL pw_transfer(work_r, derivative_g)
+            orders = 0
+            orders(axis) = 1
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, derivative_r)
+            potential(spin)%array = potential(spin)%array - derivative_r%array
+         END DO
+      END DO
+      CALL derivative_g%release()
+      CALL gradient_r%release()
+      CALL work_r%release()
+      CALL derivative_r%release()
+   END SUBROUTINE semilocal_grid_response
 
 ! **************************************************************************************************
 !> \brief Apply the native Fourier Hartree kernel and the same complete AO source transpose.

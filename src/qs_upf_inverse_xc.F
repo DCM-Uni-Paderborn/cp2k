@@ -15,7 +15,9 @@ MODULE qs_upf_inverse_xc
    USE cell_types,                      ONLY: cell_type
    USE input_section_types,             ONLY: section_get_rval,&
                                               section_vals_get_subs_vals,&
-                                              section_vals_type
+                                              section_vals_get_subs_vals2,&
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE message_passing,                 ONLY: mp_comm_type
@@ -58,6 +60,7 @@ MODULE qs_upf_inverse_xc
                                               upf_inverse_smooth_density
    USE xc_atom,                         ONLY: fill_rho_set,&
                                               vxc_of_r_new,&
+                                              xc_2nd_deriv_of_r,&
                                               xc_rho_set_atom_update
    USE xc_derivative_set_types,         ONLY: xc_derivative_set_type,&
                                               xc_dset_create,&
@@ -65,7 +68,8 @@ MODULE qs_upf_inverse_xc
                                               xc_dset_release
    USE xc_derivative_types,             ONLY: xc_derivative_get,&
                                               xc_derivative_type
-   USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
+   USE xc_derivatives,                  ONLY: xc_functional_get_info,&
+                                              xc_functionals_get_needs,&
                                               xc_functionals_select_floor_limits
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
@@ -86,6 +90,7 @@ MODULE qs_upf_inverse_xc
    PUBLIC :: qs_upf_inverse_xc_evaluate, qs_upf_inverse_xc_response, qs_upf_inverse_xc_model_response
    PUBLIC :: qs_upf_inverse_xc_grid_evaluate, qs_upf_inverse_xc_grid_response
    PUBLIC :: qs_upf_inverse_xc_grid_model_response
+   PUBLIC :: qs_upf_inverse_xc_field_kernel, qs_upf_inverse_xc_semilocal_kernel_available
    PUBLIC :: qs_upf_inverse_xc_pw_fields, qs_upf_inverse_xc_pw_adjoint, qs_upf_inverse_xc_pw_response
 
 CONTAINS
@@ -267,7 +272,7 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_xc_evaluate
 
 ! **************************************************************************************************
-!> \brief Apply the complete atomic Skala XC kernel at fixed geometry and feature layout.
+!> \brief Apply the complete atomic XC kernel at fixed geometry and feature layout.
 !>        Differentiate both exact and background functionals, retaining their signed adjoints.
 !>        Frozen-core fields in state have zero occupation-matrix response. This is a branchwise
 !>        electronic response, not a geometry derivative or a selected nonsmooth limiting covector.
@@ -286,7 +291,8 @@ CONTAINS
 !> \param background_tau_direction ...
 !> \param xc_section ...
 !> \param comm ...
-!> \param response Primitive-field directions, weighted covector responses and direct AO kernel.
+!> \param response Primitive-field directions, covector responses and direct AO kernel.
+!>        The state records whether covectors already include quadrature weights.
 !>        The negative background covectors still require the caller's interpolation transpose.
 !> \param kinetic ...
 !> \param atom_grid ...
@@ -308,7 +314,8 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: response
-      TYPE(upf_inverse_kinetic_type), INTENT(IN)         :: kinetic(:)
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
@@ -316,15 +323,25 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: cached_gradient(:, :, :, :), &
                                                             cached_soft(:, :, :)
       INTEGER                                            :: nao, nk, np, ns
-      LOGICAL                                            :: geometry_fields
+      LOGICAL                                            :: geometry_fields, model, &
+                                                            semilocal_available
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: integration_weights(:)
       TYPE(qs_upf_inverse_xc_type)                       :: fields
 
-      CPASSERT(xc_section_uses_native_skala_evaluator(xc_section))
-      CPASSERT(state%kinetic)
+      model = xc_section_uses_native_skala_evaluator(xc_section)
       CPASSERT(ALLOCATED(state%density))
-      CPASSERT(ALLOCATED(state%density_gradient) .AND. ALLOCATED(state%tau))
+      CPASSERT(state%kinetic .EQV. PRESENT(kinetic))
+      IF (model) THEN
+         CPASSERT(state%kinetic)
+      ELSE
+         semilocal_available = qs_upf_inverse_xc_semilocal_kernel_available(xc_section, SIZE(state%density, 2) == 2)
+         CPASSERT(semilocal_available)
+      END IF
+      CPASSERT(ALLOCATED(state%density_gradient))
+      IF (state%kinetic) THEN
+         CPASSERT(ALLOCATED(state%tau))
+      END IF
       nk = SIZE(frames)
       CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
       CPASSERT(ALL(kweights >= 0.0_dp))
@@ -338,7 +355,9 @@ CONTAINS
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(weights) == np)
       CPASSERT(ALL(SHAPE(state%density) == [np, ns]))
       CPASSERT(ALL(SHAPE(state%density_gradient) == [np, 3, ns]))
-      CPASSERT(ALL(SHAPE(state%tau) == [np, ns]))
+      IF (state%kinetic) THEN
+         CPASSERT(ALL(SHAPE(state%tau) == [np, ns]))
+      END IF
       CPASSERT(ALL(SHAPE(background_density) == [np, ns]))
       CPASSERT(ALL(SHAPE(background_gradient) == [np, 3, ns]))
       CPASSERT(ALL(SHAPE(background_tau) == [np, ns]))
@@ -356,9 +375,9 @@ CONTAINS
       ELSE IF (np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes) THEN
          ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
       END IF
-      response%kinetic = .TRUE.
+      response%kinetic = state%kinetic
       response%paw_reconstruction = PRESENT(paw_reconstruction)
-      response%weighted_adjoint = .TRUE.
+      response%weighted_adjoint = model
       ALLOCATE (response%density(np, ns), response%density_gradient(np, 3, ns), response%tau(np, ns), &
                 response%vdensity(np, ns), response%vgradient(np, 3, ns), response%vtau(np, ns), &
                 response%background_vdensity(np, ns), response%background_vgradient(np, 3, ns), &
@@ -371,16 +390,29 @@ CONTAINS
                                cached_soft, cached_gradient)
       fields%density = state%density
       fields%density_gradient = state%density_gradient
-      fields%tau = state%tau
-      ALLOCATE (fields%energy_density(np), fields%vdensity(np, ns), fields%vgradient(np, 3, ns), fields%vtau(np, ns), &
-                fields%background_vdensity(np, ns), fields%background_vgradient(np, 3, ns), fields%background_vtau(np, ns))
-      CALL evaluate_skala_residual(xc_section, comm, fields, background_density, background_gradient, &
-                                   background_tau, points, weights, atom_grid, frames(1)%frame%positions, energy, &
-                                   just_energy=.FALSE., field_response=response, &
-                                   background_density_direction=background_density_direction, &
-                                   background_gradient_direction=background_gradient_direction, &
-                                   background_tau_direction=background_tau_direction)
+      ALLOCATE (fields%tau(np, ns), SOURCE=0.0_dp)
+      IF (state%kinetic) fields%tau = state%tau
+      IF (model) THEN
+         ALLOCATE (fields%energy_density(np), fields%vdensity(np, ns), fields%vgradient(np, 3, ns), fields%vtau(np, ns), &
+                   fields%background_vdensity(np, ns), fields%background_vgradient(np, 3, ns), fields%background_vtau(np, ns))
+         CALL evaluate_skala_residual(xc_section, comm, fields, background_density, background_gradient, &
+                                      background_tau, points, weights, atom_grid, frames(1)%frame%positions, energy, &
+                                      just_energy=.FALSE., field_response=response, &
+                                      background_density_direction=background_density_direction, &
+                                      background_gradient_direction=background_gradient_direction, &
+                                      background_tau_direction=background_tau_direction)
+      ELSE
+         CALL qs_upf_inverse_xc_field_kernel(xc_section, state%density, state%density_gradient, fields%tau, &
+                    response%density, response%density_gradient, response%tau, response%vdensity, response%vgradient, response%vtau)
+         CALL qs_upf_inverse_xc_field_kernel(xc_section, background_density, background_gradient, background_tau, &
+                                            background_density_direction, background_gradient_direction, background_tau_direction, &
+                                             response%background_vdensity, response%background_vgradient, response%background_vtau)
+         response%background_vdensity = -response%background_vdensity
+         response%background_vgradient = -response%background_vgradient
+         response%background_vtau = -response%background_vtau
+      END IF
       ALLOCATE (integration_weights(np), SOURCE=1.0_dp)
+      IF (.NOT. response%weighted_adjoint) integration_weights = weights
       CALL integrate_xc_fields(frames, augmentation, points, integration_weights, response%vdensity, &
                                response%vgradient, response%vtau, comm, response%operators, kinetic, paw_reconstruction, &
                                atom_grid, cached_soft, cached_gradient)
@@ -992,6 +1024,150 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_xc_response
 
 ! **************************************************************************************************
+!> \brief Check whether all active semilocal components supply independent-field second derivatives.
+!> \param xc_section Original complete XC section.
+!> \param lsd Original physical spin convention.
+!> \return True for supported pointwise density, gradient and independent-tau kernels.
+! **************************************************************************************************
+   FUNCTION qs_upf_inverse_xc_semilocal_kernel_available(xc_section, lsd) RESULT(available)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      LOGICAL, INTENT(IN)                                :: lsd
+      LOGICAL                                            :: available
+
+      INTEGER                                            :: i, max_deriv
+      LOGICAL                                            :: active
+      TYPE(section_vals_type), POINTER                   :: component, functional
+      TYPE(xc_rho_cflags_type)                           :: needs
+
+      available = .FALSE.
+      IF (xc_section_uses_native_skala_evaluator(xc_section)) RETURN
+      functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
+      IF (.NOT. ASSOCIATED(functional)) RETURN
+      needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
+      IF (needs%laplace_rho .OR. needs%laplace_rho_spin) RETURN
+      i = 0
+      DO
+         i = i + 1
+         component => section_vals_get_subs_vals2(functional, i_section=i)
+         IF (.NOT. ASSOCIATED(component)) EXIT
+         CALL section_vals_val_get(component, '_SECTION_PARAMETERS_', l_val=active)
+         IF (.NOT. active) CYCLE
+         max_deriv = -1
+         CALL xc_functional_get_info(component, lsd=lsd, max_deriv=max_deriv)
+         IF (max_deriv < 2) RETURN
+      END DO
+      available = .TRUE.
+   END FUNCTION qs_upf_inverse_xc_semilocal_kernel_available
+
+! **************************************************************************************************
+!> \brief Apply the native pointwise XC Hessian to physical Cartesian primitive-field directions.
+!>        Use owned, bounded point batches and the original density/gradient/tau cutoffs.
+!>        Returned covector responses use unit point weights. Their caller applies its actual
+!>        quadrature and the original field transpose. Frozen-core fields enter the base only.
+!> \param xc_section Original complete XC section.
+!> \param density Physical spin densities, point by spin.
+!> \param gradient Physical Cartesian gradients, point by direction by spin.
+!> \param kinetic Independent physical kinetic densities, zero when unused.
+!> \param density_direction Signed density directions.
+!> \param gradient_direction Corresponding Cartesian-gradient directions.
+!> \param kinetic_direction Independent kinetic-density directions, zero when unused.
+!> \param vdensity Density-covector response.
+!> \param vgradient Cartesian-gradient-covector response.
+!> \param vkinetic Kinetic-density-covector response.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_field_kernel(xc_section, density, gradient, kinetic, density_direction, &
+                                             gradient_direction, kinetic_direction, vdensity, vgradient, vkinetic)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      REAL(dp), INTENT(IN) :: density(:, :), gradient(:, :, :), kinetic(:, :), &
+         density_direction(:, :), gradient_direction(:, :, :), kinetic_direction(:, :)
+      REAL(dp), INTENT(OUT)                              :: vdensity(:, :), vgradient(:, :, :), &
+                                                            vkinetic(:, :)
+
+      INTEGER                                            :: block, bounds(2, 3), hi, lo, n, np, ns, &
+                                                            spin
+      LOGICAL                                            :: available, lsd
+      REAL(dp), ALLOCATABLE :: delta_drho(:, :, :, :), delta_rho(:, :, :), delta_tau(:, :, :), &
+         drho(:, :, :, :), rho(:, :, :), tau(:, :, :), weights(:, :)
+      REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
+      REAL(dp), POINTER                                  :: vg(:, :, :, :)
+      TYPE(section_vals_type), POINTER                   :: functional
+      TYPE(xc_derivative_set_type)                       :: derivatives
+      TYPE(xc_rho_cflags_type)                           :: needs
+      TYPE(xc_rho_set_type)                              :: base, delta
+
+      np = SIZE(density, 1)
+      ns = SIZE(density, 2)
+      lsd = ns == 2
+      CPASSERT(ns == 1 .OR. ns == 2)
+      CPASSERT(ALL(SHAPE(gradient) == [np, 3, ns]))
+      CPASSERT(ALL(SHAPE(kinetic) == [np, ns]))
+      CPASSERT(ALL(SHAPE(density_direction) == [np, ns]))
+      CPASSERT(ALL(SHAPE(gradient_direction) == [np, 3, ns]))
+      CPASSERT(ALL(SHAPE(kinetic_direction) == [np, ns]))
+      CPASSERT(ALL(SHAPE(vdensity) == [np, ns]))
+      CPASSERT(ALL(SHAPE(vgradient) == [np, 3, ns]))
+      CPASSERT(ALL(SHAPE(vkinetic) == [np, ns]))
+      available = qs_upf_inverse_xc_semilocal_kernel_available(xc_section, lsd)
+      CPASSERT(available)
+      vdensity = 0.0_dp
+      vgradient = 0.0_dp
+      vkinetic = 0.0_dp
+      IF (np == 0) RETURN
+      functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
+      needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
+      block = MIN(np, 2048)
+      bounds = 1
+      bounds(2, 1) = block
+      ALLOCATE (rho(block, 1, ns), drho(4, block, 1, ns), tau(block, 1, ns), &
+                delta_rho(block, 1, ns), delta_drho(4, block, 1, ns), delta_tau(block, 1, ns), &
+                weights(block, 1), vn(block, 1, ns), vt(block, 1, ns), vg(3, block, 1, ns))
+      CALL xc_rho_set_create(base, bounds, rho_cutoff=section_get_rval(xc_section, 'DENSITY_CUTOFF'), &
+                 drho_cutoff=section_get_rval(xc_section, 'GRADIENT_CUTOFF'), tau_cutoff=section_get_rval(xc_section, 'TAU_CUTOFF'))
+      CALL xc_rho_set_atom_update(base, needs, ns, bounds)
+      CALL xc_rho_set_create(delta, bounds, rho_cutoff=section_get_rval(xc_section, 'DENSITY_CUTOFF'), &
+                 drho_cutoff=section_get_rval(xc_section, 'GRADIENT_CUTOFF'), tau_cutoff=section_get_rval(xc_section, 'TAU_CUTOFF'))
+      CALL xc_rho_set_atom_update(delta, needs, ns, bounds)
+      CALL xc_dset_create(derivatives, local_bounds=bounds)
+      DO lo = 1, np, block
+         hi = MIN(np, lo + block - 1)
+         n = hi - lo + 1
+         rho = 0.0_dp
+         drho = 0.0_dp
+         tau = 0.0_dp
+         delta_rho = 0.0_dp
+         delta_drho = 0.0_dp
+         delta_tau = 0.0_dp
+         weights = 0.0_dp
+         rho(:n, 1, :) = density(lo:hi, :)
+         tau(:n, 1, :) = kinetic(lo:hi, :)
+         delta_rho(:n, 1, :) = density_direction(lo:hi, :)
+         delta_tau(:n, 1, :) = kinetic_direction(lo:hi, :)
+         DO spin = 1, ns
+            drho(1:3, :n, 1, spin) = TRANSPOSE(gradient(lo:hi, :, spin))
+            delta_drho(1:3, :n, 1, spin) = TRANSPOSE(gradient_direction(lo:hi, :, spin))
+         END DO
+         drho(4, :, 1, :) = SQRT(SUM(drho(1:3, :, 1, :)**2, DIM=1))
+         delta_drho(4, :, 1, :) = SQRT(SUM(delta_drho(1:3, :, 1, :)**2, DIM=1))
+         weights(:n, 1) = 1.0_dp
+         CALL fill_rho_set(base, lsd, ns, needs, rho, drho, tau, block, 1)
+         CALL fill_rho_set(delta, lsd, ns, needs, delta_rho, delta_drho, delta_tau, block, 1)
+         vn = 0.0_dp
+         vg = 0.0_dp
+         vt = 0.0_dp
+         CALL xc_2nd_deriv_of_r(base, delta, xc_section, derivatives, weights, vn, vg, vt)
+         vdensity(lo:hi, :) = vn(:n, 1, :)
+         vkinetic(lo:hi, :) = vt(:n, 1, :)
+         DO spin = 1, ns
+            vgradient(lo:hi, :, spin) = TRANSPOSE(vg(:, :n, 1, spin))
+         END DO
+      END DO
+      CALL xc_dset_release(derivatives)
+      CALL xc_rho_set_release(base)
+      CALL xc_rho_set_release(delta)
+      DEALLOCATE (vn, vg, vt)
+   END SUBROUTINE qs_upf_inverse_xc_field_kernel
+
+! **************************************************************************************************
 !> \brief Native semilocal XC evaluation with unweighted density, gradient and kinetic covectors.
 !> \param xc_section ...
 !> \param lsd ...
@@ -1288,37 +1464,43 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_xc_type), INTENT(OUT)          :: response
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: grid_adjoint(:, :, :, :)
-      TYPE(upf_inverse_kinetic_type), INTENT(IN)         :: kinetic(:)
+      TYPE(upf_inverse_kinetic_type), INTENT(IN), &
+         OPTIONAL                                        :: kinetic(:)
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
 
-      INTEGER                                            :: axis, np, ns, spin
+      INTEGER                                            :: axis, np, ns, spin, stride
       REAL(dp), ALLOCATABLE :: background(:, :), background_direction(:, :), gradient(:, :, :), &
          gradient_direction(:, :, :), tau(:, :), tau_direction(:, :), values(:, :), &
          values_direction(:, :)
 
-      CPASSERT(state%kinetic)
+      CPASSERT(state%kinetic .EQV. PRESENT(kinetic))
       CPASSERT(ALLOCATED(state%density))
       np = SIZE(points, 2)
       ns = SIZE(state%density, 2)
       CPASSERT(ns == 1 .OR. ns == 2)
-      CPASSERT(SIZE(fields, 4) == 5*ns)
+      stride = 4
+      IF (state%kinetic) stride = 5
+      CPASSERT(SIZE(fields, 4) == stride*ns)
       CPASSERT(ALL(SHAPE(fields_direction) == SHAPE(fields)))
-      ALLOCATE (values(np, 5*ns), values_direction(np, 5*ns), background(np, ns), background_direction(np, ns), &
+      ALLOCATE (values(np, stride*ns), values_direction(np, stride*ns), background(np, ns), background_direction(np, ns), &
                 gradient(np, 3, ns), gradient_direction(np, 3, ns), tau(np, ns), tau_direction(np, ns))
       CALL interpolate_native_grid_batch(fields, grid, cell, points, values, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
       CALL interpolate_native_grid_batch(fields_direction, grid, cell, points, values_direction, &
                                          wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
+      tau = 0.0_dp; tau_direction = 0.0_dp
       DO spin = 1, ns
-         background(:, spin) = values(:, 5*(spin - 1) + 1)
-         background_direction(:, spin) = values_direction(:, 5*(spin - 1) + 1)
+         background(:, spin) = values(:, stride*(spin - 1) + 1)
+         background_direction(:, spin) = values_direction(:, stride*(spin - 1) + 1)
          DO axis = 1, 3
-            gradient(:, axis, spin) = values(:, 5*(spin - 1) + 1 + axis)
-            gradient_direction(:, axis, spin) = values_direction(:, 5*(spin - 1) + 1 + axis)
+            gradient(:, axis, spin) = values(:, stride*(spin - 1) + 1 + axis)
+            gradient_direction(:, axis, spin) = values_direction(:, stride*(spin - 1) + 1 + axis)
          END DO
-         tau(:, spin) = values(:, 5*spin)
-         tau_direction(:, spin) = values_direction(:, 5*spin)
+         IF (state%kinetic) THEN
+            tau(:, spin) = values(:, stride*spin)
+            tau_direction(:, spin) = values_direction(:, stride*spin)
+         END IF
       END DO
       CALL qs_upf_inverse_xc_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
                                             state, background, gradient, tau, background_direction, gradient_direction, &

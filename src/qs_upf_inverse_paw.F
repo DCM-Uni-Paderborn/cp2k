@@ -31,7 +31,8 @@ MODULE qs_upf_inverse_paw
    USE paw_types,                       ONLY: paw_kind_type,&
                                               paw_potential_type
    USE paw_xc,                          ONLY: paw_xc_evaluate,&
-                                              paw_xc_init
+                                              paw_xc_init,&
+                                              paw_xc_response
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
@@ -51,7 +52,7 @@ MODULE qs_upf_inverse_paw
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_upf_inverse_paw'
 
    PUBLIC :: qs_upf_inverse_paw_init, qs_upf_inverse_paw_evaluate, qs_upf_inverse_paw_response
-   PUBLIC :: qs_upf_inverse_paw_core_prepare
+   PUBLIC :: qs_upf_inverse_paw_core_prepare, qs_upf_inverse_paw_xc_kernel
    PUBLIC :: qs_upf_inverse_paw_collocate, qs_upf_inverse_paw_operator
    PUBLIC :: qs_upf_inverse_paw_density_fourier, qs_upf_inverse_paw_local_operator
 
@@ -141,7 +142,7 @@ CONTAINS
 !>        on the same atom-centered rule. The inverse coefficient response remains with the caller.
 !> \param kind Original PAW radial products, magnetic-projector mapping and atom-centered rule.
 !> \param potential Scalar field, indexed by angular point and radial node.
-!> \param operator New real symmetric valence projector operator.
+!> \param OPERATOR New real symmetric valence projector operator.
 !> \param core_energy Frozen AE-core coupling, without subtracting the XC model core.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_local_operator(kind, potential, OPERATOR, core_energy)
@@ -540,9 +541,9 @@ CONTAINS
 !> \param hamiltonian Unweighted Gaussian Hamiltonian correction for each global k point and spin.
 !> \param potential Owned per-center projector potentials for the corresponding geometry response.
 !> \param semilocal_xc Include atomic semilocal XC. A separate composite XC consumer may disable it.
-!> \param samples Optional physical XC arguments, retained on the existing atomic owners.
 !> \param core_energy Optional kind-indexed core-core exchange constants for the native HF interactions.
 !> \param core_potential Optional kind-indexed core-valence operators, with one spin-independent matrix.
+!> \param samples Optional physical XC arguments, retained on the existing atomic owners.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_evaluate(kinds, frames, density, kweights, functional, density_cutoff, &
                                           gradient_cutoff, energies, hamiltonian, potential, semilocal_xc, &
@@ -562,10 +563,9 @@ CONTAINS
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT), OPTIONAL, POINTER                :: samples
 
-      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
-      INTEGER                                            :: center, first, ik, ikind, last, n, nao, &
-                                                            nk, nproj, ns, spin
-      REAL(dp)                                           :: eh, ex, hermitian_error, hermitian_limit
+      INTEGER                                            :: center, first, ik, ikind, last, n, nk, &
+                                                            ns, spin
+      REAL(dp)                                           :: eh, ex
       REAL(dp), ALLOCATABLE                              :: dm(:, :, :), vh(:, :), vxc(:, :, :)
 
       nk = SIZE(frames)
@@ -575,32 +575,9 @@ CONTAINS
          CPASSERT(SIZE(core_potential) == SIZE(kinds))
          CPASSERT(ALL(ieee_is_finite(core_energy)))
       END IF
-      CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
-      nao = SIZE(frames(1)%ao%coefficients, 2)
-      nproj = SIZE(frames(1)%ao%coefficients, 1)
+      CALL check_paw_density(frames, density, kweights)
       ns = SIZE(density, 4)
-      CPASSERT(ns == 1 .OR. ns == 2)
-      CPASSERT(ALL(SHAPE(density) == [nao, nao, nk, ns]))
       CPASSERT(ALL(SHAPE(hamiltonian) == SHAPE(density)))
-      CPASSERT(ALL(ieee_is_finite(kweights)) .AND. ALL(kweights >= 0.0_dp))
-      CPASSERT(ABS(SUM(kweights) - 1.0_dp) < 1.e-12_dp)
-      DO ik = 1, nk
-         CPASSERT(SIZE(frames(ik)%ao%coefficients, 1) == nproj)
-         CPASSERT(SIZE(frames(ik)%ao%coefficients, 2) == nao)
-         CPASSERT(ALL(frames(ik)%ao%center_atoms == frames(1)%ao%center_atoms))
-         CPASSERT(ALL(frames(ik)%ao%center_kinds == frames(1)%ao%center_kinds))
-         IF (.NOT. (ALL(frames(ik)%ao%projector_first == frames(1)%ao%projector_first))) THEN
-            CPABORT("Inconsistent inverse PAW frame or density")
-         END IF
-         CPASSERT(ALL(frames(ik)%ao%projector_last == frames(1)%ao%projector_last))
-         DO spin = 1, ns
-            CPASSERT(ALL(ieee_is_finite(REAL(density(:, :, ik, spin), dp))))
-            CPASSERT(ALL(ieee_is_finite(AIMAG(density(:, :, ik, spin)))))
-            hermitian_error = MAXVAL(ABS(density(:, :, ik, spin) - CONJG(TRANSPOSE(density(:, :, ik, spin)))))
-            hermitian_limit = 1.e-12_dp*(1.0_dp + MAXVAL(ABS(density(:, :, ik, spin))))
-            CPASSERT(hermitian_error <= hermitian_limit)
-         END DO
-      END DO
       ALLOCATE (potential(SIZE(frames(1)%ao%center_atoms)))
       energies = 0.0_dp
       hamiltonian = 0.0_dp
@@ -621,17 +598,8 @@ CONTAINS
          ! The global density and inverse coefficients are replicated. One rank owns
          ! each atomic functional, including the core constant, independently of k groups.
          IF (MODULO(center - 1, frames(1)%ao%point_comm%num_pe) == frames(1)%ao%point_comm%mepos) THEN
-            ALLOCATE (dm(n, n, ns), projected(n, n), vh(n, n), vxc(n, n, ns))
-            dm = 0.0_dp
-            DO spin = 1, ns
-               DO ik = 1, nk
-                  projected(:, :) = MATMUL(frames(ik)%ao%coefficients(first:last, :), &
-                                           MATMUL(density(:, :, ik, spin), &
-                                                  CONJG(TRANSPOSE(frames(ik)%ao%coefficients(first:last, :)))))
-                  dm(:, :, spin) = dm(:, :, spin) + kweights(ik)*REAL(projected, dp)
-               END DO
-               dm(:, :, spin) = 0.5_dp*(dm(:, :, spin) + TRANSPOSE(dm(:, :, spin)))
-            END DO
+            ALLOCATE (dm(n, n, ns), vh(n, n), vxc(n, n, ns))
+            CALL project_paw_density(frames, density, kweights, first, last, dm)
             CALL paw_onecenter_hartree(kinds(ikind)%onecenter, SUM(dm, DIM=3), eh, vh)
             ex = 0.0_dp
             vxc = 0.0_dp
@@ -656,7 +624,7 @@ CONTAINS
             DO spin = 1, ns
                potential(center)%matrix(:, :, spin) = vh + vxc(:, :, spin)
             END DO
-            DEALLOCATE (dm, projected, vh, vxc)
+            DEALLOCATE (dm, vh, vxc)
          END IF
          CALL frames(1)%ao%point_comm%sum(potential(center)%matrix)
          DO spin = 1, ns
@@ -670,6 +638,143 @@ CONTAINS
       END DO
       CALL frames(1)%ao%point_comm%sum(energies)
    END SUBROUTINE qs_upf_inverse_paw_evaluate
+
+! **************************************************************************************************
+!> \brief Validate the replicated PAW frame layout and unweighted Hermitian AO density.
+!> \param frames Original globally ordered projector frames.
+!> \param density AO occupation matrices by k point and spin.
+!> \param kweights Original normalized k weights.
+! **************************************************************************************************
+   SUBROUTINE check_paw_density(frames, density, kweights)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
+      COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:)
+
+      INTEGER                                            :: ik, nao, nk, nproj, ns, spin
+      REAL(dp)                                           :: hermitian_error, hermitian_limit
+
+      nk = SIZE(frames)
+      CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
+      nao = SIZE(frames(1)%ao%coefficients, 2)
+      nproj = SIZE(frames(1)%ao%coefficients, 1)
+      ns = SIZE(density, 4)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      CPASSERT(ALL(SHAPE(density) == [nao, nao, nk, ns]))
+      CPASSERT(ALL(ieee_is_finite(kweights)) .AND. ALL(kweights >= 0.0_dp))
+      CPASSERT(ABS(SUM(kweights) - 1.0_dp) < 1.e-12_dp)
+      DO ik = 1, nk
+         CPASSERT(SIZE(frames(ik)%ao%coefficients, 1) == nproj)
+         CPASSERT(SIZE(frames(ik)%ao%coefficients, 2) == nao)
+         CPASSERT(ALL(frames(ik)%ao%center_atoms == frames(1)%ao%center_atoms))
+         CPASSERT(ALL(frames(ik)%ao%center_kinds == frames(1)%ao%center_kinds))
+         IF (.NOT. (ALL(frames(ik)%ao%projector_first == frames(1)%ao%projector_first))) THEN
+            CPABORT("Inconsistent inverse PAW frame or density")
+         END IF
+         CPASSERT(ALL(frames(ik)%ao%projector_last == frames(1)%ao%projector_last))
+         DO spin = 1, ns
+            CPASSERT(ALL(ieee_is_finite(REAL(density(:, :, ik, spin), dp))))
+            CPASSERT(ALL(ieee_is_finite(AIMAG(density(:, :, ik, spin)))))
+            hermitian_error = MAXVAL(ABS(density(:, :, ik, spin) - CONJG(TRANSPOSE(density(:, :, ik, spin)))))
+            hermitian_limit = 1.e-12_dp*(1.0_dp + MAXVAL(ABS(density(:, :, ik, spin))))
+            CPASSERT(hermitian_error <= hermitian_limit)
+         END DO
+      END DO
+   END SUBROUTINE check_paw_density
+
+! **************************************************************************************************
+!> \brief Project one atomic density, summing its original k weights once.
+!> \param frames Original projector frames.
+!> \param density Unweighted AO occupation matrices or their signed direction.
+!> \param kweights Original normalized k weights.
+!> \param first First projector of this atom.
+!> \param last Last projector of this atom.
+!> \param dm Overwritten spin-resolved real symmetric atomic projector density.
+! **************************************************************************************************
+   SUBROUTINE project_paw_density(frames, density, kweights, first, last, dm)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
+      COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:)
+      INTEGER, INTENT(IN)                                :: first, last
+      REAL(dp), INTENT(OUT)                              :: dm(:, :, :)
+
+      INTEGER                                            :: ik, nk, ns, spin
+      COMPLEX(dp) :: projected(last - first + 1, last - first + 1)
+
+      nk = SIZE(frames)
+      ns = SIZE(density, 4)
+      dm = 0.0_dp
+      DO spin = 1, ns
+         DO ik = 1, nk
+            projected(:, :) = MATMUL(frames(ik)%ao%coefficients(first:last, :), &
+                                     MATMUL(density(:, :, ik, spin), &
+                                            CONJG(TRANSPOSE(frames(ik)%ao%coefficients(first:last, :)))))
+            dm(:, :, spin) = dm(:, :, spin) + kweights(ik)*REAL(projected, dp)
+         END DO
+         dm(:, :, spin) = 0.5_dp*(dm(:, :, spin) + TRANSPOSE(dm(:, :, spin)))
+      END DO
+   END SUBROUTINE project_paw_density
+
+! **************************************************************************************************
+!> \brief Apply the PAW one-center semilocal XC kernel to a complete AO density direction.
+!>        Sum the original k weights before the nonlinear atomic XC evaluation. The AO
+!>        Hamiltonian responses carry no k weight. Frozen-core fields remain in the base
+!>        functional and have zero density direction. Each atom has the same MPI owner as
+!>        the original first-potential evaluation. Hartree is supplied separately.
+!> \param kinds Original prepared PAW kinds, including fixed core fields.
+!> \param frames Original projector frames in complete global k order.
+!> \param density Unperturbed unweighted Hermitian AO occupation matrices, by k point and spin.
+!> \param direction Matching signed Hermitian AO density direction.
+!> \param kweights Original normalized k weights.
+!> \param xc_section The original complete XC section.
+!> \param hamiltonian New unweighted one-center XC Hamiltonian responses.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_paw_xc_kernel(kinds, frames, density, direction, kweights, xc_section, hamiltonian)
+      TYPE(paw_kind_type), INTENT(IN)                    :: kinds(:)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
+      COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :), &
+                                                            direction(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: kweights(:)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      COMPLEX(dp), INTENT(OUT)                           :: hamiltonian(:, :, :, :)
+
+      INTEGER                                            :: center, first, ik, kind, last, n, ns, &
+                                                            spin
+      REAL(dp), ALLOCATABLE                              :: delta(:, :, :), dm(:, :, :), &
+                                                            potential(:, :, :)
+
+      CALL check_paw_density(frames, density, kweights)
+      CALL check_paw_density(frames, direction, kweights)
+      CPASSERT(ALL(SHAPE(direction) == SHAPE(density)))
+      CPASSERT(ALL(SHAPE(hamiltonian) == SHAPE(density)))
+      ns = SIZE(density, 4)
+      hamiltonian = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO center = 1, SIZE(frames(1)%ao%center_atoms)
+         kind = frames(1)%ao%center_kinds(center)
+         CPASSERT(kind >= 1 .AND. kind <= SIZE(kinds))
+         IF (.NOT. kinds(kind)%active) CYCLE
+         first = frames(1)%ao%projector_first(center)
+         last = frames(1)%ao%projector_last(center)
+         n = last - first + 1
+         CPASSERT(n == kinds(kind)%onecenter%nproj)
+         ALLOCATE (potential(n, n, ns), SOURCE=0.0_dp)
+         IF (MODULO(center - 1, frames(1)%ao%point_comm%num_pe) == frames(1)%ao%point_comm%mepos) THEN
+            ALLOCATE (dm(n, n, ns), delta(n, n, ns))
+            CALL project_paw_density(frames, density, kweights, first, last, dm)
+            CALL project_paw_density(frames, direction, kweights, first, last, delta)
+            CALL paw_xc_response(kinds(kind)%xcgrid, kinds(kind)%onecenter, xc_section, dm, delta, potential)
+            DEALLOCATE (dm, delta)
+         END IF
+         CALL frames(1)%ao%point_comm%sum(potential)
+         DO spin = 1, ns
+            DO ik = 1, SIZE(frames)
+               hamiltonian(:, :, ik, spin) = hamiltonian(:, :, ik, spin) + &
+                                             MATMUL(CONJG(TRANSPOSE(frames(ik)%ao%coefficients(first:last, :))), &
+                                        MATMUL(CMPLX(potential(:, :, spin), 0.0_dp, dp), frames(ik)%ao%coefficients(first:last, :)))
+            END DO
+         END DO
+         DEALLOCATE (potential)
+      END DO
+   END SUBROUTINE qs_upf_inverse_paw_xc_kernel
 
 ! **************************************************************************************************
 !> \brief Differentiate the same PAW functional through the native inverse transformation.

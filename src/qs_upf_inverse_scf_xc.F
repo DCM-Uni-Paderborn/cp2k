@@ -248,6 +248,7 @@ CONTAINS
 !>        and inverse orbital fields in GPW/GAPW_XC. Mesh weights enter the summed sources once.
 !>        Outputs live on the caller's XC grid, with the original reciprocal-grid transfer.
 !>        Frozen-core fields have zero occupation response. Native accepted fields are not replaced.
+!>        Without an independent kinetic cache, return a zero kinetic direction for LDA/GGA use.
 !> \param ks_env Evaluated native inverse environment with its existing density grids and task lists.
 !> \param matrices_direction Replicated unweighted Hermitian AO directions (AO,AO,k,spin).
 !> \param density_direction Created native XC-grid density directions, overwritten.
@@ -276,7 +277,6 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
       CPASSERT(ASSOCIATED(state))
       CPASSERT(state%enabled)
-      CPASSERT(ALLOCATED(state%kinetic_cache))
       CALL qs_rho_get(rho, rho_r=native_density)
       CPASSERT(ASSOCIATED(native_density))
       ns = SIZE(native_density)
@@ -330,7 +330,11 @@ CONTAINS
             END IF
          END IF
          CALL source_transfer(density, density_direction(spin))
-         CALL source_transfer(kinetic, kinetic_direction(spin))
+         IF (ALLOCATED(state%kinetic_cache)) THEN
+            CALL source_transfer(kinetic, kinetic_direction(spin))
+         ELSE
+            kinetic_direction(spin)%array = 0.0_dp
+         END IF
       END DO
       CALL qs_upf_inverse_background_release(gaussian)
       CALL density%release()
@@ -378,7 +382,6 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
       CPASSERT(ASSOCIATED(state))
       CPASSERT(state%enabled)
-      CPASSERT(ALLOCATED(state%kinetic_cache))
       CALL qs_rho_get(rho, rho_r=native_density)
       CPASSERT(ASSOCIATED(native_density))
       ns = SIZE(native_density)
@@ -402,6 +405,9 @@ CONTAINS
          valid = ASSOCIATED(kinetic_potential(spin)%pw_grid, potential(spin)%pw_grid)
          CPASSERT(valid)
          CALL source_transfer(potential(spin), density)
+         IF (.NOT. ALLOCATED(state%kinetic_cache)) THEN
+            CPASSERT(ALL(kinetic_potential(spin)%array == 0.0_dp))
+         END IF
          CALL source_transfer(kinetic_potential(spin), kinetic)
          operators(:, :, :, spin) = CMPLX(0.0_dp, 0.0_dp, dp)
          IF (.NOT. state%gaussian_background) THEN
@@ -417,9 +423,11 @@ CONTAINS
          IF (state%gaussian_background .OR. state%native_gaussian) THEN
             CALL qs_upf_inverse_background_integrate(gaussian, potential=density, ao_operators=gaussian_operator, ks_env=ks_env)
             operators(:, :, :, spin) = operators(:, :, :, spin) + gaussian_operator
-            CALL qs_upf_inverse_background_integrate(gaussian, potential=kinetic, ao_operators=gaussian_operator, &
-                                                     kinetic=.TRUE., ks_env=ks_env)
-            operators(:, :, :, spin) = operators(:, :, :, spin) + gaussian_operator
+            IF (ALLOCATED(state%kinetic_cache)) THEN
+               CALL qs_upf_inverse_background_integrate(gaussian, potential=kinetic, ao_operators=gaussian_operator, &
+                                                        kinetic=.TRUE., ks_env=ks_env)
+               operators(:, :, :, spin) = operators(:, :, :, spin) + gaussian_operator
+            END IF
          END IF
       END DO
       CALL qs_upf_inverse_background_release(gaussian)
@@ -514,7 +522,7 @@ CONTAINS
    END SUBROUTINE source_transfer
 
 ! **************************************************************************************************
-!> \brief Native fixed-geometry response of the exact-minus-background Skala functional.
+!> \brief Native fixed-geometry response of the exact-minus-background XC functional.
 !>        Preserve the original atomic fields and the signed interpolation and spectral adjoints.
 !>        Core fields are fixed. The caller supplies matching unweighted AO and native XC-grid
 !>        density directions, and subsequently integrates the returned background potentials
@@ -558,8 +566,7 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=state, cell=cell, para_env=para_env, skala_constraints=constraints)
       CPASSERT(ASSOCIATED(state))
       CPASSERT(state%enabled)
-      CPASSERT(xc_section_uses_native_skala_evaluator(xc_section))
-      CPASSERT(ALLOCATED(state%kinetic_cache))
+      CPASSERT(ALLOCATED(state%kinetic_cache) .EQV. state%xc%kinetic)
       CPASSERT(ASSOCIATED(state%xc_grid))
       CPASSERT(ALLOCATED(state%xc_matrices))
       CPASSERT(ALLOCATED(state%xc_fields))
@@ -589,13 +596,24 @@ CONTAINS
       END DO
       CALL comm%set_handle(para_env%get_handle())
       CALL frame_refs(state, frames, augmentation)
-      CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction)
+      IF (state%xc%kinetic) THEN
+         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction)
+      ELSE
+         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction)
+      END IF
       CALL qs_upf_inverse_xc_grid_model_response(frames, augmentation, matrices_direction, state%xc_kweights, &
                                                  state%atom_grid%points, state%atom_grid%weights, state%xc, &
                                                  state%xc_fields, fields_direction, state%xc_grid, cell, xc_section, &
                                                  comm, response, adjoint, state%kinetic_cache, state%atom_grid, &
                                                  state%paw_reconstruction)
-      CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction)
+      IF (state%xc%kinetic) THEN
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction)
+      ELSE
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction)
+         DO spin = 1, ns
+            kinetic_potential_direction(spin)%array = 0.0_dp
+         END DO
+      END IF
       CALL MOVE_ALLOC(response%operators, operators_direction)
    END SUBROUTINE qs_upf_inverse_scf_xc_model_response
 
