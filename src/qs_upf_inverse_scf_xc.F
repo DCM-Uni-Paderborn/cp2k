@@ -58,6 +58,7 @@ MODULE qs_upf_inverse_scf_xc
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_background_type,&
                                               qs_upf_inverse_grid_type,&
+                                              qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type,&
                                               qs_upf_inverse_xc_type
@@ -121,6 +122,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_frame_ref_type), ALLOCATABLE   :: frames(:)
+      TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(skala_density_constraints_type), POINTER      :: density_constraints
 
@@ -214,12 +216,16 @@ CONTAINS
             IF (PRESENT(kinetic)) state%xc_core(:, 5, :) = core_tau
          END IF
       END IF
+      NULLIFY (orbital_factors)
+      IF (state%orbital_factors%density_evaluation == state%density_evaluations) THEN
+         orbital_factors => state%orbital_factors
+      END IF
       CALL qs_upf_inverse_xc_grid_evaluate(frames, augmentation, state%xc_matrices, state%xc_kweights, &
                                            state%atom_grid%points, state%atom_grid%weights, state%xc_fields, &
                                            state%xc_grid, cell, core, core_gradient, xc_section, ns == 2, &
                                            comm, state%xc, energy, adjoint, state%kinetic_cache, core_tau, state%atom_grid, &
                                            state%paw_reconstruction, density_constraints, &
-                                           just_energy=.NOT. PRESENT(potential))
+                                           just_energy=.NOT. PRESENT(potential), orbital_factors=orbital_factors)
       IF (PRESENT(potential)) THEN
          CPASSERT(SIZE(potential) == ns)
          ALLOCATE (background_potential(ns))

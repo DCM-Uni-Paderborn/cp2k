@@ -100,6 +100,7 @@ PROGRAM upf_inverse_unittest
         upf_inverse_lattice_error_bounds, upf_inverse_lattice_init, upf_inverse_lattice_project, &
         upf_inverse_lattice_residual, upf_inverse_lattice_response, &
         upf_inverse_lattice_response_residual, upf_inverse_lattice_type
+   USE upf_inverse_precision,           ONLY: upf_inverse_orbital_expectation
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_density_residual,&
                                               upf_inverse_pair,&
@@ -2690,10 +2691,11 @@ CONTAINS
 !> \brief Compare density congruence to independently projected occupied orbitals.
 ! **************************************************************************************************
    SUBROUTINE check_projector_density()
-      COMPLEX(dp)                                        :: c(2, 2), density(2, 2), projected(3, 3), &
-                                                            q(3, 3), reference(3, 3), w(3, 2), &
-                                                            wc(3, 2)
+      COMPLEX(dp) :: c(2, 2), density(2, 2), fields(2, 2, 2), orbitals(2, 1, 2), projected(3, 3), &
+         q(3, 3), reference(3, 3), w(3, 2), wc(3, 2)
       INTEGER                                            :: i, j
+      REAL(dp)                                           :: displacement(2), expected, kernel(2, 2), &
+                                                            occupations(1, 2), value, weights(2)
 
       DO j = 1, 2
          DO i = 1, 2
@@ -2713,6 +2715,23 @@ CONTAINS
       CALL check(ABS(SUM(projected*CONJG(q)) - &
                      SUM(density*CONJG(MATMUL(CONJG(TRANSPOSE(w)), MATMUL(q, w)))))/MAXVAL(ABS(reference)), &
                  'projector density operator adjoint')
+      ! Forming the occupation matrix first loses this signed quadratic contribution.
+      fields = CMPLX(0.0_dp, 0.0_dp, dp)
+      fields(1, 1, :) = CMPLX(1.5_dp, 0.5_dp, dp)
+      fields(2, 2, :) = CMPLX(1.5_dp, 0.5_dp, dp)
+      kernel = 0.0_dp
+      kernel(1, 1) = 1.0_dp
+      kernel(2, 2) = -1.0_dp
+      displacement = [2.0_dp**(-28), 2.0_dp**(-29)]
+      weights = [0.37_dp, 0.63_dp]
+      occupations = 1.0_dp
+      DO i = 1, 2
+         orbitals(1, 1, i) = CMPLX(1.0_dp, 1.0_dp, dp)
+         orbitals(2, 1, i) = CMPLX(1.0_dp - displacement(i), 1.0_dp + displacement(i), dp)
+      END DO
+      expected = -5.0_dp*SUM(weights*displacement**2)
+      value = upf_inverse_orbital_expectation(fields, kernel, orbitals, occupations, weights, 0.0_dp)
+      CALL check(ABS(value - expected), 'Compensated signed orbital density with unequal k weights', 1.e-31_dp)
    END SUBROUTINE check_projector_density
 
 ! **************************************************************************************************

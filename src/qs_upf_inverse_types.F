@@ -144,12 +144,21 @@ MODULE qs_upf_inverse_types
       TYPE(qs_upf_inverse_density_cache_type), ALLOCATABLE :: fields(:, :)
    END TYPE qs_upf_inverse_coulomb_type
 
+   ! Owned factors of an installed orbital density, in global k and spin order.
+   ! A new density evaluation invalidates them unless their producer refreshes the stamp.
+   TYPE qs_upf_inverse_orbitals_type
+      COMPLEX(dp), ALLOCATABLE :: coefficients(:, :, :, :)
+      REAL(dp), ALLOCATABLE :: occupations(:, :, :)
+      INTEGER :: density_evaluation = -1
+   END TYPE qs_upf_inverse_orbitals_type
+
    TYPE qs_upf_inverse_scf_type
       LOGICAL :: enabled = .FALSE.
       LOGICAL :: gaussian_background = .FALSE.
       LOGICAL :: native_gaussian = .FALSE.
       LOGICAL :: native_gth_local = .FALSE.
       INTEGER :: density_evaluations = 0, operator_evaluations = 0
+      TYPE(qs_upf_inverse_orbitals_type) :: orbital_factors
       TYPE(qs_upf_inverse_grid_type) :: frame
       TYPE(qs_upf_inverse_lattice_type) :: lattice
       TYPE(qs_upf_inverse_augmentation_type) :: augmentation
@@ -188,6 +197,7 @@ MODULE qs_upf_inverse_types
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_grid_type, qs_upf_inverse_augmentation_type
    PUBLIC :: qs_upf_inverse_lattice_type
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_scf_type, qs_upf_inverse_scf_release
+   PUBLIC :: qs_upf_inverse_orbitals_type
    PUBLIC :: qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_background_type, qs_upf_inverse_background_release
    PUBLIC :: qs_upf_inverse_coulomb_type, qs_upf_inverse_coulomb_release

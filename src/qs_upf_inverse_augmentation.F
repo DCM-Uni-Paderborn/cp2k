@@ -42,6 +42,7 @@ MODULE qs_upf_inverse_augmentation
 
    PUBLIC :: qs_upf_inverse_augmentation_type, qs_upf_inverse_augmentation_prepare
    PUBLIC :: qs_upf_inverse_augmentation_collocate, qs_upf_inverse_augmentation_integrate
+   PUBLIC :: qs_upf_inverse_augmentation_point
    PUBLIC :: qs_upf_inverse_augmentation_response, qs_upf_inverse_augmentation_release
    PUBLIC :: qs_upf_inverse_augmentation_fourier_collocate, qs_upf_inverse_augmentation_fourier_integrate
    PUBLIC :: qs_upf_inverse_augmentation_fourier_response
@@ -139,6 +140,69 @@ CONTAINS
       END DO
       gradient = gradient + TRANSPOSE(g)
    END SUBROUTINE qs_upf_inverse_augmentation_collocate
+
+! **************************************************************************************************
+!> \brief Original point Q matrix restricted to centers whose radial support contains the point.
+!>        Keep periodic images in the charge kernel, without Bloch phases. The returned indices
+!>        select the corresponding rows of the transformed projector matrix for every k point.
+!> \param frame Original geometry and projector ordering.
+!> \param augmentation Original radial and angular charge kernels.
+!> \param point Cartesian point in bohr.
+!> \param indices Global projector rows contributing at this point.
+!> \param kernel Symmetric point kernel in the returned row order, without integration weights.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_augmentation_point(frame, augmentation, point, indices, kernel)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      REAL(dp), INTENT(IN)                               :: point(3)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: indices(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: kernel(:, :)
+
+      INTEGER                                            :: atom, center, first, i, ikind, image, &
+                                                            last, n, offset
+      LOGICAL, ALLOCATABLE                               :: active(:)
+      REAL(dp)                                           :: displacement(3), position(3)
+      REAL(dp), ALLOCATABLE                              :: block(:, :)
+
+      ALLOCATE (active(SIZE(frame%center_atoms)), SOURCE=.FALSE.)
+      n = 0
+      DO center = 1, SIZE(active)
+         ikind = frame%center_kinds(center)
+         IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
+         atom = frame%center_atoms(center)
+         DO image = 1, SIZE(frame%images, 2)
+            position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+            IF (SUM((point - position)**2) > augmentation%kinds(ikind)%realspace_radius**2) CYCLE
+            active(center) = .TRUE.
+            EXIT
+         END DO
+         IF (active(center)) n = n + augmentation%kinds(ikind)%nproj
+      END DO
+      ALLOCATE (indices(n), kernel(n, n))
+      kernel = 0.0_dp
+      offset = 0
+      DO center = 1, SIZE(active)
+         IF (.NOT. active(center)) CYCLE
+         atom = frame%center_atoms(center)
+         ikind = frame%center_kinds(center)
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         n = last - first + 1
+         CPASSERT(n == augmentation%kinds(ikind)%nproj)
+         indices(offset + 1:offset + n) = [(i, i=first, last)]
+         ALLOCATE (block(n, n))
+         DO image = 1, SIZE(frame%images, 2)
+            position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+            displacement = point - position
+            IF (SUM(displacement**2) > augmentation%kinds(ikind)%realspace_radius**2) CYCLE
+            CALL uspp_augmentation_realspace(augmentation%kinds(ikind), displacement, block)
+            kernel(offset + 1:offset + n, offset + 1:offset + n) = &
+               kernel(offset + 1:offset + n, offset + 1:offset + n) + block
+         END DO
+         DEALLOCATE (block)
+         offset = offset + n
+      END DO
+   END SUBROUTINE qs_upf_inverse_augmentation_point
 
 ! **************************************************************************************************
 !> \brief Integrate the adjoint of the same original charge/gradient image sum, with one reduction.

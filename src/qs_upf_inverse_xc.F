@@ -35,12 +35,14 @@ MODULE qs_upf_inverse_xc
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
                                               qs_upf_inverse_augmentation_integrate,&
+                                              qs_upf_inverse_augmentation_point,&
                                               qs_upf_inverse_augmentation_response
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_kinetic_collocate,&
                                               qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
                                               qs_upf_inverse_paw_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_type,&
                                               qs_upf_inverse_xc_type
    USE skala_density_constraints,       ONLY: skala_atom_domain,&
@@ -54,6 +56,7 @@ MODULE qs_upf_inverse_xc
    USE skala_gpw_functional,            ONLY: skala_gapw_atom_composite_energy,&
                                               xc_section_uses_native_skala_evaluator
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
+   USE upf_inverse_precision,           ONLY: upf_inverse_orbital_expectation
    USE upf_inverse_quadrature,          ONLY: upf_inverse_projector_density,&
                                               upf_inverse_semilocal_pair,&
                                               upf_inverse_semilocal_response,&
@@ -122,11 +125,12 @@ CONTAINS
 !> \param paw_reconstruction Optional PAW-only reference caches for the composite AE valence fields.
 !> \param density_constraints Selected exact and background atomic descriptor derivatives for this geometry.
 !> \param just_energy Evaluate the original energy without AO or background derivative assembly.
+!> \param orbital_factors Optional original MO factors certified by the caller for this density.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                          background_density, background_gradient, core_density, core_gradient, &
                                          xc_section, lsd, comm, state, energy, kinetic, background_tau, core_tau, atom_grid, &
-                                         paw_reconstruction, density_constraints, just_energy)
+                                         paw_reconstruction, density_constraints, just_energy, orbital_factors)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -147,13 +151,16 @@ CONTAINS
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
       LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors
 
       COMPLEX(dp), ALLOCATABLE                           :: cached_gradient(:, :, :, :), &
                                                             cached_soft(:, :, :)
       INTEGER                                            :: nao, nk, np, nspin
       LOGICAL                                            :: energy_only, geometry_fields, &
                                                             store_fields
-      REAL(dp), ALLOCATABLE                              :: ebackground(:), integration_weights(:)
+      REAL(dp), ALLOCATABLE                              :: density_scale(:, :), ebackground(:), &
+                                                            integration_weights(:)
 
       energy_only = .FALSE.
       IF (PRESENT(just_energy)) energy_only = just_energy
@@ -210,9 +217,16 @@ CONTAINS
       state%density_gradient(:, :, :) = core_gradient
       state%tau = 0.0_dp
       IF (state%kinetic) state%tau(:, :) = core_tau
+      IF (PRESENT(orbital_factors)) THEN
+         IF (.NOT. state%paw_reconstruction) ALLOCATE (density_scale(np, nspin))
+      END IF
       CALL collocate_xc_fields(frames, augmentation, matrices, kweights, points, state%density, &
                                state%density_gradient, state%tau, kinetic, paw_reconstruction, atom_grid, &
-                               cached_soft, cached_gradient)
+                               cached_soft, cached_gradient, density_scale)
+      IF (ALLOCATED(density_scale)) THEN
+         CALL refine_cancelled_density(frames, augmentation, kweights, points, core_density, &
+                                       orbital_factors, density_scale, state%density, atom_grid)
+      END IF
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_samples_only(density_constraints)) THEN
@@ -434,9 +448,11 @@ CONTAINS
 !> \param atom_grid ...
 !> \param cached_soft Optional storage shared with the following operator transpose.
 !> \param cached_gradient ...
+!> \param density_scale ...
 ! **************************************************************************************************
    SUBROUTINE collocate_xc_fields(frames, augmentation, matrices, kweights, points, density, density_gradient, &
-                                  kinetic_density, kinetic, paw_reconstruction, atom_grid, cached_soft, cached_gradient)
+                                  kinetic_density, kinetic, paw_reconstruction, atom_grid, cached_soft, cached_gradient, &
+                                  density_scale)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -450,6 +466,7 @@ CONTAINS
          OPTIONAL                                        :: atom_grid
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cached_soft(:, :, :), &
                                                             cached_gradient(:, :, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: density_scale(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: orbital_gradient(:, :, :), &
                                                             projected(:, :), soft(:, :)
@@ -464,6 +481,7 @@ CONTAINS
       nao = SIZE(matrices, 1)
       np = SIZE(points, 2)
       nspin = SIZE(matrices, 4)
+      IF (PRESENT(density_scale)) density_scale = ABS(density)
       block = qs_upf_inverse_block_size(frames(1)%frame)
       geometry_fields = .FALSE.
       IF (PRESENT(atom_grid)) geometry_fields = ALLOCATED(atom_grid%inverse_values)
@@ -492,6 +510,9 @@ CONTAINS
                CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
                                                matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
                density(lo:hi, spin) = density(lo:hi, spin) + kweights(ik)*rho(lo:hi)
+               IF (PRESENT(density_scale)) THEN
+                  density_scale(lo:hi, spin) = density_scale(lo:hi, spin) + kweights(ik)*ABS(rho(lo:hi))
+               END IF
                density_gradient(lo:hi, :, spin) = density_gradient(lo:hi, :, spin) + &
                                                   kweights(ik)*gradient(lo:hi, :)
                IF (PRESENT(kinetic)) kinetic_density(lo:hi, spin) = kinetic_density(lo:hi, spin) + kweights(ik)*tau(lo:hi)
@@ -511,6 +532,7 @@ CONTAINS
                gradient(:, :) = gradient + reconstruction_gradient
             END IF
             density(:, spin) = density(:, spin) + kweights(ik)*rho
+            IF (PRESENT(density_scale)) density_scale(:, spin) = density_scale(:, spin) + kweights(ik)*ABS(rho)
             density_gradient(:, :, spin) = density_gradient(:, :, spin) + kweights(ik)*gradient
             IF (PRESENT(kinetic)) THEN
                CALL qs_upf_inverse_kinetic_collocate(frame, kinetic, points, matrices(:, :, ik, spin), tau_augmentation)
@@ -525,6 +547,74 @@ CONTAINS
          DEALLOCATE (projected)
       END DO
    END SUBROUTINE collocate_xc_fields
+
+! **************************************************************************************************
+!> \brief Reevaluate cancelling signed point densities from their original orbital factors.
+!>        The mathematical density and its existing adjoint are unchanged. Ordinary density-only
+!>        sources and arbitrary signed response matrices retain the occupation-matrix evaluation.
+!>        Compact point kernels include only augmentation centers within their radial support.
+!> \param frames Original inverse frames in global k order.
+!> \param augmentation Original charge kernels.
+!> \param kweights Original k weights, applied once.
+!> \param points Local Cartesian points.
+!> \param fixed Original fixed core contribution.
+!> \param orbitals Original coefficients and occupations of the current density.
+!> \param density_scale Magnitudes of the separately collocated signed contributions.
+!> \param density Point densities, replaced only where cancellation loses half the FP64 digits.
+!> \param atom_grid Optional cached fixed-geometry soft fields.
+! **************************************************************************************************
+   SUBROUTINE refine_cancelled_density(frames, augmentation, kweights, points, fixed, orbitals, &
+                                       density_scale, density, atom_grid)
+      TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      REAL(dp), INTENT(IN)                               :: kweights(:), points(:, :), fixed(:, :)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN)     :: orbitals
+      REAL(dp), INTENT(IN)                               :: density_scale(:, :)
+      REAL(dp), INTENT(INOUT)                            :: density(:, :)
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN), &
+         OPTIONAL                                        :: atom_grid
+
+      COMPLEX(dp), ALLOCATABLE                           :: fields(:, :, :), soft(:, :), &
+                                                            soft_gradient(:, :, :)
+      INTEGER                                            :: ik, nao, nk, nproj, point, spin
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      LOGICAL                                            :: geometry_fields
+      LOGICAL, ALLOCATABLE                               :: selected(:)
+      REAL(dp), ALLOCATABLE                              :: charge(:, :), kernel(:, :)
+
+      nao = SIZE(orbitals%coefficients, 1)
+      nk = SIZE(frames)
+      geometry_fields = .FALSE.
+      IF (PRESENT(atom_grid)) geometry_fields = ALLOCATED(atom_grid%inverse_values)
+      ALLOCATE (soft(1, nao), soft_gradient(1, nao, 3), selected(SIZE(density, 2)))
+      DO point = 1, SIZE(density, 1)
+         selected = ABS(density(point, :)) <= SQRT(EPSILON(0.0_dp))*density_scale(point, :) .AND. &
+                    density_scale(point, :) > 0.0_dp
+         IF (.NOT. ANY(selected)) CYCLE
+         CALL qs_upf_inverse_augmentation_point(frames(1)%frame, augmentation, points(:, point), indices, charge)
+         nproj = SIZE(indices)
+         ALLOCATE (fields(1 + nproj, nao, nk), kernel(1 + nproj, 1 + nproj))
+         kernel = 0.0_dp
+         kernel(1, 1) = 1.0_dp
+         kernel(2:, 2:) = charge
+         DO ik = 1, nk
+            IF (geometry_fields) THEN
+               fields(1, :, ik) = atom_grid%inverse_values(point, :, ik)
+            ELSE
+               CALL qs_upf_inverse_evaluate(frames(ik)%frame, points(:, point:point), soft, soft_gradient)
+               fields(1, :, ik) = soft(1, :)
+            END IF
+            fields(2:, :, ik) = frames(ik)%frame%coefficients(indices, :)
+         END DO
+         DO spin = 1, SIZE(selected)
+            IF (.NOT. selected(spin)) CYCLE
+            density(point, spin) = upf_inverse_orbital_expectation(fields, kernel, &
+                                                                   orbitals%coefficients(:, :, :, spin), &
+                                                                   orbitals%occupations(:, :, spin), kweights, fixed(point, spin))
+         END DO
+         DEALLOCATE (indices, charge, fields, kernel)
+      END DO
+   END SUBROUTINE refine_cancelled_density
 
 ! **************************************************************************************************
 !> \brief Hermitian transpose of the same exact atomic primitive-field map.
@@ -1316,11 +1406,12 @@ CONTAINS
 !> \param paw_reconstruction Optional PAW-only reconstruction caches for the composite fields.
 !> \param density_constraints Owned selected derivatives, invalidated by geometry or atomic-layout changes.
 !> \param just_energy Evaluate the original energy without AO or background derivative assembly.
+!> \param orbital_factors Optional original MO factors certified by the caller for this density.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_grid_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                               fields, grid, cell, core_density, core_gradient, xc_section, &
                                               lsd, comm, state, energy, grid_adjoint, kinetic, core_tau, atom_grid, &
-                                              paw_reconstruction, density_constraints, just_energy)
+                                              paw_reconstruction, density_constraints, just_energy, orbital_factors)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -1346,6 +1437,8 @@ CONTAINS
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
       LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors
 
       INTEGER                                            :: atom, axis, np, ns, spin, stride
       INTEGER, ALLOCATABLE                               :: atomic_sizes(:)
@@ -1395,7 +1488,7 @@ CONTAINS
       CALL qs_upf_inverse_xc_evaluate(frames, augmentation, matrices, kweights, points, weights, &
                                       background, gradient, core_density, core_gradient, xc_section, &
                                       lsd, comm, state, energy, kinetic, tau, core_tau, atom_grid, paw_reconstruction, &
-                                      selected_constraints, just_energy)
+                                      selected_constraints, just_energy, orbital_factors)
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             IF (skala_density_samples_active(density_constraints)) THEN

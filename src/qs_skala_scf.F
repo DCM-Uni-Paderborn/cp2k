@@ -448,14 +448,15 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: coordinate(:)
 
       INTEGER                                            :: bfirst, blast, first, group, ik, last, &
-                                                            local, spin
-      LOGICAL                                            :: valid
+                                                            local, nao, nk, nmo, ns, spin
+      LOGICAL                                            :: owner, valid
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: densities(:, :)
       TYPE(particle_type), POINTER                       :: particles(:)
 
       state%operator_current = .FALSE.
       CPASSERT(ASSOCIATED(state%qs_env))
+      state%inverse%orbital_factors%density_evaluation = -1
       CPASSERT(SIZE(coordinate) == qs_skala_scf_size(state))
       CPASSERT(ALL(ieee_is_finite(coordinate)))
       CALL get_qs_env(state%qs_env, cell=cell, particle_set=particles)
@@ -505,6 +506,37 @@ CONTAINS
       END DO
       CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
       CALL qs_rho_update_rho(state%rho, state%qs_env)
+      ! Retain the original factors only after this trial has installed its density.
+      ! Mixed or externally replaced densities have a different evaluation stamp.
+      nao = SIZE(state%orbitals(1, 1)%coefficients, 1)
+      nk = SIZE(state%dimensions, 1)
+      ns = SIZE(state%orbitals, 2)
+      IF (.NOT. ALLOCATED(state%inverse%orbital_factors%coefficients)) THEN
+         ALLOCATE (state%inverse%orbital_factors%coefficients(nao, nao, nk, ns), &
+                   state%inverse%orbital_factors%occupations(nao, nk, ns))
+      END IF
+      valid = ALL(SHAPE(state%inverse%orbital_factors%coefficients) == [nao, nao, nk, ns])
+      CPASSERT(valid)
+      state%inverse%orbital_factors%coefficients = CMPLX(0.0_dp, 0.0_dp, dp)
+      state%inverse%orbital_factors%occupations = 0.0_dp
+      owner = state%para_env%mepos == 0
+      IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
+      DO spin = 1, ns
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+            IF (.NOT. owner) CYCLE
+            ik = 1
+            IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+            nmo = state%orbitals(local, spin)%native%nmo
+            state%inverse%orbital_factors%coefficients(:, :nmo, ik, spin) = &
+               state%orbitals(local, spin)%coefficients(:, :nmo)
+            state%inverse%orbital_factors%occupations(:nmo, ik, spin) = &
+               state%orbitals(local, spin)%occupations(:nmo)
+         END DO
+      END DO
+      CALL state%para_env%sum(state%inverse%orbital_factors%coefficients)
+      CALL state%para_env%sum(state%inverse%orbital_factors%occupations)
+      state%inverse%orbital_factors%density_evaluation = state%inverse%density_evaluations
    END SUBROUTINE install_native_trial
 
 ! **************************************************************************************************
