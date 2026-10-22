@@ -128,6 +128,8 @@ PROGRAM upf_inverse_unittest
    REAL(dp), PARAMETER :: stationarity_tolerance = 1.e-8_dp
    REAL(dp) :: max_error = 0.0_dp
    INTEGER :: stop_polls = 0
+   INTEGER :: analytical_hessian_calls = 0
+
    CALL check_inverse()
    CALL check_physical_stationarity()
    CALL check_constrained_curvature()
@@ -155,7 +157,7 @@ CONTAINS
    SUBROUTINE check_constrained_curvature()
       REAL(dp), PARAMETER :: tolerance = 1.e-11_dp, weights(3) = [1.0_dp, 0.01_dp, 0.0001_dp]
 
-      INTEGER                                            :: i, iterations
+      INTEGER                                            :: i, iterations, method
       LOGICAL                                            :: converged, valid
       REAL(dp) :: anisotropic(9), coordinate(4), derivative(9), empty(0), energy, energy_zero, &
          implicit_derivative, jacobian(1, 4), midpoint(4), values(1)
@@ -195,17 +197,27 @@ CONTAINS
       IF (ABS(implicit_derivative - coordinate(1)) > 1.e-11_dp) THEN
          ERROR STOP 'Feasible field windows did not resolve implicit-curve derivatives'
       END IF
-      ! Resolve a rotated quadratic before its energy changes reach roundoff.
+      ! Exercise both the existing differences and the supplied exact curvature.
+      DO method = 1, 2
       DO i = 1, SIZE(anisotropic)
          anisotropic(i) = 0.3_dp*COS(1.7_dp*REAL(i, dp))
       END DO
       energy_zero = 0.0_dp
-      CALL skala_constrained_stationarity(empty_constraints, anisotropic_energy_gradient, energy_zero, &
-                                          anisotropic, empty, tolerance, converged, max_iterations=200, iterations=iterations)
+      IF (method == 1) THEN
+         CALL skala_constrained_stationarity(empty_constraints, anisotropic_energy_gradient, energy_zero, &
+                                             anisotropic, empty, tolerance, converged, max_iterations=200, iterations=iterations)
+      ELSE
+         analytical_hessian_calls = 0
+         CALL skala_constrained_stationarity(empty_constraints, anisotropic_energy_gradient, energy_zero, &
+                                             anisotropic, empty, tolerance, converged, max_iterations=200, iterations=iterations, &
+                                             curvature_steps=.TRUE., apply_hessian=anisotropic_hessian)
+         IF (analytical_hessian_calls == 0) ERROR STOP 'Supplied analytical Hessian was not used'
+      END IF
       CALL anisotropic_energy_gradient(anisotropic, energy, derivative, energy_zero)
       IF (.NOT. converged .OR. iterations > 200 .OR. NORM2(derivative) > tolerance .OR. NORM2(anisotropic) > 1.e-7_dp) THEN
          ERROR STOP 'Anisotropic curvature did not reach the original gradient tolerance'
       END IF
+      END DO
    END SUBROUTINE check_constrained_curvature
 
 ! **************************************************************************************************
@@ -242,6 +254,28 @@ CONTAINS
          ERROR STOP 'Invalid anisotropic quadratic context'
       END SELECT
    END SUBROUTINE anisotropic_energy_gradient
+
+! **************************************************************************************************
+!> \brief Supply the exact response of the existing rotated-quadratic control.
+!> \param coordinate Original trial coordinates.
+!> \param direction Hessian direction.
+!> \param context Unchanged additive energy zero.
+!> \param PRODUCT Exact response.
+!> \param available Complete response is supplied.
+! **************************************************************************************************
+   SUBROUTINE anisotropic_hessian(coordinate, direction, context, PRODUCT, available)
+      REAL(dp), INTENT(IN)                               :: coordinate(:), direction(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+      REAL(dp), INTENT(OUT) :: PRODUCT(:)
+      LOGICAL, INTENT(OUT) :: available
+      REAL(dp) :: energy
+
+      IF (SIZE(coordinate) /= SIZE(direction)) ERROR STOP 'Wrong analytical Hessian direction'
+      CALL anisotropic_energy_gradient(direction, energy, PRODUCT, context)
+      analytical_hessian_calls = analytical_hessian_calls + 1
+      available = .TRUE.
+   END SUBROUTINE anisotropic_hessian
 
 ! **************************************************************************************************
 !> \brief A curved surface h=sum(u**2), with u the first three coordinates.

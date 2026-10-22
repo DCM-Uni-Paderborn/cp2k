@@ -60,6 +60,7 @@ MODULE qs_skala_scf
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_operator
+   USE qs_upf_inverse_scf_response,     ONLY: qs_upf_inverse_scf_electronic_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
@@ -109,6 +110,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_accept
    PUBLIC :: qs_skala_scf_coordinate_scales, qs_skala_scf_fermi_target
    PUBLIC :: qs_skala_scf_density_response, qs_skala_scf_operator_response
+   PUBLIC :: qs_skala_scf_curvature
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
    INTEGER(KIND=int_8), PARAMETER :: max_point_operator_bytes = 64_int_8*1024*1024
@@ -826,6 +828,52 @@ CONTAINS
          END DO
       END IF
    END SUBROUTINE qs_skala_scf_operator_response
+
+! **************************************************************************************************
+!> \brief Complete native electronic and entropy curvature in the original orbital/Fermi chart.
+!>        Use the actual accepted KS operator for orbital-map curvature. Its density response
+!>        includes the full native Skala, Hartree and PAW one-center terms. Geometry, charge
+!>        metric and coordinate scales stay fixed. Selected surfaces need separate responses.
+!> \param state Evaluated native state with a current complete electronic operator.
+!> \param direction Joint orbital and auxiliary-band coordinate direction.
+!> \param response Complete native free-energy covector response, overwritten.
+!> \param available Whether every physical electronic contribution has a supplied response.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_curvature(state, direction, response, available)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: direction(:)
+      REAL(dp), INTENT(OUT)                              :: response(:)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      COMPLEX(dp), ALLOCATABLE :: density_direction(:, :, :, :), gamma(:, :), &
+         operators(:, :, :, :), operators_direction(:, :, :, :)
+      INTEGER                                            :: blocked, spin
+      TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :)
+
+      available = .FALSE.
+      response = 0.0_dp
+      CPASSERT(state%evaluated .AND. state%operator_current)
+      CPASSERT(SIZE(direction) == qs_skala_scf_size(state))
+      CPASSERT(SIZE(response) == SIZE(direction))
+      blocked = 0
+      IF (ANY(state%orbitals%canonicalized)) blocked = 1
+      CALL state%para_env%max(blocked)
+      IF (blocked /= 0) RETURN
+      CALL qs_skala_scf_density_response(state, direction, density_direction)
+      CALL qs_upf_inverse_scf_electronic_response(state%qs_env, density_direction, operators_direction, available)
+      IF (.NOT. available) RETURN
+      ALLOCATE (operators, MOLD=operators_direction)
+      IF (state%bloch) THEN
+         operators = state%inverse%ks_k
+      ELSE
+         CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
+         DO spin = 1, SIZE(operators, 4)
+            CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, gamma)
+            operators(:, :, 1, spin) = gamma
+         END DO
+      END IF
+      CALL qs_skala_scf_operator_response(state, direction, operators, operators_direction, response, entropy=.TRUE.)
+   END SUBROUTINE qs_skala_scf_curvature
 
 ! **************************************************************************************************
 !> \brief Physical Fermi occupation directions with the original group charge held fixed.
@@ -2249,7 +2297,7 @@ CONTAINS
                                           check_segment=check_native_step, retain_progress=retain_progress, &
                                           check_stalled_segment=check_native_stall, coordinate_scales=coordinate_scales, &
                                           curvature_steps=state%thermal, check_curvature_segment=check_native_curvature, &
-                                          precondition=evaluate_native_preconditioner)
+                                          precondition=evaluate_native_preconditioner, apply_hessian=evaluate_native_hessian)
       IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) THEN
          IF (context%crossings%resolved) THEN
             ! Classification has already verified this downhill root in the native fields.
@@ -3273,6 +3321,39 @@ CONTAINS
          CPABORT("Invalid native orbital stall context.")
       END SELECT
    END SUBROUTINE check_native_stall
+
+! **************************************************************************************************
+!> \brief Apply the complete physical free-energy response at the accepted unconstrained native state.
+!> \param coordinate Complete orbital and Fermi coordinates.
+!> \param direction Direction in those same coordinates.
+!> \param context Borrowed native state and original physical constraints.
+!> \param PRODUCT Complete free-energy Hessian product.
+!> \param available Whether all original electronic contributions have a response.
+! **************************************************************************************************
+   SUBROUTINE evaluate_native_hessian(coordinate, direction, context, PRODUCT, available)
+      REAL(dp), INTENT(IN)                               :: coordinate(:), direction(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      REAL(dp), INTENT(OUT)                              :: PRODUCT(:)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: gradient(:)
+
+      available = .FALSE.
+      PRODUCT = 0.0_dp
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (SIZE(context%points, 2) /= 0) RETURN
+         IF (.NOT. at_native_coordinate(context%state, coordinate) .OR. .NOT. context%state%operator_current) THEN
+            ALLOCATE (gradient(SIZE(coordinate)))
+            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient)
+         END IF
+         CALL qs_skala_scf_curvature(context%state, direction, PRODUCT, available)
+      CLASS DEFAULT
+         CPABORT("Invalid native Skala Hessian context.")
+      END SELECT
+   END SUBROUTINE evaluate_native_hessian
 
 ! **************************************************************************************************
 !> \brief Invert current frozen-Hamiltonian occupation curvature in the fixed search coordinates.

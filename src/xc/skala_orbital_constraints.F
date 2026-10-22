@@ -121,11 +121,26 @@ MODULE skala_orbital_constraints
          LOGICAL, INTENT(OUT) :: smooth, interrupted
       END SUBROUTINE orbital_curvature_segment
 ! **************************************************************************************************
-!> \brief ...
-!> \param coordinate ...
-!> \param context ...
-!> \param inverse_diagonal ...
-!> \param available ...
+!> \brief Apply a supplied full-coordinate energy Hessian at an unconstrained state.
+!> \param coordinate Complete accepted orbital coordinates.
+!> \param direction Full-coordinate direction.
+!> \param context Borrowed problem state.
+!> \param PRODUCT Full-coordinate Hessian product.
+!> \param available Whether the complete physical response is supplied.
+! **************************************************************************************************
+      SUBROUTINE orbital_hessian_product(coordinate, direction, context, PRODUCT, available)
+         IMPORT :: dp
+         REAL(dp), INTENT(IN) :: coordinate(:), direction(:)
+         CLASS(*), INTENT(INOUT) :: context
+         REAL(dp), INTENT(OUT) :: PRODUCT(:)
+         LOGICAL, INTENT(OUT) :: available
+      END SUBROUTINE orbital_hessian_product
+! **************************************************************************************************
+!> \brief Supply a positive inverse diagonal for the coupled orbital step.
+!> \param coordinate Complete accepted coordinates.
+!> \param context Borrowed problem state.
+!> \param inverse_diagonal Current positive diagonal inverse.
+!> \param available Whether this preconditioner is supplied.
 ! **************************************************************************************************
       SUBROUTINE orbital_preconditioner(coordinate, context, inverse_diagonal, available)
          IMPORT :: dp
@@ -732,12 +747,14 @@ CONTAINS
 !> \param check_curvature_segment Optional branch check of every restored Hessian probe.
 !> \param precondition Optional current positive diagonal inverse for coupled steps.
 !>        The returned inverse stays fixed throughout each Newton solve.
+!> \param apply_hessian Optional complete analytical response when no dependent constraints are present.
+!>        An unavailable response retains the original numerical curvature and acceptance tests.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
                                              max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
                                              check_segment, interrupted, retain_progress, check_stalled_segment, &
-                                             coordinate_scales, curvature_steps, check_curvature_segment, precondition)
+                                           coordinate_scales, curvature_steps, check_curvature_segment, precondition, apply_hessian)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
@@ -746,6 +763,7 @@ CONTAINS
       PROCEDURE(orbital_segment), OPTIONAL :: check_stalled_segment
       PROCEDURE(orbital_curvature_segment), OPTIONAL :: check_curvature_segment
       PROCEDURE(orbital_preconditioner), OPTIONAL :: precondition
+      PROCEDURE(orbital_hessian_product), OPTIONAL :: apply_hessian
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
@@ -1084,7 +1102,8 @@ CONTAINS
          valid_direction = ALL(ieee_is_finite(newton_step)) .AND. DOT_PRODUCT(derivative, newton_step) < 0.0_dp
       END SUBROUTINE newton_direction
 ! **************************************************************************************************
-!> \brief Resolve a native reduced Hessian product across narrow smooth XC projections.
+!> \brief Use the complete analytical unconstrained response when supplied, otherwise resolve native curvature.
+!>        Dependent physical constraints retain their existing implicit-curve response.
 !>        Refine central differences to one-percent agreement. If coordinate resolution prevents
 !>        agreement, retain the estimate with the smallest relative change. This constructs a trial
 !>        direction. The original energy, constraint and stationarity tests remain authoritative.
@@ -1104,15 +1123,31 @@ CONTAINS
                                                             valid_trial
       REAL(dp)                                           :: best_error, difference, energy_trial, &
                                                             relative_error, scale, step
-      REAL(dp), ALLOCATABLE                              :: candidate(:), gradient_minus(:), &
-                                                            gradient_plus(:), minus(:), plus(:), &
-                                                            previous(:)
+      REAL(dp), ALLOCATABLE :: candidate(:), full_direction(:), full_product(:), &
+         gradient_minus(:), gradient_plus(:), minus(:), plus(:), previous(:)
 
          valid_product = .FALSE.
          stopped_product = .FALSE.
          PRODUCT = 0.0_dp
          scale = NORM2(direction)
          IF (scale <= TINY(0.0_dp)) RETURN
+         IF (PRESENT(apply_hessian)) THEN
+            IF (r == 0) THEN
+               IF (stop_requested()) THEN
+                  stopped_product = .TRUE.
+                  RETURN
+               END IF
+               ALLOCATE (full_direction(d), full_product(d))
+               full_direction = 0.0_dp
+               full_direction(curve%free) = direction
+               CALL apply_hessian(center, full_direction, context, full_product, valid_product)
+               IF (valid_product) THEN
+                  CPASSERT(ALL(ieee_is_finite(full_product)))
+                  PRODUCT = full_product(curve%free)
+                  RETURN
+               END IF
+            END IF
+         END IF
          ! Central differences balance quadratic truncation against derivative roundoff.
          step = EPSILON(0.0_dp)**(1.0_dp/3.0_dp)*MAX(1.0_dp, NORM2(center(curve%free)))/scale
          best_error = HUGE(0.0_dp)

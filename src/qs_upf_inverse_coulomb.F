@@ -59,7 +59,9 @@ MODULE qs_upf_inverse_coulomb
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
-                                              qs_upf_inverse_background_prepare
+                                              qs_upf_inverse_background_prepare,&
+                                              qs_upf_inverse_background_release,&
+                                              qs_upf_inverse_background_scratch
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_cache_prepare,&
                                               qs_upf_inverse_density_gapw,&
                                               qs_upf_inverse_density_gapw_integrate
@@ -71,6 +73,7 @@ MODULE qs_upf_inverse_coulomb
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_install_metric,&
                                               qs_upf_inverse_scf_integrate_background
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_background_type,&
                                               qs_upf_inverse_coulomb_release,&
                                               qs_upf_inverse_coulomb_type,&
                                               qs_upf_inverse_scf_type,&
@@ -92,6 +95,7 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_xc_integrate
    PUBLIC :: qs_upf_inverse_coulomb_ionic_geometry
    PUBLIC :: qs_upf_inverse_coulomb_response, qs_upf_inverse_coulomb_metric_response
+   PUBLIC :: qs_upf_inverse_coulomb_operator_response
    PUBLIC :: qs_upf_inverse_coulomb_density
    PUBLIC :: qs_upf_inverse_coulomb_charges
    PUBLIC :: qs_upf_inverse_paw_density
@@ -753,6 +757,102 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_coulomb_evaluate
+
+! **************************************************************************************************
+!> \brief Apply the complete fixed-geometry GAPW Coulomb kernel to an electronic AO direction.
+!>        Use the original smooth Gaussian source, signed center densities, compensation maps,
+!>        complete center interactions and native Poisson weights. Fixed ionic fields have zero
+!>        response. Independent matrix and PW workspaces preserve every accepted source/cache.
+!>        The caller sums spin directions. Mesh weights enter source densities once, and the
+!>        returned common Hartree operators are unweighted in the original global k-point order.
+!> \param qs_env Native environment owning the original Gaussian task lists and atomic grids.
+!> \param state Original inverse frames at the same fixed geometry.
+!> \param map Immutable prepared Coulomb map, including its native boundary-condition kernel.
+!> \param matrix_direction Replicated unweighted Hermitian spin-summed AO direction (AO,AO,k).
+!> \param operators_direction Overwritten complete Hartree operator direction (AO,AO,k).
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_coulomb_operator_response(qs_env, state, map, matrix_direction, operators_direction)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
+      TYPE(qs_upf_inverse_coulomb_type), INTENT(IN)      :: map
+      COMPLEX(dp), INTENT(IN)                            :: matrix_direction(:, :, :)
+      COMPLEX(dp), INTENT(OUT)                           :: operators_direction(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), ao_operator(:, :)
+      INTEGER                                            :: a, k, kind
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: quadratic_energy
+      REAL(dp), ALLOCATABLE                              :: radial(:, :)
+      TYPE(pw_c1d_gs_type)                               :: potential_g, source_g
+      TYPE(pw_r3d_rs_type)                               :: potential, source
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_background_type)               :: background
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers(:)
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE                                     :: potentials(:)
+
+      CPASSERT(map%ready)
+      valid = ALL(SHAPE(matrix_direction) == SHAPE(map%metric))
+      CPASSERT(valid)
+      valid = ALL(SHAPE(operators_direction) == SHAPE(map%metric))
+      CPASSERT(valid)
+      CALL select_frame(state, 1, frame, augmentation)
+      CPASSERT(ALL(frame%cell == map%cell))
+      CPASSERT(ALL(frame%positions == map%positions))
+      CALL get_qs_env(qs_env, ks_env=ks_env, qs_kind_set=kinds)
+      CALL qs_upf_inverse_background_scratch(map%background, background)
+      CALL source%create(map%grid)
+      CALL source_g%create(map%grid)
+      CALL potential%create(map%grid)
+      CALL potential_g%create(map%grid)
+      CALL qs_upf_inverse_background_collocate(background, ks_env, matrix_direction, source, source_g)
+      ALLOCATE (centers, SOURCE=map%centers)
+      DO a = 1, SIZE(centers)
+         ALLOCATE (radial, MOLD=centers(a)%density)
+         centers(a)%density = 0.0_dp
+         kind = map%center_kinds(a)
+         DO k = 1, SIZE(map%weights)
+            CALL select_frame(state, k, frame, augmentation)
+            CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), &
+                                             map%pairs(a), matrix_direction(:, :, k), radial, &
+                                             atom_index=map%center_atoms(a), cache=map%fields(a, k))
+            centers(a)%density = centers(a)%density + map%weights(k)*radial
+         END DO
+         DEALLOCATE (radial)
+      END DO
+      ALLOCATE (adjoint(SIZE(source_g%array)))
+      ALLOCATE (ao_operator(SIZE(matrix_direction, 1), SIZE(matrix_direction, 2)))
+      IF (map%grid%para%mode == PW_MODE_LOCAL) THEN
+         CALL upf_inverse_coulomb_periodic(centers, map%cell, map%grid%g, map%grid%vol, &
+                                           source_g%array, map%poisson_weights, quadratic_energy, potentials, &
+                                           adjoint, map=map%maps)
+      ELSE
+         CALL upf_inverse_coulomb_periodic(centers, map%cell, map%grid%g, map%grid%vol, &
+                                           source_g%array, map%poisson_weights, quadratic_energy, potentials, &
+                                           adjoint, comm=map%grid%para%group%mp_comm_type, map=map%maps)
+      END IF
+      potential_g%array = adjoint/(map%grid%vol*map%multiplicity)
+      CALL pw_transfer(potential_g, potential)
+      CALL qs_upf_inverse_background_integrate(background, qs_env, potential, operators_direction)
+      DO k = 1, SIZE(map%weights)
+         CALL select_frame(state, k, frame, augmentation)
+         DO a = 1, SIZE(centers)
+            kind = map%center_kinds(a)
+            CALL qs_upf_inverse_density_gapw_integrate(frame, augmentation, map%inverse_centers(a), kinds(kind), &
+                                                       map%pairs(a), potentials(a)%values, ao_operator, &
+                                                       atom_index=map%center_atoms(a), cache=map%fields(a, k))
+            operators_direction(:, :, k) = operators_direction(:, :, k) + ao_operator
+         END DO
+      END DO
+      CALL qs_upf_inverse_background_release(background)
+      CALL source%release()
+      CALL source_g%release()
+      CALL potential%release()
+      CALL potential_g%release()
+   END SUBROUTINE qs_upf_inverse_coulomb_operator_response
 
 ! **************************************************************************************************
 !> \brief Joint atom/cell derivative of the complete native Coulomb functional at fixed AO occupations.
