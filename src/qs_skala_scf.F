@@ -86,7 +86,8 @@ MODULE qs_skala_scf
         skala_orbital_chart_response_inverse, skala_orbital_chart_scales, skala_orbital_chart_size
    USE smearing_utils,                  ONLY: Smearkp
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
-   USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
+   USE xc_derivatives,                  ONLY: xc_functionals_floor_jumps_available,&
+                                              xc_functionals_get_needs,&
                                               xc_functionals_spin_floors
    USE xc_input_constants,              ONLY: xc_rho_no_smooth
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
@@ -2582,6 +2583,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: gradient(:), jump_values(:), &
                                                             original_weights(:), physical(:), &
                                                             targets(:), weights(:)
+      TYPE(section_vals_type), POINTER                   :: functionals
 
       n = qs_skala_scf_size(state)
       fixed_orbitals = .FALSE.
@@ -2612,9 +2614,13 @@ CONTAINS
       weights = 0.0_dp
       assembled = .FALSE.
       CALL skala_density_constraints_update_weights(state%constraints, weights)
-      ! A primitive contribution is the complete jump only for a pure native model.
-      ! Mixed functionals and consumers without unique ownership retain full KS evaluations.
+      ! Primitive readouts must cover the complete active functional combination.
+      ! Unsupported combinations and nonunique owners retain complete KS evaluations.
       capture_jumps = ALL(targets == 0.0_dp) .AND. skala_only_functional(state)
+      IF (ALL(targets > 0.0_dp) .AND. ALL(descriptors == skala_density_descriptor)) THEN
+         functionals => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC%XC_FUNCTIONAL")
+         capture_jumps = xc_functionals_floor_jumps_available(functionals)
+      END IF
       IF (PRESENT(assemble_jumps)) capture_jumps = capture_jumps .AND. assemble_jumps
       IF (capture_jumps) CALL skala_density_jumps_begin(state%constraints)
       CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)

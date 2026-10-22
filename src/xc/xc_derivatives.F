@@ -13,8 +13,10 @@ MODULE xc_derivatives
                                   section_vals_val_get
    USE kinds, ONLY: default_string_length, &
                     dp
+   USE cp_linked_list_xc_deriv, ONLY: cp_sll_xc_deriv_next, cp_sll_xc_deriv_type
    USE skala_density_constraints, ONLY: skala_density_constraints_count, skala_density_constraints_get, &
-                                        skala_density_constraints_type, skala_density_descriptor, skala_fft_domain
+                                        skala_density_constraints_type, skala_density_descriptor, skala_fft_domain, &
+                                        skala_density_jumps_active, skala_density_jumps_put
    USE string_utilities, ONLY: uppercase
    USE xc_b97, ONLY: b97_lda_eval, &
                      b97_lda_info, &
@@ -24,7 +26,9 @@ MODULE xc_derivatives
                      cs1_lda_info, &
                      cs1_lsd_eval, &
                      cs1_lsd_info
-   USE xc_derivative_set_types, ONLY: xc_derivative_set_type
+   USE xc_derivative_desc, ONLY: deriv_rhoa, deriv_rhob
+   USE xc_derivative_set_types, ONLY: xc_derivative_set_type, xc_dset_create, xc_dset_get_derivative, xc_dset_release
+   USE xc_derivative_types, ONLY: xc_derivative_type
    USE xc_exchange_gga, ONLY: xgga_eval, &
                               xgga_info
    USE xc_gauxc_functional, ONLY: skala_info
@@ -136,6 +140,7 @@ MODULE xc_derivatives
    PUBLIC :: xc_functional_get_info, xc_functionals_eval, xc_functionals_get_needs
    PUBLIC :: xc_functionals_select_floor_limits
    PUBLIC :: xc_functionals_spin_floors
+   PUBLIC :: xc_functionals_floor_jumps_available, xc_functionals_collect_floor_jumps
 
 CONTAINS
 
@@ -914,13 +919,15 @@ CONTAINS
 !> \param nspins Number of physical density columns.
 !> \param domain Physical evaluation domain.
 !> \param keys Optional global sample keys in Fortran field order, required outside FFT.
+!> \param selected_rows Optional local row per domain constraint, zero when not on its owned surface.
 ! **************************************************************************************************
-   SUBROUTINE xc_functionals_select_floor_limits(functionals, state, rho_set, nspins, domain, keys)
+   SUBROUTINE xc_functionals_select_floor_limits(functionals, state, rho_set, nspins, domain, keys, selected_rows)
       TYPE(section_vals_type), POINTER                   :: functionals
       TYPE(skala_density_constraints_type), INTENT(IN)   :: state
       TYPE(xc_rho_set_type), INTENT(INOUT)               :: rho_set
       INTEGER, INTENT(IN)                                :: nspins, domain
       INTEGER, INTENT(IN), OPTIONAL                      :: keys(:, :)
+      INTEGER, ALLOCATABLE, INTENT(OUT), OPTIONAL        :: selected_rows(:)
 
       INTEGER                                            :: bounds(2, 3), c, extent(3), n, point(3), &
                                                             row
@@ -936,6 +943,7 @@ CONTAINS
       IF (ALLOCATED(rho_set%pbe_spin_floor_slopes)) DEALLOCATE (rho_set%pbe_spin_floor_slopes)
       rho_set%spin_floor_tolerance = 0.0_dp
       n = skala_density_constraints_count(state, domain)
+      IF (PRESENT(selected_rows)) ALLOCATE (selected_rows(n), SOURCE=0)
       IF (n == 0) RETURN
       CALL skala_density_constraints_get(state, points, spins, weights, probe, tolerance, &
                                          descriptors=descriptors, kinetic_probe=kinetic_probe, &
@@ -984,6 +992,7 @@ CONTAINS
             value = rho_set%rhob(point(1), point(2), point(3))
          END IF
          IF (ABS(value - targets(c)) > tolerance) CYCLE
+         IF (PRESENT(selected_rows)) selected_rows(c) = row
          rho_set%spin_floor_tolerance = tolerance
          IF (select_libxc) THEN
             IF (.NOT. ALLOCATED(rho_set%spin_floor_slopes)) THEN
@@ -1001,5 +1010,162 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE xc_functionals_select_floor_limits
+
+! **************************************************************************************************
+!> \brief Whether each active functional supplies the implemented local spin-floor projection.
+!>        Learned and other functional combinations retain complete KS differences.
+!> \param combination Actual functional combination, including activation and scaling.
+!> \return Whether positive individual-spin floor jumps can be inspected locally.
+! **************************************************************************************************
+   FUNCTION xc_functionals_floor_jumps_available(combination) RESULT(available)
+      TYPE(section_vals_type), POINTER                   :: combination
+      LOGICAL                                            :: available
+
+      INTEGER                                            :: i, nactive
+      LOGICAL                                            :: active, libxc_floor, pbe_floor
+      TYPE(section_vals_type), POINTER                   :: functional
+
+      available = .FALSE.
+      IF (.NOT. ASSOCIATED(combination)) RETURN
+      nactive = 0
+      i = 0
+      DO
+         i = i + 1
+         functional => section_vals_get_subs_vals2(combination, i_section=i)
+         IF (.NOT. ASSOCIATED(functional)) EXIT
+         CALL section_vals_val_get(functional, "_SECTION_PARAMETERS_", l_val=active)
+         IF (.NOT. active) CYCLE
+         CALL xc_functional_get_info(functional, .TRUE., print_warn=.FALSE., &
+                                     spin_density_floor=libxc_floor, pbe_density_floor=pbe_floor)
+         IF (.NOT. (libxc_floor .OR. pbe_floor)) RETURN
+         nactive = nactive + 1
+      END DO
+      available = nactive > 0
+   END FUNCTION xc_functionals_floor_jumps_available
+
+! **************************************************************************************************
+!> \brief Collect complete primitive negative-minus-positive covectors at positive spin floors.
+!>        All selected slopes must initially be positive. A single local-functional reevaluation
+!>        switches them together. Accept only density-partial changes at their own selected rows,
+!>        with exactly unchanged energy and all other partials. Otherwise the KS caller falls back.
+!>        Physical fields, the supplied derivative set and the original slopes remain unchanged.
+!> \param functionals Actual supported local functional combination.
+!> \param state Original owned physical constraints, including their collection request.
+!> \param rho_set Original fields and selected positive floor slopes, restored before return.
+!> \param positive Original unweighted first derivative set, before norm-gradient conversion.
+!> \param rows Local rows returned by the matching floor selector.
+!> \param domain Original physical evaluation domain.
+!> \param measure Constant quadrature factor, including any negative residual sign.
+!> \param point_weights Optional point quadrature factors in the original Fortran field order.
+! **************************************************************************************************
+   SUBROUTINE xc_functionals_collect_floor_jumps(functionals, state, rho_set, positive, rows, domain, measure, point_weights)
+      TYPE(section_vals_type), POINTER                   :: functionals
+      TYPE(skala_density_constraints_type), &
+         INTENT(INOUT)                                   :: state
+      TYPE(xc_rho_set_type), INTENT(INOUT)               :: rho_set
+      TYPE(xc_derivative_set_type), INTENT(IN)           :: positive
+      INTEGER, INTENT(IN)                                :: rows(:), domain
+      REAL(dp), INTENT(IN)                               :: measure
+      REAL(dp), INTENT(IN), OPTIONAL :: point_weights(rho_set%local_bounds(1, 1):, rho_set% &
+         local_bounds(1, 2):, rho_set%local_bounds(1, 3):)
+
+      INTEGER                                            :: bo(2, 3), c, m, n, nnegative, npositive, &
+                                                            spin
+      INTEGER, ALLOCATABLE                               :: descriptors(:), points(:, :), spins(:)
+      LOGICAL                                            :: valid
+      LOGICAL, ALLOCATABLE                               :: outside(:, :), owned(:)
+      REAL(dp)                                           :: probe, tolerance
+      REAL(dp), ALLOCATABLE                              :: difference(:), libxc_slopes(:, :), &
+                                                            pbe_slopes(:, :), targets(:), &
+                                                            values(:), weighted(:), weights(:)
+      TYPE(cp_sll_xc_deriv_type), POINTER                :: pos
+      TYPE(xc_derivative_set_type)                       :: negative
+      TYPE(xc_derivative_type), POINTER                  :: first, second
+
+      IF (.NOT. skala_density_jumps_active(state)) RETURN
+      IF (.NOT. xc_functionals_floor_jumps_available(functionals)) RETURN
+      m = skala_density_constraints_count(state, domain)
+      CPASSERT(SIZE(rows) == m)
+      IF (m == 0 .OR. ALL(rows == 0)) RETURN
+      bo = rho_set%local_bounds
+      n = PRODUCT(MAX(0, bo(2, :) - bo(1, :) + 1))
+      CPASSERT(ALL(rows >= 0 .AND. rows <= n))
+      CALL skala_density_constraints_get(state, points, spins, weights, probe, tolerance, &
+                                         descriptors=descriptors, domain=domain, targets=targets)
+      IF (ANY(targets <= 0.0_dp) .OR. ANY(descriptors /= skala_density_descriptor)) RETURN
+      IF (ANY(spins < 1 .OR. spins > 2)) RETURN
+      IF (ALLOCATED(rho_set%spin_floor_slopes)) THEN
+         IF (ANY(rho_set%spin_floor_slopes >= 0.0_dp .AND. rho_set%spin_floor_slopes /= 1.0_dp)) RETURN
+         ALLOCATE (libxc_slopes, SOURCE=rho_set%spin_floor_slopes)
+      END IF
+      IF (ALLOCATED(rho_set%pbe_spin_floor_slopes)) THEN
+         IF (ANY(rho_set%pbe_spin_floor_slopes >= 0.0_dp .AND. rho_set%pbe_spin_floor_slopes /= 1.0_dp)) RETURN
+         ALLOCATE (pbe_slopes, SOURCE=rho_set%pbe_spin_floor_slopes)
+      END IF
+      ALLOCATE (values(m), owned(m), outside(n, 2), weighted(n))
+      values = 0.0_dp
+      owned = rows > 0
+      outside = .TRUE.
+      weighted = measure
+      IF (PRESENT(point_weights)) THEN
+         valid = ALL(UBOUND(point_weights) >= bo(2, :))
+         CPASSERT(valid)
+         weighted = weighted*RESHAPE(point_weights(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), [n])
+      END IF
+      DO c = 1, m
+         IF (owned(c)) outside(rows(c), spins(c)) = .FALSE.
+      END DO
+      IF (ALLOCATED(libxc_slopes)) THEN
+         WHERE (libxc_slopes >= 0.0_dp) rho_set%spin_floor_slopes = 0.0_dp
+      END IF
+      IF (ALLOCATED(pbe_slopes)) THEN
+         WHERE (pbe_slopes >= 0.0_dp) rho_set%pbe_spin_floor_slopes = 0.0_dp
+      END IF
+      CALL xc_dset_create(negative, local_bounds=rho_set%local_bounds)
+      CALL xc_functionals_eval(functionals, .TRUE., rho_set, negative, 1)
+      IF (ALLOCATED(libxc_slopes)) rho_set%spin_floor_slopes = libxc_slopes
+      IF (ALLOCATED(pbe_slopes)) rho_set%pbe_spin_floor_slopes = pbe_slopes
+      valid = .TRUE.
+      npositive = 0
+      pos => positive%derivs
+      DO WHILE (cp_sll_xc_deriv_next(pos, el_att=first))
+         npositive = npositive + 1
+         second => xc_dset_get_derivative(negative, first%split_desc)
+         IF (.NOT. ASSOCIATED(second)) THEN
+            valid = .FALSE.
+            EXIT
+         END IF
+         spin = 0
+         IF (SIZE(first%split_desc) == 1) THEN
+            SELECT CASE (first%split_desc(1))
+            CASE (deriv_rhoa)
+               spin = 1
+            CASE (deriv_rhob)
+               spin = 2
+            END SELECT
+         END IF
+         IF (spin == 0) THEN
+            IF (ANY(first%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)) /= &
+                    second%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)))) valid = .FALSE.
+         ELSE
+            difference = RESHAPE(second%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)) - &
+                                 first%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), [n])
+            IF (ANY(difference /= 0.0_dp .AND. outside(:, spin))) valid = .FALSE.
+            DO c = 1, m
+               IF (.NOT. owned(c) .OR. spins(c) /= spin) CYCLE
+               values(c) = weighted(rows(c))*difference(rows(c))
+            END DO
+         END IF
+         IF (.NOT. valid) EXIT
+      END DO
+      nnegative = 0
+      pos => negative%derivs
+      DO WHILE (cp_sll_xc_deriv_next(pos, el_att=second))
+         nnegative = nnegative + 1
+      END DO
+      valid = valid .AND. npositive == nnegative
+      CALL xc_dset_release(negative)
+      IF (valid) CALL skala_density_jumps_put(state, domain, values, owned)
+   END SUBROUTINE xc_functionals_collect_floor_jumps
 
 END MODULE xc_derivatives

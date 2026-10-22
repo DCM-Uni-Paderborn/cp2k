@@ -45,14 +45,11 @@ MODULE qs_upf_inverse_xc
                                               qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_type,&
                                               qs_upf_inverse_xc_type
-   USE skala_density_constraints,       ONLY: skala_atom_domain,&
-                                              skala_background_domain,&
-                                              skala_density_constraints_count,&
-                                              skala_density_constraints_matches,&
-                                              skala_density_constraints_type,&
-                                              skala_density_samples_active,&
-                                              skala_density_samples_only,&
-                                              skala_density_samples_put
+   USE skala_density_constraints,       ONLY: &
+        skala_atom_domain, skala_background_domain, skala_density_constraints_count, &
+        skala_density_constraints_matches, skala_density_constraints_type, &
+        skala_density_jumps_active, skala_density_samples_active, skala_density_samples_only, &
+        skala_density_samples_put
    USE skala_gpw_functional,            ONLY: skala_gapw_atom_composite_energy,&
                                               xc_section_uses_native_skala_evaluator
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
@@ -72,6 +69,7 @@ MODULE qs_upf_inverse_xc
    USE xc_derivative_types,             ONLY: xc_derivative_get,&
                                               xc_derivative_type
    USE xc_derivatives,                  ONLY: xc_functional_get_info,&
+                                              xc_functionals_collect_floor_jumps,&
                                               xc_functionals_get_needs,&
                                               xc_functionals_select_floor_limits
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
@@ -1290,9 +1288,9 @@ CONTAINS
          OPTIONAL                                        :: atom_grid
 
       INTEGER                                            :: bounds(2, 3), np, nspin, spin
-      INTEGER, ALLOCATABLE                               :: keys(:, :)
+      INTEGER, ALLOCATABLE                               :: floor_rows(:), keys(:, :)
       LOGICAL                                            :: have_kinetic
-      REAL(dp)                                           :: energy
+      REAL(dp)                                           :: energy, jump_sign
       REAL(dp), ALLOCATABLE                              :: drho(:, :, :, :), rho(:, :, :), &
                                                             tau(:, :, :), weights(:, :)
       REAL(dp), POINTER                                  :: derivative(:, :, :), vtau(:, :, :), &
@@ -1357,12 +1355,24 @@ CONTAINS
                keys(1, :) = atom_grid%atoms
                keys(2, :) = atom_grid%atom_rows
                keys(3, :) = 1
-               CALL xc_functionals_select_floor_limits(functional, density_constraints, fields, nspin, domain, keys)
+               CALL xc_functionals_select_floor_limits(functional, density_constraints, fields, nspin, domain, &
+                                                       keys, selected_rows=floor_rows)
             END IF
          END IF
       END IF
       CALL xc_dset_create(derivatives, local_bounds=bounds)
       CALL vxc_of_r_new(functional, fields, derivatives, 1, needs, weights, lsd, np, 1, energy, vxc, vxg, vtau)
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints) .AND. ALLOCATED(floor_rows)) THEN
+            IF (skala_density_jumps_active(density_constraints)) THEN
+               CPASSERT(PRESENT(atom_grid))
+               jump_sign = 1.0_dp
+               IF (domain == skala_background_domain) jump_sign = -1.0_dp
+               CALL xc_functionals_collect_floor_jumps(functional, density_constraints, fields, derivatives, &
+                                                       floor_rows, domain, jump_sign, RESHAPE(atom_grid%weights, [np, 1, 1]))
+            END IF
+         END IF
+      END IF
       energy_term => xc_dset_get_derivative(derivatives, [INTEGER::])
       IF (ASSOCIATED(energy_term)) THEN
          CALL xc_derivative_get(energy_term, deriv_data=derivative)

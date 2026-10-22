@@ -63,7 +63,8 @@ MODULE xc
    USE xc_derivative_types, ONLY: xc_derivative_get, &
                                   xc_derivative_type
    USE xc_derivatives, ONLY: xc_functionals_eval, &
-                             xc_functionals_get_needs, xc_functionals_select_floor_limits
+                             xc_functionals_get_needs, xc_functionals_select_floor_limits, &
+                             xc_functionals_collect_floor_jumps
    USE xc_gauxc_functional, ONLY: xc_section_uses_gauxc
 #if defined(__LIBXC)
    USE xc_libxc, ONLY: libxc_set_backend
@@ -174,7 +175,9 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'xc_rho_set_and_dset_create'
 
       INTEGER                                            :: handle, nspins
+      INTEGER, ALLOCATABLE                               :: floor_rows(:)
       LOGICAL                                            :: lsd
+      REAL(dp), POINTER                                  :: jump_weights(:, :, :)
       TYPE(xc_derivative_type), POINTER                  :: deriv_att
       TYPE(cp_sll_xc_deriv_type), POINTER                :: pos
       TYPE(section_vals_type), POINTER                   :: xc_fun_sections
@@ -213,7 +216,8 @@ CONTAINS
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             CALL record_fft_descriptors(density_constraints, rho_set, nspins)
-            CALL xc_functionals_select_floor_limits(xc_fun_sections, density_constraints, rho_set, nspins, skala_fft_domain)
+            CALL xc_functionals_select_floor_limits(xc_fun_sections, density_constraints, rho_set, nspins, &
+                                                    skala_fft_domain, selected_rows=floor_rows)
          END IF
       END IF
 
@@ -223,6 +227,15 @@ CONTAINS
                                rho_set=rho_set, &
                                deriv_set=deriv_set, &
                                deriv_order=deriv_order)
+
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints) .AND. ALLOCATED(floor_rows) .AND. deriv_order == 1) THEN
+            NULLIFY (jump_weights)
+            IF (ASSOCIATED(weights)) jump_weights => weights%array
+            CALL xc_functionals_collect_floor_jumps(xc_fun_sections, density_constraints, rho_set, deriv_set, &
+                                                    floor_rows, skala_fft_domain, rho_r(1)%pw_grid%dvol, jump_weights)
+         END IF
+      END IF
 
       ! apply weights
       IF (ASSOCIATED(weights)) THEN

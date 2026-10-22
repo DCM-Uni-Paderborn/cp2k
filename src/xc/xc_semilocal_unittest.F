@@ -21,7 +21,8 @@ PROGRAM xc_semilocal_unittest
                       cp2k_init
    USE mathconstants, ONLY: pi
    USE skala_density_constraints, ONLY: skala_density_constraints_type, skala_density_constraints_set, &
-                                        skala_density_constraints_reset, skala_fft_domain, skala_last_sample_domain
+                                        skala_density_constraints_reset, skala_fft_domain, skala_last_sample_domain, &
+                                        skala_background_domain, skala_density_jumps_begin, skala_density_jumps_finish
    USE xc_atom, ONLY: xc_rho_set_atom_update, fill_rho_set, vxc_of_r_new, xc_2nd_deriv_of_r
    USE xc_derivative_desc, ONLY: deriv_norm_drho, &
                                  deriv_norm_drhoa, &
@@ -38,7 +39,8 @@ PROGRAM xc_semilocal_unittest
                                   xc_derivative_type
    USE xc_derivatives, ONLY: xc_functional_get_info, &
                              xc_functionals_eval, &
-                             xc_functionals_get_needs, xc_functionals_select_floor_limits, xc_functionals_spin_floors
+                             xc_functionals_get_needs, xc_functionals_select_floor_limits, xc_functionals_spin_floors, &
+                             xc_functionals_collect_floor_jumps, xc_functionals_floor_jumps_available
    USE xc_input_constants, ONLY: xc_pbe_orig, &
                                  xc_pbe_rev, &
                                  xc_pbe_sol
@@ -935,11 +937,17 @@ CONTAINS
 !> \brief Check component-specific floor routing, physical keys and clearing between atomic batches.
 ! **************************************************************************************************
    SUBROUTINE check_xc_floor_selection()
-      INTEGER                                            :: bounds(2, 3), domain, families, family, &
-                                                            keys(3, 4), point(3, 1)
-      REAL(dp)                                           :: hmat(3, 3), level
+      INTEGER                                            :: bounds(2, 3), c, domain, families, &
+                                                            family, keys(3, 4), point(3, 1), &
+                                                            points(3, 4), spin_labels(4)
+      INTEGER, ALLOCATABLE                               :: owners(:), selected_rows(:)
+      REAL(dp) :: data_gradient(4, 4, 1, 2), data_rho(4, 1, 2), data_tau(4, 1, 2), delta(4), &
+         hmat(3, 3), level, quadrature(4, 1, 1), reference
+      REAL(dp), ALLOCATABLE                              :: jumps(:)
       TYPE(section_vals_type), POINTER                   :: combination
       TYPE(skala_density_constraints_type)               :: constraints
+      TYPE(xc_derivative_set_type)                       :: negative, positive
+      TYPE(xc_derivative_type), POINTER                  :: first, second
       TYPE(xc_rho_cflags_type)                           :: needs
       TYPE(xc_rho_set_type)                              :: fields
 
@@ -980,10 +988,13 @@ CONTAINS
                                                domains=[domain], atomic_sizes=[0, 6], targets=[level], &
                                                paw_sizes=RESHAPE([0, 0, 6, 3], [2, 2]))
             IF (domain == skala_fft_domain) THEN
-               CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain)
+               CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain, &
+                                                       selected_rows=selected_rows)
             ELSE
-               CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain, keys)
+               CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain, keys, &
+                                                       selected_rows=selected_rows)
             END IF
+            IF (ANY(selected_rows /= [2])) ERROR STOP 'Wrong owned spin-floor row'
             IF (family == 1) THEN
                IF (.NOT. ALLOCATED(fields%pbe_spin_floor_slopes)) ERROR STOP 'Missing native PBE floor derivative'
                IF (ALLOCATED(fields%spin_floor_slopes)) ERROR STOP 'PBE floor selected a Libxc derivative'
@@ -998,12 +1009,82 @@ CONTAINS
                IF (ANY(fields%spin_floor_slopes /= -1.0_dp)) ERROR STOP 'Libxc selected an unrelated sample'
             END IF
             fields%rhob(0, 2, 4) = 2.0_dp*level
-            CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain, keys)
+            CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, domain, keys, &
+                                                    selected_rows=selected_rows)
+            IF (ANY(selected_rows /= 0)) ERROR STOP 'An off-surface floor kept its owned row'
             IF (ALLOCATED(fields%spin_floor_slopes) .OR. ALLOCATED(fields%pbe_spin_floor_slopes)) THEN
                ERROR STOP 'A stale floor derivative survived an off-surface batch'
             END IF
             CALL skala_density_constraints_reset(constraints)
          END DO
+      END DO
+      CALL xc_rho_set_release(fields)
+      ! Compare a batched jump with independent one-slope evaluations. Two spins share
+      ! one point, another point is distinct, and the fourth constraint is not owned.
+      bounds(1, :) = 1
+      bounds(2, :) = [4, 1, 1]
+      needs = xc_functionals_get_needs(combination, .TRUE., calc_potential=.TRUE.)
+      CALL xc_rho_set_create(fields, bounds, rho_cutoff=1.e-14_dp)
+      CALL xc_rho_set_atom_update(fields, needs, 2, bounds)
+      IF (.NOT. xc_functionals_floor_jumps_available(combination)) ERROR STOP 'Missing local floor-jump provider'
+      keys(:, 1) = [2, 4, 1]
+      keys(:, 2) = [1, 3, 1]
+      keys(:, 3) = [2, 5, 1]
+      keys(:, 4) = [1, 4, 1]
+      points(:, 1) = keys(:, 1)
+      points(:, 2) = keys(:, 1)
+      points(:, 3) = keys(:, 3)
+      points(:, 4) = [2, 6, 1]
+      spin_labels = [1, 2, 2, 1]
+      quadrature(:, 1, 1) = [0.17_dp, 0.23_dp, 0.41_dp, 0.19_dp]
+      data_gradient = 0.0_dp
+      data_tau = 0.0_dp
+      DO family = 1, families
+         level = pbe_spin_density_floor
+#if defined(__LIBXC)
+         IF (family == 2) level = libxc_density_floor(fields%rho_cutoff)
+#endif
+         data_rho = 0.3_dp
+         data_rho(1, 1, :) = level
+         data_rho(3, 1, 2) = level
+         CALL fill_rho_set(fields, .TRUE., 2, needs, data_rho, data_gradient, data_tau, 4, 1)
+         CALL skala_density_constraints_set(constraints, points, spin_labels, [0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp], &
+                                            1.e-14_dp, 1.e-20_dp, 2, [4, 1, 1], bounds, hmat, &
+                                            RESHAPE([REAL(dp)::0, 0, 0, 1, 0, 0], [3, 2]), &
+                                            domains=SPREAD(skala_background_domain, 1, 4), &
+                                            atomic_sizes=[0, 6], targets=SPREAD(level, 1, 4))
+         CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, skala_background_domain, &
+                                                 keys, selected_rows=selected_rows)
+         IF (ANY(selected_rows /= [1, 1, 3, 0])) ERROR STOP 'Coupled floor rows changed'
+         CALL xc_dset_create(positive, local_bounds=bounds)
+         CALL xc_functionals_eval(combination, .TRUE., fields, positive, 1)
+         CALL skala_density_jumps_begin(constraints)
+         CALL xc_functionals_collect_floor_jumps(combination, constraints, fields, positive, selected_rows, &
+                                                 skala_background_domain, -1.0_dp, quadrature)
+         CALL skala_density_jumps_finish(constraints, jumps, owners)
+         IF (ANY(owners /= [1, 1, 1, 0])) ERROR STOP 'Local floor-jump ownership changed'
+         IF (jumps(4) /= 0.0_dp) ERROR STOP 'An unowned floor supplied a jump'
+         IF (MAXVAL(ABS(jumps(:3))) <= 1.e-18_dp) ERROR STOP 'The floor-jump comparison has no resolved change'
+         DO c = 1, 3
+            CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, skala_background_domain, keys)
+            IF (family == 1) THEN
+               fields%pbe_spin_floor_slopes(spin_labels(c), selected_rows(c)) = 0.0_dp
+            ELSE
+               fields%spin_floor_slopes(spin_labels(c), selected_rows(c)) = 0.0_dp
+            END IF
+            CALL xc_dset_create(negative, local_bounds=bounds)
+            CALL xc_functionals_eval(combination, .TRUE., fields, negative, 1)
+            first => xc_dset_get_derivative(positive, [MERGE(deriv_rhoa, deriv_rhob, spin_labels(c) == 1)])
+            second => xc_dset_get_derivative(negative, [MERGE(deriv_rhoa, deriv_rhob, spin_labels(c) == 1)])
+            delta = RESHAPE(second%deriv_data - first%deriv_data, [4])
+            reference = -quadrature(selected_rows(c), 1, 1)*delta(selected_rows(c))
+            IF (ABS(jumps(c) - reference) > 64.0_dp*EPSILON(0.0_dp)*MAX(1.0_dp, ABS(reference))) THEN
+               ERROR STOP 'Batched floor jump differs from an independent single-slope evaluation'
+            END IF
+            CALL xc_dset_release(negative)
+         END DO
+         CALL xc_dset_release(positive)
+         CALL skala_density_constraints_reset(constraints)
       END DO
       CALL xc_rho_set_release(fields)
       CALL section_vals_release(combination)
