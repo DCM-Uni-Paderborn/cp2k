@@ -79,7 +79,8 @@ MODULE qs_skala_scf
    USE skala_orbital_constraints,       ONLY: &
         skala_constrained_stationarity, skala_constraint_chart_create, &
         skala_constraint_chart_restore, skala_constraint_chart_type, skala_cusp_admissibility, &
-        skala_orbital_chart_derivative, skala_orbital_chart_precondition, &
+        skala_orbital_chart_density_response, skala_orbital_chart_derivative, &
+        skala_orbital_chart_operator_response, skala_orbital_chart_precondition, &
         skala_orbital_chart_response_inverse, skala_orbital_chart_scales, skala_orbital_chart_size
    USE smearing_utils,                  ONLY: Smearkp
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
@@ -107,6 +108,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_release_cusp
    PUBLIC :: qs_skala_scf_accept
    PUBLIC :: qs_skala_scf_coordinate_scales, qs_skala_scf_fermi_target
+   PUBLIC :: qs_skala_scf_density_response, qs_skala_scf_operator_response
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
    INTEGER(KIND=int_8), PARAMETER :: max_point_operator_bytes = 64_int_8*1024*1024
@@ -641,6 +643,228 @@ CONTAINS
          END IF
       END IF
    END SUBROUTINE native_orbital_covectors
+
+! **************************************************************************************************
+!> \brief Differentiate all native AO density blocks in fixed-geometry orbital and Fermi coordinates.
+!>        The returned matrices are unweighted and globally replicated, including empty k owners.
+!>        Physical occupation changes preserve the original charge separately in each Fermi group.
+!> \param state Evaluated original-metric orbital state.
+!> \param direction Complete real orbital and auxiliary-band coordinate direction.
+!> \param density_direction New Hermitian AO density directions indexed (AO,AO,k,spin).
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_density_response(state, direction, density_direction)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: direction(:)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density_direction(:, :, :, :)
+
+      INTEGER                                            :: bfirst, blast, first, ik, last, local, &
+                                                            n, nk, ns, spin
+      LOGICAL                                            :: owner, valid
+      REAL(dp), ALLOCATABLE                              :: block_occupations(:), &
+                                                            occupations_direction(:)
+
+      CPASSERT(state%evaluated)
+      CPASSERT(SIZE(direction) == qs_skala_scf_size(state))
+      CPASSERT(ALL(ieee_is_finite(direction)))
+      nk = SIZE(state%dimensions, 1)
+      ns = SIZE(state%dimensions, 2)
+      IF (state%bloch) THEN
+         n = SIZE(state%inverse%metric_k, 1)
+      ELSE
+         n = SIZE(state%inverse%frame%ao%coefficients, 2)
+      END IF
+      ALLOCATE (density_direction(n, n, nk, ns), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      IF (state%thermal) CALL thermal_band_direction(state, direction(state%orbital_size + 1:), occupations_direction)
+      owner = state%para_env%mepos == 0
+      IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
+      DO spin = 1, ns
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+            IF (.NOT. owner) CYCLE
+            valid = .NOT. state%orbitals(local, spin)%canonicalized
+            CPASSERT(valid)
+            ik = 1
+            IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+            first = state%offsets(ik, spin) + 1
+            last = first + state%dimensions(ik, spin) - 1
+            IF (state%thermal) THEN
+               bfirst = state%band_offsets(ik, spin) + 1
+               blast = bfirst + state%band_dimensions(ik, spin) - 1
+               ALLOCATE (block_occupations(SIZE(state%orbitals(local, spin)%occupations)), SOURCE=0.0_dp)
+               block_occupations(:blast - bfirst + 1) = occupations_direction(bfirst:blast)
+               CALL skala_orbital_chart_density_response(state%orbitals(local, spin)%chart, direction(first:last), &
+                                                         density_direction(:, :, ik, spin), block_occupations)
+               DEALLOCATE (block_occupations)
+            ELSE
+               CALL skala_orbital_chart_density_response(state%orbitals(local, spin)%chart, direction(first:last), &
+                                                         density_direction(:, :, ik, spin))
+            END IF
+         END DO
+      END DO
+      CALL state%para_env%sum(density_direction)
+   END SUBROUTINE qs_skala_scf_density_response
+
+! **************************************************************************************************
+!> \brief Differentiate a complete Hermitian AO covector in native orbital and Fermi coordinates.
+!>        Operators and their responses are unweighted, globally replicated (AO,AO,k,spin) blocks.
+!>        The original k weights enter once. Include both Cayley factors, physical occupation
+!>        changes, the Fermi chemical-potential response and optional original entropy curvature.
+!>        The caller supplies the electronic operator response. Geometry and coordinate scales
+!>        remain fixed. Selected constraint-normal responses are separate.
+!> \param state Evaluated original-metric orbital state.
+!> \param direction Complete real orbital and auxiliary-band coordinate direction.
+!> \param operators Unweighted Hermitian AO operators at the current state.
+!> \param operators_direction Their unweighted electronic response.
+!> \param response Complete coordinate-covector response.
+!> \param entropy Include the original finite-temperature entropy response when true.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_operator_response(state, direction, operators, operators_direction, response, entropy)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: direction(:)
+      COMPLEX(dp), INTENT(IN) :: operators(:, :, :, :), operators_direction(:, :, :, :)
+      REAL(dp), INTENT(OUT)                              :: response(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: entropy
+
+      COMPLEX(dp), ALLOCATABLE                           :: density_direction(:, :), &
+                                                            orbital_direction(:, :), work(:, :), &
+                                                            work_direction(:, :)
+      INTEGER                                            :: band, bfirst, blast, first, group, i, &
+                                                            ik, last, local, n, nk, ns, spin
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      LOGICAL                                            :: include_entropy, owner, valid
+      REAL(dp)                                           :: mean, mean_direction, weight
+      REAL(dp), ALLOCATABLE :: block_occupations(:), energies_direction(:), expectations(:), &
+         expectations_direction(:), occupations_direction(:), residual(:), residual_direction(:), &
+         weighted_direction(:)
+
+      CPASSERT(state%evaluated)
+      CPASSERT(SIZE(direction) == qs_skala_scf_size(state))
+      CPASSERT(SIZE(response) == SIZE(direction))
+      CPASSERT(ALL(ieee_is_finite(direction)))
+      nk = SIZE(state%dimensions, 1)
+      ns = SIZE(state%dimensions, 2)
+      IF (state%bloch) THEN
+         n = SIZE(state%inverse%metric_k, 1)
+      ELSE
+         n = SIZE(state%inverse%frame%ao%coefficients, 2)
+      END IF
+      valid = ALL(SHAPE(operators) == [n, n, nk, ns])
+      CPASSERT(valid)
+      valid = ALL(SHAPE(operators_direction) == SHAPE(operators))
+      CPASSERT(valid)
+      response = 0.0_dp
+      include_entropy = .FALSE.
+      IF (PRESENT(entropy)) include_entropy = entropy
+      IF (state%thermal) THEN
+         CALL thermal_band_direction(state, direction(state%orbital_size + 1:), occupations_direction, &
+                                     weighted_direction, energies_direction)
+         ALLOCATE (expectations(SIZE(state%band_reference)), expectations_direction(SIZE(state%band_reference)))
+         expectations = 0.0_dp
+         expectations_direction = 0.0_dp
+      END IF
+      owner = state%para_env%mepos == 0
+      IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
+      DO spin = 1, ns
+         DO local = 1, SIZE(state%orbitals, 1)
+            IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
+            IF (.NOT. owner) CYCLE
+            valid = .NOT. state%orbitals(local, spin)%canonicalized
+            CPASSERT(valid)
+            ik = 1
+            IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+            first = state%offsets(ik, spin) + 1
+            last = first + state%dimensions(ik, spin) - 1
+            weight = state%orbitals(local, spin)%weight
+            IF (state%thermal) THEN
+               bfirst = state%band_offsets(ik, spin) + 1
+               blast = bfirst + state%band_dimensions(ik, spin) - 1
+               ALLOCATE (block_occupations(SIZE(state%orbitals(local, spin)%occupations)), SOURCE=0.0_dp)
+               block_occupations(:blast - bfirst + 1) = occupations_direction(bfirst:blast)
+               ALLOCATE (density_direction(n, n), orbital_direction(n, SIZE(block_occupations)))
+               CALL skala_orbital_chart_density_response(state%orbitals(local, spin)%chart, direction(first:last), &
+                                                         density_direction, block_occupations, orbital_direction)
+               CALL skala_orbital_chart_operator_response(state%orbitals(local, spin)%chart, direction(first:last), &
+                                                          weight*operators(:, :, ik, spin), &
+                                                          weight*operators_direction(:, :, ik, spin), &
+                                                          response(first:last), block_occupations)
+               work = MATMUL(operators(:, :, ik, spin), state%orbitals(local, spin)%coefficients)
+               work_direction = MATMUL(operators_direction(:, :, ik, spin), state%orbitals(local, spin)%coefficients)
+               DO band = bfirst, blast
+                  i = band - bfirst + 1
+                  expectations(band) = REAL(SUM(CONJG(state%orbitals(local, spin)%coefficients(:, i))*work(:, i)), dp)
+                  expectations_direction(band) = 2.0_dp*REAL(SUM(CONJG(orbital_direction(:, i))*work(:, i)), dp) + &
+                                           REAL(SUM(CONJG(state%orbitals(local, spin)%coefficients(:, i))*work_direction(:, i)), dp)
+               END DO
+               DEALLOCATE (block_occupations, density_direction, orbital_direction, work, work_direction)
+            ELSE
+               CALL skala_orbital_chart_operator_response(state%orbitals(local, spin)%chart, direction(first:last), &
+                                                          weight*operators(:, :, ik, spin), &
+                                                          weight*operators_direction(:, :, ik, spin), response(first:last))
+            END IF
+         END DO
+      END DO
+      CALL state%para_env%sum(response)
+      IF (state%thermal) THEN
+         CALL state%para_env%sum(expectations)
+         CALL state%para_env%sum(expectations_direction)
+         residual = expectations
+         residual_direction = expectations_direction
+         IF (include_entropy) THEN
+            residual = residual - state%band_energies
+            residual_direction = residual_direction - energies_direction
+         END IF
+         DO group = 1, SIZE(state%thermal_targets)
+            indices = PACK([(i, i=1, SIZE(state%band_reference))], state%band_groups == group)
+            weight = SUM(state%band_response(indices))
+            IF (weight <= TINY(weight)) CYCLE
+            mean = SUM(state%band_response(indices)*residual(indices))/weight
+            mean_direction = (SUM(weighted_direction(indices)*(residual(indices) - mean)) + &
+                              SUM(state%band_response(indices)*residual_direction(indices)))/weight
+            response(state%orbital_size + indices) = -state%band_scales(indices)/state%temperature* &
+                                                     (weighted_direction(indices)*(residual(indices) - mean) + &
+                                                      state%band_response(indices)*(residual_direction(indices) - mean_direction))
+         END DO
+      END IF
+   END SUBROUTINE qs_skala_scf_operator_response
+
+! **************************************************************************************************
+!> \brief Physical Fermi occupation directions with the original group charge held fixed.
+!> \param state ...
+!> \param direction Auxiliary-band coordinate direction.
+!> \param occupations_direction Physical, unweighted occupation direction.
+!> \param weighted_direction Optional response of the original weighted Fermi occupation variance.
+!> \param energies_direction Optional auxiliary-band energy direction.
+! **************************************************************************************************
+   SUBROUTINE thermal_band_direction(state, direction, occupations_direction, weighted_direction, energies_direction)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      REAL(dp), INTENT(IN)                               :: direction(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: occupations_direction(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL       :: weighted_direction(:), &
+                                                            energies_direction(:)
+
+      INTEGER                                            :: group, i
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      REAL(dp)                                           :: mean, weight
+      REAL(dp), ALLOCATABLE                              :: energy_direction(:)
+
+      CPASSERT(state%thermal)
+      CPASSERT(SIZE(direction) == SIZE(state%band_reference))
+      energy_direction = state%band_scales*direction
+      ALLOCATE (occupations_direction(SIZE(direction)), SOURCE=0.0_dp)
+      DO group = 1, SIZE(state%thermal_targets)
+         indices = PACK([(i, i=1, SIZE(direction))], state%band_groups == group)
+         weight = SUM(state%band_response(indices))
+         IF (weight <= TINY(weight)) CYCLE
+         mean = SUM(state%band_response(indices)*energy_direction(indices))/weight
+         occupations_direction(indices) = -state%band_occupations(indices)* &
+                        (1.0_dp - state%band_occupations(indices)/state%maxocc)/state%temperature*(energy_direction(indices) - mean)
+      END DO
+      IF (PRESENT(weighted_direction)) THEN
+         weighted_direction = state%band_weights*(1.0_dp - 2.0_dp*state%band_occupations/state%maxocc)* &
+                              occupations_direction
+      END IF
+      IF (PRESENT(energies_direction)) energies_direction = energy_direction
+   END SUBROUTINE thermal_band_direction
 
 ! **************************************************************************************************
 !> \brief Read one actual physical model input, requiring exactly one distributed owner.

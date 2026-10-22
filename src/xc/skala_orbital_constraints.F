@@ -563,12 +563,14 @@ CONTAINS
 !> \param direction Real coordinate direction, including independent imaginary orbital rotations.
 !> \param response Hermitian AO density response without a k-point weight.
 !> \param occupations_direction Optional physical occupation direction for a variable-occupation chart.
+!> \param orbital_direction Optional coefficient response for band-expectation derivatives.
 ! **************************************************************************************************
-   SUBROUTINE skala_orbital_chart_density_response(chart, direction, response, occupations_direction)
+   SUBROUTINE skala_orbital_chart_density_response(chart, direction, response, occupations_direction, orbital_direction)
       TYPE(skala_orbital_chart_type), INTENT(IN)         :: chart
       REAL(dp), INTENT(IN)                               :: direction(:)
       COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: occupations_direction(:)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: orbital_direction(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: coefficients_direction(:, :), &
                                                             generator(:, :), weighted(:, :)
@@ -580,6 +582,11 @@ CONTAINS
       CPASSERT(ALL(SHAPE(response) == [nao, nao]))
       CALL orbital_generator_direction(chart, direction, generator)
       coefficients_direction = MATMUL(chart%base, MATMUL(chart%inverse, MATMUL(generator, chart%inverse)))
+      IF (PRESENT(orbital_direction)) THEN
+         CPASSERT(SIZE(orbital_direction, 1) == nao)
+         CPASSERT(SIZE(orbital_direction, 2) == n)
+         orbital_direction = coefficients_direction
+      END IF
       weighted = coefficients_direction
       DO i = 1, n
          weighted(:, i) = chart%occupations(i)*weighted(:, i)
