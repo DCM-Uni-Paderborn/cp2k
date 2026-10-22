@@ -47,6 +47,7 @@ MODULE qs_upf_inverse_background
    PUBLIC :: qs_upf_inverse_background_integrate, qs_upf_inverse_background_operator
    PUBLIC :: qs_upf_inverse_background_geometry
    PUBLIC :: qs_upf_inverse_background_gaussian_geometry
+   PUBLIC :: qs_upf_inverse_background_scratch
    PUBLIC :: qs_upf_inverse_background_set_density
 
    INTERFACE qs_upf_inverse_background_set_density
@@ -141,6 +142,41 @@ CONTAINS
       tolerance = 128.0_dp*EPSILON(1.0_dp)*SIZE(map%weights)
       CPASSERT(ABS(SUM(map%weights) - 1.0_dp) <= tolerance)
    END SUBROUTINE qs_upf_inverse_background_prepare
+
+! **************************************************************************************************
+!> \brief Copy an existing Gaussian source map into independent zeroed matrix workspaces.
+!>        Retain its original image sparsity, phases, mesh weights and soft-basis convention.
+!>        Inverse SCF may already have replaced native overlaps by a different charge metric.
+!>        Rebuilding the source map from those overlaps would change the original task-list map.
+!> \param source Existing fixed-geometry Gaussian source.
+!> \param map New owned image matrices and copied phase metadata, borrowing the same communicator.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_background_scratch(source, map)
+      TYPE(qs_upf_inverse_background_type), INTENT(IN)   :: source
+      TYPE(qs_upf_inverse_background_type), INTENT(OUT)  :: map
+
+      INTEGER                                            :: image
+
+      CPASSERT(ASSOCIATED(source%density))
+      CPASSERT(ASSOCIATED(source%potential))
+      CPASSERT(SIZE(source%density) == SIZE(source%potential))
+      CPASSERT(ALLOCATED(source%weights) .AND. ALLOCATED(source%reduced_k))
+      map%nao = source%nao
+      map%bloch = source%bloch
+      map%soft_basis = source%soft_basis
+      map%comm = source%comm
+      map%plan = source%plan
+      map%weights = source%weights
+      map%reduced_k = source%reduced_k
+      ALLOCATE (map%density(SIZE(source%density)), map%potential(SIZE(source%potential)))
+      DO image = 1, SIZE(source%density)
+         ALLOCATE (map%density(image)%matrix, map%potential(image)%matrix)
+         CALL dbcsr_copy(map%density(image)%matrix, source%density(image)%matrix)
+         CALL dbcsr_copy(map%potential(image)%matrix, source%potential(image)%matrix)
+         CALL dbcsr_set(map%density(image)%matrix, 0.0_dp)
+         CALL dbcsr_set(map%potential(image)%matrix, 0.0_dp)
+      END DO
+   END SUBROUTINE qs_upf_inverse_background_scratch
 
 ! **************************************************************************************************
 !> \brief Collocate the Gaussian soft background from explicit accepted AO occupations.

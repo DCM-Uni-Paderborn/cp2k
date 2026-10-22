@@ -26,7 +26,10 @@ MODULE qs_upf_inverse_scf_xc
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_ae_cartesian,&
                                               paw_core_kinetic_cartesian
    USE paw_xc,                          ONLY: paw_xc_ae_core_cartesian
-   USE pw_types,                        ONLY: pw_r3d_rs_type
+   USE pw_grids,                        ONLY: pw_grid_compare
+   USE pw_methods,                      ONLY: pw_transfer
+   USE pw_types,                        ONLY: pw_c1d_gs_type,&
+                                              pw_r3d_rs_type
    USE qs_grid_atom,                    ONLY: allocate_grid_atom,&
                                               create_grid_atom,&
                                               grid_atom_type
@@ -44,9 +47,17 @@ MODULE qs_upf_inverse_scf_xc
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_prepare,&
                                               qs_upf_inverse_atom_grid_ref_type,&
                                               qs_upf_inverse_atom_grid_response
-   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
+                                              qs_upf_inverse_background_integrate,&
+                                              qs_upf_inverse_background_release,&
+                                              qs_upf_inverse_background_scratch
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate_dense,&
+                                              qs_upf_inverse_grid_integrate_dense,&
+                                              qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_background_type,&
+                                              qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type,&
                                               qs_upf_inverse_xc_type
@@ -70,6 +81,7 @@ MODULE qs_upf_inverse_scf_xc
    PRIVATE
    PUBLIC :: qs_upf_inverse_scf_xc_evaluate, qs_upf_inverse_scf_xc_response
    PUBLIC :: qs_upf_inverse_scf_xc_model_response
+   PUBLIC :: qs_upf_inverse_scf_xc_source_direction, qs_upf_inverse_scf_xc_source_adjoint
 
    INTEGER(KIND=int_8), PARAMETER :: max_xc_field_bytes = 64_int_8*1024*1024
 
@@ -229,6 +241,277 @@ CONTAINS
          END DO
       END IF
    END SUBROUTINE qs_upf_inverse_scf_xc_evaluate
+
+! **************************************************************************************************
+!> \brief Differentiate the native valence density and kinetic-density sources at fixed geometry.
+!>        Retain the actual Gaussian soft source in GAPW and the original Fourier augmentation
+!>        and inverse orbital fields in GPW/GAPW_XC. Mesh weights enter the summed sources once.
+!>        Outputs live on the caller's XC grid, with the original reciprocal-grid transfer.
+!>        Frozen-core fields have zero occupation response. Native accepted fields are not replaced.
+!> \param ks_env Evaluated native inverse environment with its existing density grids and task lists.
+!> \param matrices_direction Replicated unweighted Hermitian AO directions (AO,AO,k,spin).
+!> \param density_direction Created native XC-grid density directions, overwritten.
+!> \param kinetic_direction Created matching kinetic-density directions, overwritten.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_xc_source_direction(ks_env, matrices_direction, density_direction, kinetic_direction)
+      TYPE(qs_ks_env_type), INTENT(IN), TARGET           :: ks_env
+      COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density_direction(:), &
+                                                            kinetic_direction(:)
+
+      INTEGER                                            :: axis, ik, n, nk, ns, spin
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: weights(:)
+      TYPE(pw_c1d_gs_type)                               :: density_g, kinetic_g
+      TYPE(pw_r3d_rs_type)                               :: density, gradient(3), kinetic, partial, &
+                                                            partial_tau
+      TYPE(pw_r3d_rs_type), POINTER                      :: native_density(:)
+      TYPE(qs_ks_env_type), POINTER                      :: native_ks
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_background_type)               :: gaussian
+      TYPE(qs_upf_inverse_grid_type), POINTER            :: frame
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
+      CPASSERT(ASSOCIATED(state))
+      CPASSERT(state%enabled)
+      CPASSERT(ALLOCATED(state%kinetic_cache))
+      CALL qs_rho_get(rho, rho_r=native_density)
+      CPASSERT(ASSOCIATED(native_density))
+      ns = SIZE(native_density)
+      CALL source_frames(state, weights, augmentation)
+      nk = SIZE(weights)
+      frame => source_frame(state, 1)
+      n = SIZE(frame%ao%coefficients, 2)
+      valid = ALL(SHAPE(matrices_direction) == [n, n, nk, ns])
+      CPASSERT(valid)
+      CPASSERT(SIZE(density_direction) == ns)
+      CPASSERT(SIZE(kinetic_direction) == ns)
+      native_ks => ks_env
+      CALL source_gaussian(state, gaussian)
+      CALL density%create(native_density(1)%pw_grid)
+      CALL kinetic%create(native_density(1)%pw_grid)
+      IF (state%gaussian_background .OR. state%native_gaussian) THEN
+         CALL density_g%create(native_density(1)%pw_grid)
+         CALL kinetic_g%create(native_density(1)%pw_grid)
+      END IF
+      IF (.NOT. state%gaussian_background) THEN
+         CALL partial%create(native_density(1)%pw_grid)
+         CALL partial_tau%create(native_density(1)%pw_grid)
+         DO axis = 1, 3
+            CALL gradient(axis)%create(native_density(1)%pw_grid)
+         END DO
+      END IF
+      DO spin = 1, ns
+         CPASSERT(ASSOCIATED(density_direction(spin)%pw_grid))
+         valid = ASSOCIATED(kinetic_direction(spin)%pw_grid, density_direction(spin)%pw_grid)
+         CPASSERT(valid)
+         IF (state%gaussian_background) THEN
+            CALL qs_upf_inverse_background_collocate(gaussian, native_ks, matrices_direction(:, :, :, spin), &
+                                                     density, density_g, kinetic=kinetic, kinetic_gspace=kinetic_g)
+         ELSE
+            density%array = 0.0_dp
+            kinetic%array = 0.0_dp
+            DO ik = 1, nk
+               frame => source_frame(state, ik)
+               CALL qs_upf_inverse_grid_collocate_dense(frame, weights(ik)*matrices_direction(:, :, ik, spin), &
+                                                        partial, gradient, partial_tau, augmentation=augmentation, &
+                                                        fourier_charge=.TRUE., kinetic=state%kinetic_cache, &
+                                                        orbital_fields=.NOT. state%native_gaussian)
+               density%array = density%array + partial%array
+               kinetic%array = kinetic%array + partial_tau%array
+            END DO
+            IF (state%native_gaussian) THEN
+               CALL qs_upf_inverse_background_collocate(gaussian, native_ks, matrices_direction(:, :, :, spin), &
+                                                        partial, density_g, kinetic=partial_tau, kinetic_gspace=kinetic_g)
+               density%array = density%array + partial%array
+               kinetic%array = kinetic%array + partial_tau%array
+            END IF
+         END IF
+         CALL source_transfer(density, density_direction(spin))
+         CALL source_transfer(kinetic, kinetic_direction(spin))
+      END DO
+      CALL qs_upf_inverse_background_release(gaussian)
+      CALL density%release()
+      CALL kinetic%release()
+      IF (state%gaussian_background .OR. state%native_gaussian) THEN
+         CALL density_g%release()
+         CALL kinetic_g%release()
+      END IF
+      IF (.NOT. state%gaussian_background) THEN
+         CALL partial%release()
+         CALL partial_tau%release()
+         DO axis = 1, 3
+            CALL gradient(axis)%release()
+         END DO
+      END IF
+   END SUBROUTINE qs_upf_inverse_scf_xc_source_direction
+
+! **************************************************************************************************
+!> \brief Exact native AO transpose of the fixed-geometry XC density and kinetic-density sources.
+!>        Potentials are unweighted energy derivatives on the caller's XC grid. Apply its original
+!>        reciprocal transfer before the native source transpose. The native grid measure enters
+!>        once and the returned per-k Hermitian operators do not carry mesh weights.
+!> \param ks_env Evaluated native inverse environment with the same source task lists.
+!> \param potential Density potential, after any spectral-gradient transpose.
+!> \param kinetic_potential Matching kinetic-density potential.
+!> \param operators New globally reduced AO source adjoints (AO,AO,k,spin).
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_xc_source_adjoint(ks_env, potential, kinetic_potential, operators)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:), kinetic_potential(:)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian_operator(:, :, :), partial(:, :)
+      INTEGER                                            :: axis, ik, n, nk, ns, spin
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: weights(:)
+      TYPE(pw_r3d_rs_type)                               :: density, gradient(3), kinetic
+      TYPE(pw_r3d_rs_type), POINTER                      :: native_density(:)
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_background_type)               :: gaussian
+      TYPE(qs_upf_inverse_grid_type), POINTER            :: frame
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
+      CPASSERT(ASSOCIATED(state))
+      CPASSERT(state%enabled)
+      CPASSERT(ALLOCATED(state%kinetic_cache))
+      CALL qs_rho_get(rho, rho_r=native_density)
+      CPASSERT(ASSOCIATED(native_density))
+      ns = SIZE(native_density)
+      CALL source_frames(state, weights, augmentation)
+      nk = SIZE(weights)
+      frame => source_frame(state, 1)
+      n = SIZE(frame%ao%coefficients, 2)
+      CPASSERT(SIZE(potential) == ns)
+      CPASSERT(SIZE(kinetic_potential) == ns)
+      ALLOCATE (operators(n, n, nk, ns))
+      IF (state%gaussian_background .OR. state%native_gaussian) ALLOCATE (gaussian_operator(n, n, nk))
+      CALL source_gaussian(state, gaussian)
+      CALL density%create(native_density(1)%pw_grid)
+      CALL kinetic%create(native_density(1)%pw_grid)
+      DO axis = 1, 3
+         CALL gradient(axis)%create(native_density(1)%pw_grid)
+         gradient(axis)%array = 0.0_dp
+      END DO
+      DO spin = 1, ns
+         CPASSERT(ASSOCIATED(potential(spin)%pw_grid))
+         valid = ASSOCIATED(kinetic_potential(spin)%pw_grid, potential(spin)%pw_grid)
+         CPASSERT(valid)
+         CALL source_transfer(potential(spin), density)
+         CALL source_transfer(kinetic_potential(spin), kinetic)
+         operators(:, :, :, spin) = CMPLX(0.0_dp, 0.0_dp, dp)
+         IF (.NOT. state%gaussian_background) THEN
+            DO ik = 1, nk
+               frame => source_frame(state, ik)
+               CALL qs_upf_inverse_grid_integrate_dense(frame, density, gradient, kinetic, partial, &
+                                                        augmentation=augmentation, fourier_charge=.TRUE., &
+                                                        kinetic=state%kinetic_cache, &
+                                                        orbital_fields=.NOT. state%native_gaussian)
+               operators(:, :, ik, spin) = partial
+            END DO
+         END IF
+         IF (state%gaussian_background .OR. state%native_gaussian) THEN
+            CALL qs_upf_inverse_background_integrate(gaussian, potential=density, ao_operators=gaussian_operator, ks_env=ks_env)
+            operators(:, :, :, spin) = operators(:, :, :, spin) + gaussian_operator
+            CALL qs_upf_inverse_background_integrate(gaussian, potential=kinetic, ao_operators=gaussian_operator, &
+                                                     kinetic=.TRUE., ks_env=ks_env)
+            operators(:, :, :, spin) = operators(:, :, :, spin) + gaussian_operator
+         END IF
+      END DO
+      CALL qs_upf_inverse_background_release(gaussian)
+      CALL density%release()
+      CALL kinetic%release()
+      DO axis = 1, 3
+         CALL gradient(axis)%release()
+      END DO
+   END SUBROUTINE qs_upf_inverse_scf_xc_source_adjoint
+
+! **************************************************************************************************
+!> \brief Borrow the original density-source frame for one globally indexed k point.
+!> \param state ...
+!> \param ik ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION source_frame(state, ik) RESULT(frame)
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN), POINTER :: state
+      INTEGER, INTENT(IN)                                :: ik
+      TYPE(qs_upf_inverse_grid_type), POINTER            :: frame
+
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         frame => state%bloch%frames(ik)
+      ELSE
+         CPASSERT(ik == 1)
+         frame => state%frame
+      END IF
+   END FUNCTION source_frame
+
+! **************************************************************************************************
+!> \brief Read mesh weights and original augmentation without replacing accepted density caches.
+!> \param state ...
+!> \param weights ...
+!> \param augmentation ...
+! **************************************************************************************************
+   SUBROUTINE source_frames(state, weights, augmentation)
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN), POINTER :: state
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: weights(:)
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         weights = state%bloch%weights
+         augmentation => state%bloch%augmentation
+      ELSE
+         ALLOCATE (weights(1), SOURCE=1.0_dp)
+         augmentation => state%augmentation
+      END IF
+   END SUBROUTINE source_frames
+
+! **************************************************************************************************
+!> \brief Own scratch Gaussian images for the exact native source convention.
+!> \param state ...
+!> \param gaussian ...
+! **************************************************************************************************
+   SUBROUTINE source_gaussian(state, gaussian)
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
+      TYPE(qs_upf_inverse_background_type), INTENT(OUT)  :: gaussian
+
+      IF (state%gaussian_background) THEN
+         CPASSERT(ASSOCIATED(state%coulomb))
+         CPASSERT(state%coulomb%ready)
+         CALL qs_upf_inverse_background_scratch(state%coulomb%background, gaussian)
+      ELSE IF (state%native_gaussian) THEN
+         CALL qs_upf_inverse_background_scratch(state%gaussian, gaussian)
+      END IF
+   END SUBROUTINE source_gaussian
+
+! **************************************************************************************************
+!> \brief Original real/reciprocal grid transfer shared by a source and its weighted adjoint.
+!> \param source ...
+!> \param TARGET ...
+! **************************************************************************************************
+   SUBROUTINE source_transfer(source, TARGET)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: source
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: target
+
+      TYPE(pw_c1d_gs_type)                               :: source_g, target_g
+
+      CPASSERT(ASSOCIATED(source%pw_grid))
+      CPASSERT(ASSOCIATED(target%pw_grid))
+      IF (pw_grid_compare(source%pw_grid, target%pw_grid)) THEN
+         target%array = source%array
+      ELSE
+         CALL source_g%create(source%pw_grid)
+         CALL target_g%create(target%pw_grid)
+         CALL pw_transfer(source, source_g)
+         CALL pw_transfer(source_g, target_g)
+         CALL pw_transfer(target_g, TARGET)
+         CALL source_g%release()
+         CALL target_g%release()
+      END IF
+   END SUBROUTINE source_transfer
 
 ! **************************************************************************************************
 !> \brief Native fixed-geometry response of the exact-minus-background Skala functional.
