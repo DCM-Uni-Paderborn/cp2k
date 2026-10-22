@@ -48,13 +48,16 @@ MODULE qs_upf_inverse_scf_xc
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_scf_type,&
-                                              qs_upf_inverse_type
+                                              qs_upf_inverse_type,&
+                                              qs_upf_inverse_xc_type
    USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_frame_ref_type,&
                                               qs_upf_inverse_xc_grid_evaluate,&
+                                              qs_upf_inverse_xc_grid_model_response,&
                                               qs_upf_inverse_xc_grid_response,&
                                               qs_upf_inverse_xc_pw_adjoint,&
                                               qs_upf_inverse_xc_pw_fields
-   USE skala_density_constraints,       ONLY: skala_density_constraints_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
+                                              skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator
    USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
                                               upf_radial_fields_periodic
@@ -66,6 +69,7 @@ MODULE qs_upf_inverse_scf_xc
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_scf_xc_evaluate, qs_upf_inverse_scf_xc_response
+   PUBLIC :: qs_upf_inverse_scf_xc_model_response
 
    INTEGER(KIND=int_8), PARAMETER :: max_xc_field_bytes = 64_int_8*1024*1024
 
@@ -225,6 +229,92 @@ CONTAINS
          END DO
       END IF
    END SUBROUTINE qs_upf_inverse_scf_xc_evaluate
+
+! **************************************************************************************************
+!> \brief Native fixed-geometry response of the exact-minus-background Skala functional.
+!>        Preserve the original atomic fields and the signed interpolation and spectral adjoints.
+!>        Core fields are fixed. The caller supplies matching unweighted AO and native XC-grid
+!>        density directions, and subsequently integrates the returned background potentials
+!>        with the original source-density transpose. This does not include the positive global
+!>        grid kernel, Hartree or other electronic terms. Selected nonsmooth limits require their
+!>        common-tangent and normal responses and are not treated by this branchwise operation.
+!> \param ks_env Evaluated native inverse environment at the unperturbed physical density.
+!> \param matrices_direction Unweighted Hermitian AO occupation-matrix directions (AO,AO,k,spin).
+!> \param density_direction Matching native XC-grid density directions, without frozen-core changes.
+!> \param kinetic_direction Matching native kinetic-density directions, with the original factor one half.
+!> \param xc_section The same functional and numerical thresholds as the unperturbed evaluation.
+!> \param operators_direction New globally reduced direct atomic AO operator responses, without k weights.
+!> \param potential_direction Created native potentials receiving the negative background density response.
+!> \param kinetic_potential_direction Created native potentials receiving its kinetic-density response.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, density_direction, &
+                                                   kinetic_direction, xc_section, operators_direction, &
+                                                   potential_direction, kinetic_potential_direction)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density_direction(:), &
+                                                            kinetic_direction(:)
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT) :: operators_direction(:, :, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: potential_direction(:), &
+                                                            kinetic_potential_direction(:)
+
+      INTEGER                                            :: nao, nk, ns, selected, spin
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), &
+                                                            fields_direction(:, :, :, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_frame_ref_type), ALLOCATABLE   :: frames(:)
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(qs_upf_inverse_xc_type)                       :: response
+      TYPE(skala_density_constraints_type), POINTER      :: constraints
+
+      CALL get_ks_env(ks_env, upf_inverse=state, cell=cell, para_env=para_env, skala_constraints=constraints)
+      CPASSERT(ASSOCIATED(state))
+      CPASSERT(state%enabled)
+      CPASSERT(xc_section_uses_native_skala_evaluator(xc_section))
+      CPASSERT(ALLOCATED(state%kinetic_cache))
+      CPASSERT(ASSOCIATED(state%xc_grid))
+      CPASSERT(ALLOCATED(state%xc_matrices))
+      CPASSERT(ALLOCATED(state%xc_fields))
+      CPASSERT(ALLOCATED(state%xc%density))
+      IF (ASSOCIATED(constraints)) THEN
+         selected = skala_density_constraints_count(constraints)
+         CPASSERT(selected == 0)
+      END IF
+      IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw .OR. &
+          section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO") /= xc_rho_no_smooth) THEN
+         CPABORT("Inverse mixed XC model response requires XC_DERIV PW and XC_SMOOTH_RHO NONE")
+      END IF
+      nao = SIZE(state%xc_matrices, 1)
+      nk = SIZE(state%xc_matrices, 3)
+      ns = SIZE(state%xc_matrices, 4)
+      valid = ALL(SHAPE(matrices_direction) == [nao, nao, nk, ns])
+      CPASSERT(valid)
+      CPASSERT(SIZE(density_direction) == ns)
+      CPASSERT(SIZE(kinetic_direction) == ns)
+      CPASSERT(SIZE(potential_direction) == ns)
+      CPASSERT(SIZE(kinetic_potential_direction) == ns)
+      DO spin = 1, ns
+         CPASSERT(ASSOCIATED(density_direction(spin)%pw_grid, state%xc_grid))
+         CPASSERT(ASSOCIATED(kinetic_direction(spin)%pw_grid, state%xc_grid))
+         CPASSERT(ASSOCIATED(potential_direction(spin)%pw_grid, state%xc_grid))
+         CPASSERT(ASSOCIATED(kinetic_potential_direction(spin)%pw_grid, state%xc_grid))
+      END DO
+      CALL comm%set_handle(para_env%get_handle())
+      CALL frame_refs(state, frames, augmentation)
+      CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction)
+      CALL qs_upf_inverse_xc_grid_model_response(frames, augmentation, matrices_direction, state%xc_kweights, &
+                                                 state%atom_grid%points, state%atom_grid%weights, state%xc, &
+                                                 state%xc_fields, fields_direction, state%xc_grid, cell, xc_section, &
+                                                 comm, response, adjoint, state%kinetic_cache, state%atom_grid, &
+                                                 state%paw_reconstruction)
+      CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction)
+      CALL MOVE_ALLOC(response%operators, operators_direction)
+   END SUBROUTINE qs_upf_inverse_scf_xc_model_response
 
 ! **************************************************************************************************
 !> \brief Atom XC geometry response after the native folded source-density response is accounted for.
