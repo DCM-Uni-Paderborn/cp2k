@@ -2065,8 +2065,8 @@ CONTAINS
       INTEGER                                            :: count, i, iteration, limit, m, n
       INTEGER, ALLOCATABLE                               :: rows(:)
       LOGICAL                                            :: bracketed, EXTERNAL, requested, valid
-      REAL(dp)                                           :: energy, fraction, left, right, scale, &
-                                                            trial_fraction
+      REAL(dp)                                           :: energy, fraction, left, previous_width, &
+                                                            right, scale, trial_fraction
       REAL(dp), ALLOCATABLE                              :: direction(:), edge_values(:, :), &
                                                             gradient(:), initial(:), &
                                                             jacobian(:, :), residuals(:), sides(:)
@@ -2127,6 +2127,7 @@ CONTAINS
          IF (ALL(sides*(values - targets) <= tolerances)) THEN
             left = 0.0_dp
             right = 1.0_dp
+            previous_width = 2.0_dp*(right - left)
             edge_values(1, :) = sides*(initial - targets)
             edge_values(2, :) = sides*(values - targets)
             DO iteration = 1, limit
@@ -2146,9 +2147,12 @@ CONTAINS
                   trial_fraction = MIN(trial_fraction, (edge_values(1, i)/scale)/ &
                                        ((edge_values(1, i)/scale) - (edge_values(2, i)/scale)))
                END DO
-               IF (.NOT. bracketed) trial_fraction = 0.5_dp
-               trial_fraction = MAX(0.1_dp, MIN(0.9_dp, trial_fraction))
+               ! Keep an accurate interpolation near either endpoint. If the last
+               ! trial did not halve the bracket, bisect this interval instead.
+               IF (.NOT. bracketed .OR. right - left > 0.5_dp*previous_width) trial_fraction = 0.5_dp
+               previous_width = right - left
                fraction = (1.0_dp - trial_fraction)*left + trial_fraction*right
+               IF (fraction <= left .OR. fraction >= right) fraction = left + 0.5_dp*(right - left)
                IF (fraction <= left .OR. fraction >= right) EXIT
                root(:) = first + fraction*direction
                IF (PRESENT(curve)) THEN
