@@ -22,7 +22,8 @@ MODULE skala_density_constraints
              skala_density_constraints_matches, skala_density_constraints_get, &
              skala_density_constraints_balance, skala_density_crossings, skala_density_root
    PUBLIC :: skala_density_samples_begin, skala_density_samples_end, skala_density_samples_active, &
-             skala_density_samples_put, skala_density_samples_get, skala_density_samples_only
+             skala_density_samples_put, skala_density_samples_get, skala_density_samples_only, &
+             skala_density_samples_generation
    PUBLIC :: skala_density_constraints_update_weights, skala_density_constraints_clear_selection
    PUBLIC :: skala_density_jumps_begin, skala_density_jumps_active, &
              skala_density_jumps_put, skala_density_jumps_finish
@@ -64,6 +65,7 @@ MODULE skala_density_constraints
       REAL(dp), ALLOCATABLE :: jump_values(:)
       INTEGER, ALLOCATABLE :: jump_owners(:)
       INTEGER :: sample_nspins = 0
+      INTEGER :: sample_generation = 0
       TYPE(skala_density_samples_type) :: samples(skala_fft_domain:skala_last_sample_domain)
    END TYPE skala_density_constraints_type
 
@@ -197,6 +199,20 @@ CONTAINS
       state%sampling = .FALSE.
       state%descriptors_only = .FALSE.
    END SUBROUTINE skala_density_samples_end
+
+! **************************************************************************************************
+!> \brief Identify the current descriptor collection independently of selected derivatives.
+!>        Starting another collection or clearing samples changes this generation even when
+!>        the orbital coordinates are unchanged. Empty distributed owners retain the same token.
+!> \param state Native descriptor collection.
+!> \return Collection generation, without interpreting local sample availability.
+! **************************************************************************************************
+   FUNCTION skala_density_samples_generation(state) RESULT(generation)
+      TYPE(skala_density_constraints_type), INTENT(IN)   :: state
+      INTEGER                                            :: generation
+
+      generation = state%sample_generation
+   END FUNCTION skala_density_samples_generation
 
 ! **************************************************************************************************
 !> \brief Whether the native consumers should retain their current physical inputs.
@@ -343,6 +359,7 @@ CONTAINS
 
       INTEGER                                            :: domain
 
+      state%sample_generation = state%sample_generation + 1
       DO domain = skala_fft_domain, skala_last_sample_domain
          ASSOCIATE (sample => state%samples(domain))
             IF (ALLOCATED(sample%points)) DEALLOCATE (sample%points, sample%density, sample%kinetic)

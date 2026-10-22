@@ -74,8 +74,8 @@ MODULE qs_skala_scf
         skala_density_constraints_type, skala_density_constraints_update_weights, &
         skala_density_crossings, skala_density_descriptor, skala_density_jumps_begin, &
         skala_density_jumps_finish, skala_density_root, skala_density_samples_begin, &
-        skala_density_samples_end, skala_density_samples_get, skala_fft_domain, &
-        skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
+        skala_density_samples_end, skala_density_samples_generation, skala_density_samples_get, &
+        skala_fft_domain, skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
    USE skala_gpw_functional,            ONLY: native_skala_spin_floors
    USE skala_orbital_constraints,       ONLY: &
@@ -145,6 +145,7 @@ MODULE qs_skala_scf
       LOGICAL :: thermal = .FALSE.
       REAL(dp), ALLOCATABLE :: coordinate(:), positions(:, :)
       REAL(dp) :: hmat(3, 3) = 0.0_dp
+      INTEGER :: sample_generation = -1, sample_density_evaluation = -1
       LOGICAL :: bloch = .FALSE., evaluated = .FALSE., operator_current = .FALSE.
    END TYPE qs_skala_scf_type
 
@@ -354,6 +355,8 @@ CONTAINS
       state%bloch = .FALSE.
       state%evaluated = .FALSE.
       state%operator_current = .FALSE.
+      state%sample_generation = -1
+      state%sample_density_evaluation = -1
    END SUBROUTINE qs_skala_scf_release
 
 ! **************************************************************************************************
@@ -432,6 +435,12 @@ CONTAINS
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., &
                                just_energy=.NOT. need_gradient, print_active=.FALSE.)
       CALL skala_density_samples_end(state%constraints)
+      IF (record_inputs) THEN
+         CALL retain_native_samples(state)
+      ELSE
+         state%sample_generation = -1
+         state%sample_density_evaluation = -1
+      END IF
       energy = state%energy%total
       state%operator_current = need_gradient
       IF (need_gradient) CALL native_orbital_covectors(state, gradient, physical_gradient)
@@ -455,6 +464,8 @@ CONTAINS
       TYPE(dbcsr_p_type), POINTER                        :: densities(:, :)
       TYPE(particle_type), POINTER                       :: particles(:)
 
+      state%sample_generation = -1
+      state%sample_density_evaluation = -1
       state%operator_current = .FALSE.
       CPASSERT(ASSOCIATED(state%qs_env))
       state%inverse%orbital_factors%density_evaluation = -1
@@ -567,6 +578,18 @@ CONTAINS
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
 
+      ! Constraint restoration can query the same installed fields more than once.
+      ! Reuse only this complete collection at the identical coordinate and density stamp.
+      IF (at_native_coordinate(state, coordinate) .AND. state%sample_generation >= 0) THEN
+         IF (state%sample_generation == skala_density_samples_generation(state%constraints) .AND. &
+             state%sample_density_evaluation == state%inverse%density_evaluations) THEN
+            ! Preserve the field-only callback contract even when no traversal is needed.
+            ! Selected derivative weights can change without changing these raw fields.
+            state%operator_current = .FALSE.
+            CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+            RETURN
+         END IF
+      END IF
       IF (.NOT. at_native_coordinate(state, coordinate)) THEN
          CALL install_native_trial(state, coordinate)
       END IF
@@ -574,10 +597,22 @@ CONTAINS
       CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.TRUE., print_active=.FALSE.)
       CALL skala_density_samples_end(state%constraints)
+      CALL retain_native_samples(state)
       state%coordinate(:) = coordinate
       state%evaluated = .TRUE.
       state%operator_current = .FALSE.
    END SUBROUTINE sample_native_constraints
+
+! **************************************************************************************************
+!> \brief Associate a completed descriptor collection with its installed native density.
+!> \param state Native orbital and physical-field state.
+! **************************************************************************************************
+   SUBROUTINE retain_native_samples(state)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+
+      state%sample_generation = skala_density_samples_generation(state%constraints)
+      state%sample_density_evaluation = state%inverse%density_evaluations
+   END SUBROUTINE retain_native_samples
 
 ! **************************************************************************************************
 !> \brief Inspect a fresh native orbital chart without changing MOs, density, fields or KS.
@@ -2005,7 +2040,7 @@ CONTAINS
 !> \param selected All candidates satisfying their physical window at the root.
 !> \param found Whether the returned boundary satisfies the original physical criteria.
 !> \param max_iterations Maximum shared bracket refinements, defaults to 100.
-!> \param evaluations Optional number of complete native field evaluations.
+!> \param evaluations Optional number of bracket field requests and complete root checks, excluding curve restoration.
 !> \param check_external Poll the normal CP2K external stop conditions, false by default.
 !> \param stopped Whether an external stop was requested.
 !> \param curve Optional original minimization chart, restoring active physical constraints at every root trial.
@@ -2193,10 +2228,11 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Evaluate several actual physical constraints and their joint native orbital Jacobian.
-!>        Only the physical fields and their point Jacobians are current on return. An energy
-!>        or KS consumer must reevaluate the complete functional. Density and kinetic constraints
-!>        retain their distinct physical units. No
-!>        interpolation of fields, feature rows or previously accepted Jacobians is used.
+!>        Reuse a complete physical-field collection only at the same coordinates and native
+!>        density stamp. The energy and KS require reevaluation afterwards, including when
+!>        raw fields are reused, because selected derivative weights can change independently.
+!>        Density and kinetic constraints retain distinct physical units. Point Jacobians are
+!>        evaluated at the current state, without interpolation or reuse from another trial.
 !> \param state ...
 !> \param coordinate Global normalized-orbital coordinates.
 !> \param points Global FFT indices or (global atom, atomic row, 1), one column per constraint.
@@ -2722,6 +2758,7 @@ CONTAINS
       CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.FALSE., print_active=.FALSE.)
       CALL skala_density_samples_end(state%constraints)
+      CALL retain_native_samples(state)
       energy = state%energy%total
       state%operator_current = .TRUE.
       CALL native_orbital_covectors(state, physical_gradient=physical_gradient)

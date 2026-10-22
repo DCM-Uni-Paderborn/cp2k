@@ -22,7 +22,9 @@ PROGRAM xc_semilocal_unittest
    USE mathconstants, ONLY: pi
    USE skala_density_constraints, ONLY: skala_density_constraints_type, skala_density_constraints_set, &
                                         skala_density_constraints_reset, skala_fft_domain, skala_last_sample_domain, &
-                                        skala_background_domain, skala_density_jumps_begin, skala_density_jumps_finish
+                                        skala_background_domain, skala_density_jumps_begin, skala_density_jumps_finish, &
+                                        skala_density_samples_begin, skala_density_samples_end, &
+                                        skala_density_samples_generation, skala_density_constraints_clear_selection
    USE xc_atom, ONLY: xc_rho_set_atom_update, fill_rho_set, vxc_of_r_new, xc_2nd_deriv_of_r
    USE xc_derivative_desc, ONLY: deriv_norm_drho, &
                                  deriv_norm_drhoa, &
@@ -938,8 +940,9 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_xc_floor_selection()
       INTEGER                                            :: bounds(2, 3), c, domain, families, &
-                                                            family, keys(3, 4), point(3, 1), &
-                                                            points(3, 4), spin_labels(4)
+                                                            family, generation, keys(3, 4), &
+                                                            point(3, 1), points(3, 4), &
+                                                            spin_labels(4)
       INTEGER, ALLOCATABLE                               :: owners(:), selected_rows(:)
       REAL(dp) :: data_gradient(4, 4, 1, 2), data_rho(4, 1, 2), data_tau(4, 1, 2), delta(4), &
          hmat(3, 3), level, quadrature(4, 1, 1), reference
@@ -959,6 +962,15 @@ CONTAINS
       CALL section_vals_val_set(combination, 'GGA_C_PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
       families = 2
 #endif
+      generation = skala_density_samples_generation(constraints)
+      CALL skala_density_samples_begin(constraints)
+      IF (generation == skala_density_samples_generation(constraints)) ERROR STOP 'New samples reused a generation'
+      generation = skala_density_samples_generation(constraints)
+      CALL skala_density_samples_end(constraints)
+      CALL skala_density_constraints_clear_selection(constraints)
+      IF (generation /= skala_density_samples_generation(constraints)) ERROR STOP 'Derivative selection changed sample generation'
+      CALL skala_density_constraints_reset(constraints)
+      IF (generation == skala_density_samples_generation(constraints)) ERROR STOP 'Cleared samples retained a generation'
       bounds(:, 1) = [-1, 0]
       bounds(:, 2) = [2, 3]
       bounds(:, 3) = [4, 4]
