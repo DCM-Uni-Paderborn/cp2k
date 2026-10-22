@@ -793,8 +793,10 @@ CONTAINS
       cutoff = 1.0_dp
       f = zetb/zetp
       prefactor = EXP(-zeta*f*rab2)
+      ! Resolve the same density-tail threshold without coarse radius-search jumps
+      ! under small atomic or cell displacements.
       radius = exp_radius_very_extended(la_min, la_max, lb_min, lb_max, ra=ra, rb=rb, rp=rp, &
-                                        zetp=zetp, eps=eps, prefactor=prefactor, cutoff=cutoff)
+                                        zetp=zetp, eps=eps, prefactor=prefactor, cutoff=cutoff, epsabs=1.e-12_dp)
 
       CALL compute_cube_center(cube_center, rs_desc, zeta, zetb, ra, rab)
       ! compute cube_center, the center of the gaussian product to map (folded to within the unit cell)

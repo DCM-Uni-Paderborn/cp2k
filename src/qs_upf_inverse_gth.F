@@ -20,6 +20,7 @@ MODULE qs_upf_inverse_gth
    USE libgrpp,                         ONLY: libgrpp_init
    USE particle_types,                  ONLY: particle_type
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_build_ae
+   USE paw_types,                       ONLY: qs_upf_inverse_gth_core_type => paw_core_projector_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_overlap
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
@@ -35,13 +36,6 @@ MODULE qs_upf_inverse_gth
    PUBLIC :: qs_upf_inverse_gth_nonlocal
    PUBLIC :: qs_upf_inverse_gth_core_type, qs_upf_inverse_gth_core_init, qs_upf_inverse_gth_core_nonlocal
 
-   TYPE qs_upf_inverse_gth_core_type
-      LOGICAL :: initialized = .FALSE., available = .FALSE.
-      CHARACTER(LEN=256) :: reason = 'Original PAW core orbitals have not been initialized'
-      TYPE(upf_projector_type) :: orbitals
-      REAL(dp), ALLOCATABLE :: occupations(:)
-   END TYPE qs_upf_inverse_gth_core_type
-
 CONTAINS
 
 ! **************************************************************************************************
@@ -52,7 +46,7 @@ CONTAINS
 !> \param frame Defining geometry, original AO ordering and reconstruction coefficients.
 !> \param kinds Original native GTH and UPF datasets with borrowed live orbital bases.
 !> \param particles Original atom-to-kind mapping, in the frame's atom order.
-!> \param operator Optional existing dense operator, incremented in place.
+!> \param OPERATOR Optional existing dense operator, incremented in place.
 !>        At least one of operator or response must be supplied.
 !> \param response Optional existing operator response, incremented in place.
 !> \param coefficients_response Required with response, the defining response of W.

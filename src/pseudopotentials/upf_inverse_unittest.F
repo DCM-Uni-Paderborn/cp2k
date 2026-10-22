@@ -56,7 +56,8 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_atomic_overlap,&
                                               qs_upf_inverse_evaluate,&
                                               qs_upf_inverse_prepare,&
-                                              qs_upf_inverse_response
+                                              qs_upf_inverse_response,&
+                                              qs_upf_inverse_soft_projectors
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_radial,&
                                               qs_upf_inverse_density_radial_adjoint,&
                                               qs_upf_inverse_kinetic_center,&
@@ -584,12 +585,11 @@ CONTAINS
    END SUBROUTINE check_physical_stationarity
 
 ! **************************************************************************************************
-!> \brief Detect a known threshold along a scaled physical orbital trial.
-!> \param first Last accepted coordinate.
-!> \param last Proposed coordinate.
-!> \param curve Fixed physical constraint chart.
+!> \brief Supply the exact diagonal inverse response of the scaled quadratic control.
+!> \param coordinate Current scaled coordinates.
 !> \param context Positive coordinate scale.
-!> \param interrupted Whether the trial crosses the threshold.
+!> \param inverse_diagonal Exact inverse diagonal.
+!> \param available Whether the inverse response is supplied.
 ! **************************************************************************************************
    SUBROUTINE scaled_inverse_curvature(coordinate, context, inverse_diagonal, available)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
@@ -607,6 +607,13 @@ CONTAINS
       END SELECT
    END SUBROUTINE scaled_inverse_curvature
 
+! **************************************************************************************************
+!> \brief Exercise a finite but unresolved diagonal inverse response.
+!> \param coordinate Two physical coordinates.
+!> \param context Unused callback context.
+!> \param inverse_diagonal Declared extreme inverse response.
+!> \param available Whether the response is supplied.
+! **************************************************************************************************
    SUBROUTINE extreme_inverse_curvature(coordinate, context, inverse_diagonal, available)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
 
@@ -619,6 +626,15 @@ CONTAINS
       available = .TRUE.
    END SUBROUTINE extreme_inverse_curvature
 
+! **************************************************************************************************
+!> \brief Interrupt a nonzero coupled-curvature probe.
+!> \param first Accepted coordinates.
+!> \param last Proposed coordinates.
+!> \param curve Fixed physical constraint chart.
+!> \param context Unused callback context.
+!> \param smooth Whether the segment remains differentiable.
+!> \param interrupted Whether the probe is interrupted.
+! **************************************************************************************************
    SUBROUTINE interrupt_curvature_probe(first, last, curve, context, smooth, interrupted)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
@@ -630,6 +646,14 @@ CONTAINS
       interrupted = ANY(first /= last)
    END SUBROUTINE interrupt_curvature_probe
 
+! **************************************************************************************************
+!> \brief Detect a known threshold along a scaled physical orbital trial.
+!> \param first Accepted coordinates.
+!> \param last Proposed coordinates.
+!> \param curve Fixed physical constraint chart.
+!> \param context Positive coordinate scale.
+!> \param interrupted Whether the segment crosses the threshold.
+! **************************************************************************************************
    SUBROUTINE crossing_segment(first, last, curve, context, interrupted)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
@@ -1231,6 +1255,9 @@ CONTAINS
    END SUBROUTINE check_paw_density_fourier
 
 ! **************************************************************************************************
+!> \brief Check GTH local fields against original PAW valence and core contributions.
+!> \param paw_kind Original PAW quadrature control.
+! **************************************************************************************************
    SUBROUTINE check_gth_paw_local(paw_kind)
       TYPE(paw_kind_type), INTENT(IN)                    :: paw_kind
 
@@ -1311,6 +1338,7 @@ CONTAINS
    END SUBROUTINE check_gth_paw_local
 ! **************************************************************************************************
 !> \brief Atomic hard-projector orientation, full kinetic matrix and exact NC reduction.
+!> \param comm Native control communicator.
 ! **************************************************************************************************
    SUBROUTINE check_atomic_projectors(comm)
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
@@ -1610,6 +1638,10 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Mixed NC projectors retain their overlap with a neighboring periodic reconstruction.
+!> \param pot Original scalar dataset.
+!> \param basis Original Gaussian basis.
+!> \param metric Original inverse normalization metric.
+!> \param comm Native control communicator.
 ! **************************************************************************************************
    SUBROUTINE check_nc_atomic_coupling(pot, basis, metric, comm)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
@@ -1618,7 +1650,8 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
 
       COMPLEX(dp), ALLOCATABLE :: beta(:, :), chi(:, :), correction(:, :), density(:, :), &
-         dw(:, :), gradient(:, :, :), op(:, :), original(:, :), samples(:, :, :), soft(:, :)
+         dw(:, :), gradient(:, :, :), op(:, :), original(:, :), projection(:, :), &
+         projection_response(:, :), samples(:, :, :), soft(:, :)
       INTEGER                                            :: i, images(3, 3), info, ir, j, np, &
                                                             npoint, row, rule, side
       REAL(dp)                                           :: atom_response(3, 2), dc(3, 3), &
@@ -1698,6 +1731,19 @@ CONTAINS
       CALL check(MAXVAL(ABS(original - frame%coefficients(np + 1:, :) - correction)), &
                  'NC bra agrees with the reconstructed-orbital difference integral')
       CALL qs_upf_inverse_response(frame, empty_points, atom_response, dc, dk, empty_weights, dw)
+      ALLOCATE (projection(2*np, 4), projection_response(2*np, 4))
+      CALL qs_upf_inverse_soft_projectors(frame, kinds, projection, projection_response, dw, &
+                                          atom_response=atom_response, cell_response=dc, reduced_k_response=dk)
+      CALL check(MAXVAL(ABS(projection - frame%coefficients)), 'Original soft-projector identity including NC coupling')
+      CALL check(MAXVAL(ABS(projection_response - dw)), 'Original soft-projector joint response including NC coupling')
+      shifted = frame
+      shifted%coefficients(:np, :) = 1.03_dp*frame%coefficients(:np, :)
+      CALL qs_upf_inverse_soft_projectors(shifted, kinds, projection)
+      CALL check(MAXVAL(ABS(projection(np + 1:, :) - frame%coefficients(np + 1:, :) + 0.03_dp*correction)), &
+                 'NC soft projection retains the supplied reconstruction coefficients')
+      IF (MAXVAL(ABS(projection(:np, :) - shifted%coefficients(:np, :))) < 1.e-6_dp) THEN
+         ERROR STOP 'Soft-projector reconstruction residual was not exercised'
+      END IF
       DO j = 1, 4
          DO i = 1, 4
             density(i, j) = CMPLX(0.1_dp*COS(REAL(i - j, dp)), 0.05_dp*SIN(REAL(i - j, dp)), dp)

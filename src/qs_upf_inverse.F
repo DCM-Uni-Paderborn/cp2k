@@ -43,7 +43,8 @@ MODULE qs_upf_inverse
                                               upf_inverse_exchange_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
-   USE upf_projector_integrals,         ONLY: upf_projector_overlap,&
+   USE upf_projector_integrals,         ONLY: upf_projector_init,&
+                                              upf_projector_overlap,&
                                               upf_projector_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
 #include "./base/base_uses.f90"
@@ -59,11 +60,162 @@ MODULE qs_upf_inverse
    PUBLIC :: qs_upf_inverse_evaluate, qs_upf_inverse_center_fields
    PUBLIC :: qs_upf_inverse_atomic_overlap
    PUBLIC :: qs_upf_inverse_atomic_operators
+   PUBLIC :: qs_upf_inverse_soft_projectors
    PUBLIC :: qs_upf_inverse_transition, qs_upf_inverse_transition_response
    PUBLIC :: qs_upf_inverse_exchange_pair, qs_upf_inverse_exchange_pair_response
    PUBLIC :: qs_upf_inverse_block_size
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Original beta bras against the soft Gaussian columns, using the defining integration rule.
+!>        Evaluate B-C*W. Around the independently re-solved W0=K^-1*B, the equivalent form
+!>        W0-C*(W-W0) avoids cancellation. No projection residual or response is discarded.
+!>        The general inverse retains its defining K=I+C point rule. The atom-local form uses original
+!>        radial beta-Delta products and analytic Gaussian overlaps, with NC cross terms retained.
+!>        A modified W leaves its actual projection residual and its response explicit.
+!> \param frame Original inverse map, defining points, held images, and projector ordering.
+!> \param kinds Original scalar UPF datasets and native Gaussian bases.
+!> \param projection New original soft-projector amplitudes, in frame row and AO order.
+!> \param response Optional new joint response of those amplitudes.
+!> \param coefficients_response Required with response, complete defining derivative of W.
+!> \param point_response Required for a general-inverse response, motion of the defining points.
+!> \param atom_response Required with response, motion of all physical centers.
+!> \param cell_response Required with response, motion of the fixed image lattice.
+!> \param reduced_k_response Required with response, reduced Bloch-vector motion.
+!> \param weights_response Required for a general-inverse response, defining quadrature response.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_soft_projectors(frame, kinds, projection, response, coefficients_response, &
+                                             point_response, atom_response, cell_response, reduced_k_response, &
+                                             weights_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      COMPLEX(dp), INTENT(OUT)                           :: projection(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL :: point_response(:, :), atom_response(:, :), &
+         cell_response(3, 3), reduced_k_response(3), weights_response(:)
+
+      COMPLEX(dp), ALLOCATABLE :: coupling(:, :), db(:, :), dc(:, :), deviation(:, :), &
+         nc_response(:, :), nc_values(:, :), overlaps(:, :), reference(:, :), &
+         reference_response(:, :)
+      INTEGER                                            :: atom, basis_atom, center, column, first, &
+                                                            kind, last, n, np, nr, p, q, row
+      TYPE(upf_projector_type), ALLOCATABLE              :: original(:)
+
+      np = SIZE(frame%coefficients, 1)
+      n = SIZE(frame%coefficients, 2)
+      CPASSERT(ALL(SHAPE(projection) == [np, n]))
+      IF (PRESENT(response)) THEN
+         CPASSERT(ALL(SHAPE(response) == [np, n]))
+         CPASSERT(PRESENT(coefficients_response))
+         CPASSERT(ALL(SHAPE(coefficients_response) == [np, n]))
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(PRESENT(reduced_k_response))
+      END IF
+      IF (.NOT. frame%atom_local) THEN
+         ALLOCATE (coupling(np, np), overlaps(np, n))
+         IF (PRESENT(response)) THEN
+            CPASSERT(PRESENT(point_response))
+            CPASSERT(PRESENT(weights_response))
+            CPASSERT(ALL(SHAPE(point_response) == SHAPE(frame%points)))
+            CPASSERT(SIZE(weights_response) == SIZE(frame%weights))
+            ALLOCATE (dc(np, np), db(np, n))
+            CALL defining_pairs(frame, coupling, overlaps, dc, db, point_response, atom_response, &
+                                cell_response, reduced_k_response, weights_response)
+         ELSE
+            CALL defining_pairs(frame, coupling, overlaps)
+         END IF
+         IF (frame%fields_stored) THEN
+            CALL upf_inverse_pair(frame%beta, frame%delta, frame%weights, coupling, frame%point_comm)
+            CALL upf_inverse_pair(frame%beta, frame%gaussian, frame%weights, overlaps, frame%point_comm)
+         END IF
+         ALLOCATE (reference(np, n), deviation(np, n))
+         CALL upf_inverse_project(frame%inverse, overlaps, reference)
+         deviation = frame%coefficients - reference
+         projection = reference - MATMUL(coupling, deviation)
+         IF (PRESENT(response)) THEN
+            ALLOCATE (reference_response(np, n))
+            CALL upf_inverse_project_response(frame%inverse, reference, db, dc, reference_response)
+            response = reference_response - MATMUL(dc, deviation) - &
+                       MATMUL(coupling, coefficients_response - reference_response)
+         END IF
+         RETURN
+      END IF
+      ALLOCATE (original(SIZE(kinds)))
+      DO center = 1, SIZE(frame%center_atoms)
+         kind = frame%center_kinds(center)
+         atom = frame%center_atoms(center)
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         IF (original(kind)%nproj == 0) THEN
+            CALL upf_projector_init(kinds(kind)%sgp_potential%upf_data, &
+                                    frame%atomic_cache(kind)%hard%degree, original(kind))
+         END IF
+         DO basis_atom = 1, SIZE(frame%bases)
+            p = frame%ao_first(basis_atom)
+            q = frame%ao_last(basis_atom)
+            IF (PRESENT(response)) THEN
+               CALL qs_upf_inverse_atomic_overlap(frame%bases(basis_atom)%gto_basis_set, original(kind), &
+                                                  frame%positions(:, atom), frame%positions(:, basis_atom), &
+                                                  frame%cell, frame%images, frame%reduced_k, projection(first:last, p:q), &
+                                                  response(first:last, p:q), atom_response(:, atom), &
+                                                  atom_response(:, basis_atom), cell_response, reduced_k_response)
+            ELSE
+               CALL qs_upf_inverse_atomic_overlap(frame%bases(basis_atom)%gto_basis_set, original(kind), &
+                                                  frame%positions(:, atom), frame%positions(:, basis_atom), &
+                                                  frame%cell, frame%images, frame%reduced_k, projection(first:last, p:q))
+            END IF
+         END DO
+         IF (frame%direct) CYCLE
+         IF (frame%nc_kinds(kind)) CYCLE
+         ASSOCIATE (difference => frame%atomic_cache(kind)%difference, pot => kinds(kind)%sgp_potential%upf_data)
+            nr = SIZE(difference%r)
+            ALLOCATE (coupling(last - first + 1, last - first + 1), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+            DO column = 1, difference%nproj
+               q = difference%radial_index(column)
+               DO row = 1, original(kind)%nproj
+                  IF (original(kind)%angular_index(row) /= difference%angular_index(column)) CYCLE
+                  p = original(kind)%radial_index(row)
+                  coupling(row, column) = CMPLX(SUM(pot%beta(:nr, p)*difference%weighted_beta(:, q)), 0.0_dp, dp)
+               END DO
+            END DO
+         END ASSOCIATE
+         projection(first:last, :) = projection(first:last, :) - MATMUL(coupling, frame%coefficients(first:last, :))
+         IF (PRESENT(response)) THEN
+            response(first:last, :) = response(first:last, :) - MATMUL(coupling, coefficients_response(first:last, :))
+         END IF
+         DEALLOCATE (coupling)
+      END DO
+      IF (frame%direct) RETURN
+      IF (.NOT. ANY(frame%nc_kinds)) RETURN
+      ! The NC contraction needs the defining active W, including when B-C*W differs from W.
+      ALLOCATE (nc_values, SOURCE=frame%coefficients)
+      IF (PRESENT(response)) ALLOCATE (nc_response, SOURCE=coefficients_response)
+      DO center = 1, SIZE(frame%center_atoms)
+         kind = frame%center_kinds(center)
+         IF (.NOT. frame%nc_kinds(kind)) CYCLE
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         nc_values(first:last, :) = projection(first:last, :)
+         IF (PRESENT(response)) nc_response(first:last, :) = response(first:last, :)
+      END DO
+      IF (PRESENT(response)) THEN
+         CALL nc_projector_correction(frame, nc_values, nc_response, atom_response, cell_response, reduced_k_response)
+      ELSE
+         CALL nc_projector_correction(frame, nc_values)
+      END IF
+      DO center = 1, SIZE(frame%center_atoms)
+         kind = frame%center_kinds(center)
+         IF (.NOT. frame%nc_kinds(kind)) CYCLE
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         projection(first:last, :) = nc_values(first:last, :)
+         IF (PRESENT(response)) response(first:last, :) = nc_response(first:last, :)
+      END DO
+   END SUBROUTINE qs_upf_inverse_soft_projectors
 
 ! **************************************************************************************************
 !> \brief Contract atom-local hard projectors with native Gaussian AOs and explicit Bloch images.
@@ -843,13 +995,12 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
-
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :)
 
-      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_dw(:, :)
-      COMPLEX(dp), POINTER                              :: dw(:, :)
-      COMPLEX(dp), ALLOCATABLE :: dl(:, :), dz(:, :), laplacian(:, :), overlaps(:, :), &
-                                  rs(:, :), rt(:, :), z(:, :), zero_ao(:, :), zero_projectors(:, :)
+      COMPLEX(dp), ALLOCATABLE :: dl(:, :), dz(:, :), laplacian(:, :), overlaps(:, :), rs(:, :), &
+         rt(:, :), z(:, :), zero_ao(:, :), zero_projectors(:, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
+      COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: atom, b, center, first, ikind, last, n, &
                                                             np, p, q
       LOGICAL                                            :: calculate_response

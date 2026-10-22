@@ -22,7 +22,8 @@ MODULE qs_upf_inverse_types
                                               kpoint_native_operator_clear,&
                                               kpoint_type
    USE message_passing,                 ONLY: mp_comm_type
-   USE paw_types,                       ONLY: paw_kind_type,&
+   USE paw_types,                       ONLY: paw_core_projector_type,&
+                                              paw_kind_type,&
                                               paw_potential_type
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL,&
                                               pw_grid_type
@@ -157,6 +158,8 @@ MODULE qs_upf_inverse_types
       ! PAW AE valence fields for one joint learned functional, separate from USPP kinetic kernels.
       TYPE(upf_inverse_kinetic_type), ALLOCATABLE :: paw_reconstruction(:)
       TYPE(paw_kind_type), ALLOCATABLE :: paw(:)
+      TYPE(paw_core_projector_type), ALLOCATABLE :: gth_paw_core(:)
+      REAL(dp) :: gth_paw_energy = 0.0_dp
       TYPE(paw_potential_type), ALLOCATABLE :: paw_potential(:)
       COMPLEX(dp), ALLOCATABLE :: paw_operator(:, :, :, :), paw_density(:, :, :, :)
       INTEGER :: paw_density_evaluation = -1

@@ -11,9 +11,17 @@
 MODULE paw_types
    USE kinds,                           ONLY: dp
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_type
+   USE upf_projector_integrals,         ONLY: upf_projector_type
 
    IMPLICIT NONE
    PRIVATE
+
+   TYPE paw_core_projector_type
+      LOGICAL :: initialized = .FALSE., available = .FALSE.
+      CHARACTER(LEN=256) :: reason = 'Original PAW core orbitals have not been initialized'
+      TYPE(upf_projector_type) :: orbitals
+      REAL(dp), ALLOCATABLE :: occupations(:)
+   END TYPE paw_core_projector_type
 
    TYPE paw_core_exchange_type
       LOGICAL :: initialized = .FALSE., available = .FALSE.
@@ -60,5 +68,6 @@ MODULE paw_types
    END TYPE paw_kind_type
 
    PUBLIC :: paw_onecenter_type, paw_xc_type, paw_kind_type, paw_core_exchange_type, paw_potential_type
+   PUBLIC :: paw_core_projector_type
 
 END MODULE paw_types
