@@ -50,12 +50,15 @@ MODULE qs_upf_inverse_scf_response
    USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_field_kernel,&
                                               qs_upf_inverse_xc_semilocal_kernel_available
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
-                                              skala_density_constraints_type
+                                              skala_density_constraints_get,&
+                                              skala_density_constraints_type,&
+                                              skala_density_descriptor
    USE skala_gpw_functional,            ONLY: native_skala_gapw_atom_composite_requested,&
                                               native_skala_gapw_composite_reference,&
                                               skala_gpw_eval,&
                                               xc_section_uses_native_skala_evaluator
-   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
+                                              xc_functionals_spin_floors
    USE xc_input_constants,              ONLY: xc_deriv_pw,&
                                               xc_rho_no_smooth
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
@@ -64,8 +67,57 @@ MODULE qs_upf_inverse_scf_response
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_scf_electronic_response
+   PUBLIC :: qs_upf_inverse_scf_density_tangent_available
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Recognize native positive spin-density floors with a linear density constraint.
+!>        Their selected and default covectors differ only in the density normal. A kernel
+!>        from the default branch can therefore be used between tangent projections, together
+!>        with the current selected KS operator and the physical constraint curvature.
+!>        Learned-model, kinetic and nonlinear selector boundaries retain numerical response.
+!> \param qs_env Original evaluated inverse environment and its registered physical constraints.
+!> \return Whether the selected surfaces admit this native density-tangent construction.
+! **************************************************************************************************
+   FUNCTION qs_upf_inverse_scf_density_tangent_available(qs_env) RESULT(available)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL                                            :: available
+
+      INTEGER                                            :: i
+      INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
+                                                            points(:, :), spins(:)
+      LOGICAL                                            :: kinetic_boundary
+      REAL(dp)                                           :: kinetic_probe, kinetic_tolerance, probe, &
+                                                            tolerance
+      REAL(dp), ALLOCATABLE                              :: floors(:), targets(:), weights(:)
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(section_vals_type), POINTER                   :: functional, xc
+      TYPE(skala_density_constraints_type), POINTER      :: constraints
+      TYPE(xc_rho_cflags_type)                           :: needs
+
+      available = .FALSE.
+      CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=control)
+      IF (control%nspins /= 2) RETURN
+      CALL get_ks_env(ks_env, skala_constraints=constraints)
+      IF (.NOT. ASSOCIATED(constraints)) RETURN
+      IF (skala_density_constraints_count(constraints) == 0) RETURN
+      xc => section_vals_get_subs_vals(qs_env%input, "DFT%XC")
+      IF (xc_section_uses_native_skala_evaluator(xc)) RETURN
+      functional => section_vals_get_subs_vals(xc, "XC_FUNCTIONAL")
+      needs = xc_functionals_get_needs(functional, .TRUE., kinetic_density_boundary=kinetic_boundary)
+      IF (kinetic_boundary .AND. (needs%tau .OR. needs%tau_spin)) RETURN
+      floors = xc_functionals_spin_floors(functional, .TRUE., section_get_rval(xc, "DENSITY_CUTOFF"))
+      CALL skala_density_constraints_get(constraints, points, spins, weights, probe, tolerance, &
+                                         descriptors=descriptors, domains=domains, targets=targets, &
+                                         kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
+      IF (ANY(descriptors /= skala_density_descriptor) .OR. ANY(spins < 1) .OR. ANY(spins > 2)) RETURN
+      DO i = 1, SIZE(targets)
+         IF (targets(i) <= 0.0_dp .OR. ALL(floors /= targets(i))) RETURN
+      END DO
+      available = .TRUE.
+   END FUNCTION qs_upf_inverse_scf_density_tangent_available
 
 ! **************************************************************************************************
 !> \brief Apply the original electronic KS kernel to a joint spin/k occupation-matrix direction.
@@ -80,19 +132,22 @@ CONTAINS
 !> \param matrices_direction Replicated unweighted Hermitian AO directions (AO,AO,k,spin).
 !> \param operators_direction New complete electronic operator directions, without mesh weights.
 !> \param available Whether every density-dependent contribution has a supplied kernel.
+!> \param density_tangent Use only between projections onto recognized native density-floor tangents.
+!>        This is not an unconstrained Hessian on a nonsmooth surface.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_scf_electronic_response(qs_env, matrices_direction, operators_direction, available)
+   SUBROUTINE qs_upf_inverse_scf_electronic_response(qs_env, matrices_direction, operators_direction, available, density_tangent)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT) :: operators_direction(:, :, :, :)
       LOGICAL, INTENT(OUT)                               :: available
+      LOGICAL, INTENT(IN), OPTIONAL                      :: density_tangent
 
       COMPLEX(dp), ALLOCATABLE                           :: atomic(:, :, :, :), hartree(:, :, :), &
                                                             paw(:, :, :, :)
       INTEGER                                            :: n, nk, ns, selected, spin
       LOGICAL                                            :: atomic_xc, do_hfx, fine, model, &
-                                                            rho_valid, tau_g_valid, tau_valid, &
-                                                            use_tau, valid
+                                                            rho_valid, tangent, tau_g_valid, &
+                                                            tau_valid, use_tau, valid
       REAL(dp)                                           :: energies(3), energy, virial(3, 3)
       REAL(dp), ALLOCATABLE                              :: kweights(:)
       TYPE(cell_type), POINTER                           :: cell
@@ -122,6 +177,8 @@ CONTAINS
       TYPE(xc_rho_cflags_type)                           :: needs
 
       available = .FALSE.
+      tangent = .FALSE.
+      IF (PRESENT(density_tangent)) tangent = density_tangent
       CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho, dft_control=control, cell=cell, &
                       particle_set=particles, pw_env=pw_env, para_env=para_env)
       CALL get_ks_env(ks_env, upf_inverse=state, skala_constraints=constraints, &
@@ -152,7 +209,11 @@ CONTAINS
       selected = 0
       IF (ASSOCIATED(constraints)) selected = skala_density_constraints_count(constraints)
       CALL para_env%max(selected)
-      IF (selected /= 0) RETURN
+      IF (tangent) THEN
+         IF (.NOT. qs_upf_inverse_scf_density_tangent_available(qs_env)) RETURN
+      ELSE IF (selected /= 0) THEN
+         RETURN
+      END IF
       CALL qs_rho_get(rho, rho_r=native_r, rho_g=native_g, tau_r=native_tau, tau_g=native_tau_g, &
                       rho_g_valid=rho_valid, tau_r_valid=tau_valid, tau_g_valid=tau_g_valid)
       IF (.NOT. rho_valid) RETURN
@@ -264,7 +325,7 @@ CONTAINS
       END IF
       IF (atomic_xc) THEN
          CALL qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, direction, kinetic_direction, xc, &
-                                                   atomic, combined_rho, combined_tau)
+                                                   atomic, combined_rho, combined_tau, density_tangent=tangent)
       ELSE
          DO spin = 1, ns
             combined_rho(spin)%array = 0.0_dp

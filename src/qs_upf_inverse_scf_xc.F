@@ -537,10 +537,11 @@ CONTAINS
 !> \param operators_direction New globally reduced direct atomic AO operator responses, without k weights.
 !> \param potential_direction Created native potentials receiving the negative background density response.
 !> \param kinetic_potential_direction Created native potentials receiving its kinetic-density response.
+!> \param density_tangent Native density-floor response used only between feasible tangent projections.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, density_direction, &
                                                    kinetic_direction, xc_section, operators_direction, &
-                                                   potential_direction, kinetic_potential_direction)
+                                                   potential_direction, kinetic_potential_direction, density_tangent)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density_direction(:), &
@@ -549,9 +550,10 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT) :: operators_direction(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: potential_direction(:), &
                                                             kinetic_potential_direction(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: density_tangent
 
       INTEGER                                            :: nao, nk, ns, selected, spin
-      LOGICAL                                            :: valid
+      LOGICAL                                            :: tangent, valid
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), &
                                                             fields_direction(:, :, :, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -563,6 +565,11 @@ CONTAINS
       TYPE(qs_upf_inverse_xc_type)                       :: response
       TYPE(skala_density_constraints_type), POINTER      :: constraints
 
+      tangent = .FALSE.
+      IF (PRESENT(density_tangent)) tangent = density_tangent
+      IF (tangent) THEN
+         CPASSERT(.NOT. xc_section_uses_native_skala_evaluator(xc_section))
+      END IF
       CALL get_ks_env(ks_env, upf_inverse=state, cell=cell, para_env=para_env, skala_constraints=constraints)
       CPASSERT(ASSOCIATED(state))
       CPASSERT(state%enabled)
@@ -573,7 +580,7 @@ CONTAINS
       CPASSERT(ALLOCATED(state%xc%density))
       IF (ASSOCIATED(constraints)) THEN
          selected = skala_density_constraints_count(constraints)
-         CPASSERT(selected == 0)
+         CPASSERT(selected == 0 .OR. tangent)
       END IF
       IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw .OR. &
           section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO") /= xc_rho_no_smooth) THEN

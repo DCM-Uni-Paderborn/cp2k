@@ -136,6 +136,22 @@ MODULE skala_orbital_constraints
          LOGICAL, INTENT(OUT) :: available
       END SUBROUTINE orbital_hessian_product
 ! **************************************************************************************************
+!> \brief Apply the Lagrangian Hessian to a feasible full-coordinate direction.
+!> \param coordinate Accepted coordinates on the original physical constraint curve.
+!> \param direction Full tangent direction, including dependent-coordinate response.
+!> \param multipliers Constraint coefficients in their original physical units.
+!> \param context Borrowed problem state.
+!> \param PRODUCT Hessian of E minus the multiplier-weighted constraints, applied to direction.
+!> \param available Whether this complete constrained response is supplied.
+! **************************************************************************************************
+      SUBROUTINE orbital_lagrangian_hessian(coordinate, direction, multipliers, context, PRODUCT, available)
+         IMPORT :: dp
+         REAL(dp), INTENT(IN) :: coordinate(:), direction(:), multipliers(:)
+         CLASS(*), INTENT(INOUT) :: context
+         REAL(dp), INTENT(OUT) :: PRODUCT(:)
+         LOGICAL, INTENT(OUT) :: available
+      END SUBROUTINE orbital_lagrangian_hessian
+! **************************************************************************************************
 !> \brief Supply a positive inverse diagonal for the coupled orbital step.
 !> \param coordinate Complete accepted coordinates.
 !> \param context Borrowed problem state.
@@ -749,12 +765,15 @@ CONTAINS
 !>        The returned inverse stays fixed throughout each Newton solve.
 !> \param apply_hessian Optional complete analytical response when no dependent constraints are present.
 !>        An unavailable response retains the original numerical curvature and acceptance tests.
+!> \param apply_lagrangian_hessian Optional analytical response on the original physical constraint curve.
+!>        Constraint curvature and original-unit multipliers are included before tangent projection.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
                                              max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
                                              check_segment, interrupted, retain_progress, check_stalled_segment, &
-                                           coordinate_scales, curvature_steps, check_curvature_segment, precondition, apply_hessian)
+                                             coordinate_scales, curvature_steps, check_curvature_segment, precondition, &
+                                             apply_hessian, apply_lagrangian_hessian)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
@@ -764,6 +783,7 @@ CONTAINS
       PROCEDURE(orbital_curvature_segment), OPTIONAL :: check_curvature_segment
       PROCEDURE(orbital_preconditioner), OPTIONAL :: precondition
       PROCEDURE(orbital_hessian_product), OPTIONAL :: apply_hessian
+      PROCEDURE(orbital_lagrangian_hessian), OPTIONAL :: apply_lagrangian_hessian
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
@@ -1124,7 +1144,8 @@ CONTAINS
       REAL(dp)                                           :: best_error, difference, energy_trial, &
                                                             relative_error, scale, step
       REAL(dp), ALLOCATABLE :: candidate(:), full_direction(:), full_product(:), &
-         gradient_minus(:), gradient_plus(:), minus(:), plus(:), previous(:)
+         gradient_minus(:), gradient_plus(:), matrix(:, :), minus(:), multipliers(:), plus(:), &
+         previous(:), rhs(:, :)
 
          valid_product = .FALSE.
          stopped_product = .FALSE.
@@ -1145,6 +1166,49 @@ CONTAINS
                   CPASSERT(ALL(ieee_is_finite(full_product)))
                   PRODUCT = full_product(curve%free)
                   RETURN
+               END IF
+            END IF
+         END IF
+         IF (PRESENT(apply_lagrangian_hessian) .AND. r > 0) THEN
+            IF (stop_requested()) THEN
+               stopped_product = .TRUE.
+               RETURN
+            END IF
+            CALL evaluate_constraints(center, values, jacobian, context)
+            IF (ALL(ABS(values) <= curve%tolerances)) THEN
+               ALLOCATE (full_direction(d), full_product(d), matrix(r, r), rhs(r, 1), multipliers(m))
+               matrix = jacobian(curve%rows(:r), curve%dependent)/SPREAD(curve%scales(curve%rows(:r)), 2, r)
+               rhs(:, 1) = -MATMUL(jacobian(curve%rows(:r), curve%free)/ &
+                                   SPREAD(curve%scales(curve%rows(:r)), 2, nf), direction)
+               CALL solve_constraint_system(matrix, rhs, valid_trial)
+               IF (valid_trial) THEN
+                  full_direction(curve%free) = direction
+                  full_direction(curve%dependent) = rhs(:, 1)
+                  ! Backtracking callbacks can leave the last rejected full gradient cached.
+                  CALL evaluate_gradient(center, energy_trial, g, context)
+                  matrix = TRANSPOSE(jacobian(curve%rows(:r), curve%dependent)/ &
+                                     SPREAD(curve%scales(curve%rows(:r)), 2, r))
+                  rhs(:, 1) = g(curve%dependent)
+                  CALL solve_constraint_system(matrix, rhs, valid_trial)
+                  IF (valid_trial) THEN
+                     multipliers = 0.0_dp
+                     multipliers(curve%rows(:r)) = rhs(:, 1)/curve%scales(curve%rows(:r))
+                     CALL apply_lagrangian_hessian(center, full_direction, multipliers, context, &
+                                                   full_product, valid_product)
+                     IF (valid_product) THEN
+                        CPASSERT(ALL(ieee_is_finite(full_product)))
+                        matrix = TRANSPOSE(jacobian(curve%rows(:r), curve%dependent)/ &
+                                           SPREAD(curve%scales(curve%rows(:r)), 2, r))
+                        rhs(:, 1) = full_product(curve%dependent)
+                        CALL solve_constraint_system(matrix, rhs, valid_product)
+                        IF (valid_product) THEN
+                           PRODUCT = full_product(curve%free) - &
+                                     MATMUL(TRANSPOSE(jacobian(curve%rows(:r), curve%free)/ &
+                                                      SPREAD(curve%scales(curve%rows(:r)), 2, nf)), rhs(:, 1))
+                           RETURN
+                        END IF
+                     END IF
+                  END IF
                END IF
             END IF
          END IF

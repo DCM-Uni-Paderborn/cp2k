@@ -186,6 +186,19 @@ CONTAINS
       IF (ABS(coordinate(4) - SUM(coordinate(:3)**2)) > 1.e-16_dp) THEN
          ERROR STOP 'Reduced-gradient curvature changed the physical constraint'
       END IF
+      ! The analytical reduction must retain the curved normal and original field units.
+      coordinate(:3) = [0.01_dp, 0.02_dp, 0.03_dp]
+      coordinate(4) = SUM(coordinate(:3)**2)
+      analytical_hessian_calls = 0
+      CALL skala_constrained_stationarity(scaled_curved_constraints, curved_energy_gradient, energy_zero, coordinate, &
+                                          [1.e-24_dp], tolerance, converged, max_iterations=4, iterations=iterations, &
+                                          curvature_steps=.TRUE., apply_lagrangian_hessian=curved_lagrangian_hessian)
+      IF (.NOT. converged .OR. iterations > 4 .OR. NORM2(weights*coordinate(:3)) > tolerance) THEN
+         ERROR STOP 'Analytical Lagrangian curvature did not reach the original minimum'
+      END IF
+      IF (ABS(coordinate(4) - SUM(coordinate(:3)**2)) > 1.e-16_dp .OR. analytical_hessian_calls == 0) THEN
+         ERROR STOP 'Analytical constrained response lost feasibility or was not used'
+      END IF
       ! Feasibility in field units alone does not resolve a weak-normal orbital curve.
       coordinate = [0.2_dp, 0.0_dp, 0.0_dp, 0.04_dp + 1.e-10_dp]
       CALL skala_constraint_chart_create(scaled_curved_constraints, energy_zero, coordinate, [1.e-17_dp], curve, valid)
@@ -342,6 +355,38 @@ CONTAINS
          ERROR STOP 'Invalid curved-energy context'
       END SELECT
    END SUBROUTINE curved_energy_gradient
+
+! **************************************************************************************************
+!> \brief Exact Lagrangian Hessian for the existing curved quadratic in small field units.
+!> \param coordinate Original coordinates (u,h).
+!> \param direction Full tangent direction.
+!> \param multipliers Original-unit coefficient of 1e-8*(h-|u|**2).
+!> \param context Additive energy zero.
+!> \param PRODUCT Complete Lagrangian Hessian product.
+!> \param available Whether this exact response is supplied.
+! **************************************************************************************************
+   SUBROUTINE curved_lagrangian_hessian(coordinate, direction, multipliers, context, PRODUCT, available)
+      REAL(dp), INTENT(IN)                               :: coordinate(:), direction(:), &
+                                                            multipliers(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      REAL(dp), INTENT(OUT)                              :: PRODUCT(:)
+      LOGICAL, INTENT(OUT)                               :: available
+      REAL(dp), PARAMETER :: weights(3) = [1.0_dp, 0.01_dp, 0.0001_dp]
+
+      IF (SIZE(coordinate) /= 4 .OR. SIZE(direction) /= 4 .OR. SIZE(multipliers) /= 1) THEN
+         ERROR STOP 'Invalid curved Lagrangian response dimensions'
+      END IF
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         available = .TRUE.
+      CLASS DEFAULT
+         ERROR STOP 'Invalid curved Lagrangian response context'
+      END SELECT
+      PRODUCT(:3) = (weights - 0.5_dp + 2.e-8_dp*multipliers(1))*direction(:3)
+      PRODUCT(4) = 0.0_dp
+      analytical_hessian_calls = analytical_hessian_calls + 1
+   END SUBROUTINE curved_lagrangian_hessian
 
 ! **************************************************************************************************
 !> \brief Retain every physical residual when several samples share an independent condition.

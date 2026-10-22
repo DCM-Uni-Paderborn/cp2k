@@ -60,7 +60,8 @@ MODULE qs_skala_scf
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_operator
-   USE qs_upf_inverse_scf_response,     ONLY: qs_upf_inverse_scf_electronic_response
+   USE qs_upf_inverse_scf_response,     ONLY: qs_upf_inverse_scf_density_tangent_available,&
+                                              qs_upf_inverse_scf_electronic_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
@@ -110,7 +111,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_accept
    PUBLIC :: qs_skala_scf_coordinate_scales, qs_skala_scf_fermi_target
    PUBLIC :: qs_skala_scf_density_response, qs_skala_scf_operator_response
-   PUBLIC :: qs_skala_scf_curvature
+   PUBLIC :: qs_skala_scf_curvature, qs_skala_scf_lagrangian_curvature
    INTEGER, PARAMETER, PUBLIC :: qs_skala_positive_density_sum = -2
 
    INTEGER(KIND=int_8), PARAMETER :: max_point_operator_bytes = 64_int_8*1024*1024
@@ -838,12 +839,16 @@ CONTAINS
 !> \param direction Joint orbital and auxiliary-band coordinate direction.
 !> \param response Complete native free-energy covector response, overwritten.
 !> \param available Whether every physical electronic contribution has a supplied response.
+!> \param constraint_operator Optional unweighted sum of multiplier-weighted density point operators.
+!>        Subtract it from the orbital part for a native density-floor Lagrangian response.
+!>        Such a product must subsequently be projected onto the same feasible tangent.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_curvature(state, direction, response, available)
+   SUBROUTINE qs_skala_scf_curvature(state, direction, response, available, constraint_operator)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: direction(:)
       REAL(dp), INTENT(OUT)                              :: response(:)
       LOGICAL, INTENT(OUT)                               :: available
+      COMPLEX(dp), INTENT(IN), OPTIONAL :: constraint_operator(:, :, :, :)
 
       COMPLEX(dp), ALLOCATABLE :: density_direction(:, :, :, :), gamma(:, :), &
          operators(:, :, :, :), operators_direction(:, :, :, :)
@@ -860,7 +865,8 @@ CONTAINS
       CALL state%para_env%max(blocked)
       IF (blocked /= 0) RETURN
       CALL qs_skala_scf_density_response(state, direction, density_direction)
-      CALL qs_upf_inverse_scf_electronic_response(state%qs_env, density_direction, operators_direction, available)
+      CALL qs_upf_inverse_scf_electronic_response(state%qs_env, density_direction, operators_direction, available, &
+                                                  density_tangent=PRESENT(constraint_operator))
       IF (.NOT. available) RETURN
       ALLOCATE (operators, MOLD=operators_direction)
       IF (state%bloch) THEN
@@ -872,8 +878,55 @@ CONTAINS
             operators(:, :, 1, spin) = gamma
          END DO
       END IF
+      IF (PRESENT(constraint_operator)) THEN
+         CPASSERT(ALL(SHAPE(constraint_operator) == SHAPE(operators)))
+         operators = operators - constraint_operator
+      END IF
       CALL qs_skala_scf_operator_response(state, direction, operators, operators_direction, response, entropy=.TRUE.)
    END SUBROUTINE qs_skala_scf_curvature
+
+! **************************************************************************************************
+!> \brief Apply the native density-floor Lagrangian Hessian to a feasible orbital tangent.
+!>        Point densities are linear in the original AO matrices at fixed geometry. Their
+!>        coordinate curvature therefore follows from the same orbital operator response.
+!>        The selected KS operator is retained. The default electronic kernel differs only
+!>        by density-normal terms removed by the caller's final tangent projection.
+!> \param state Evaluated original state with feasible registered density-floor constraints.
+!> \param direction Full feasible coordinate direction, including dependent motion.
+!> \param multipliers Original-unit coefficients in registered constraint order.
+!> \param response Full Lagrangian Hessian product, before the final tangent projection.
+!> \param available Whether the native selected surfaces and complete response are supported.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_lagrangian_curvature(state, direction, multipliers, response, available)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: direction(:), multipliers(:)
+      REAL(dp), INTENT(OUT)                              :: response(:)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      COMPLEX(dp), ALLOCATABLE                           :: normal(:, :, :, :), operators(:, :, :)
+      INTEGER                                            :: i
+      INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
+                                                            points(:, :), spins(:)
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: targets(:), tolerances(:)
+
+      available = .FALSE.
+      response = 0.0_dp
+      IF (.NOT. qs_upf_inverse_scf_density_tangent_available(state%qs_env)) RETURN
+      CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid)
+      IF (.NOT. valid) RETURN
+      CPASSERT(SIZE(multipliers) == SIZE(spins))
+      CPASSERT(ALL(ieee_is_finite(multipliers)))
+      CALL point_operators(state, domains(1), points(:, 1), descriptors(1), operators)
+      ALLOCATE (normal(SIZE(operators, 1), SIZE(operators, 2), SIZE(operators, 3), 2), &
+                SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      DO i = 1, SIZE(spins)
+         IF (multipliers(i) == 0.0_dp) CYCLE
+         CALL point_operators(state, domains(i), points(:, i), descriptors(i), operators)
+         normal(:, :, :, spins(i)) = normal(:, :, :, spins(i)) + multipliers(i)*operators
+      END DO
+      CALL qs_skala_scf_curvature(state, direction, response, available, constraint_operator=normal)
+   END SUBROUTINE qs_skala_scf_lagrangian_curvature
 
 ! **************************************************************************************************
 !> \brief Physical Fermi occupation directions with the original group charge held fixed.
@@ -2224,7 +2277,7 @@ CONTAINS
       LOGICAL                                            :: coupled_curvature, valid
       REAL(dp), ALLOCATABLE                              :: coordinate_scales(:), density_floors(:), &
                                                             gradient(:), origin(:), response(:), &
-                                                            zero(:)
+                                                            zero(:), zero_multipliers(:)
       TYPE(mp_comm_type)                                 :: comm
       TYPE(physical_constraints_context)                 :: context
       TYPE(section_vals_type), POINTER                   :: functional_section, xc_section
@@ -2289,12 +2342,17 @@ CONTAINS
       END IF
       origin = coordinate
       coupled_curvature = state%thermal
-      IF (m == 0 .AND. .NOT. coupled_curvature) THEN
-         ! Use available complete analytical curvature before a fixed-occupation
-         ! search stalls. Unsupported kernels retain the ordinary BFGS search.
+      IF (.NOT. coupled_curvature) THEN
+         ! Probe the appropriate complete response before the native search stalls.
          ALLOCATE (zero(SIZE(coordinate)), response(SIZE(coordinate)))
          zero = 0.0_dp
-         CALL evaluate_native_hessian(coordinate, zero, context, response, coupled_curvature)
+         IF (m == 0) THEN
+            CALL evaluate_native_hessian(coordinate, zero, context, response, coupled_curvature)
+         ELSE
+            ALLOCATE (zero_multipliers(m), SOURCE=0.0_dp)
+            CALL evaluate_native_lagrangian_hessian(coordinate, zero, zero_multipliers, context, response, coupled_curvature)
+         END IF
+         DEALLOCATE (zero, response)
       END IF
       ALLOCATE (coordinate_scales(SIZE(coordinate)))
       CALL qs_skala_scf_coordinate_scales(state, coordinate_scales)
@@ -2306,7 +2364,8 @@ CONTAINS
                                           check_segment=check_native_step, retain_progress=retain_progress, &
                                           check_stalled_segment=check_native_stall, coordinate_scales=coordinate_scales, &
                                           curvature_steps=coupled_curvature, check_curvature_segment=check_native_curvature, &
-                                          precondition=evaluate_native_preconditioner, apply_hessian=evaluate_native_hessian)
+                                          precondition=evaluate_native_preconditioner, apply_hessian=evaluate_native_hessian, &
+                                          apply_lagrangian_hessian=evaluate_native_lagrangian_hessian)
       IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) THEN
          IF (context%crossings%resolved) THEN
             ! Classification has already verified this downhill root in the native fields.
@@ -3363,6 +3422,50 @@ CONTAINS
          CPABORT("Invalid native Skala Hessian context.")
       END SELECT
    END SUBROUTINE evaluate_native_hessian
+
+! **************************************************************************************************
+!> \brief Supply the native original-unit density-floor Lagrangian response.
+!> \param coordinate Accepted coordinates on the physical constraint curve.
+!> \param direction Complete feasible coordinate direction.
+!> \param multipliers Constraint coefficients in original physical units.
+!> \param context Borrowed state and the same registered physical constraint ordering.
+!> \param PRODUCT Full response before the caller's final tangent projection.
+!> \param available Whether a complete native tangent response is supplied.
+! **************************************************************************************************
+   SUBROUTINE evaluate_native_lagrangian_hessian(coordinate, direction, multipliers, context, PRODUCT, available)
+      REAL(dp), INTENT(IN)                               :: coordinate(:), direction(:), &
+                                                            multipliers(:)
+
+      CLASS(*), INTENT(INOUT)                            :: context
+      REAL(dp), INTENT(OUT)                              :: PRODUCT(:)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), points(:, :), &
+                                                            spins(:)
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: gradient(:), targets(:), tolerances(:)
+
+      available = .FALSE.
+      PRODUCT = 0.0_dp
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (.NOT. qs_upf_inverse_scf_density_tangent_available(context%state%qs_env)) RETURN
+         IF (.NOT. at_native_coordinate(context%state, coordinate) .OR. .NOT. context%state%operator_current) THEN
+            ALLOCATE (gradient(SIZE(coordinate)))
+            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient)
+         END IF
+         CALL qs_skala_scf_selected(context%state, points, domains, spins, descriptors, targets, tolerances, valid)
+         IF (.NOT. valid) RETURN
+         CPASSERT(ALL(SHAPE(points) == SHAPE(context%points)))
+         CPASSERT(ALL(points == context%points) .AND. ALL(domains == context%domains))
+         CPASSERT(ALL(spins == context%spins) .AND. ALL(descriptors == context%descriptors))
+         CPASSERT(ALL(targets == context%targets))
+         CALL qs_skala_scf_lagrangian_curvature(context%state, direction, multipliers, PRODUCT, available)
+      CLASS DEFAULT
+         CPABORT("Invalid native Lagrangian Hessian context.")
+      END SELECT
+   END SUBROUTINE evaluate_native_lagrangian_hessian
 
 ! **************************************************************************************************
 !> \brief Invert current frozen-Hamiltonian occupation curvature in the fixed search coordinates.
