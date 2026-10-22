@@ -11,6 +11,7 @@ PROGRAM xc_semilocal_unittest
    USE input_section_types, ONLY: section_release, &
                                   section_type, &
                                   section_vals_create, &
+                                  section_vals_get_subs_vals, &
                                   section_vals_release, &
                                   section_vals_type, &
                                   section_vals_val_set
@@ -34,12 +35,14 @@ PROGRAM xc_semilocal_unittest
                                       xc_dset_release
    USE xc_derivative_types, ONLY: xc_derivative_get, &
                                   xc_derivative_type
-   USE xc_derivatives, ONLY: xc_functionals_eval, &
+   USE xc_derivatives, ONLY: xc_functional_get_info, &
+                             xc_functionals_eval, &
                              xc_functionals_get_needs, xc_functionals_select_floor_limits, xc_functionals_spin_floors
    USE xc_input_constants, ONLY: xc_pbe_orig, &
                                  xc_pbe_rev, &
                                  xc_pbe_sol
    USE xc_pbe, ONLY: pbe_spin_density_floor
+   USE xc_pade, ONLY: pade_info
    USE xc_rho_cflags_types, ONLY: xc_rho_cflags_type
    USE xc_rho_set_types, ONLY: xc_rho_set_create, &
                                xc_rho_set_release, &
@@ -67,6 +70,7 @@ PROGRAM xc_semilocal_unittest
                step, trial(5), x(5), energy_error, hessian_error
 
    CALL cp2k_init()
+   CALL check_pade_metadata()
    NULLIFY (specification, functional)
    CALL create_xc_fun_section(specification)
    CALL section_vals_create(functional, specification)
@@ -126,6 +130,32 @@ PROGRAM xc_semilocal_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check that the functional dispatcher forwards PADE derivative availability for both spins.
+! **************************************************************************************************
+   SUBROUTINE check_pade_metadata()
+      INTEGER                                            :: direct_order, reported_order, spin_case
+      TYPE(section_type), POINTER                        :: definition
+      TYPE(section_vals_type), POINTER                   :: combination, component
+
+      NULLIFY (definition, combination, component)
+      CALL create_xc_fun_section(definition)
+      CALL section_vals_create(combination, definition)
+      CALL section_vals_val_set(combination, 'PADE%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      component => section_vals_get_subs_vals(combination, 'PADE')
+      DO spin_case = 1, 2
+         direct_order = -1
+         reported_order = -2
+         CALL pade_info(lsd=spin_case == 2, max_deriv=direct_order)
+         CALL xc_functional_get_info(component, lsd=spin_case == 2, max_deriv=reported_order)
+         IF (reported_order /= direct_order .OR. reported_order < 2) THEN
+            ERROR STOP 'PADE derivative availability differs from the native functional'
+         END IF
+      END DO
+      CALL section_vals_release(combination)
+      CALL section_release(definition)
+   END SUBROUTINE check_pade_metadata
 
 #if defined (__LIBXC)
 ! **************************************************************************************************

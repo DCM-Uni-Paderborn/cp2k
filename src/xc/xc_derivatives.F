@@ -231,7 +231,7 @@ CONTAINS
                               needs=needs, max_deriv=max_deriv)
          END IF
       CASE ("PADE")
-         CALL pade_info(reference, shortform, lsd=lsd, needs=needs)
+         CALL pade_info(reference, shortform, lsd=lsd, needs=needs, max_deriv=max_deriv)
       CASE ("HCTH")
          CALL section_vals_val_get(functional, "PARAMETER_SET", i_val=i_param)
          CPASSERT(.NOT. lsd)
