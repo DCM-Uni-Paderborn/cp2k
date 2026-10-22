@@ -963,10 +963,10 @@ CONTAINS
                trial_slope = DOT_PRODUCT(trial_reduced, direction)
                IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. &
                    ((curvature_stalled .AND. .NOT. resolved_descent) .OR. ABS(trial_energy - energy) <= roundoff .OR. &
-                    (trial_slope >= 0.0_dp .AND. trial_energy < energy - roundoff)) .AND. &
+                    (trial_slope > 0.9_dp*ABS(slope) .AND. trial_energy < energy - roundoff)) .AND. &
                    free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
-                  ! A reversed directional derivative can bracket a cusp while the energy
-                  ! decrease remains resolved. Inspect that feasible interval immediately.
+                  ! Inspect a reversal that fails the usual strong curvature condition.
+                  ! A reversal satisfying it can be an ordinary smooth descent step.
                   resolution_checked = .TRUE.
                   event = .FALSE.
                   IF (trial_slope >= 0.0_dp .AND. trial_energy < energy - roundoff) THEN
