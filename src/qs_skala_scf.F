@@ -1043,7 +1043,7 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: available
 
       COMPLEX(dp), ALLOCATABLE                           :: normal(:, :, :, :), operators(:, :, :)
-      INTEGER                                            :: i
+      INTEGER                                            :: i, ns
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), spins(:)
       LOGICAL                                            :: valid
@@ -1057,12 +1057,20 @@ CONTAINS
       CPASSERT(SIZE(multipliers) == SIZE(spins))
       CPASSERT(ALL(ieee_is_finite(multipliers)))
       CALL point_operators(state, domains(1), points(:, 1), descriptors(1), operators)
-      ALLOCATE (normal(SIZE(operators, 1), SIZE(operators, 2), SIZE(operators, 3), 2), &
+      ns = SIZE(state%orbitals, 2)
+      ALLOCATE (normal(SIZE(operators, 1), SIZE(operators, 2), SIZE(operators, 3), ns), &
                 SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
       DO i = 1, SIZE(spins)
          IF (multipliers(i) == 0.0_dp) CYCLE
          CALL point_operators(state, domains(i), points(:, i), descriptors(i), operators)
-         normal(:, :, :, spins(i)) = normal(:, :, :, spins(i)) + multipliers(i)*operators
+         IF (ns == 1) THEN
+            CPASSERT(spins(i) == 0)
+            ! A native RKS sample is one half of its spin-summed AO density.
+            normal(:, :, :, 1) = normal(:, :, :, 1) + 0.5_dp*multipliers(i)*operators
+         ELSE
+            CPASSERT(spins(i) >= 1 .AND. spins(i) <= ns)
+            normal(:, :, :, spins(i)) = normal(:, :, :, spins(i)) + multipliers(i)*operators
+         END IF
       END DO
       CALL qs_skala_scf_curvature(state, direction, response, available, constraint_operator=normal)
    END SUBROUTINE qs_skala_scf_lagrangian_curvature

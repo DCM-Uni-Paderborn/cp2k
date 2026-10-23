@@ -14,9 +14,12 @@ MODULE qs_upf_inverse_scf_response
                                               section_get_rval,&
                                               section_vals_get,&
                                               section_vals_get_subs_vals,&
-                                              section_vals_type
+                                              section_vals_get_subs_vals2,&
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_para_env_type
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE paw_types,                       ONLY: paw_potential_type
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -56,6 +59,7 @@ MODULE qs_upf_inverse_scf_response
                                               skala_density_descriptor
    USE skala_gpw_functional,            ONLY: native_skala_gapw_atom_composite_requested,&
                                               native_skala_gapw_composite_reference,&
+                                              native_skala_spin_floors,&
                                               skala_gpw_eval,&
                                               xc_section_uses_native_skala_evaluator
    USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
@@ -77,7 +81,8 @@ CONTAINS
 !>        Their selected and default covectors differ only in the density normal. A kernel
 !>        from the default branch can therefore be used between tangent projections, together
 !>        with the current selected KS operator and the physical constraint curvature.
-!>        Learned-model, kinetic and nonlinear selector boundaries retain numerical response.
+!>        Native model density clamps have the same common tangent. Kinetic and nonlinear
+!>        selector boundaries retain numerical response.
 !> \param qs_env Original evaluated inverse environment and its registered physical constraints.
 !> \return Whether the selected surfaces admit this native density-tangent construction.
 ! **************************************************************************************************
@@ -88,34 +93,56 @@ CONTAINS
       INTEGER                                            :: i
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), spins(:)
-      LOGICAL                                            :: kinetic_boundary
+      LOGICAL                                            :: active, kinetic_boundary, model
       REAL(dp)                                           :: kinetic_probe, kinetic_tolerance, probe, &
                                                             tolerance
       REAL(dp), ALLOCATABLE                              :: floors(:), targets(:), weights(:)
       TYPE(dft_control_type), POINTER                    :: control
+      TYPE(mp_comm_type)                                 :: group
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
-      TYPE(section_vals_type), POINTER                   :: functional, xc
+      TYPE(section_vals_type), POINTER                   :: component, functional, xc
       TYPE(skala_density_constraints_type), POINTER      :: constraints
       TYPE(xc_rho_cflags_type)                           :: needs
 
       available = .FALSE.
-      CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=control)
-      IF (control%nspins /= 2) RETURN
+      CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=control, para_env=para_env)
+      IF (control%nspins < 1 .OR. control%nspins > 2) RETURN
       CALL get_ks_env(ks_env, skala_constraints=constraints)
       IF (.NOT. ASSOCIATED(constraints)) RETURN
       IF (skala_density_constraints_count(constraints) == 0) RETURN
       xc => section_vals_get_subs_vals(qs_env%input, "DFT%XC")
-      IF (xc_section_uses_native_skala_evaluator(xc)) RETURN
+      model = xc_section_uses_native_skala_evaluator(xc)
       functional => section_vals_get_subs_vals(xc, "XC_FUNCTIONAL")
-      needs = xc_functionals_get_needs(functional, .TRUE., kinetic_density_boundary=kinetic_boundary)
-      IF (kinetic_boundary .AND. (needs%tau .OR. needs%tau_spin)) RETURN
-      floors = xc_functionals_spin_floors(functional, .TRUE., section_get_rval(xc, "DENSITY_CUTOFF"))
+      IF (model) THEN
+         ! The complete native model kernel is used only for its own density clamps.
+         i = 0
+         DO
+            i = i + 1
+            component => section_vals_get_subs_vals2(functional, i_section=i)
+            IF (.NOT. ASSOCIATED(component)) EXIT
+            CALL section_vals_val_get(component, "_SECTION_PARAMETERS_", l_val=active)
+            IF (active .AND. component%section%name /= "GAUXC") RETURN
+         END DO
+         CALL group%set_handle(para_env%get_handle())
+         floors = native_skala_spin_floors(xc, group)
+      ELSE
+         needs = xc_functionals_get_needs(functional, control%nspins == 2, kinetic_density_boundary=kinetic_boundary)
+         IF (kinetic_boundary .AND. (needs%tau .OR. needs%tau_spin)) RETURN
+         floors = xc_functionals_spin_floors(functional, control%nspins == 2, section_get_rval(xc, "DENSITY_CUTOFF"))
+      END IF
       CALL skala_density_constraints_get(constraints, points, spins, weights, probe, tolerance, &
                                          descriptors=descriptors, domains=domains, targets=targets, &
                                          kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
-      IF (ANY(descriptors /= skala_density_descriptor) .OR. ANY(spins < 1) .OR. ANY(spins > 2)) RETURN
+      IF (ANY(descriptors /= skala_density_descriptor)) RETURN
+      IF (control%nspins == 1) THEN
+         IF (ANY(spins /= 0)) RETURN
+      ELSE
+         IF (ANY(spins < 1) .OR. ANY(spins > 2)) RETURN
+      END IF
       DO i = 1, SIZE(targets)
-         IF (targets(i) <= 0.0_dp .OR. ALL(floors /= targets(i))) RETURN
+         IF (.NOT. model .AND. targets(i) <= 0.0_dp) RETURN
+         IF (ALL(floors /= targets(i))) RETURN
       END DO
       available = .TRUE.
    END FUNCTION qs_upf_inverse_scf_density_tangent_available
@@ -174,7 +201,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(section_vals_type), POINTER                   :: functional, hf, xc
-      TYPE(skala_density_constraints_type), POINTER      :: constraints
+      TYPE(skala_density_constraints_type), POINTER      :: constraints, response_constraints
       TYPE(xc_rho_cflags_type)                           :: needs
 
       available = .FALSE.
@@ -316,8 +343,12 @@ CONTAINS
       END DO
       NULLIFY (first_rho, first_tau, response_rho, response_tau)
       IF (model) THEN
+         response_constraints => constraints
+         ! Keep the selected KS covector. Only the electronic kernel uses the default
+         ! clamp branch between the caller's two physical tangent projections.
+         IF (tangent) NULLIFY (response_constraints)
          CALL skala_gpw_eval(first_rho, first_tau, energy, density, density_g, kinetic, xc, weights, pool, &
-                             particles, cell, .FALSE., virial, density_constraints=constraints, &
+                             particles, cell, .FALSE., virial, density_constraints=response_constraints, &
                              rho_direction=direction, rho_direction_g=direction_g, tau_direction=kinetic_direction, &
                              vxc_rho_response=response_rho, vxc_tau_response=response_tau)
       ELSE

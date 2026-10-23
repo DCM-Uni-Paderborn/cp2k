@@ -574,9 +574,6 @@ CONTAINS
 
       tangent = .FALSE.
       IF (PRESENT(density_tangent)) tangent = density_tangent
-      IF (tangent) THEN
-         CPASSERT(.NOT. xc_section_uses_native_skala_evaluator(xc_section))
-      END IF
       CALL get_ks_env(ks_env, upf_inverse=state, cell=cell, para_env=para_env, skala_constraints=constraints)
       CPASSERT(ASSOCIATED(state))
       CPASSERT(state%enabled)
