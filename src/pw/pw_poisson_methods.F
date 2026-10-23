@@ -152,7 +152,7 @@ CONTAINS
             z = ABS(grid%g(iz, ig))
             IF (z == 0.0_dp) CYCLE
             radius = green%radius
-            q = SQRT(MAX(0.0_dp, g2 - z*z))
+            q = SQRT(SUM(grid%g(:, ig)**2, MASK=[1, 2, 3] /= iz))
             dz = -strain(iz, iz)*z
             response(ig) = response(ig) + fourpi/g2*radius*dz* &
                            (radius*q*BESSEL_J1(radius*q)*bessk0_response(radius*z) - &

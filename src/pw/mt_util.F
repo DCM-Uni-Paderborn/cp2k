@@ -166,7 +166,7 @@ CONTAINS
          DO ig = screen_function%pw_grid%first_gne0, screen_function%pw_grid%ngpts_cut_local
             gz = screen_function%pw_grid%g(iz, ig)
             g2 = screen_function%pw_grid%gsq(ig)
-            gxy = SQRT(ABS(g2 - gz*gz))
+            gxy = SQRT(SUM(screen_function%pw_grid%g(:, ig)**2, MASK=[1, 2, 3] /= iz))
             g3d = fourpi/g2
             screen_function%array(ig) = -g3d*COS(gz*zlength/2.0_dp)*EXP(-gxy*zlength/2.0_dp)
          END DO

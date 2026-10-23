@@ -327,7 +327,8 @@ CONTAINS
                nz = grid%g_hat(iz, ig)
                g2 = grid%gsq(ig)
                g3d = fourpi/g2
-               gxy = MAX(0.0_dp, g2 - grid%g(iz, ig)*grid%g(iz, ig))
+               ! Retain exact reciprocal-axis zeros, including with fused arithmetic.
+               gxy = SUM(grid%g(:, ig)**2, MASK=[1, 2, 3] /= iz)
                gg = 0.5_dp*SQRT(gxy)
                gf%array(ig) = g3d*(1.0_dp - (-1.0_dp)**nz*EXP(-gg*zlength))
             END DO
@@ -342,7 +343,7 @@ CONTAINS
             DO ig = grid%first_gne0, grid%ngpts_cut_local
                g2 = grid%gsq(ig)
                g3d = fourpi/g2
-               gxy = SQRT(MAX(0.0_dp, g2 - grid%g(iz, ig)*grid%g(iz, ig)))
+               gxy = SQRT(SUM(grid%g(:, ig)**2, MASK=[1, 2, 3] /= iz))
                gz = ABS(grid%g(iz, ig))
                j0g = BESSEL_J0(rlength*gxy)
                j1g = BESSEL_J1(rlength*gxy)
