@@ -106,8 +106,8 @@ CONTAINS
          CPASSERT(ASSOCIATED(kpoints))
          DO ik = 1, kpoints%nkp
             IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry .AND. &
-                (control%qs_control%gapw .OR. control%use_gauxc)) THEN
-               CPABORT("Spatial k-point symmetry currently requires semilocal GPW or GAPW_XC")
+                control%use_gauxc) THEN
+               CPABORT("Spatial k-point symmetry with learned XC is not implemented yet")
             END IF
          END DO
          ! The star retains physical AO actions for both spatial and time-reversed partners.

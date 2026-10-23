@@ -506,7 +506,7 @@ CONTAINS
                           "It requires nonoverlapping reconstruction and projector supports. "// &
                           "INVERSE retains couplings between reconstruction regions. "// &
                           "Both inverse representations retain the original augmentation and finite reconstruction residuals. "// &
-                          "Spatial k-point reduction supports semilocal GPW and GAPW_XC calculations.", &
+                          "Spatial k-point reduction supports semilocal GPW, GAPW_XC and GAPW calculations.", &
                           usage="USPP_METHOD INVERSE_1C", &
                           enum_c_vals=s2a("DIRECT", "INVERSE", "INVERSE_1C"), &
                           enum_desc=s2a("Soft Gaussian orbitals", "General coupled inverse", "Nonoverlapping atom-local inverse"), &
