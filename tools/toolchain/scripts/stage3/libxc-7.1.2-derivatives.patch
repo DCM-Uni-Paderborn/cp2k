@@ -1,82 +1,163 @@
---- a/src/maple2c/mgga_exc/mgga_c_r2scan.c
-+++ b/src/maple2c/mgga_exc/mgga_c_r2scan.c
-@@ -132,7 +132,7 @@
-   const double _t8 = xc_expm1(_t7);
- #if _KMAX >= 1
-   const double _t9 = log(p->zeta_threshold);
--  const double _t10 = _t8 + 0.1e1;
-+  const double _t10 = exp(_t7);
-   const double _t11 = my_piecewise3(_t4, 0.1e1, 0);
-   const double _t12 = _t5 + 0.1e1;
-   const double _t13 = _t10*_t11/_t12;
-@@ -159,23 +159,62 @@
- #endif
- }
+--- a/python/libxc_codegen.py
++++ b/python/libxc_codegen.py
+@@ -265,7 +265,7 @@
+         # v2rho2 NaN. Neither my_piecewise3(.., thr^n, (1+z)^n) nor a base clamp
+         # m_max(1+z,thr)^n survive: the codegen distributes Pow back over the
+         # piecewise, re-exposing a raw (1+z)^n branch whose derivative is inf.
+-        return 1 + opz_pow_n_m1(z, n)
++        return opz_pow_n_positive(z, n)
+     if _opz_pow_n_gen_helper is None:
+         _zg = sp.Symbol("z", real=True)
+         _ng = sp.Symbol("n", real=True)
+@@ -4160,7 +4160,7 @@
+     def fdiff(self, argindex=1):
+         y, = self.args
+         if argindex == 1:
+-            return (xc_expm1(y) + Integer(1)) * Integer(1)
++            return exp(y)
+         return 0
 
-+GPU_DEVICE_FUNCTION static inline void XC_CAT(opz_pow_n_k, _KMAX)(const xc_func_type *p, double z, double n, double *out) {
-+
-+  const double _t1 = z + 0.1e1 <= p->zeta_threshold;
-+  const double _t2 = pow(p->zeta_threshold, n);
-+  const double _t3 = p->zeta_threshold - 0.1e1;
-+  const double _t4 = z > _t3;
-+  const double _t5 = my_piecewise3(_t4, z, _t3);
-+  const double _t6 = xc_log1p(_t5);
-+  const double _t7 = _t6*n;
-+  const double _t8 = exp(_t7);
-+#if _KMAX >= 1
-+  const double _t9 = log(p->zeta_threshold);
-+  const double _t10 = _t8;
-+  const double _t11 = my_piecewise3(_t4, 0.1e1, 0);
-+  const double _t12 = _t5 + 0.1e1;
-+  const double _t13 = _t10*_t11/_t12;
-+#endif
-+#if _KMAX >= 2
-+  const double _t14 = _t10*(_t11 * _t11)/(_t12 * _t12);
-+#endif
-+
-+  const double f = my_piecewise3(_t1, _t2, _t8);
-+  out[0] = f;
-+#if _KMAX >= 1
-+  const double df_dn = my_piecewise3(_t1, _t2*_t9, _t10*_t6);
-+  out[1] = df_dn;
-+  const double df_dz = my_piecewise3(_t1, 0, _t13*n);
-+  out[2] = df_dz;
-+#endif
-+#if _KMAX >= 2
-+  const double d2f_dn2 = my_piecewise3(_t1, _t2*(_t9 * _t9), _t10*(_t6 * _t6));
-+  out[3] = d2f_dn2;
-+  const double d2f_dz_dn = my_piecewise3(_t1, 0, _t13*_t7 + _t13);
-+  out[4] = d2f_dz_dn;
-+  const double d2f_dz2 = my_piecewise3(_t1, 0, _t14*(n * n) - _t14*n);
-+  out[5] = d2f_dz2;
-+#endif
-+}
-+
- GPU_DEVICE_FUNCTION static inline void XC_CAT(mgga_alpha_total_reg_k, _KMAX)(const xc_func_type *p, double z, double xt, double ts0, double ts1, double eta, double *out) {
 
-   double _hc0[(_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1];
--  XC_CAT(opz_pow_n_m1_k, _KMAX)(p, z, 0.5e1 / 0.3e1, _hc0);
-+  XC_CAT(opz_pow_n_k, _KMAX)(p, z, 0.5e1 / 0.3e1, _hc0);
-   double _hc1[(_KMAX) >= 2 ? 6 : (_KMAX) >= 1 ? 3 : 1];
--  XC_CAT(opz_pow_n_m1_k, _KMAX)(p, -z, 0.5e1 / 0.3e1, _hc1);
-+  XC_CAT(opz_pow_n_k, _KMAX)(p, -z, 0.5e1 / 0.3e1, _hc1);
-   const double _t1 = (xt * xt);
-   const double _t2 = (0.1e1 / 0.8e1)*_t1;
-   const double _t3 = _t2*eta;
-   const double _t4 = xc_powr(0.3e1, 2, 3)*(M_PI * M_CBRTPI);
-   const double _t5 = (0.3e1 / 0.20e2)*_t4;
--  const double _t6 = _t3 + _t5*(_hc0[0] + _hc1[0] + 0.2e1);
-+  const double _t6 = _hc0[0]*_t5 + _hc1[0]*_t5 + _t3;
-   const double _t7 = (0.1e1 / _t6);
-   const double _t8 = M_CBRT2;
--  const double _t9 = _hc0[0] + 0.1e1;
-+  const double _t9 = _hc0[0];
-   const double _t10 = _t9*ts0;
--  const double _t11 = _hc1[0] + 0.1e1;
-+  const double _t11 = _hc1[0];
-   const double _t12 = _t11*ts1;
-   const double _t13 = -_t2 + (0.1e1 / 0.4e1)*_t8*(_t10 + _t12);
- #if _KMAX >= 1
+@@ -4208,6 +4208,11 @@
+
+ def to_elementary(expr):
+     return maple_eval(expr, xc_expm1, (lambda q: exp(q) - Integer(1)), xc_log1p, (lambda q: log(Integer(1) + q)), xc_asinh, (lambda q: asinh(q)), xc_atanh, (lambda q: atanh(q)), xc_x_minus_log1p, (lambda q: q - log(Integer(1) + q)), my_dilog, (lambda q: polylog(Integer(2), q)), m_recexp, (lambda q: exp(-Integer(1)/q)), m_one_minus_recexp, (lambda q: Integer(1) - exp(-Integer(1)/q)), xc_erfcx, (lambda q: exp(q**Integer(2))*erfc(q)), xc_E1_scaled, (lambda q: exp(q)*expint(Integer(1), q)))
++
++
++@helper
++def opz_pow_n_positive(z, n):
++    return my_piecewise3(Integer(1) + z <= p_a_zeta_threshold, (p_a_zeta_threshold)**n, exp(n*xc_log1p(m_max(z, p_a_zeta_threshold - Integer(1)))))
+
+
+ @helper
+@@ -4449,7 +4454,6 @@
+     return (t - x**Integer(2)/Integer(8))/K_FACTOR_C
+
+
+-@helper
+ def mgga_alpha_reg(x, t, eta):
+     return (t - x**Integer(2)/Integer(8))/(K_FACTOR_C + eta*x**Integer(2)/Integer(8))
+
+@@ -4511,7 +4515,6 @@
+     return (t_total(z, ts0, ts1) - xt**Integer(2)/Integer(8))/(K_FACTOR_C*t_total(z, Integer(1), Integer(1)))
+
+
+-@helper
+ def mgga_alpha_total_reg(z, xt, ts0, ts1, eta):
+     return (t_total(z, ts0, ts1) - xt**Integer(2)/Integer(8))/(K_FACTOR_C*t_total(z, Integer(1), Integer(1)) + eta*xt**Integer(2)/Integer(8))
+
+@@ -4592,3 +4595,5 @@
+
+
+ __all__ += ["att_erf_aux1", "att_erf_aux2", "att_erf_aux3", "attenuation_erf0", "attenuation_erf", "one_minus_attenuation_erf0", "one_minus_attenuation_erf", "a_cnst", "lda_x_ax", "lda_x_erf_spin"]
++
++__all__ += ["opz_pow_n_positive"]
+--- a/python/mgga_exc/mgga_c_r2scan.py
++++ b/python/mgga_exc/mgga_c_r2scan.py
+@@ -108,7 +108,6 @@
+
+ # Equation (S34)
+
+-@helper
+ def r2scan_dy(rs, z, s):
+     return (
+         r2scan_dfc2(rscan_fc)/(Integer(27) * mgamma * r2scan_d(z) * mphi(z)**Integer(3) * w1(rs, z)) * (
+@@ -119,7 +118,6 @@
+
+ # Equation (S32)
+
+-@helper
+ def r2scan_y(rs, z, t):
+     return mbeta(rs)*t**Integer(2)/(mgamma*w1(rs, z))
+
+@@ -130,23 +128,19 @@
+ # is routed through expm1/log1p so the small-Y limit doesn't lose
+ # precision in `1 - close-to-1`.
+
+-@helper
+ def r2scan_one_minus_g(rs, z, s, t):
+     return -xc_expm1(-(Integer(1)/Integer(4))*xc_log1p(Integer(4)*(r2scan_y(rs, z, t) - r2scan_dy(rs, z, s))))
+
+-@helper
+ def fH(rs, z, s, t):
+     return mgamma*mphi(z)**Integer(3)*xc_log1p(w1(rs, z)*r2scan_one_minus_g(rs, z, s, t))
+
+ # Now we can build ec1 from (S24)
+
+-@helper
+ def r2scan_ec1(rs, z, s, t):
+     return f_pw(rs, z) + fH(rs, z, s, t)
+
+ # Equation (S35)-(S41) are same as SCAN
+
+-@helper
+ def r2scan_ec0(rs, z, s):
+     return scan_e0(rs, z, s)
+
+@@ -155,14 +149,12 @@
+ # yields directly; see mgga_c_r2scanl.mpl.  Named to avoid colliding with the
+ # exchange kernel's r2scan_f_a.
+
+-@helper
+ def r2scan_c_f_a(rs, z, xt, a):
+     return (
+         r2scan_ec1(rs, z, gga_s_total(xt), tt(rs, z, xt)) + r2scan_f_alpha(a, rscan_fc)*(
+         + r2scan_ec0(rs, z, gga_s_total(xt)) - r2scan_ec1(rs, z, gga_s_total(xt), tt(rs, z, xt)))
+     )
+
+-@helper
+ def r2scan_f(rs, z, xt, xs0, xs1, ts0, ts1):
+     return r2scan_c_f_a(rs, z, xt, mgga_alpha_total_reg(z, xt, ts0, ts1, params_a_eta))
+
+--- a/python/mgga_exc/mgga_c_scan.py
++++ b/python/mgga_exc/mgga_c_scan.py
+@@ -44,7 +44,6 @@
+ # as `1 - scan_g_infty`, so we emit that form directly through
+ # expm1/log1p for cancellation-free evaluation at small 4*chi*s^2.
+
+-@helper
+ def scan_one_minus_g_infty(s):
+     return -xc_expm1(-(Integer(1)/Integer(4))*xc_log1p(Integer(4)*scan_chi_infty*s**Integer(2)))
+
+@@ -56,11 +55,9 @@
+ def scan_Gc(z):
+     return (Integer(1) - scan_G_cnst*(Integer(2)**(Integer(1)/Integer(3)) - Integer(1))*f_zeta(z))*one_minus_z_pow_n(z, Integer(12))
+
+-@helper
+ def scan_H0(rs, s):
+     return scan_b1c*xc_log1p(xc_expm1(-scan_eclda0(rs)/scan_b1c)*scan_one_minus_g_infty(s))
+
+-@helper
+ def scan_e0(rs, z, s):
+     return (scan_eclda0(rs) + scan_H0(rs, s))*scan_Gc(z)
+
+--- a/python/mgga_exc/mgga_x_r2scan.py
++++ b/python/mgga_exc/mgga_x_r2scan.py
+@@ -55,14 +55,12 @@
+ # the alpha its kinetic energy functional yields directly, rather than
+ # reconstructing it from tau; see mgga_x_scanl.mpl.
+
+-@helper
+ def r2scan_f_a(x, a):
+     return (
+         (scan_h1x(r2scan_x(mgga_p(x), rscan_fx))
+         + r2scan_f_alpha(a, rscan_fx) * (scan_h0x - scan_h1x(r2scan_x(mgga_p(x), rscan_fx))))*scan_gx(x)
+     )
+
+-@helper
+ def r2scan_f(x, u, t):
+     return r2scan_f_a(x, mgga_alpha_reg(x, t, params_a_eta))
+
+--- a/python/mgga_exc/mgga_x_scan.py
++++ b/python/mgga_exc/mgga_x_scan.py
+@@ -80,7 +80,6 @@
+
+ scan_a1 = Float('4.9479')
+
+-@helper
+ def scan_gx(x):
+     return -xc_expm1(-scan_a1/sqrt(gga_s(x)))
+
 --- a/src/maple2c/mgga_exc/mgga_c_tpss.c
 +++ b/src/maple2c/mgga_exc/mgga_c_tpss.c
 @@ -186,7 +186,7 @@
@@ -282,7 +363,7 @@
 @@ -1395,7 +1396,7 @@
    const double _t47 = _t16*_t40;
  #endif
- 
+
 -  const double f = my_piecewise3(_t9, 0.1e1, _t8);
 +  const double f = my_piecewise3(_t8 > 0.1e1, 0.1e1, _t8);
    out[0] = f;
@@ -301,7 +382,7 @@
 @@ -1533,7 +1535,7 @@
    const double _t19 = my_piecewise3(_t4, 0, -_t15);
  #endif
- 
+
 -  const double f = my_piecewise3(_t4, 0.1e1, _t6*_t8);
 +  const double f = my_piecewise3((-_t1 + _t2*_t3)/_t1 > 0, 0.1e1, _t6*_t8);
    out[0] = f;
