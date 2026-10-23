@@ -16,8 +16,12 @@ MODULE qs_upf_inverse_kpoints
                                               cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
                                               cp_cfm_type
-   USE cp_dbcsr_api,                    ONLY: dbcsr_get_info,&
-                                              dbcsr_p_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_clear,&
+                                              dbcsr_finalize,&
+                                              dbcsr_get_info,&
+                                              dbcsr_get_stored_coordinates,&
+                                              dbcsr_p_type,&
+                                              dbcsr_put_block
    USE cp_fm_struct,                    ONLY: cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_get_submatrix
    USE kinds,                           ONLY: dp
@@ -27,6 +31,8 @@ MODULE qs_upf_inverse_kpoints
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_star_type,&
                                               kpoint_type
+   USE mathconstants,                   ONLY: twopi
+   USE message_passing,                 ONLY: mp_comm_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
@@ -45,6 +51,7 @@ MODULE qs_upf_inverse_kpoints
 
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_kpoints_prepare, qs_upf_inverse_kpoints_release
    PUBLIC :: qs_upf_inverse_kpoints_density, qs_upf_inverse_kpoints_collocate
+   PUBLIC :: qs_upf_inverse_kpoints_images
    PUBLIC :: qs_upf_inverse_kpoints_integrate, qs_upf_inverse_kpoints_metric, qs_upf_inverse_kpoints_distribute
    PUBLIC :: qs_upf_inverse_kpoints_release_operators
 
@@ -187,6 +194,56 @@ CONTAINS
       CALL MOVE_ALLOC(density, representatives)
       CALL kpoint_star_density(frame%star, representatives, density)
    END SUBROUTINE qs_upf_inverse_kpoints_density
+
+! **************************************************************************************************
+!> \brief Construct current real image densities for native RI exchange in the physical-cell gauge.
+!>        Gather the live Bloch density, including symmetry partners, without borrowing the stale
+!>        Gaussian image cache. Reconstruction can couple AO pairs outside the Gaussian neighbor list.
+!> \param frame ...
+!> \param spin ...
+!> \param images Integer translations of the original cell used by inverse transition integrals.
+!> \param matrices Existing nonsymmetric image matrices, overwritten with all owned AO blocks.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_kpoints_images(frame, spin, images, matrices)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
+      INTEGER, INTENT(IN)                                :: spin, images(:, :)
+      TYPE(dbcsr_p_type), INTENT(INOUT)                  :: matrices(:)
+
+      COMPLEX(dp)                                        :: phase
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :)
+      INTEGER                                            :: a, b, first_a, first_b, image, k, &
+                                                            last_a, last_b, owner
+      REAL(dp)                                           :: angle
+      REAL(dp), ALLOCATABLE                              :: matrix(:, :)
+      TYPE(mp_comm_type)                                 :: comm
+
+      CPASSERT(SIZE(images, 1) == 3)
+      CPASSERT(SIZE(images, 2) == SIZE(matrices))
+      CALL qs_upf_inverse_kpoints_density(frame, spin, density)
+      ALLOCATE (matrix(frame%nao, frame%nao))
+      DO image = 1, SIZE(matrices)
+         matrix = 0.0_dp
+         DO k = 1, SIZE(frame%weights)
+            angle = twopi*DOT_PRODUCT(frame%reduced_k(:, k), REAL(images(:, image), dp))
+            phase = CMPLX(COS(angle), -SIN(angle), dp)
+            matrix = matrix + frame%weights(k)*REAL(phase*density(:, :, k), dp)
+         END DO
+         CALL dbcsr_get_info(matrices(image)%matrix, group=comm)
+         CALL dbcsr_clear(matrices(image)%matrix)
+         DO b = 1, SIZE(frame%frames(1)%ao%ao_first)
+            first_b = frame%frames(1)%ao%ao_first(b)
+            last_b = frame%frames(1)%ao%ao_last(b)
+            DO a = 1, SIZE(frame%frames(1)%ao%ao_first)
+               CALL dbcsr_get_stored_coordinates(matrices(image)%matrix, a, b, owner)
+               IF (owner /= comm%mepos) CYCLE
+               first_a = frame%frames(1)%ao%ao_first(a)
+               last_a = frame%frames(1)%ao%ao_last(a)
+               CALL dbcsr_put_block(matrices(image)%matrix, a, b, matrix(first_a:last_a, first_b:last_b))
+            END DO
+         END DO
+         CALL dbcsr_finalize(matrices(image)%matrix)
+      END DO
+   END SUBROUTINE qs_upf_inverse_kpoints_images
 
 ! **************************************************************************************************
 !> \brief Sum native k-point densities with their mesh weights exactly once.

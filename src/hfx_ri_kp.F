@@ -114,6 +114,7 @@ MODULE hfx_ri_kp
    USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_adjoint,&
                                               qs_upf_inverse_hfx_lattice_centers,&
                                               qs_upf_inverse_hfx_lattice_gradient
+   USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_images
    USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_adjoint
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
@@ -2157,8 +2158,9 @@ CONTAINS
       INTEGER                                            :: cell_j(3), i_img, i_spin, iatom, icol, &
                                                             irow, j_img, jatom, mi_img, mj_img, &
                                                             nimg, nspins
+      INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: found
+      LOGICAL                                            :: found, inverse_density
       REAL(dp)                                           :: fac
       REAL(dp), DIMENSION(:, :), POINTER                 :: pblock, pblock_desymm
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, rho_desymm
@@ -2169,13 +2171,20 @@ CONTAINS
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl, sab_nl_nosym
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
       NULLIFY (rho_desymm, kpoints, sab_nl_nosym, scf_env, matrix_ks, dft_control, &
-               sab_nl, nl_iterator, cell_to_index, pblock, pblock_desymm)
+               sab_nl, nl_iterator, cell_to_index, index_to_cell, pblock, pblock_desymm)
 
-      CALL get_qs_env(qs_env, kpoints=kpoints, scf_env=scf_env, matrix_ks_kp=matrix_ks, dft_control=dft_control)
-      CALL get_kpoint_info(kpoints, sab_nl_nosym=sab_nl_nosym, cell_to_index=cell_to_index, sab_nl=sab_nl)
+      CALL get_qs_env(qs_env, kpoints=kpoints, scf_env=scf_env, matrix_ks_kp=matrix_ks, &
+                      dft_control=dft_control, ks_env=ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_density = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_density = inverse%enabled
+      CALL get_kpoint_info(kpoints, sab_nl_nosym=sab_nl_nosym, cell_to_index=cell_to_index, &
+                           index_to_cell=index_to_cell, sab_nl=sab_nl)
 
       IF (dft_control%do_admm) THEN
          CALL get_admm_env(qs_env%admm_env, matrix_ks_aux_fit_kp=matrix_ks)
@@ -2190,49 +2199,59 @@ CONTAINS
             ALLOCATE (rho_desymm(i_spin, i_img)%matrix)
             CALL dbcsr_create(rho_desymm(i_spin, i_img)%matrix, template=matrix_ks(i_spin, i_img)%matrix, &
                               matrix_type=dbcsr_type_no_symmetry)
-            CALL cp_dbcsr_alloc_block_from_nbl(rho_desymm(i_spin, i_img)%matrix, sab_nl_nosym)
+            IF (.NOT. inverse_density) THEN
+               CALL cp_dbcsr_alloc_block_from_nbl(rho_desymm(i_spin, i_img)%matrix, sab_nl_nosym)
+            END IF
          END DO
       END DO
       CALL dbt_create(rho_desymm(1, 1)%matrix, tmp)
 
-      !We transfor the symmtric typed (but not actually symmetric: P_ab^i = P_ba^-i) real-spaced density
-      !matrix into proper non-symemtric ones (using the same nl for consistency)
-      CALL neighbor_list_iterator_create(nl_iterator, sab_nl)
-      DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
-         CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, cell=cell_j)
-         j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
-         IF (j_img > nimg .OR. j_img < 1) CYCLE
-
-         fac = 1.0_dp
-         IF (iatom == jatom) fac = 0.5_dp
-         mj_img = get_opp_index(j_img, qs_env)
-         !if no opposite image, then no sum of P^j + P^-j => need full diag
-         IF (mj_img == 0) fac = 1.0_dp
-
-         irow = iatom
-         icol = jatom
-         IF (iatom > jatom) THEN
-            !because symmetric nl. Value for atom pair i,j is actually stored in j,i if i > j
-            irow = jatom
-            icol = iatom
-         END IF
-
+      IF (inverse_density) THEN
+         CPASSERT(ASSOCIATED(inverse%bloch%kpoints))
+         CPASSERT(nimg <= SIZE(index_to_cell, 2))
          DO i_spin = 1, nspins
-            CALL dbcsr_get_block_p(rho_ao(i_spin, j_img)%matrix, irow, icol, pblock, found)
-            IF (.NOT. found) CYCLE
-
-            !distribution of symm and non-symm matrix match in that way
-            CALL dbcsr_get_block_p(rho_desymm(i_spin, j_img)%matrix, iatom, jatom, pblock_desymm, found)
-            IF (.NOT. found) CYCLE
-
-            IF (iatom > jatom) THEN
-               pblock_desymm(:, :) = fac*TRANSPOSE(pblock(:, :))
-            ELSE
-               pblock_desymm(:, :) = fac*pblock(:, :)
-            END IF
+            CALL qs_upf_inverse_kpoints_images(inverse%bloch, i_spin, index_to_cell(:, 1:nimg), rho_desymm(i_spin, :))
          END DO
-      END DO
-      CALL neighbor_list_iterator_release(nl_iterator)
+      ELSE
+         !We transfor the symmtric typed (but not actually symmetric: P_ab^i = P_ba^-i) real-spaced density
+         !matrix into proper non-symemtric ones (using the same nl for consistency)
+         CALL neighbor_list_iterator_create(nl_iterator, sab_nl)
+         DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+            CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, cell=cell_j)
+            j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
+            IF (j_img > nimg .OR. j_img < 1) CYCLE
+
+            fac = 1.0_dp
+            IF (iatom == jatom) fac = 0.5_dp
+            mj_img = get_opp_index(j_img, qs_env)
+            !if no opposite image, then no sum of P^j + P^-j => need full diag
+            IF (mj_img == 0) fac = 1.0_dp
+
+            irow = iatom
+            icol = jatom
+            IF (iatom > jatom) THEN
+               !because symmetric nl. Value for atom pair i,j is actually stored in j,i if i > j
+               irow = jatom
+               icol = iatom
+            END IF
+
+            DO i_spin = 1, nspins
+               CALL dbcsr_get_block_p(rho_ao(i_spin, j_img)%matrix, irow, icol, pblock, found)
+               IF (.NOT. found) CYCLE
+
+               !distribution of symm and non-symm matrix match in that way
+               CALL dbcsr_get_block_p(rho_desymm(i_spin, j_img)%matrix, iatom, jatom, pblock_desymm, found)
+               IF (.NOT. found) CYCLE
+
+               IF (iatom > jatom) THEN
+                  pblock_desymm(:, :) = fac*TRANSPOSE(pblock(:, :))
+               ELSE
+                  pblock_desymm(:, :) = fac*pblock(:, :)
+               END IF
+            END DO
+         END DO
+         CALL neighbor_list_iterator_release(nl_iterator)
+      END IF
 
       DO i_img = 1, nimg
          DO i_spin = 1, nspins
@@ -2243,7 +2262,7 @@ CONTAINS
 
             !symmetrize by addin transpose of opp img
             mi_img = get_opp_index(i_img, qs_env)
-            IF (mi_img > 0 .AND. mi_img <= nimg) THEN
+            IF (.NOT. inverse_density .AND. mi_img > 0 .AND. mi_img <= nimg) THEN
                CALL dbt_copy_matrix_to_tensor(rho_desymm(i_spin, mi_img)%matrix, tmp)
                CALL dbt_copy(tmp, rho_ao_t(i_spin, i_img), order=[2, 1], summation=.TRUE., move_data=.TRUE.)
             END IF
