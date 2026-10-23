@@ -276,6 +276,14 @@ MODULE kpoint_types
       TYPE(qs_matrix_pools_type), POINTER     :: mpools_aux_fit => Null()
    END TYPE kpoint_type
 
+   ! Explicit density contributions in the cell Fourier gauge H(k)=sum_R exp(+ikR) H(R).
+   ! Symmetry metadata are borrowed and remain valid until k-point reinitialization.
+   TYPE, PUBLIC :: kpoint_star_type
+      TYPE(kpoint_type), POINTER :: kpoints => NULL()
+      INTEGER, ALLOCATABLE :: representative(:), operation(:), first(:), last(:)
+      REAL(dp), ALLOCATABLE :: vectors(:, :), weights(:), relative_weights(:)
+   END TYPE kpoint_star_type
+
 ! **************************************************************************************************
 
 CONTAINS

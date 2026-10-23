@@ -79,8 +79,8 @@ MODULE kpoint_methods
                                               regular_kpoint_grid
    USE kpoint_types,                    ONLY: &
         find_kpoint_rotation_slot, get_kpoint_info, kind_rotmat_type, kp_transform_plan_type, &
-        kpoint_env_create, kpoint_env_p_type, kpoint_env_type, kpoint_sym_create, kpoint_sym_type, &
-        kpoint_type
+        kpoint_env_create, kpoint_env_p_type, kpoint_env_type, kpoint_star_type, &
+        kpoint_sym_create, kpoint_sym_type, kpoint_type
    USE local_gemm_api,                  ONLY: LOCAL_GEMM_PU_GPU,&
                                               LOCAL_GEMM_PU_HOST,&
                                               local_gemm_ctxt_type
@@ -150,6 +150,7 @@ MODULE kpoint_methods
    PUBLIC :: kpoint_density_matrices, kpoint_density_transform
    PUBLIC :: kpoint_ot_energy_weighted_density
    PUBLIC :: kp_transform_plan_create
+   PUBLIC :: kpoint_star_create, kpoint_star_density, kpoint_star_operator, kpoint_star_orbitals
    PUBLIC :: rskp_transform, lowdin_kp_trans, lowdin_kp_mo_coeff
    PUBLIC :: rskp_grid_type, rskp_transform_grid_prepare, rskp_transform_grid_extract, &
              rskp_transform_grid_release
@@ -165,6 +166,254 @@ MODULE kpoint_methods
 ! **************************************************************************************************
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Index the native symmetry contributions without adding little-group multiplicities.
+!>        Each explicit contribution has its original representative weight divided by nwght.
+!>        The corresponding relative weight defines the unweighted operator adjoint, including
+!>        zero-weight representatives. AO blocks follow the native atom order. The cell Fourier
+!>        gauge uses exp(-i*k_target*L_atom), independently of legacy SCF phase calibration.
+!> \param kpoint Borrowed initialized native k-point metadata.
+!> \param ao_sizes AO block sizes for all atoms, including empty blocks.
+!> \param map Owned contribution indices and borrowed native symmetry data.
+! **************************************************************************************************
+   SUBROUTINE kpoint_star_create(kpoint, ao_sizes, map)
+      TYPE(kpoint_type), POINTER                         :: kpoint
+      INTEGER, INTENT(IN)                                :: ao_sizes(:)
+      TYPE(kpoint_star_type), INTENT(OUT)                :: map
+
+      INTEGER                                            :: a, ik, is, link, n, ncontrib, nlink
+      INTEGER, ALLOCATABLE                               :: counts(:)
+      LOGICAL                                            :: valid
+      TYPE(kp_symmetry_op_type)                          :: op
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      CPASSERT(ASSOCIATED(kpoint))
+      CPASSERT(kpoint%nkp > 0)
+      CPASSERT(ASSOCIATED(kpoint%xkp) .AND. ASSOCIATED(kpoint%wkp))
+      CPASSERT(ASSOCIATED(kpoint%kp_sym))
+      CPASSERT(SIZE(kpoint%wkp) == kpoint%nkp)
+      CPASSERT(ALL(SHAPE(kpoint%xkp) == [3, kpoint%nkp]))
+      CPASSERT(ALL(kpoint%wkp >= 0.0_dp))
+      CPASSERT(ABS(SUM(kpoint%wkp) - 1.0_dp) <= 128.0_dp*EPSILON(0.0_dp)*kpoint%nkp)
+      n = SIZE(ao_sizes)
+      CPASSERT(n > 0 .AND. SUM(ao_sizes) > 0)
+      CPASSERT(ALL(ao_sizes >= 0))
+      map%kpoints => kpoint
+      ALLOCATE (map%first(n), map%last(n), counts(n))
+      link = 0
+      DO a = 1, n
+         map%first(a) = link + 1
+         link = link + ao_sizes(a)
+         map%last(a) = link
+      END DO
+      nlink = 0
+      DO ik = 1, kpoint%nkp
+         CPASSERT(ASSOCIATED(kpoint%kp_sym(ik)%kpoint_sym))
+         sym => kpoint%kp_sym(ik)%kpoint_sym
+         ncontrib = 1
+         IF (sym%apply_symmetry) ncontrib = sym%nwght
+         CPASSERT(ncontrib > 0)
+         nlink = nlink + ncontrib
+      END DO
+      ALLOCATE (map%representative(nlink), map%operation(nlink), map%vectors(3, nlink), &
+                map%weights(nlink), map%relative_weights(nlink))
+      link = 0
+      DO ik = 1, kpoint%nkp
+         sym => kpoint%kp_sym(ik)%kpoint_sym
+         ncontrib = 1
+         IF (sym%apply_symmetry) ncontrib = sym%nwght
+         DO is = 1, ncontrib
+            link = link + 1
+            map%representative(link) = ik
+            map%operation(link) = 0
+            map%vectors(:, link) = kpoint%xkp(:, ik)
+            map%relative_weights(link) = 1.0_dp/REAL(ncontrib, dp)
+            map%weights(link) = kpoint%wkp(ik)*map%relative_weights(link)
+            IF (.NOT. sym%apply_symmetry) CYCLE
+            CPASSERT(ASSOCIATED(kpoint%atype) .AND. ASSOCIATED(kpoint%kind_rotmat))
+            CPASSERT(SIZE(kpoint%atype) == n)
+            CALL kp_symmetry_op_init(op, kpoint, sym, is)
+            CPASSERT(SIZE(op%atom_map) == n)
+            CPASSERT(ALL(op%atom_map >= 1 .AND. op%atom_map <= n))
+            CPASSERT(ALL(ao_sizes(op%atom_map) == ao_sizes))
+            counts = 0
+            DO a = 1, n
+               counts(op%atom_map(a)) = counts(op%atom_map(a)) + 1
+               IF (ao_sizes(a) == 0) CYCLE
+               CPASSERT(ASSOCIATED(op%kind_rot(op%atom_kind(a))%rmat))
+               valid = ALL(SHAPE(op%kind_rot(op%atom_kind(a))%rmat) == [ao_sizes(a), ao_sizes(a)])
+               CPASSERT(valid)
+            END DO
+            CPASSERT(ALL(counts == 1))
+            map%operation(link) = is
+            map%vectors(:, link) = sym%xkp(:, is)
+         END DO
+      END DO
+   END SUBROUTINE kpoint_star_create
+
+! **************************************************************************************************
+!> \brief Expand unweighted AO density matrices with native rotations and cell-gauge phases.
+!> \param map Native contribution map.
+!> \param density Replicated AO matrices indexed by irreducible representative.
+!> \param expanded New matrices indexed by explicit contribution, without mesh weights.
+! **************************************************************************************************
+   SUBROUTINE kpoint_star_density(map, density, expanded)
+      TYPE(kpoint_star_type), INTENT(IN)                 :: map
+      COMPLEX(dp), INTENT(IN)                            :: density(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: expanded(:, :, :)
+
+      INTEGER                                            :: link, n
+
+      CPASSERT(ASSOCIATED(map%kpoints))
+      n = SUM(map%last - map%first + 1)
+      CPASSERT(ALL(SHAPE(density) == [n, n, map%kpoints%nkp]))
+      ALLOCATE (expanded(n, n, SIZE(map%weights)))
+      DO link = 1, SIZE(map%weights)
+         CALL kpoint_star_matrix(map, link, density(:, :, map%representative(link)), expanded(:, :, link), .FALSE.)
+      END DO
+   END SUBROUTINE kpoint_star_density
+
+! **************************************************************************************************
+!> \brief Return the weighted adjoint as unweighted irreducible AO operators.
+!>        Averaging by the relative star multiplicity applies each original mesh weight once
+!>        in the native trace pairing. No division by a possibly zero representative weight occurs.
+!> \param map Native contribution map.
+!> \param operators Unweighted operators indexed by explicit contribution.
+!> \param reduced New unweighted operators indexed by irreducible representative.
+! **************************************************************************************************
+   SUBROUTINE kpoint_star_operator(map, operators, reduced)
+      TYPE(kpoint_star_type), INTENT(IN)                 :: map
+      COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: reduced(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      INTEGER                                            :: ik, link, n
+
+      CPASSERT(ASSOCIATED(map%kpoints))
+      n = SUM(map%last - map%first + 1)
+      CPASSERT(ALL(SHAPE(operators) == [n, n, SIZE(map%weights)]))
+      ALLOCATE (reduced(n, n, map%kpoints%nkp), matrix(n, n))
+      reduced = z_zero
+      DO link = 1, SIZE(map%weights)
+         ik = map%representative(link)
+         CALL kpoint_star_matrix(map, link, operators(:, :, link), matrix, .TRUE.)
+         reduced(:, :, ik) = reduced(:, :, ik) + map%relative_weights(link)*matrix
+      END DO
+   END SUBROUTINE kpoint_star_operator
+
+! **************************************************************************************************
+!> \brief Expand native orbital factors with the same atom/AO map as the density.
+!> \param map Native contribution map.
+!> \param coefficients AO orbital factors indexed by irreducible representative.
+!> \param expanded New orbital factors indexed by explicit contribution.
+! **************************************************************************************************
+   SUBROUTINE kpoint_star_orbitals(map, coefficients, expanded)
+      TYPE(kpoint_star_type), INTENT(IN)                 :: map
+      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: expanded(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: block(:, :)
+      INTEGER                                            :: a, ik, is, link, n, shift(3), target_atom
+      REAL(dp)                                           :: phase(2, 2)
+      REAL(dp), POINTER                                  :: rotation(:, :)
+      TYPE(kp_symmetry_op_type)                          :: op
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      CPASSERT(ASSOCIATED(map%kpoints))
+      n = SUM(map%last - map%first + 1)
+      CPASSERT(SIZE(coefficients, 1) == n .AND. SIZE(coefficients, 3) == map%kpoints%nkp)
+      ALLOCATE (expanded(n, SIZE(coefficients, 2), SIZE(map%weights)))
+      DO link = 1, SIZE(map%weights)
+         ik = map%representative(link)
+         is = map%operation(link)
+         IF (is == 0) THEN
+            expanded(:, :, link) = coefficients(:, :, ik)
+            CYCLE
+         END IF
+         sym => map%kpoints%kp_sym(ik)%kpoint_sym
+         CALL kp_symmetry_op_init(op, map%kpoints, sym, is)
+         DO a = 1, SIZE(map%first)
+            IF (map%last(a) < map%first(a)) CYCLE
+            target_atom = op%atom_map(a)
+            rotation => op%kind_rot(op%atom_kind(a))%rmat
+            block = MATMUL(rotation, coefficients(map%first(a):map%last(a), :, ik))
+            shift = op%cell_shift(:, a)
+            CALL kp_symmetry_phase_factors(shift, op%xkp, op%time_reversal, .FALSE., phase)
+            expanded(map%first(target_atom):map%last(target_atom), :, link) = &
+               CMPLX(phase(1, 1)*REAL(block, dp) + phase(1, 2)*AIMAG(block), &
+                     phase(2, 1)*REAL(block, dp) + phase(2, 2)*AIMAG(block), dp)
+         END DO
+      END DO
+   END SUBROUTINE kpoint_star_orbitals
+
+! **************************************************************************************************
+!> \brief Apply one native AO symmetry map or its real-Hermitian trace adjoint.
+!>        Only atom-block workspaces are allocated. No dense AO rotation matrix is formed.
+!> \param map Native contribution map.
+!> \param link Explicit contribution index.
+!> \param matrix Input AO matrix.
+!> \param transformed New AO matrix.
+!> \param adjoint Apply the transpose of the real-linear map, including time reversal.
+! **************************************************************************************************
+   SUBROUTINE kpoint_star_matrix(map, link, matrix, transformed, adjoint)
+      TYPE(kpoint_star_type), INTENT(IN)                 :: map
+      INTEGER, INTENT(IN)                                :: link
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: transformed(:, :)
+      LOGICAL, INTENT(IN)                                :: adjoint
+
+      INTEGER                                            :: a, b, ia, ib, ik, is, na, nb, shift(3)
+      REAL(dp)                                           :: phase(2, 2)
+      REAL(dp), ALLOCATABLE                              :: cpart(:, :), cwork(:, :), rpart(:, :), &
+                                                            rwork(:, :), work(:, :)
+      REAL(dp), POINTER                                  :: left(:, :), right(:, :)
+      TYPE(kp_symmetry_op_type)                          :: op
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      ik = map%representative(link)
+      is = map%operation(link)
+      IF (is == 0) THEN
+         transformed = matrix
+         RETURN
+      END IF
+      sym => map%kpoints%kp_sym(ik)%kpoint_sym
+      CALL kp_symmetry_op_init(op, map%kpoints, sym, is)
+      transformed = z_zero
+      DO b = 1, SIZE(map%first)
+         nb = map%last(b) - map%first(b) + 1
+         IF (nb == 0) CYCLE
+         ib = op%atom_map(b)
+         right => op%kind_rot(op%atom_kind(b))%rmat
+         DO a = 1, SIZE(map%first)
+            na = map%last(a) - map%first(a) + 1
+            IF (na == 0) CYCLE
+            ia = op%atom_map(a)
+            left => op%kind_rot(op%atom_kind(a))%rmat
+            CALL ensure_work_matrix(rpart, na, nb)
+            CALL ensure_work_matrix(cpart, na, nb)
+            rpart = 0.0_dp
+            cpart = 0.0_dp
+            shift = op%cell_shift(:, a) - op%cell_shift(:, b)
+            IF (adjoint) THEN
+               CALL kp_symmetry_rotate_block(REAL(matrix(map%first(ia):map%last(ia), map%first(ib):map%last(ib)), dp), &
+                                             TRANSPOSE(left), TRANSPOSE(right), .FALSE., 1.0_dp, rpart, work)
+               CALL kp_symmetry_rotate_block(AIMAG(matrix(map%first(ia):map%last(ia), map%first(ib):map%last(ib))), &
+                                             TRANSPOSE(left), TRANSPOSE(right), .FALSE., 1.0_dp, cpart, work)
+               CALL kp_symmetry_phase_factors(shift, op%xkp, op%time_reversal, .FALSE., phase)
+               transformed(map%first(a):map%last(a), map%first(b):map%last(b)) = &
+                  CMPLX(phase(1, 1)*rpart + phase(2, 1)*cpart, phase(1, 2)*rpart + phase(2, 2)*cpart, dp)
+            ELSE
+               CALL kp_symmetry_phase_block(REAL(matrix(map%first(a):map%last(a), map%first(b):map%last(b)), dp), &
+                                            shift, op%xkp, op%time_reversal, rwork, cwork, &
+                                            AIMAG(matrix(map%first(a):map%last(a), map%first(b):map%last(b))))
+               CALL kp_symmetry_rotate_block(rwork, left, right, .FALSE., 1.0_dp, rpart, work)
+               CALL kp_symmetry_rotate_block(cwork, left, right, .FALSE., 1.0_dp, cpart, work)
+               transformed(map%first(ia):map%last(ia), map%first(ib):map%last(ib)) = CMPLX(rpart, cpart, dp)
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE kpoint_star_matrix
 
 ! **************************************************************************************************
 !> \brief Index full-grid links by irreducible k-point without rescanning the complete mesh.

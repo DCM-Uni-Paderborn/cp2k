@@ -11,6 +11,15 @@ PROGRAM kpsym_unittest
                                               kpoint_gen,&
                                               release_csym_type
    USE kinds,                           ONLY: dp
+   USE kpoint_methods,                  ONLY: kpoint_star_create,&
+                                              kpoint_star_density,&
+                                              kpoint_star_operator,&
+                                              kpoint_star_orbitals
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_cell_gauge_action
+   USE kpoint_types,                    ONLY: kpoint_star_type,&
+                                              kpoint_sym_create,&
+                                              kpoint_sym_type,&
+                                              kpoint_type
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
    USE physcon,                         ONLY: bohr
@@ -58,6 +67,7 @@ PROGRAM kpsym_unittest
    INTEGER :: types(36)
 
    CALL cp2k_init()
+   CALL check_star_adjoint()
    io_unit = cp_logger_get_default_io_unit()
    cell = 0.0_dp
    cell(1, 1) = 6.784903_dp*bohr
@@ -91,6 +101,140 @@ PROGRAM kpsym_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check native symmetry phases, nonorthogonal AO rotations and the weighted trace adjoint.
+!>        Include atom permutation, time reversal, unequal and zero representative weights,
+!>        unused little-group metadata, and independence from legacy SCF phase calibration.
+! **************************************************************************************************
+   SUBROUTINE check_star_adjoint()
+      COMPLEX(dp) :: action(6, 6), coefficients(6, 2, 2), density(6, 6, 2), expected(6, 2), &
+         operators(6, 6, 4), reference(6, 6, 2)
+      COMPLEX(dp), ALLOCATABLE                           :: expanded(:, :, :), orbitals(:, :, :), &
+                                                            reduced(:, :, :)
+      INTEGER                                            :: i, ik, j, link, pass, status
+      LOGICAL                                            :: antiunitary
+      REAL(dp)                                           :: lhs, rhs, rotation(3, 3)
+      TYPE(kpoint_star_type)                             :: map
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+      TYPE(kpoint_type), POINTER                         :: kpoint
+
+      ALLOCATE (kpoint)
+      kpoint%nkp = 2
+      ALLOCATE (kpoint%xkp(3, 2), kpoint%wkp(2), kpoint%kp_sym(2), kpoint%atype(2), &
+                kpoint%ibrot(2), kpoint%kind_rotmat(2, 1))
+      kpoint%xkp(:, 1) = [0.13_dp, 0.21_dp, 0.07_dp]
+      kpoint%xkp(:, 2) = [0.31_dp, 0.17_dp, 0.11_dp]
+      kpoint%atype = 1
+      kpoint%ibrot = [1, 2]
+      DO i = 1, 2
+         ALLOCATE (kpoint%kind_rotmat(i, 1)%rmat(3, 3))
+         CALL kpoint_sym_create(kpoint%kp_sym(i)%kpoint_sym)
+      END DO
+      kpoint%kind_rotmat(1, 1)%rmat = 0.0_dp
+      DO i = 1, 3
+         kpoint%kind_rotmat(1, 1)%rmat(i, i) = 1.0_dp
+      END DO
+      ! A Cartesian rotation has a nonorthogonal representation in a scaled AO basis.
+      kpoint%kind_rotmat(2, 1)%rmat = RESHAPE([0.0_dp, 0.5_dp, 0.0_dp, &
+                                               -2.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      sym => kpoint%kp_sym(1)%kpoint_sym
+      sym%apply_symmetry = .TRUE.
+      sym%nwght = 3
+      sym%nwred = 4
+      ALLOCATE (sym%rot(3, 3, 4), sym%rotp(4), sym%f0(2, 4), sym%fcell_gauge(3, 2, 4), &
+                sym%phase_mode(4), sym%xkp(3, 4))
+      DO i = 1, 4
+         sym%rot(:, :, i) = kpoint%kind_rotmat(1, 1)%rmat
+         sym%f0(:, i) = [1, 2]
+         sym%xkp(:, i) = kpoint%xkp(:, 1)
+      END DO
+      sym%rot(:, :, 2) = RESHAPE([0.0_dp, 1.0_dp, 0.0_dp, &
+                                  -1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      sym%rot(:, :, 3) = sym%rot(:, :, 2)
+      sym%rotp = [1, 2, -2, 1]
+      sym%f0(:, 2) = [2, 1]
+      sym%f0(:, 3) = [2, 1]
+      sym%fcell_gauge = 0
+      sym%fcell_gauge(:, 1, 2) = [1, 0, 0]
+      sym%fcell_gauge(:, 2, 2) = [0, -1, 1]
+      sym%fcell_gauge(:, :, 3) = sym%fcell_gauge(:, :, 2)
+      sym%phase_mode = [1, 1, 2, 1]
+      sym%xkp(:, 2) = [-0.21_dp, 0.13_dp, 0.07_dp]
+      sym%xkp(:, 3) = -sym%xkp(:, 2)
+      DO ik = 1, 2
+         DO j = 1, 2
+            DO i = 1, 6
+               coefficients(i, j, ik) = CMPLX(SIN(0.17_dp*REAL(i + 2*j + 3*ik, dp)), &
+                                              COS(0.23_dp*REAL(2*i - j + 4*ik, dp)), dp)
+            END DO
+         END DO
+         density(:, :, ik) = MATMUL(coefficients(:, :, ik), CONJG(TRANSPOSE(coefficients(:, :, ik))))
+      END DO
+      DO link = 1, 4
+         DO j = 1, 6
+            DO i = 1, 6
+               operators(i, j, link) = CMPLX(SIN(0.19_dp*REAL(i + 2*j + link, dp)), &
+                                             COS(0.29_dp*REAL(2*i - j + 3*link, dp)), dp)
+            END DO
+         END DO
+         operators(:, :, link) = 0.5_dp*(operators(:, :, link) + CONJG(TRANSPOSE(operators(:, :, link))))
+      END DO
+      DO pass = 1, 2
+         kpoint%wkp = [0.37_dp, 0.63_dp]
+         sym%phase_mode = 0
+         IF (pass == 2) kpoint%wkp = [0.0_dp, 1.0_dp]
+         IF (pass == 2) sym%phase_mode = [1, 2, 1, 2]
+         CALL kpoint_star_create(kpoint, [3, 3], map)
+         IF (SIZE(map%weights) /= 4 .OR. ANY(map%representative /= [1, 1, 1, 2])) THEN
+            ERROR STOP 'Little-group metadata added spurious density contributions'
+         END IF
+         CALL kpoint_star_density(map, density, expanded)
+         CALL kpoint_star_orbitals(map, coefficients, orbitals)
+         DO link = 1, 4
+            ik = map%representative(link)
+            CALL kpoint_cell_gauge_action(kpoint, ik, map%operation(link), map%vectors(:, link), &
+                                          action, rotation, antiunitary, status)
+            IF (status /= 0) ERROR STOP 'The independent cell-gauge AO action is unavailable'
+            IF (antiunitary) THEN
+               expected = MATMUL(action, CONJG(coefficients(:, :, ik)))
+            ELSE
+               expected = MATMUL(action, coefficients(:, :, ik))
+            END IF
+            IF (.NOT. MAXVAL(ABS(orbitals(:, :, link) - expected)) <= 1.e-13_dp) THEN
+               ERROR STOP 'Orbital symmetry changed an atom permutation, AO rotation or Bloch phase'
+            END IF
+            IF (.NOT. MAXVAL(ABS(expanded(:, :, link) - MATMUL(expected, CONJG(TRANSPOSE(expected))))) <= 1.e-12_dp) THEN
+               ERROR STOP 'Native density symmetry differs from transformed orbital factors'
+            END IF
+         END DO
+         CALL kpoint_star_operator(map, operators, reduced)
+         lhs = 0.0_dp
+         rhs = 0.0_dp
+         DO link = 1, 4
+            lhs = lhs + map%weights(link)*REAL(SUM(CONJG(operators(:, :, link))*expanded(:, :, link)), dp)
+         END DO
+         DO ik = 1, 2
+            rhs = rhs + kpoint%wkp(ik)*REAL(SUM(CONJG(reduced(:, :, ik))*density(:, :, ik)), dp)
+         END DO
+         IF (.NOT. ABS(lhs - rhs) <= 1.e-12_dp*MAX(1.0_dp, ABS(lhs), ABS(rhs))) THEN
+            ERROR STOP 'Weighted k-point symmetry is not paired with its operator adjoint'
+         END IF
+         IF (pass == 1) reference = reduced
+         IF (pass == 2) THEN
+            IF (.NOT. MAXVAL(ABS(reduced - reference)) <= 1.e-13_dp) THEN
+               ERROR STOP 'Zero representative weight changed an unweighted symmetry operator'
+            END IF
+         END IF
+      END DO
+      map = kpoint_star_type()
+      DEALLOCATE (sym%rot, sym%rotp, sym%f0, sym%fcell_gauge, sym%phase_mode, sym%xkp)
+      DO i = 1, 2
+         DEALLOCATE (kpoint%kp_sym(i)%kpoint_sym, kpoint%kind_rotmat(i, 1)%rmat)
+      END DO
+      DEALLOCATE (kpoint%xkp, kpoint%wkp, kpoint%kp_sym, kpoint%atype, kpoint%ibrot, kpoint%kind_rotmat)
+      DEALLOCATE (kpoint)
+   END SUBROUTINE check_star_adjoint
 
 ! **************************************************************************************************
 !> \brief Check mesh reduction and atomic operation consistency without an SCF calculation.
