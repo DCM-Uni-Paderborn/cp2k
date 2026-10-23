@@ -111,7 +111,7 @@ CONTAINS
       COMPLEX(dp) :: action(6, 6), coefficients(6, 2, 2), density(6, 6, 2), expected(6, 2), &
          operators(6, 6, 4), reference(6, 6, 2)
       COMPLEX(dp), ALLOCATABLE                           :: expanded(:, :, :), orbitals(:, :, :), &
-                                                            reduced(:, :, :)
+                                                            reduced(:, :, :), selected(:, :, :)
       INTEGER                                            :: i, ik, j, link, pass, status
       LOGICAL                                            :: antiunitary
       REAL(dp)                                           :: lhs, rhs, rotation(3, 3)
@@ -209,6 +209,13 @@ CONTAINS
             END IF
          END DO
          CALL kpoint_star_operator(map, operators, reduced)
+         DO ik = 1, 2
+            CALL kpoint_star_operator(map, operators, selected, representative=ik)
+            IF (SIZE(selected, 3) /= 1) ERROR STOP 'A selected operator has more than one representative'
+            IF (.NOT. MAXVAL(ABS(selected(:, :, 1) - reduced(:, :, ik))) <= 1.e-13_dp) THEN
+               ERROR STOP 'A selected operator differs from the full irreducible adjoint'
+            END IF
+         END DO
          lhs = 0.0_dp
          rhs = 0.0_dp
          DO link = 1, 4

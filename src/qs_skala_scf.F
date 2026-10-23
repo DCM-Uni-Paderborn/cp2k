@@ -24,6 +24,9 @@ MODULE qs_skala_scf
                                               section_vals_val_get
    USE kinds,                           ONLY: dp,&
                                               int_8
+   USE kpoint_methods,                  ONLY: kpoint_star_density,&
+                                              kpoint_star_operator,&
+                                              kpoint_star_orbitals
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
    USE message_passing,                 ONLY: mp_comm_type,&
@@ -184,6 +187,48 @@ MODULE qs_skala_scf
 CONTAINS
 
 ! **************************************************************************************************
+!> \brief Pull one unweighted contribution operator back to its native representative.
+!> \param state Borrowed native orbital state.
+!> \param operators AO operators indexed by the complete contribution map.
+!> \param ik Native irreducible k-point index.
+!> \param matrix Unweighted native AO operator.
+! **************************************************************************************************
+   SUBROUTINE native_bloch_operator(state, operators, ik, matrix)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
+      INTEGER, INTENT(IN)                                :: ik
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: matrix(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
+
+      CPASSERT(state%bloch)
+      CALL kpoint_star_operator(state%inverse%bloch%star, operators, reduced, representative=ik)
+      matrix = reduced(:, :, 1)
+   END SUBROUTINE native_bloch_operator
+
+! **************************************************************************************************
+!> \brief Return spin-resolved contribution covectors to the native orbital coordinates.
+!> \param state Borrowed native orbital state.
+!> \param operators Owned unweighted (AO,AO,contribution,spin) matrices, replaced by native representatives.
+! **************************************************************************************************
+   SUBROUTINE reduce_bloch_operators(state, operators)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      COMPLEX(dp), ALLOCATABLE, INTENT(INOUT)            :: operators(:, :, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: block(:, :, :), reduced(:, :, :, :)
+      INTEGER                                            :: spin
+
+      CPASSERT(state%bloch)
+      IF (ALL(state%inverse%bloch%star%operation == 0)) RETURN
+      ALLOCATE (reduced(SIZE(operators, 1), SIZE(operators, 2), state%kpoints%nkp, SIZE(operators, 4)))
+      DO spin = 1, SIZE(operators, 4)
+         CALL kpoint_star_operator(state%inverse%bloch%star, operators(:, :, :, spin), block)
+         reduced(:, :, :, spin) = block
+      END DO
+      CALL MOVE_ALLOC(reduced, operators)
+   END SUBROUTINE reduce_bloch_operators
+
+! **************************************************************************************************
 !> \brief Borrow the native QS state and complete each occupied block in its original charge metric.
 !>        Collective over QS and each owning k group. Zero-weight and empty-spin blocks have no
 !>        coordinates. Geometry, occupations and k weights stay fixed throughout this state.
@@ -267,9 +312,7 @@ CONTAINS
             IF (weight == 0.0_dp .OR. native%nmo == 0) CYCLE
             ! Retained virtuals in an empty spin still require matching canonical eigenvalues.
             IF (state%bloch) THEN
-               IF (ALLOCATED(metric)) DEALLOCATE (metric)
-               ALLOCATE (metric(native%nao, native%nao))
-               metric(:, :) = state%inverse%metric_k(:, :, ik)
+               CALL native_bloch_operator(state, state%inverse%metric_k, ik, metric)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, metrics(1)%matrix, metric)
             END IF
@@ -278,7 +321,7 @@ CONTAINS
             IF (.NOT. block_valid) failed = 1
             IF (block_valid .AND. state%thermal) THEN
                IF (state%bloch) THEN
-                  hamiltonian = state%inverse%ks_k(:, :, ik, spin)
+                  CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
                ELSE
                   CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
                END IF
@@ -457,9 +500,11 @@ CONTAINS
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
 
+      COMPLEX(dp), ALLOCATABLE                           :: coefficients(:, :, :)
       INTEGER                                            :: bfirst, blast, first, group, ik, last, &
                                                             local, nao, nk, nmo, ns, spin
       LOGICAL                                            :: owner, valid
+      REAL(dp), ALLOCATABLE                              :: occupations(:, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: densities(:, :)
       TYPE(particle_type), POINTER                       :: particles(:)
@@ -522,6 +567,7 @@ CONTAINS
       ! Mixed or externally replaced densities have a different evaluation stamp.
       nao = SIZE(state%orbitals(1, 1)%coefficients, 1)
       nk = SIZE(state%dimensions, 1)
+      IF (state%bloch) nk = SIZE(state%inverse%bloch%weights)
       ns = SIZE(state%orbitals, 2)
       IF (.NOT. ALLOCATED(state%inverse%orbital_factors%coefficients)) THEN
          ALLOCATE (state%inverse%orbital_factors%coefficients(nao, nao, nk, ns), &
@@ -548,6 +594,19 @@ CONTAINS
       END DO
       CALL state%para_env%sum(state%inverse%orbital_factors%coefficients)
       CALL state%para_env%sum(state%inverse%orbital_factors%occupations)
+      IF (state%bloch) THEN
+         IF (ANY(state%inverse%bloch%star%operation /= 0)) THEN
+            DO spin = 1, ns
+               CALL kpoint_star_orbitals(state%inverse%bloch%star, &
+                                         state%inverse%orbital_factors%coefficients(:, :, :SIZE(state%dimensions, 1), spin), &
+                                         coefficients)
+               state%inverse%orbital_factors%coefficients(:, :, :, spin) = coefficients
+               occupations = state%inverse%orbital_factors%occupations(:, :SIZE(state%dimensions, 1), spin)
+               state%inverse%orbital_factors%occupations(:, :, spin) = &
+                  occupations(:, state%inverse%bloch%star%representative)
+            END DO
+         END IF
+      END IF
       state%inverse%orbital_factors%density_evaluation = state%inverse%density_evaluations
    END SUBROUTINE install_native_trial
 
@@ -679,9 +738,7 @@ CONTAINS
             first = state%offsets(ik, spin) + 1
             last = first + state%dimensions(ik, spin) - 1
             IF (state%bloch) THEN
-               IF (ALLOCATED(hamiltonian)) DEALLOCATE (hamiltonian)
-               ALLOCATE (hamiltonian(SIZE(state%inverse%ks_k, 1), SIZE(state%inverse%ks_k, 2)))
-               hamiltonian(:, :) = state%inverse%ks_k(:, :, ik, spin)
+               CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
             END IF
@@ -722,12 +779,14 @@ CONTAINS
 !> \param state Evaluated original-metric orbital state.
 !> \param direction Complete real orbital and auxiliary-band coordinate direction.
 !> \param density_direction New Hermitian AO density directions indexed (AO,AO,k,spin).
+!>        Bloch outputs use the complete contribution map consumed by the functional.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_density_response(state, direction, density_direction)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: direction(:)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density_direction(:, :, :, :)
 
+      COMPLEX(dp), ALLOCATABLE                           :: block(:, :, :), expanded(:, :, :, :)
       INTEGER                                            :: bfirst, blast, first, ik, last, local, &
                                                             n, nk, ns, spin
       LOGICAL                                            :: owner, valid
@@ -773,6 +832,16 @@ CONTAINS
          END DO
       END DO
       CALL state%para_env%sum(density_direction)
+      IF (state%bloch) THEN
+         IF (ANY(state%inverse%bloch%star%operation /= 0)) THEN
+            ALLOCATE (expanded(n, n, SIZE(state%inverse%bloch%weights), ns))
+            DO spin = 1, ns
+               CALL kpoint_star_density(state%inverse%bloch%star, density_direction(:, :, :, spin), block)
+               expanded(:, :, :, spin) = block
+            END DO
+            CALL MOVE_ALLOC(expanded, density_direction)
+         END IF
+      END IF
    END SUBROUTINE qs_skala_scf_density_response
 
 ! **************************************************************************************************
@@ -939,6 +1008,8 @@ CONTAINS
       ALLOCATE (operators, MOLD=operators_direction)
       IF (state%bloch) THEN
          operators = state%inverse%ks_k
+         CALL reduce_bloch_operators(state, operators)
+         CALL reduce_bloch_operators(state, operators_direction)
       ELSE
          CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
          DO spin = 1, SIZE(operators, 4)
@@ -1312,6 +1383,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: domain, point(3), descriptor
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
 
+      COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
       INTEGER                                            :: capacity, ENTRY, free_entry, growth
       INTEGER(KIND=int_8)                                :: bytes, entry_bytes
       TYPE(physical_point_operator)                      :: layout
@@ -1338,6 +1410,10 @@ CONTAINS
          CALL paw_point_operators(state, domain, point, descriptor, operators)
       ELSE
          CALL atom_point_operators(state, point, descriptor, operators)
+      END IF
+      IF (state%bloch) THEN
+         CALL kpoint_star_operator(state%inverse%bloch%star, operators, reduced)
+         CALL MOVE_ALLOC(reduced, operators)
       END IF
       bytes = 16_int_8*SIZE(operators, KIND=int_8)
       IF (bytes > max_point_operator_bytes - state%point_operator_bytes) RETURN
@@ -1444,6 +1520,7 @@ CONTAINS
       END IF
       nk = SIZE(state%dimensions, 1)
       IF (state%bloch) THEN
+         nk = SIZE(state%inverse%bloch%weights)
          nao = SIZE(state%inverse%bloch%frames(1)%ao%coefficients, 2)
       ELSE
          nao = SIZE(state%inverse%frame%ao%coefficients, 2)
@@ -1519,6 +1596,7 @@ CONTAINS
       np = COUNT(state%inverse%atom_grid%atoms == point(1) .AND. &
                  state%inverse%atom_grid%atom_rows == point(2))
       nk = SIZE(state%dimensions, 1)
+      IF (state%bloch) nk = SIZE(state%inverse%bloch%weights)
       frame => state%inverse%frame%ao
       IF (state%bloch) frame => state%inverse%bloch%frames(1)%ao
       nao = SIZE(frame%coefficients, 2)
@@ -1595,6 +1673,7 @@ CONTAINS
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
       nk = SIZE(state%dimensions, 1)
+      IF (state%bloch) nk = SIZE(state%inverse%bloch%weights)
       frame => state%inverse%frame%ao
       IF (state%bloch) frame => state%inverse%bloch%frames(1)%ao
       center = 0
@@ -3161,9 +3240,7 @@ CONTAINS
             IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
             IF (state%bloch) THEN
                ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
-               IF (ALLOCATED(hamiltonian)) DEALLOCATE (hamiltonian)
-               ALLOCATE (hamiltonian(SIZE(state%inverse%ks_k, 1), SIZE(state%inverse%ks_k, 2)))
-               hamiltonian(:, :) = state%inverse%ks_k(:, :, ik, spin)
+               CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
             END IF
@@ -3597,7 +3674,7 @@ CONTAINS
                ik = 1
                IF (context%state%bloch) ik = context%state%kpoints%kp_env(local)%kpoint_env%nkpoint
                IF (context%state%bloch) THEN
-                  hamiltonian = context%state%inverse%ks_k(:, :, ik, spin)
+                  CALL native_bloch_operator(context%state, context%state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
                ELSE
                   CALL qs_upf_inverse_matrix_gather(context%state%inverse%frame%ao, &
                                                     matrices(spin, 1)%matrix, hamiltonian)
@@ -4214,7 +4291,7 @@ CONTAINS
             ik = 1
             IF (state%bloch) THEN
                ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
-               hamiltonian = state%inverse%ks_k(:, :, ik, spin)
+               CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
             END IF

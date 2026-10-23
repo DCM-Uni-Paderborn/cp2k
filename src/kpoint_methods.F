@@ -281,22 +281,33 @@ CONTAINS
 !> \param map Native contribution map.
 !> \param operators Unweighted operators indexed by explicit contribution.
 !> \param reduced New unweighted operators indexed by irreducible representative.
+!> \param representative Optional single representative. The output then has one third-index slice.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_star_operator(map, operators, reduced)
+   SUBROUTINE kpoint_star_operator(map, operators, reduced, representative)
       TYPE(kpoint_star_type), INTENT(IN)                 :: map
       COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: reduced(:, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: representative
 
       COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
-      INTEGER                                            :: ik, link, n
+      INTEGER                                            :: ik, link, n, nk
 
       CPASSERT(ASSOCIATED(map%kpoints))
       n = SUM(map%last - map%first + 1)
       CPASSERT(ALL(SHAPE(operators) == [n, n, SIZE(map%weights)]))
-      ALLOCATE (reduced(n, n, map%kpoints%nkp), matrix(n, n))
+      nk = map%kpoints%nkp
+      IF (PRESENT(representative)) THEN
+         CPASSERT(representative >= 1 .AND. representative <= nk)
+         nk = 1
+      END IF
+      ALLOCATE (reduced(n, n, nk), matrix(n, n))
       reduced = z_zero
       DO link = 1, SIZE(map%weights)
          ik = map%representative(link)
+         IF (PRESENT(representative)) THEN
+            IF (ik /= representative) CYCLE
+            ik = 1
+         END IF
          CALL kpoint_star_matrix(map, link, operators(:, :, link), matrix, .TRUE.)
          reduced(:, :, ik) = reduced(:, :, ik) + map%relative_weights(link)*matrix
       END DO
