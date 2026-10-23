@@ -20,6 +20,7 @@ MODULE qs_upf_inverse_types
                                               kpoint_clear_scf_smat,&
                                               kpoint_native_density_clear,&
                                               kpoint_native_operator_clear,&
+                                              kpoint_star_type,&
                                               kpoint_type
    USE message_passing,                 ONLY: mp_comm_type
    USE paw_types,                       ONLY: paw_core_projector_type,&
@@ -91,6 +92,7 @@ MODULE qs_upf_inverse_types
    TYPE qs_upf_inverse_kpoints_type
       ! The live initialized group environment is borrowed; all fields below are owned.
       TYPE(kpoint_type), POINTER :: kpoints => NULL()
+      TYPE(kpoint_star_type) :: star
       TYPE(qs_upf_inverse_grid_type), ALLOCATABLE :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type) :: augmentation
       REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)

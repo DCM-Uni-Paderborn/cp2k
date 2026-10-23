@@ -14,8 +14,10 @@ MODULE qs_upf_inverse_background
         dbcsr_type_symmetric
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
    USE kinds,                           ONLY: dp
-   USE kpoint_methods,                  ONLY: kp_transform_plan_create
-   USE kpoint_types,                    ONLY: kpoint_type
+   USE kpoint_methods,                  ONLY: kp_transform_plan_create,&
+                                              kpoint_star_create
+   USE kpoint_types,                    ONLY: kpoint_star_type,&
+                                              kpoint_type
    USE mathconstants,                   ONLY: twopi
    USE mathlib,                         ONLY: invmat
    USE particle_types,                  ONLY: particle_type
@@ -76,6 +78,7 @@ CONTAINS
                                                             rab(3), tolerance
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
+      TYPE(kpoint_star_type)                             :: star
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(neighbor_list_iterator_p_type), POINTER       :: iterator(:)
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
@@ -129,9 +132,9 @@ CONTAINS
          END DO
          CALL neighbor_list_iterator_release(iterator)
          CPASSERT(ENTRY == map%plan%nentry)
-         ALLOCATE (map%reduced_k(3, kpoints%nkp), map%weights(kpoints%nkp))
-         map%reduced_k(:, :) = kpoints%xkp
-         map%weights(:) = kpoints%wkp
+         CALL kpoint_star_create(kpoints, sizes, star)
+         map%reduced_k = star%vectors
+         map%weights = star%weights
       ELSE
          CPASSERT(SIZE(overlap, 2) == 1)
          ALLOCATE (map%reduced_k(3, 1), map%weights(1))

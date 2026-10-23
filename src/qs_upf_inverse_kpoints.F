@@ -16,10 +16,16 @@ MODULE qs_upf_inverse_kpoints
                                               cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
                                               cp_cfm_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_get_info,&
+                                              dbcsr_p_type
    USE cp_fm_struct,                    ONLY: cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_get_submatrix
    USE kinds,                           ONLY: dp
+   USE kpoint_methods,                  ONLY: kpoint_star_create,&
+                                              kpoint_star_density,&
+                                              kpoint_star_operator
    USE kpoint_types,                    ONLY: kpoint_env_type,&
+                                              kpoint_star_type,&
                                               kpoint_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
@@ -66,9 +72,11 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
 
       INTEGER                                            :: ik
+      INTEGER, POINTER                                   :: sizes(:)
+      TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
       TYPE(kpoint_type), POINTER                         :: kpoints
 
-      CALL get_ks_env(ks_env, kpoints=kpoints)
+      CALL get_ks_env(ks_env, kpoints=kpoints, matrix_s_kp=overlap)
       CPASSERT(ASSOCIATED(kpoints))
       CPASSERT(kpoints%nkp > 0)
       DO ik = 1, kpoints%nkp
@@ -82,11 +90,13 @@ CONTAINS
       CPASSERT(ABS(SUM(kpoints%wkp) - 1.0_dp) <= 128.0_dp*EPSILON(1.0_dp)*kpoints%nkp)
       frame%kpoints => kpoints
       frame%kp_range = kpoints%kp_range
-      ALLOCATE (frame%reduced_k(3, kpoints%nkp), frame%weights(kpoints%nkp))
-      frame%reduced_k(:, :) = kpoints%xkp
-      frame%weights(:) = kpoints%wkp
-      ALLOCATE (frame%frames(kpoints%nkp))
-      DO ik = 1, kpoints%nkp
+      CPASSERT(ASSOCIATED(overlap))
+      CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes)
+      CALL kpoint_star_create(kpoints, sizes, frame%star)
+      frame%reduced_k = frame%star%vectors
+      frame%weights = frame%star%weights
+      ALLOCATE (frame%frames(SIZE(frame%weights)))
+      DO ik = 1, SIZE(frame%weights)
          CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info, &
                                           atom_local, direct, store_fields)
          IF (info /= 0) THEN
@@ -110,6 +120,7 @@ CONTAINS
       IF (ALLOCATED(frame%augmentation%kinds)) DEALLOCATE (frame%augmentation%kinds)
       IF (ALLOCATED(frame%reduced_k)) DEALLOCATE (frame%reduced_k)
       IF (ALLOCATED(frame%weights)) DEALLOCATE (frame%weights)
+      frame%star = kpoint_star_type()
       NULLIFY (frame%kpoints)
       frame%nao = 0
       frame%kp_range = 0
@@ -130,6 +141,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: energy_weighted
 
+      COMPLEX(dp), ALLOCATABLE                           :: representatives(:, :, :)
       INTEGER                                            :: ik, local
       LOGICAL                                            :: use_energy_weighted
       REAL(dp)                                           :: defect, tolerance
@@ -139,7 +151,7 @@ CONTAINS
       CALL check_live(frame)
       use_energy_weighted = .FALSE.
       IF (PRESENT(energy_weighted)) use_energy_weighted = energy_weighted
-      ALLOCATE (density(frame%nao, frame%nao, SIZE(frame%weights)), &
+      ALLOCATE (density(frame%nao, frame%nao, frame%kpoints%nkp), &
                 real_part(frame%nao, frame%nao), imaginary(frame%nao, frame%nao))
       density = CMPLX(0.0_dp, 0.0_dp, dp)
       DO local = 1, SIZE(frame%kpoints%kp_env)
@@ -166,12 +178,14 @@ CONTAINS
             IF (frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(real_part, imaginary, dp)
          END IF
       END DO
-      DO ik = 1, SIZE(frame%weights)
+      DO ik = 1, frame%kpoints%nkp
          CALL frame%kpoints%para_env%sum(density(:, :, ik))
          defect = MAXVAL(ABS(density(:, :, ik) - CONJG(TRANSPOSE(density(:, :, ik)))))
          tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(density(:, :, ik))))
          CPASSERT(defect <= tolerance)
       END DO
+      CALL MOVE_ALLOC(density, representatives)
+      CALL kpoint_star_density(frame%star, representatives, density)
    END SUBROUTINE qs_upf_inverse_kpoints_density
 
 ! **************************************************************************************************
@@ -307,11 +321,13 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: dense(:, :, :)
       TYPE(cp_cfm_type), ALLOCATABLE, INTENT(OUT)        :: operators(:)
 
+      COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
       INTEGER                                            :: col, ik, local, row
       TYPE(cp_fm_struct_type), POINTER                   :: layout
 
       CALL check_live(frame)
       CPASSERT(ALL(SHAPE(dense) == [frame%nao, frame%nao, SIZE(frame%weights)]))
+      CALL kpoint_star_operator(frame%star, dense, reduced)
       ALLOCATE (operators(SIZE(frame%kpoints%kp_env)))
       DO local = 1, SIZE(operators)
          ik = frame%kp_range(1) + local - 1
@@ -321,7 +337,7 @@ CONTAINS
          operators(local)%local_data = CMPLX(0.0_dp, 0.0_dp, dp)
          DO col = 1, SIZE(layout%col_indices)
             DO row = 1, SIZE(layout%row_indices)
-               operators(local)%local_data(row, col) = dense(layout%row_indices(row), layout%col_indices(col), ik)
+               operators(local)%local_data(row, col) = reduced(layout%row_indices(row), layout%col_indices(col), ik)
             END DO
          END DO
       END DO
@@ -350,14 +366,28 @@ CONTAINS
    SUBROUTINE check_live(frame)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
 
-      INTEGER                                            :: nlocal
+      INTEGER                                            :: ik, is, link, nlocal
+      LOGICAL                                            :: valid
 
       CPASSERT(ASSOCIATED(frame%kpoints))
       CPASSERT(ALLOCATED(frame%frames))
-      CPASSERT(frame%kpoints%nkp == SIZE(frame%weights))
+      CPASSERT(ASSOCIATED(frame%star%kpoints, frame%kpoints))
+      CPASSERT(frame%kpoints%nkp == MAXVAL(frame%star%representative))
       CPASSERT(ALL(frame%kpoints%kp_range == frame%kp_range))
-      CPASSERT(ALL(frame%kpoints%xkp == frame%reduced_k))
-      CPASSERT(ALL(frame%kpoints%wkp == frame%weights))
+      CPASSERT(ALL(frame%star%vectors == frame%reduced_k))
+      CPASSERT(ALL(frame%star%weights == frame%weights))
+      DO link = 1, SIZE(frame%weights)
+         ik = frame%star%representative(link)
+         is = frame%star%operation(link)
+         valid = frame%weights(link) == frame%kpoints%wkp(ik)*frame%star%relative_weights(link)
+         CPASSERT(valid)
+         IF (is == 0) THEN
+            CPASSERT(ALL(frame%kpoints%xkp(:, ik) == frame%reduced_k(:, link)))
+         ELSE
+            valid = ALL(frame%kpoints%kp_sym(ik)%kpoint_sym%xkp(:, is) == frame%reduced_k(:, link))
+            CPASSERT(valid)
+         END IF
+      END DO
       nlocal = MAX(0, frame%kp_range(2) - frame%kp_range(1) + 1)
       CPASSERT(SIZE(frame%kpoints%kp_env) == nlocal)
    END SUBROUTINE check_live

@@ -33,6 +33,7 @@ MODULE qs_upf_inverse_scf
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
+   USE kpoint_methods,                  ONLY: kpoint_star_operator
    USE kpoint_transitional,             ONLY: set_1d_pointer,&
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: kpoint_native_operator_clear
@@ -1529,11 +1530,13 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: slot
       COMPLEX(dp), INTENT(IN)                            :: dense(:, :, :)
 
+      COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
       INTEGER                                            :: col, ik, local, row
       TYPE(cp_cfm_type), ALLOCATABLE                     :: native(:, :)
       TYPE(cp_fm_struct_type), POINTER                   :: layout
 
       CPASSERT(SIZE(source, 1) == 1)
+      CALL kpoint_star_operator(state%bloch%star, dense, reduced)
       ALLOCATE (native(SIZE(state%bloch%kpoints%kp_env), 1))
       DO local = 1, SIZE(native, 1)
          ik = state%bloch%kp_range(1) + local - 1
@@ -1542,7 +1545,7 @@ CONTAINS
          native(local, 1)%local_data = CMPLX(0.0_dp, 0.0_dp, dp)
          DO col = 1, SIZE(layout%col_indices)
             DO row = 1, SIZE(layout%row_indices)
-               native(local, 1)%local_data(row, col) = dense(layout%row_indices(row), layout%col_indices(col), ik)
+               native(local, 1)%local_data(row, col) = reduced(layout%row_indices(row), layout%col_indices(col), ik)
             END DO
          END DO
       END DO
@@ -1561,6 +1564,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
       TYPE(dbcsr_p_type), POINTER                        :: source(:, :)
 
+      COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
       INTEGER                                            :: col, ik, local, row, spin
       TYPE(cp_cfm_type), ALLOCATABLE                     :: native(:, :)
       TYPE(cp_fm_struct_type), POINTER                   :: layout
@@ -1568,6 +1572,7 @@ CONTAINS
       CPASSERT(SIZE(source, 1) == SIZE(state%ks_k, 4))
       ALLOCATE (native(SIZE(state%bloch%kpoints%kp_env), SIZE(source, 1)))
       DO spin = 1, SIZE(source, 1)
+         CALL kpoint_star_operator(state%bloch%star, state%ks_k(:, :, :, spin), reduced)
          DO local = 1, SIZE(native, 1)
             ik = state%bloch%kp_range(1) + local - 1
             layout => state%bloch%kpoints%kp_env(local)%kpoint_env%pmat(1, spin)%matrix_struct
@@ -1576,7 +1581,7 @@ CONTAINS
             DO col = 1, SIZE(layout%col_indices)
                DO row = 1, SIZE(layout%row_indices)
                   native(local, spin)%local_data(row, col) = &
-                     state%ks_k(layout%row_indices(row), layout%col_indices(col), ik, spin)
+                     reduced(layout%row_indices(row), layout%col_indices(col), ik)
                END DO
             END DO
          END DO
