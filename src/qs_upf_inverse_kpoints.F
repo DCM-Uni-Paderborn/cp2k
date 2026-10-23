@@ -209,23 +209,40 @@ CONTAINS
 !> \param spin ...
 !> \param images Integer translations of the original cell used by inverse transition integrals.
 !> \param matrices Existing nonsymmetric image matrices, overwritten with all owned AO blocks.
+!> \param density_matrices Optional unweighted Hermitian matrices for every physical Bloch contribution.
+!>        They use the same cell gauge and symmetry expansion as the live density, and may be indefinite.
+!>        This permits density responses without changing the accepted native density or RI history.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_images(frame, spin, images, matrices)
+   SUBROUTINE qs_upf_inverse_kpoints_images(frame, spin, images, matrices, density_matrices)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
       INTEGER, INTENT(IN)                                :: spin, images(:, :)
       TYPE(dbcsr_p_type), INTENT(INOUT)                  :: matrices(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: density_matrices(:, :, :)
 
       COMPLEX(dp)                                        :: phase
       COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :)
       INTEGER                                            :: a, b, first_a, first_b, image, k, &
                                                             last_a, last_b, owner
-      REAL(dp)                                           :: angle
+      REAL(dp)                                           :: angle, defect, tolerance
       REAL(dp), ALLOCATABLE                              :: matrix(:, :)
       TYPE(mp_comm_type)                                 :: comm
 
       CPASSERT(SIZE(images, 1) == 3)
       CPASSERT(SIZE(images, 2) == SIZE(matrices))
-      CALL qs_upf_inverse_kpoints_density(frame, spin, density)
+      IF (PRESENT(density_matrices)) THEN
+         CALL check_live(frame)
+         CPASSERT(SIZE(density_matrices, 1) == frame%nao)
+         CPASSERT(SIZE(density_matrices, 2) == frame%nao)
+         CPASSERT(SIZE(density_matrices, 3) == SIZE(frame%weights))
+         DO k = 1, SIZE(frame%weights)
+            defect = MAXVAL(ABS(density_matrices(:, :, k) - CONJG(TRANSPOSE(density_matrices(:, :, k)))))
+            tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(density_matrices(:, :, k))))
+            CPASSERT(defect <= tolerance)
+         END DO
+         density = density_matrices
+      ELSE
+         CALL qs_upf_inverse_kpoints_density(frame, spin, density)
+      END IF
       ALLOCATE (matrix(frame%nao, frame%nao))
       DO image = 1, SIZE(matrices)
          matrix = 0.0_dp
