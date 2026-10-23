@@ -266,3 +266,44 @@
    const double _t1939 = _t153*_t52;
    const double _t1940 = (0.2e1 / 0.3e1)*_t153;
    const double _t1942 = _t31*my_piecewise3(_t35, 0, _t1409*_t1933 + _t1413*_t740 + _t1586*_t740 + _t167*(_t1426*_t1938 - _t1603*_t738 - _t1930*_t1940 + _t1931*_t1940 + _t1934 - _t1935*_t1939 - _t1936*_t426 + _t1936*_t737 + _t1937*_t51 - _t1937*_t736 + _t1941*_t430 + _t425*_t738) + _t1812*_t262 + _t1814*_t1928 + _t1819*_t742 + _t420*(-_t1411*_t1930 + _t1411*_t1931 + _t1412*_t261 + _t1929));
+
+--- a/src/maple2c/mgga_exc/mgga_c_tpss.c
++++ b/src/maple2c/mgga_exc/mgga_c_tpss.c
+@@ -1349,7 +1349,8 @@
+   const double _t6 = (xt * xt);
+   const double _t7 = (0.1e1 / 0.4e1)*_t6;
+   const double _t8 = _t5*_t7;
+-  const double _t9 = _t8 > 0.1e1;
++  /* Preserve the physical-side jet when reduction roundoff crosses z = 1. */
++  const double _t9 = _t8 > 0.1e1 + 64.0 * DBL_EPSILON;
+ #if _KMAX >= 1
+   const double _t10 = -_t3;
+   const double _t11 = _t1/(_t4 * _t4);
+@@ -1395,7 +1396,7 @@
+   const double _t47 = _t16*_t40;
+ #endif
+ 
+-  const double f = my_piecewise3(_t9, 0.1e1, _t8);
++  const double f = my_piecewise3(_t8 > 0.1e1, 0.1e1, _t8);
+   out[0] = f;
+ #if _KMAX >= 1
+   const double df_dts1 = my_piecewise3(_t9, 0, _t10*_t12);
+@@ -1510,7 +1511,8 @@
+   const double _t1 = 0.4e1*ts0 + 0.4e1*ts1;
+   const double _t2 = xc_powr(0.2e1, 2, 3);
+   const double _t3 = (xt * xt);
+-  const double _t4 = (-_t1 + _t2*_t3)/_t1 > 0;
++  /* Keep energy clipping unchanged,including at the iso-orbital boundary. */
++  const double _t4 = (-_t1 + _t2*_t3)/_t1 > 64.0 * DBL_EPSILON;
+   const double _t5 = ts0 + ts1;
+   const double _t6 = (0.1e1 / _t5);
+   const double _t7 = _t2*_t3;
+@@ -1533,7 +1535,7 @@
+   const double _t19 = my_piecewise3(_t4, 0, -_t15);
+ #endif
+ 
+-  const double f = my_piecewise3(_t4, 0.1e1, _t6*_t8);
++  const double f = my_piecewise3((-_t1 + _t2*_t3)/_t1 > 0, 0.1e1, _t6*_t8);
+   out[0] = f;
+ #if _KMAX >= 1
+   const double df_dts1 = _t10;

@@ -49,6 +49,7 @@ MODULE qs_upf_inverse_scf_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_field_kernel,&
                                               qs_upf_inverse_xc_semilocal_kernel_available
+   USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_get,&
                                               skala_density_constraints_type,&
@@ -261,19 +262,19 @@ CONTAINS
          CALL kinetic_direction(spin)%create(grid)
          CALL combined_rho(spin)%create(grid)
          CALL combined_tau(spin)%create(grid)
-         CALL pw_transfer(native_g(spin), density_g(spin))
+         CALL pw_real_transfer(native_g(spin), density_g(spin))
          IF (fine) THEN
             CALL pw_transfer(density_g(spin), density(spin))
             CALL pw_transfer(density(spin), density_g(spin))
             IF (use_tau) THEN
                IF (tau_g_valid) THEN
-                  CALL pw_transfer(native_tau_g(spin), work_g)
+                  CALL pw_real_transfer(native_tau_g(spin), work_g)
                ELSE
                   BLOCK
                      TYPE(pw_c1d_gs_type) :: tau_aux
                      CALL tau_aux%create(native_tau(spin)%pw_grid)
                      CALL pw_transfer(native_tau(spin), tau_aux)
-                     CALL pw_transfer(tau_aux, work_g)
+                     CALL pw_real_transfer(tau_aux, work_g)
                      CALL tau_aux%release()
                   END BLOCK
                END IF
@@ -288,7 +289,7 @@ CONTAINS
          CPASSERT(ASSOCIATED(native_core_g))
          CALL transferred_core%create(grid)
          CALL core_g%create(grid)
-         CALL pw_transfer(native_core_g, core_g)
+         CALL pw_real_transfer(native_core_g, core_g)
          IF (fine) THEN
             CALL pw_transfer(core_g, transferred_core)
             CALL pw_transfer(transferred_core, core_g)
@@ -574,7 +575,7 @@ CONTAINS
          CALL source_g%create(source%pw_grid)
          CALL target_g%create(target%pw_grid)
          CALL pw_transfer(source, source_g)
-         CALL pw_transfer(source_g, target_g)
+         CALL pw_real_transfer(source_g, target_g)
          CALL pw_transfer(target_g, TARGET)
          CALL source_g%release()
          CALL target_g%release()

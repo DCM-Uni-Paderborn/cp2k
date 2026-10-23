@@ -32,7 +32,7 @@ case "$with_libxc" in
       [ -d libxc-${libxc_ver} ] && rm -rf libxc-${libxc_ver}
       tar -xjf libxc-${libxc_ver}.tar.bz2
       cd libxc-${libxc_ver}
-      # Avoid cancellation in spin powers of meta-GGA correlation.
+      # Preserve spin powers and physical iso-orbital derivative limits.
       patch -p1 < "${SCRIPT_DIR}/stage3/libxc-${libxc_ver}-spin-powers.patch" \
         > libxc_spin_powers.patch.log 2>&1 || tail_excerpt libxc_spin_powers.patch.log
 

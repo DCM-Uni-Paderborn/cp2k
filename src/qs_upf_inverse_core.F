@@ -26,6 +26,7 @@ MODULE qs_upf_inverse_core
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE upf_core,                        ONLY: upf_core_fourier,&
                                               upf_core_kinetic_fourier
    USE virial_types,                    ONLY: virial_type
@@ -53,8 +54,8 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_c1d_gs_type), POINTER                      :: core_g
-      TYPE(pw_r3d_rs_type), POINTER                      :: core_r
       TYPE(pw_r3d_rs_type)                               :: native_core
+      TYPE(pw_r3d_rs_type), POINTER                      :: core_r
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
@@ -156,7 +157,7 @@ CONTAINS
       CPASSERT(SIZE(kinetic) > 0)
       CALL field_g%create(kinetic(1)%pw_grid)
       CALL field_r%create(kinetic(1)%pw_grid)
-      CALL pw_transfer(state%core_tau_g, field_g)
+      CALL pw_real_transfer(state%core_tau_g, field_g)
       CALL pw_transfer(field_g, field_r)
       DO spin = 1, SIZE(kinetic)
          CPASSERT(ASSOCIATED(kinetic(spin)%pw_grid, field_r%pw_grid))

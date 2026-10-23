@@ -76,7 +76,7 @@ PROGRAM xc_semilocal_unittest
 
    CALL cp2k_init()
    CALL check_pade_metadata()
-   CALL check_zero_gradient_kernel()
+   CALL check_cartesian_kernel()
    NULLIFY (specification, functional)
    CALL create_xc_fun_section(specification)
    CALL section_vals_create(functional, specification)
@@ -164,15 +164,18 @@ CONTAINS
    END SUBROUTINE check_pade_metadata
 
 ! **************************************************************************************************
-!> \brief Check the Cartesian XC kernel at zero total and zero individual density gradients.
+!> \brief Check Cartesian XC kernels at zero gradients and the TPSS iso-orbital boundary.
 ! **************************************************************************************************
-   SUBROUTINE check_zero_gradient_kernel()
-      REAL(dp), PARAMETER                                :: step = 1.e-4_dp
+   SUBROUTINE check_cartesian_kernel()
+      REAL(dp), PARAMETER :: iso_drho(2) = [-0.014668019976782638_dp, 0.00456205224006841_dp], &
+         iso_dtau(2) = [-0.00565294859952081_dp, -0.002661714548905217_dp], &
+         iso_rho(2) = [0.024588959233318015_dp, 0.02458895923331792_dp], &
+         iso_tau = 0.03126982337307299_dp, step = 1.e-4_dp
 
       INTEGER                                            :: bounds(2, 3), configuration, ns, spin, &
                                                             trial
       REAL(dp)                                           :: center_gradient, energies(2), energy, &
-                                                            error, gradient_scale
+                                                            error, gradient_scale, trial_step
       REAL(dp), ALLOCATABLE :: direction(:, :, :, :), grad(:, :, :, :), original(:, :, :, :), &
          rho(:, :, :), samples(:, :, :), tau(:, :, :), weights(:, :)
       REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
@@ -184,9 +187,9 @@ CONTAINS
       TYPE(xc_rho_set_type)                              :: delta, fields
 
       error = 0.0_dp
-      DO configuration = 1, 4
+      DO configuration = 1, 5
 #if !defined (__LIBXC)
-         IF (configuration == 3) CYCLE
+         IF (configuration == 3 .OR. configuration == 5) CYCLE
 #endif
          ns = MIN(configuration, 2)
          IF (configuration == 4) ns = 1
@@ -196,6 +199,8 @@ CONTAINS
          IF (configuration == 3) THEN
             CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_X_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
             CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_C_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         ELSE IF (configuration == 5) THEN
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_C_TPSS%_SECTION_PARAMETERS_', l_val=.TRUE.)
          ELSE
             CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%PBE%_SECTION_PARAMETERS_', l_val=.TRUE.)
             IF (configuration == 4) THEN
@@ -216,8 +221,18 @@ CONTAINS
             original(1:3, 1, 1, 1) = [0.01_dp, 0.02_dp, -0.015_dp]
             original(1:3, 1, 1, 2) = -original(1:3, 1, 1, 1)
          END IF
+         IF (configuration == 5) THEN
+            ! Per-spin tau projects onto tau_W. The total iso-orbital ratio then
+            ! reaches one, where roundoff must preserve the physical derivative.
+            original(1:3, 1, 1, 1) = [-0.08534449161641214_dp, -0.005430706214988238_dp, -0.009593180114248362_dp]
+            original(1:3, 1, 1, 2) = [-0.0853444916164123_dp, -0.005430706214988212_dp, -0.00959318011424829_dp]
+         END IF
          IF (ns == 2) THEN
             direction(1:3, 1, 1, 2) = [-0.011_dp, 0.013_dp, 0.007_dp]
+         END IF
+         IF (configuration == 5) THEN
+            direction(1:3, 1, 1, 1) = [-0.02179654789805297_dp, 0.0030660712011541004_dp, 0.005217556783912998_dp]
+            direction(1:3, 1, 1, 2) = [-0.0020480873856408184_dp, -0.000417406123067801_dp, -0.0007553685436135118_dp]
          END IF
          gradient_scale = section_get_rval(xc, 'GRADIENT_CUTOFF')
          IF (configuration == 4) THEN
@@ -232,15 +247,29 @@ CONTAINS
                                 drho_cutoff=section_get_rval(xc, 'GRADIENT_CUTOFF'), tau_cutoff=section_get_rval(xc, 'TAU_CUTOFF'))
          CALL xc_rho_set_atom_update(delta, needs, ns, bounds)
          rho = 0.0_dp
+         IF (configuration == 5) THEN
+            rho(1, 1, :) = iso_drho
+            tau(1, 1, :) = iso_dtau
+         END IF
          CALL fill_rho_set(delta, ns == 2, ns, needs, rho, direction, tau, 1, 1)
          rho = 0.4_dp
          IF (ns == 2) rho(1, 1, :) = [0.25_dp, 0.15_dp]
          IF (configuration == 4) rho = 100.0_dp*section_get_rval(xc, 'DENSITY_CUTOFF')
          IF (configuration == 3) tau = 0.06_dp
+         IF (configuration == 5) THEN
+            rho(1, 1, :) = iso_rho
+            tau = iso_tau
+         END IF
          DO trial = 0, 2
+            trial_step = 0.0_dp
+            IF (trial == 1) trial_step = step
+            IF (trial == 2) trial_step = -step
             grad = original
-            IF (trial == 1) grad(1:3, :, :, :) = grad(1:3, :, :, :) + step*direction(1:3, :, :, :)
-            IF (trial == 2) grad(1:3, :, :, :) = grad(1:3, :, :, :) - step*direction(1:3, :, :, :)
+            grad(1:3, :, :, :) = grad(1:3, :, :, :) + trial_step*direction(1:3, :, :, :)
+            IF (configuration == 5) THEN
+               rho(1, 1, :) = iso_rho + trial_step*iso_drho
+               tau(1, 1, :) = iso_tau + trial_step*iso_dtau
+            END IF
             DO spin = 1, ns
                grad(4, 1, 1, spin) = NORM2(grad(1:3, 1, 1, spin))
             END DO
@@ -283,9 +312,9 @@ CONTAINS
          CALL section_release(definition)
          DEALLOCATE (rho, grad, direction, original, tau, weights, samples, vn, vt, vg)
       END DO
-      WRITE (*, '(A,ES15.6)') 'Zero-gradient Cartesian XC kernel error:', error
-      IF (error > 3.e-8_dp) ERROR STOP 'The zero-gradient XC kernel is not the original potential derivative'
-   END SUBROUTINE check_zero_gradient_kernel
+      WRITE (*, '(A,ES15.6)') 'Cartesian XC kernel error:', error
+      IF (error > 3.e-8_dp) ERROR STOP 'The Cartesian XC kernel is not the original potential derivative'
+   END SUBROUTINE check_cartesian_kernel
 
 #if defined (__LIBXC)
 ! **************************************************************************************************
