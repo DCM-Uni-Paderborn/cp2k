@@ -47,6 +47,7 @@ PROGRAM pw_unittest
    USE realspace_grid_cube,             ONLY: cube_read_values,&
                                               cube_value_format,&
                                               cube_values_format
+   USE rs_pw_interface,                 ONLY: pw_real_transfer
 
    IMPLICIT NONE
 
@@ -63,6 +64,7 @@ PROGRAM pw_unittest
    DO mode = 0, 8
       CALL check_copy(mode)
    END DO
+   CALL check_real_interpolation()
    max_error = 0.0_dp
    CALL check_pw_integral_and_poisson()
    CALL check_mt2d_kernel()
@@ -72,6 +74,78 @@ PROGRAM pw_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Preserve even-grid tensor-product Nyquist modes and the real-density/potential adjoint.
+! **************************************************************************************************
+   SUBROUTINE check_real_interpolation()
+      INTEGER                                            :: axes, ig
+      REAL(dp)                                           :: cell(3, 3), error, expected, left, right
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(pw_c1d_gs_type)                               :: coarse, fine, restricted, test
+      TYPE(pw_grid_type), POINTER                        :: coarse_grid, fine_grid
+
+      NULLIFY (coarse_grid, fine_grid)
+      CALL comm%set_handle(mp_comm_world%get_handle())
+      cell = 0.0_dp
+      DO axes = 1, 3
+         cell(axes, axes) = 7.0_dp
+      END DO
+      CALL pw_grid_create(fine_grid, comm, cell, grid_span=FULLSPACE, npts=[9, 9, 9], &
+                          odd=.TRUE., fft_usage=.FALSE.)
+      CALL pw_grid_create(coarse_grid, comm, cell, grid_span=FULLSPACE, npts=[6, 6, 6], &
+                          odd=.FALSE., fft_usage=.FALSE., ref_grid=fine_grid)
+      CALL coarse%create(coarse_grid)
+      CALL fine%create(fine_grid)
+      CALL test%create(fine_grid)
+      CALL restricted%create(coarse_grid)
+      DO axes = 1, 3
+         ! The sampled product of one, two or three Nyquist cosines has a single
+         ! coarse coefficient. Its real trigonometric interpolant has 2**axes signs.
+         coarse%array = 0.0_dp
+         DO ig = 1, SIZE(coarse%array)
+            IF (ANY(coarse_grid%g_hat(:axes, ig) /= -3)) CYCLE
+            IF (ANY(coarse_grid%g_hat(axes + 1:3, ig) /= 0)) CYCLE
+            coarse%array(ig) = 1.0_dp
+         END DO
+         fine%array = (17.0_dp, -3.0_dp)
+         CALL pw_real_transfer(coarse, fine)
+         error = 0.0_dp
+         DO ig = 1, SIZE(fine%array)
+            expected = 0.0_dp
+            IF (ALL(ABS(fine_grid%g_hat(:axes, ig)) == 3) .AND. &
+                ALL(fine_grid%g_hat(axes + 1:3, ig) == 0)) expected = 0.5_dp**axes
+            error = MAX(error, ABS(fine%array(ig) - expected))
+         END DO
+         CALL comm%max(error)
+         IF (error > 3.e-14_dp) ERROR STOP "Real Fourier interpolation lost a Nyquist sign."
+      END DO
+      DO ig = 1, SIZE(coarse%array)
+         coarse%array(ig) = CMPLX(COS(REAL(SUM(coarse_grid%g_hat(:, ig)), dp)), &
+                                  SIN(REAL(DOT_PRODUCT([2, 3, 5], coarse_grid%g_hat(:, ig)), dp)), dp)
+      END DO
+      DO ig = 1, SIZE(test%array)
+         test%array(ig) = CMPLX(SIN(REAL(SUM(fine_grid%g_hat(:, ig)), dp)), &
+                                COS(REAL(DOT_PRODUCT([3, 5, 7], fine_grid%g_hat(:, ig)), dp)), dp)
+      END DO
+      fine%array = test%array
+      CALL pw_real_transfer(coarse, fine, additive=.TRUE.)
+      fine%array = fine%array - test%array
+      CALL pw_real_transfer(test, restricted)
+      left = REAL(SUM(CONJG(test%array)*fine%array), dp)
+      right = REAL(SUM(CONJG(restricted%array)*coarse%array), dp)
+      CALL comm%sum(left)
+      CALL comm%sum(right)
+      IF (ABS(left - right) > 1.e-13_dp*MAX(1.0_dp, ABS(left), ABS(right))) THEN
+         ERROR STOP "Real Fourier density and potential transfers are not adjoint."
+      END IF
+      CALL coarse%release()
+      CALL fine%release()
+      CALL test%release()
+      CALL restricted%release()
+      CALL pw_grid_release(coarse_grid)
+      CALL pw_grid_release(fine_grid)
+   END SUBROUTINE check_real_interpolation
 
 ! **************************************************************************************************
 !> \brief Preserve three-digit cube exponents and parse adjacent values across z-slices.
