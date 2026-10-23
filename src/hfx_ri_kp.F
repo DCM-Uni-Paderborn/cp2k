@@ -114,7 +114,8 @@ MODULE hfx_ri_kp
    USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_adjoint,&
                                               qs_upf_inverse_hfx_lattice_centers,&
                                               qs_upf_inverse_hfx_lattice_gradient
-   USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_images
+   USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_image_operator,&
+                                              qs_upf_inverse_kpoints_images
    USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_adjoint
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
@@ -475,6 +476,7 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_update_ks_kp'
 
+      COMPLEX(dp), ALLOCATABLE                           :: exchange(:, :, :)
       INTEGER :: b_img, batch_size, group_size, handle, handle2, i_batch, i_img, i_spin, iatom, &
          iblk, igroup, iprint, jatom, mb_img, n_batch_nze, n_nze, natom, ngroups, nimg, nimg_nze
       INTEGER(int_8)                                     :: mem, nflop, nze
@@ -482,7 +484,9 @@ CONTAINS
                                                             idx_to_at_AO
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: iapc_pairs
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: sparsity_pattern
-      LOGICAL                                            :: estimate_mem, print_progress, use_delta_p
+      INTEGER, POINTER                                   :: image_cells(:, :)
+      LOGICAL                                            :: estimate_mem, inverse_operator, &
+                                                            print_progress, use_delta_p
       REAL(dp)                                           :: etmp, fac, occ, pfac, pref, t1, t2, t3, &
                                                             t4
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env_sub
@@ -492,7 +496,10 @@ CONTAINS
       TYPE(dbt_type), ALLOCATABLE, DIMENSION(:)          :: ks_t_split, t_2c_ao_tmp, t_2c_work, &
                                                             t_3c_int, t_3c_work_2, t_3c_work_3
       TYPE(dbt_type), ALLOCATABLE, DIMENSION(:, :)       :: ks_t, ks_t_sub, t_3c_apc, t_3c_apc_sub
+      TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_sub
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_section, print_section
 
       NULLIFY (para_env, para_env_sub, blacs_env_sub, hfx_section, dbcsr_template, print_section)
@@ -501,7 +508,18 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      CALL get_qs_env(qs_env, para_env=para_env, natom=natom)
+      CALL get_qs_env(qs_env, para_env=para_env, natom=natom, ks_env=ks_env, kpoints=kpoints)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_operator = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_operator = inverse%enabled
+      IF (inverse_operator) THEN
+         CPASSERT(ASSOCIATED(inverse%bloch%kpoints))
+         CALL get_kpoint_info(kpoints, index_to_cell=image_cells)
+         IF (.NOT. ALLOCATED(inverse%exchange_k)) THEN
+            ALLOCATE (inverse%exchange_k, MOLD=inverse%ks_k)
+            inverse%exchange_k = CMPLX(0.0_dp, 0.0_dp, dp)
+         END IF
+      END IF
 
       IF (nspins == 1) THEN
          fac = 0.5_dp*hf_fraction
@@ -836,6 +854,10 @@ CONTAINS
             CALL dbt_filter(ri_data%ks_t(i_spin, i_img), ri_data%filter_eps)
             CALL dbt_copy(ri_data%ks_t(i_spin, i_img), t_2c_ao_tmp(1))
             CALL dbt_copy_tensor_to_matrix(t_2c_ao_tmp(1), ks_desymm)
+            IF (inverse_operator) THEN
+               CALL qs_upf_inverse_kpoints_image_operator(inverse%bloch, image_cells(:, i_img), ks_desymm, exchange)
+               inverse%exchange_k(:, :, :, i_spin) = inverse%exchange_k(:, :, :, i_spin) + exchange
+            END IF
             CALL dbt_copy_tensor_to_matrix(t_2c_ao_tmp(1), tmp)
             CALL dbcsr_add(ks_matrix(i_spin, i_img)%matrix, tmp, 1.0_dp, 1.0_dp)
 

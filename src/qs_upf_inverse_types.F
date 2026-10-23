@@ -181,6 +181,8 @@ MODULE qs_upf_inverse_types
       TYPE(qs_upf_inverse_background_type) :: gaussian
       COMPLEX(dp), ALLOCATABLE :: gaussian_kinetic(:, :, :)
       COMPLEX(dp), ALLOCATABLE :: metric_k(:, :, :), core_k(:, :, :), kinetic_k(:, :, :), ks_k(:, :, :, :)
+      ! Real RI image matrices also contribute to the complete direct Bloch KS provider.
+      COMPLEX(dp), ALLOCATABLE :: exchange_k(:, :, :, :)
       TYPE(qs_upf_inverse_atom_grid_type) :: atom_grid
       TYPE(qs_upf_inverse_xc_type) :: xc
       TYPE(qs_upf_inverse_coulomb_type), POINTER :: coulomb => NULL()

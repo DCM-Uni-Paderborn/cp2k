@@ -111,7 +111,8 @@ MODULE hfx_admm_utils
                                               init_gapw_basis_set,&
                                               init_gapw_nlcc,&
                                               qs_kind_type
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_local_rho_types,              ONLY: local_rho_set_create
    USE qs_matrix_pools,                 ONLY: mpools_get
    USE qs_mo_types,                     ONLY: allocate_mo_set,&
@@ -135,6 +136,7 @@ MODULE hfx_admm_utils
    USE qs_rho_types,                    ONLY: qs_rho_create,&
                                               qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE rt_propagation_types,            ONLY: rt_prop_type
    USE task_list_methods,               ONLY: generate_qs_task_list
    USE task_list_types,                 ONLY: allocate_task_list,&
@@ -985,7 +987,9 @@ CONTAINS
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_orb
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: adiabatic_rescaling_section, &
                                                             hfx_sections, input
       TYPE(virial_type), POINTER                         :: virial
@@ -1006,7 +1010,11 @@ CONTAINS
                       virial=virial, &
                       matrix_ks_im=matrix_ks_im, &
                       s_mstruct_changed=s_mstruct_changed, &
-                      x_data=x_data)
+                      x_data=x_data, ks_env=ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      IF (ASSOCIATED(inverse)) THEN
+         IF (ALLOCATED(inverse%exchange_k)) inverse%exchange_k = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
 
       ! No RTP
       IF (qs_env%run_rtp) CPABORT("No RTP implementation with K-points HFX")

@@ -21,7 +21,8 @@ MODULE qs_upf_inverse_kpoints
                                               dbcsr_get_info,&
                                               dbcsr_get_stored_coordinates,&
                                               dbcsr_p_type,&
-                                              dbcsr_put_block
+                                              dbcsr_put_block,&
+                                              dbcsr_type
    USE cp_fm_struct,                    ONLY: cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_get_submatrix
    USE kinds,                           ONLY: dp
@@ -41,7 +42,8 @@ MODULE qs_upf_inverse_kpoints
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate_dense,&
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_metric_dense,&
-                                              qs_upf_inverse_grid_prepare
+                                              qs_upf_inverse_grid_prepare,&
+                                              qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_kpoints_type
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
 #include "./base/base_uses.f90"
@@ -52,6 +54,7 @@ MODULE qs_upf_inverse_kpoints
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_kpoints_prepare, qs_upf_inverse_kpoints_release
    PUBLIC :: qs_upf_inverse_kpoints_density, qs_upf_inverse_kpoints_collocate
    PUBLIC :: qs_upf_inverse_kpoints_images
+   PUBLIC :: qs_upf_inverse_kpoints_image_operator
    PUBLIC :: qs_upf_inverse_kpoints_integrate, qs_upf_inverse_kpoints_metric, qs_upf_inverse_kpoints_distribute
    PUBLIC :: qs_upf_inverse_kpoints_release_operators
 
@@ -244,6 +247,32 @@ CONTAINS
          CALL dbcsr_finalize(matrices(image)%matrix)
       END DO
    END SUBROUTINE qs_upf_inverse_kpoints_images
+
+! **************************************************************************************************
+!> \brief Return one real image operator's unweighted Bloch contributions, adjoint to image density.
+!> \param frame ...
+!> \param image Original-cell translation of the nonsymmetric image operator.
+!> \param matrix Real nonsymmetric image operator with native AO ownership.
+!> \param operators New full-contribution Bloch operators, without mesh weights.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_kpoints_image_operator(frame, image, matrix, operators)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
+      INTEGER, INTENT(IN)                                :: image(3)
+      TYPE(dbcsr_type), INTENT(IN)                       :: matrix
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: dense(:, :)
+      INTEGER                                            :: k
+      REAL(dp)                                           :: angle
+
+      CALL check_live(frame)
+      CALL qs_upf_inverse_matrix_gather(frame%frames(1)%ao, matrix, dense)
+      ALLOCATE (operators(frame%nao, frame%nao, SIZE(frame%weights)))
+      DO k = 1, SIZE(frame%weights)
+         angle = twopi*DOT_PRODUCT(frame%reduced_k(:, k), REAL(image, dp))
+         operators(:, :, k) = CMPLX(COS(angle), SIN(angle), dp)*dense
+      END DO
+   END SUBROUTINE qs_upf_inverse_kpoints_image_operator
 
 ! **************************************************************************************************
 !> \brief Sum native k-point densities with their mesh weights exactly once.

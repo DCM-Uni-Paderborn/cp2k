@@ -864,6 +864,9 @@ CONTAINS
          IF (ALLOCATED(state%xc%operators)) THEN
             state%ks_k(:, :, :, spin) = state%ks_k(:, :, :, spin) + state%xc%operators(:, :, :, spin)
          END IF
+         IF (ALLOCATED(state%exchange_k)) THEN
+            state%ks_k(:, :, :, spin) = state%ks_k(:, :, :, spin) + state%exchange_k(:, :, :, spin)
+         END IF
          CALL get_ks_env(ks_env, matrix_ks_kp=source)
          CALL register_bloch_spin(state, source)
       ELSE
@@ -1004,6 +1007,9 @@ CONTAINS
             state%ks_k(:, :, :, spin) = state%ks_k(:, :, :, spin) + OPERATOR
          ELSE
             state%ks_k(:, :, :, spin) = state%core_k + OPERATOR
+            IF (ALLOCATED(state%exchange_k)) THEN
+               state%ks_k(:, :, :, spin) = state%ks_k(:, :, :, spin) + state%exchange_k(:, :, :, spin)
+            END IF
          END IF
          CALL get_ks_env(ks_env, matrix_ks_kp=source)
          CALL register_bloch_spin(state, source)
