@@ -68,6 +68,7 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_xc_grid_response,&
                                               qs_upf_inverse_xc_pw_adjoint,&
                                               qs_upf_inverse_xc_pw_fields
+   USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator
@@ -520,7 +521,7 @@ CONTAINS
          CALL source_g%create(source%pw_grid)
          CALL target_g%create(target%pw_grid)
          CALL pw_transfer(source, source_g)
-         CALL pw_transfer(source_g, target_g)
+         CALL pw_real_transfer(source_g, target_g)
          CALL pw_transfer(target_g, TARGET)
          CALL source_g%release()
          CALL target_g%release()

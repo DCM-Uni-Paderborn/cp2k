@@ -62,6 +62,7 @@ MODULE qs_vxc
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_paw_composite
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_evaluate
+   USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
                                               native_skala_gapw_composite_direct_ao,&
@@ -549,7 +550,7 @@ CONTAINS
             ALLOCATE (rho_g(mspin))
             DO ispin = 1, mspin
                CALL xc_pw_pool%create_pw(rho_g(ispin))
-               CALL pw_transfer(rho_struct_g(ispin), rho_g(ispin))
+               CALL pw_real_transfer(rho_struct_g(ispin), rho_g(ispin))
             END DO
             DO ispin = 1, mspin
                CALL xc_pw_pool%create_pw(rho_r(ispin))
@@ -566,11 +567,11 @@ CONTAINS
                      TYPE(pw_c1d_gs_type) :: tau_g_aux, tau_g_xc
                      CALL xc_pw_pool%create_pw(tau_g_xc)
                      IF (tau_g_valid) THEN
-                        CALL pw_transfer(tau_struct_g(ispin), tau_g_xc)
+                        CALL pw_real_transfer(tau_struct_g(ispin), tau_g_xc)
                      ELSE
                         CALL auxbas_pw_pool%create_pw(tau_g_aux)
                         CALL pw_transfer(tau_struct_r(ispin), tau_g_aux)
-                        CALL pw_transfer(tau_g_aux, tau_g_xc)
+                        CALL pw_real_transfer(tau_g_aux, tau_g_xc)
                         CALL auxbas_pw_pool%give_back_pw(tau_g_aux)
                      END IF
                      CALL pw_transfer(tau_g_xc, tau(ispin))
@@ -586,7 +587,7 @@ CONTAINS
                   CALL auxbas_pw_pool%create_pw(weights_g_aux)
                   CALL xc_pw_pool%create_pw(weights_g_xc)
                   CALL pw_transfer(weights, weights_g_aux)
-                  CALL pw_transfer(weights_g_aux, weights_g_xc)
+                  CALL pw_real_transfer(weights_g_aux, weights_g_xc)
                   CALL pw_transfer(weights_g_xc, weights_xc)
                   CALL xc_pw_pool%give_back_pw(weights_g_xc)
                   CALL auxbas_pw_pool%give_back_pw(weights_g_aux)
@@ -598,7 +599,7 @@ CONTAINS
                ALLOCATE (rho_nlcc_g_xc, rho_nlcc_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_g_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_xc)
-               CALL pw_transfer(rho_nlcc_g, rho_nlcc_g_xc)
+               CALL pw_real_transfer(rho_nlcc_g, rho_nlcc_g_xc)
                CALL pw_transfer(rho_nlcc_g_xc, rho_nlcc_xc)
                CALL pw_transfer(rho_nlcc_xc, rho_nlcc_g_xc)
                rho_nlcc_use => rho_nlcc_xc
@@ -733,19 +734,19 @@ CONTAINS
                CALL diagnostics_pw_pool%create_pw(tau_smooth_model_r(ispin))
                IF (uf_grid) THEN
                   IF (rho_g_valid) THEN
-                     CALL pw_transfer(rho_smooth_g(ispin), rho_smooth_model_g(ispin))
+                     CALL pw_real_transfer(rho_smooth_g(ispin), rho_smooth_model_g(ispin))
                   ELSE
                      CALL auxbas_pw_pool%create_pw(tmp_g)
                      CALL pw_transfer(rho_smooth_r(ispin), tmp_g)
-                     CALL pw_transfer(tmp_g, rho_smooth_model_g(ispin))
+                     CALL pw_real_transfer(tmp_g, rho_smooth_model_g(ispin))
                      CALL auxbas_pw_pool%give_back_pw(tmp_g)
                   END IF
                   IF (tau_g_valid) THEN
-                     CALL pw_transfer(tau_smooth_g(ispin), tau_smooth_model_g(ispin))
+                     CALL pw_real_transfer(tau_smooth_g(ispin), tau_smooth_model_g(ispin))
                   ELSE
                      CALL auxbas_pw_pool%create_pw(tmp_g)
                      CALL pw_transfer(tau_smooth_r(ispin), tmp_g)
-                     CALL pw_transfer(tmp_g, tau_smooth_model_g(ispin))
+                     CALL pw_real_transfer(tmp_g, tau_smooth_model_g(ispin))
                      CALL auxbas_pw_pool%give_back_pw(tmp_g)
                   END IF
                ELSE
@@ -1030,7 +1031,7 @@ CONTAINS
                   DO ispin = 1, SIZE(vxc_rho)
                      CALL auxbas_pw_pool%create_pw(tmp_pw)
                      CALL pw_transfer(vxc_rho(ispin), tmp_g)
-                     CALL pw_transfer(tmp_g, tmp_g2)
+                     CALL pw_real_transfer(tmp_g, tmp_g2)
                      CALL pw_transfer(tmp_g2, tmp_pw)
                      CALL xc_pw_pool%give_back_pw(vxc_rho(ispin))
                      vxc_rho(ispin) = tmp_pw
@@ -1040,7 +1041,7 @@ CONTAINS
                   DO ispin = 1, SIZE(vxc_tau)
                      CALL auxbas_pw_pool%create_pw(tmp_pw)
                      CALL pw_transfer(vxc_tau(ispin), tmp_g)
-                     CALL pw_transfer(tmp_g, tmp_g2)
+                     CALL pw_real_transfer(tmp_g, tmp_g2)
                      CALL pw_transfer(tmp_g2, tmp_pw)
                      CALL xc_pw_pool%give_back_pw(vxc_tau(ispin))
                      vxc_tau(ispin) = tmp_pw
@@ -1404,7 +1405,7 @@ CONTAINS
                ALLOCATE (rho_nlcc_g_xc, rho_nlcc_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_g_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_xc)
-               CALL pw_transfer(rho_nlcc_g, rho_nlcc_g_xc)
+               CALL pw_real_transfer(rho_nlcc_g, rho_nlcc_g_xc)
                CALL pw_transfer(rho_nlcc_g_xc, rho_nlcc_xc)
                rho_nlcc_use => rho_nlcc_xc
                rho_nlcc_g_use => rho_nlcc_g_xc
@@ -1576,7 +1577,7 @@ CONTAINS
          CALL source_pw_pool%create_pw(source_g)
          CALL target_pw_pool%create_pw(target_g)
          CALL pw_transfer(source, source_g)
-         CALL pw_transfer(source_g, target_g)
+         CALL pw_real_transfer(source_g, target_g)
          CALL pw_transfer(target_g, TARGET)
          CALL target_pw_pool%give_back_pw(target_g)
          CALL source_pw_pool%give_back_pw(source_g)
@@ -1607,7 +1608,7 @@ CONTAINS
       DO ispin = 1, nspins
          CALL pw_pool%create_pw(rho_g_out(ispin))
          CALL pw_pool%create_pw(rho_r_out(ispin))
-         CALL pw_transfer(rho_g_in(ispin), rho_g_out(ispin))
+         CALL pw_real_transfer(rho_g_in(ispin), rho_g_out(ispin))
          CALL pw_transfer(rho_g_out(ispin), rho_r_out(ispin))
       END DO
 
@@ -1640,7 +1641,7 @@ CONTAINS
          CALL target_pw_pool%create_pw(rho_g_out(ispin))
          CALL target_pw_pool%create_pw(rho_r_out(ispin))
          CALL pw_transfer(rho_r_in(ispin), rho_g_in)
-         CALL pw_transfer(rho_g_in, rho_g_out(ispin))
+         CALL pw_real_transfer(rho_g_in, rho_g_out(ispin))
          CALL pw_transfer(rho_g_out(ispin), rho_r_out(ispin))
          CALL source_pw_pool%give_back_pw(rho_g_in)
       END DO

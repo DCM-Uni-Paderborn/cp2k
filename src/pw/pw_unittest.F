@@ -24,7 +24,8 @@ PROGRAM pw_unittest
    USE pw_grid_types,                   ONLY: FULLSPACE,&
                                               HALFSPACE,&
                                               pw_grid_type
-   USE pw_grids,                        ONLY: pw_grid_create,&
+   USE pw_grids,                        ONLY: do_pw_grid_blocked_false,&
+                                              pw_grid_create,&
                                               pw_grid_release
    USE pw_methods,                      ONLY: do_accurate_sum,&
                                               do_standard_sum,&
@@ -64,7 +65,8 @@ PROGRAM pw_unittest
    DO mode = 0, 8
       CALL check_copy(mode)
    END DO
-   CALL check_real_interpolation()
+   CALL check_real_interpolation(.FALSE.)
+   CALL check_real_interpolation(.TRUE.)
    max_error = 0.0_dp
    CALL check_pw_integral_and_poisson()
    CALL check_mt2d_kernel()
@@ -77,9 +79,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Preserve even-grid tensor-product Nyquist modes and the real-density/potential adjoint.
+!> \param partial Keep one Nyquist extent unchanged while refining the other two directions.
 ! **************************************************************************************************
-   SUBROUTINE check_real_interpolation()
-      INTEGER                                            :: axes, ig
+   SUBROUTINE check_real_interpolation(partial)
+      LOGICAL, INTENT(IN)                                :: partial
+
+      INTEGER                                            :: axes, fine_sizes(3), ig, nsplit
       REAL(dp)                                           :: cell(3, 3), error, expected, left, right
       TYPE(mp_comm_type)                                 :: comm
       TYPE(pw_c1d_gs_type)                               :: coarse, fine, restricted, test
@@ -91,17 +96,23 @@ CONTAINS
       DO axes = 1, 3
          cell(axes, axes) = 7.0_dp
       END DO
-      CALL pw_grid_create(fine_grid, comm, cell, grid_span=FULLSPACE, npts=[9, 9, 9], &
-                          odd=.TRUE., fft_usage=.FALSE.)
+      fine_sizes = [9, 9, 9]
+      IF (partial) fine_sizes(1) = 6
+      CALL pw_grid_create(fine_grid, comm, cell, grid_span=FULLSPACE, npts=fine_sizes, &
+                          odd=.NOT. partial, fft_usage=.FALSE.)
+      ! As in Quickstep, reference-aligned coarse grids use ray distribution.
+      ! The fine grid may still use a blocked layout when its x extent is small.
       CALL pw_grid_create(coarse_grid, comm, cell, grid_span=FULLSPACE, npts=[6, 6, 6], &
-                          odd=.FALSE., fft_usage=.FALSE., ref_grid=fine_grid)
+                          odd=.FALSE., fft_usage=.FALSE., blocked=do_pw_grid_blocked_false, ref_grid=fine_grid)
       CALL coarse%create(coarse_grid)
       CALL fine%create(fine_grid)
       CALL test%create(fine_grid)
       CALL restricted%create(coarse_grid)
       DO axes = 1, 3
+         nsplit = axes
+         IF (partial) nsplit = axes - 1
          ! The sampled product of one, two or three Nyquist cosines has a single
-         ! coarse coefficient. Its real trigonometric interpolant has 2**axes signs.
+         ! coarse coefficient. Each refined direction splits into two signs.
          coarse%array = 0.0_dp
          DO ig = 1, SIZE(coarse%array)
             IF (ANY(coarse_grid%g_hat(:axes, ig) /= -3)) CYCLE
@@ -114,7 +125,9 @@ CONTAINS
          DO ig = 1, SIZE(fine%array)
             expected = 0.0_dp
             IF (ALL(ABS(fine_grid%g_hat(:axes, ig)) == 3) .AND. &
-                ALL(fine_grid%g_hat(axes + 1:3, ig) == 0)) expected = 0.5_dp**axes
+                ALL(fine_grid%g_hat(axes + 1:3, ig) == 0)) THEN
+               IF (.NOT. partial .OR. fine_grid%g_hat(1, ig) == -3) expected = 0.5_dp**nsplit
+            END IF
             error = MAX(error, ABS(fine%array(ig) - expected))
          END DO
          CALL comm%max(error)
