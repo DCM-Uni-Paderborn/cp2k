@@ -1332,9 +1332,12 @@ CONTAINS
 !> \param geometry_did_change ...
 !> \param nspins ...
 !> \param hf_fraction ...
+!> \param response Optional fixed-geometry linear density response in RI-RHO.
+!>        Reuses the integrals with owned temporary density and exchange tensors.
+!>        Does not replace the accepted SCF histories or compressed integrals.
 ! **************************************************************************************************
    SUBROUTINE hfx_ri_update_ks(qs_env, ri_data, ks_matrix, ehfx, mos, rho_ao, &
-                               geometry_did_change, nspins, hf_fraction)
+                               geometry_did_change, nspins, hf_fraction, response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ks_matrix
@@ -1345,6 +1348,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: geometry_did_change
       INTEGER, INTENT(IN)                                :: nspins
       REAL(KIND=dp), INTENT(IN)                          :: hf_fraction
+      LOGICAL, INTENT(IN), OPTIONAL                      :: response
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'hfx_ri_update_ks'
 
@@ -1352,7 +1356,7 @@ CONTAINS
       INTEGER                                            :: handle, handle2, i, ispin, j
       INTEGER(int_8)                                     :: nblks
       INTEGER, DIMENSION(2)                              :: homo
-      LOGICAL                                            :: is_antisymmetric
+      LOGICAL                                            :: is_antisymmetric, linear_response
       REAL(dp)                                           :: etmp, fac
       REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
@@ -1362,6 +1366,14 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
+
+      linear_response = .FALSE.
+      IF (PRESENT(response)) linear_response = response
+      IF (linear_response) THEN
+         CPASSERT(.NOT. geometry_did_change)
+         CPASSERT(.NOT. PRESENT(mos))
+         CPASSERT(ri_data%flavor == ri_pmat)
+      END IF
 
       IF (nspins == 1) THEN
          fac = 0.5_dp*hf_fraction
@@ -1432,13 +1444,13 @@ CONTAINS
          DO ispin = 1, SIZE(my_rho_ao, 1)
             nblks = dbcsr_get_num_blocks(my_rho_ao(ispin, 1)%matrix)
             CALL para_env%sum(nblks)
-            IF (nblks == 0) THEN
+            IF (nblks == 0 .AND. .NOT. linear_response) THEN
                CPABORT("received empty density matrix")
             END IF
          END DO
 
          CALL hfx_ri_update_ks_pmat(qs_env, ri_data, my_ks_matrix, my_rho_ao, &
-                                    geometry_did_change, nspins, fac)
+                                    geometry_did_change, nspins, fac, response=linear_response)
 
       END SELECT
 
@@ -1835,15 +1847,17 @@ CONTAINS
 !> \param geometry_did_change ...
 !> \param nspins ...
 !> \param fac ...
+!> \param response Use temporary tensors without changing the accepted density/exchange histories.
 ! **************************************************************************************************
    SUBROUTINE hfx_ri_update_ks_Pmat(qs_env, ri_data, ks_matrix, rho_ao, &
-                                    geometry_did_change, nspins, fac)
+                                    geometry_did_change, nspins, fac, response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
+      TYPE(hfx_ri_type), INTENT(INOUT), TARGET           :: ri_data
       TYPE(dbcsr_p_type), DIMENSION(:, :)                :: ks_matrix, rho_ao
       LOGICAL, INTENT(IN)                                :: geometry_did_change
       INTEGER, INTENT(IN)                                :: nspins
       REAL(dp), INTENT(IN)                               :: fac
+      LOGICAL, INTENT(IN)                                :: response
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_update_ks_Pmat'
 
@@ -1863,6 +1877,12 @@ CONTAINS
                                                             unused
       TYPE(dbt_type)                                     :: ks_t, ks_tmp, rho_ao_tmp, t_3c_1, &
                                                             t_3c_3, tensor_old
+      TYPE(dbt_type), ALLOCATABLE, TARGET                :: density_response(:, :), &
+                                                            exchange_response(:, :)
+      TYPE(dbt_type), POINTER                            :: density_history(:, :), &
+                                                            exchange_history(:, :), &
+                                                            integral_current
+      TYPE(dbt_type), TARGET                             :: integral_response
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
       IF (.NOT. fac > EPSILON(0.0_dp)) RETURN
@@ -1889,6 +1909,26 @@ CONTAINS
          END DO
       END IF
 
+      IF (response) THEN
+         CPASSERT(.NOT. geometry_did_change)
+         CPASSERT(ALLOCATED(ri_data%rho_ao_t))
+         CPASSERT(ALLOCATED(ri_data%ks_t))
+         ALLOCATE (density_response(nspins, 1), exchange_response(nspins, 1))
+         DO ispin = 1, nspins
+            CALL dbt_create(ri_data%rho_ao_t(ispin, 1), density_response(ispin, 1))
+            CALL dbt_create(ri_data%ks_t(ispin, 1), exchange_response(ispin, 1))
+         END DO
+         CALL dbt_create(ri_data%t_3c_int_ctr_1(1, 1), integral_response)
+         density_history => density_response
+         exchange_history => exchange_response
+         integral_current => integral_response
+         use_delta_p = .FALSE.
+      ELSE
+         density_history => ri_data%rho_ao_t
+         exchange_history => ri_data%ks_t
+         integral_current => ri_data%t_3c_int_ctr_1(1, 1)
+      END IF
+
       nblks = dbt_get_num_blocks_total(ri_data%t_3c_int_ctr_2(1, 1))
       IF (nblks == 0) THEN
          CPABORT("3-center integrals are not available (first call requires geometry_did_change=.TRUE.)")
@@ -1906,7 +1946,7 @@ CONTAINS
       DEALLOCATE (dist1, dist2)
 
       CALL dbt_create(ri_data%t_3c_int_ctr_2(1, 1), t_3c_1)
-      CALL dbt_create(ri_data%t_3c_int_ctr_1(1, 1), t_3c_3)
+      CALL dbt_create(integral_current, t_3c_3)
 
       CALL para_env%sync()
       t1 = m_walltime()
@@ -1937,24 +1977,24 @@ CONTAINS
          ! Incremental updates can discard small density changes through tensor screening.
          ! Rebuild both the density and exchange matrix when full-density updates are requested.
          IF (use_delta_p) THEN
-            CALL dbt_scale(ri_data%rho_ao_t(ispin, 1), -1.0_dp)
+            CALL dbt_scale(density_history(ispin, 1), -1.0_dp)
          ELSE
-            CALL dbt_scale(ri_data%rho_ao_t(ispin, 1), 0.0_dp)
-            CALL dbt_scale(ri_data%ks_t(ispin, 1), 0.0_dp)
+            CALL dbt_scale(density_history(ispin, 1), 0.0_dp)
+            CALL dbt_scale(exchange_history(ispin, 1), 0.0_dp)
          END IF
-         CALL dbt_copy(rho_ao_tmp, ri_data%rho_ao_t(ispin, 1), summation=.TRUE., move_data=.TRUE.)
+         CALL dbt_copy(rho_ao_tmp, density_history(ispin, 1), summation=.TRUE., move_data=.TRUE.)
 
-         CALL get_tensor_occupancy(ri_data%rho_ao_t(ispin, 1), nze_rho, occ_rho)
+         CALL get_tensor_occupancy(density_history(ispin, 1), nze_rho, occ_rho)
 
-         CALL dbt_batched_contract_init(ri_data%t_3c_int_ctr_1(1, 1), batch_range_1=batch_ranges_AO, &
+         CALL dbt_batched_contract_init(integral_current, batch_range_1=batch_ranges_AO, &
                                         batch_range_2=batch_ranges_RI)
          CALL dbt_batched_contract_init(t_3c_3, batch_range_1=batch_ranges_AO, batch_range_2=batch_ranges_RI)
 
-         CALL dbt_create(ri_data%t_3c_int_ctr_1(1, 1), tensor_old)
+         CALL dbt_create(integral_current, tensor_old)
 
          DO i_mem = 1, n_mem
 
-            CALL dbt_batched_contract_init(ri_data%rho_ao_t(ispin, 1))
+            CALL dbt_batched_contract_init(density_history(ispin, 1))
             CALL dbt_batched_contract_init(ri_data%t_3c_int_ctr_2(1, 1), batch_range_2=batch_ranges_RI, &
                                            batch_range_3=batch_ranges_AO)
             CALL dbt_batched_contract_init(t_3c_1, batch_range_2=batch_ranges_RI, batch_range_3=batch_ranges_AO)
@@ -1967,7 +2007,7 @@ CONTAINS
                bounds_j(:, 1) = [1, dims_3c(1)]
                bounds_j(:, 2) = [ri_data%starts_array_RI_mem(j_mem), ri_data%ends_array_RI_mem(j_mem)]
 
-               CALL dbt_contract(1.0_dp, ri_data%rho_ao_t(ispin, 1), ri_data%t_3c_int_ctr_2(1, 1), &
+               CALL dbt_contract(1.0_dp, density_history(ispin, 1), ri_data%t_3c_int_ctr_2(1, 1), &
                                  0.0_dp, t_3c_1, &
                                  contract_1=[2], notcontract_1=[1], &
                                  contract_2=[3], notcontract_2=[1, 2], &
@@ -1995,14 +2035,14 @@ CONTAINS
                CALL decompress_tensor(tensor_old, ri_data%blk_indices(i_mem, j_mem)%ind, &
                                       ri_data%store_3c(i_mem, j_mem), ri_data%filter_eps_storage)
 
-               CALL dbt_copy(tensor_old, ri_data%t_3c_int_ctr_1(1, 1), move_data=.TRUE.)
+               CALL dbt_copy(tensor_old, integral_current, move_data=.TRUE.)
 
-               CALL get_tensor_occupancy(ri_data%t_3c_int_ctr_1(1, 1), nze, occ)
+               CALL get_tensor_occupancy(integral_current, nze, occ)
                nze_3c_2 = nze_3c_2 + nze
                occ_3c_2 = occ_3c_2 + occ
                CALL timeset(routineN//"_KS", handle2)
                CALL dbt_batched_contract_init(ks_t)
-               CALL dbt_contract(-fac, ri_data%t_3c_int_ctr_1(1, 1), t_3c_3, &
+               CALL dbt_contract(-fac, integral_current, t_3c_3, &
                                  1.0_dp, ks_t, &
                                  contract_1=[1, 2], notcontract_1=[3], &
                                  contract_2=[1, 2], notcontract_2=[3], &
@@ -2017,26 +2057,28 @@ CONTAINS
                ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
 
             END DO
-            CALL dbt_batched_contract_finalize(ri_data%rho_ao_t(ispin, 1), unit_nr=unit_nr_dbcsr)
+            CALL dbt_batched_contract_finalize(density_history(ispin, 1), unit_nr=unit_nr_dbcsr)
             CALL dbt_batched_contract_finalize(ri_data%t_3c_int_ctr_2(1, 1))
             CALL dbt_batched_contract_finalize(t_3c_1)
          END DO
-         CALL dbt_batched_contract_finalize(ri_data%t_3c_int_ctr_1(1, 1))
+         CALL dbt_batched_contract_finalize(integral_current)
          CALL dbt_batched_contract_finalize(t_3c_3)
 
-         DO j_mem = 1, n_mem_RI
-            DO i_mem = 1, n_mem
-               ASSOCIATE (blk_indices => ri_data%blk_indices(i_mem, j_mem), t_3c => ri_data%t_3c_int_ctr_1(1, 1))
-                  CALL decompress_tensor(tensor_old, blk_indices%ind, &
-                                         ri_data%store_3c(i_mem, j_mem), ri_data%filter_eps_storage)
-                  CALL dbt_copy(tensor_old, t_3c, move_data=.TRUE.)
+         IF (.NOT. response) THEN
+            DO j_mem = 1, n_mem_RI
+               DO i_mem = 1, n_mem
+                  ASSOCIATE (blk_indices => ri_data%blk_indices(i_mem, j_mem), t_3c => integral_current)
+                     CALL decompress_tensor(tensor_old, blk_indices%ind, &
+                                            ri_data%store_3c(i_mem, j_mem), ri_data%filter_eps_storage)
+                     CALL dbt_copy(tensor_old, t_3c, move_data=.TRUE.)
 
-                  unused = 0
-                  CALL compress_tensor(t_3c, blk_indices%ind, ri_data%store_3c(i_mem, j_mem), &
-                                       ri_data%filter_eps_storage, unused)
-               END ASSOCIATE
+                     unused = 0
+                     CALL compress_tensor(t_3c, blk_indices%ind, ri_data%store_3c(i_mem, j_mem), &
+                                          ri_data%filter_eps_storage, unused)
+                  END ASSOCIATE
+               END DO
             END DO
-         END DO
+         END IF
 
          CALL dbt_destroy(tensor_old)
 
@@ -2044,10 +2086,10 @@ CONTAINS
 
          ! Retain the full current density for the next incremental or full-density update.
          CALL dbt_copy_matrix_to_tensor(rho_ao(ispin, 1)%matrix, rho_ao_tmp)
-         CALL dbt_copy(rho_ao_tmp, ri_data%rho_ao_t(ispin, 1), move_data=.TRUE.)
-         CALL dbt_copy(ks_t, ri_data%ks_t(ispin, 1), summation=.TRUE., move_data=.TRUE.)
+         CALL dbt_copy(rho_ao_tmp, density_history(ispin, 1), move_data=.TRUE.)
+         CALL dbt_copy(ks_t, exchange_history(ispin, 1), summation=.TRUE., move_data=.TRUE.)
 
-         CALL dbt_copy(ri_data%ks_t(ispin, 1), ks_tmp)
+         CALL dbt_copy(exchange_history(ispin, 1), ks_tmp)
          CALL dbt_copy_tensor_to_matrix(ks_tmp, ks_matrix(ispin, 1)%matrix, summation=.TRUE.)
          CALL dbt_clear(ks_tmp)
 
@@ -2078,6 +2120,13 @@ CONTAINS
       CALL dbt_destroy(ks_t)
       CALL dbt_destroy(ks_tmp)
 
+      IF (response) THEN
+         DO ispin = 1, nspins
+            CALL dbt_destroy(density_response(ispin, 1))
+            CALL dbt_destroy(exchange_response(ispin, 1))
+         END DO
+         CALL dbt_destroy(integral_response)
+      END IF
       CALL timestop(handle)
 
    END SUBROUTINE hfx_ri_update_ks_Pmat
