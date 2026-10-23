@@ -234,9 +234,9 @@ CONTAINS
          native_gapw_atom_composite_reference, native_gapw_atom_composite_requested, &
          native_gapw_composite_direct_ao, native_gapw_composite_reference, &
          native_gapw_periodic_atom_composite, native_grid_diagnostics, native_grid_use_cuda, &
-         native_skala_evaluator, skala_fields_only
-      LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, use_gauxc_matrix, &
-         use_virial
+         native_skala_evaluator
+      LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, skala_fields_only, &
+         use_gauxc_matrix, use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
       REAL(dp)                                           :: paw_energies(3)
       REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, mulliken_order_p, &
@@ -2057,6 +2057,11 @@ CONTAINS
       END IF
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
+         DO contribution = 1, inverse%bloch%kpoints%nkp
+            IF (inverse%bloch%kpoints%kp_sym(contribution)%kpoint_sym%apply_symmetry) THEN
+               CPABORT("Spatial k-point symmetry for inverse UPF exact exchange is not implemented yet")
+            END IF
+         END DO
       END IF
       CPASSERT(ASSOCIATED(exchange))
       DO contribution = 1, SIZE(exchange, 1)

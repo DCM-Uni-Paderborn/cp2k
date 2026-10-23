@@ -7,6 +7,7 @@
 !> \brief Native Gaussian grid source and its complex Bloch AO and geometry transposes.
 MODULE qs_upf_inverse_background
    USE cell_types,                      ONLY: cell_type
+   USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_copy, dbcsr_get_block_p, dbcsr_get_info, dbcsr_get_matrix_type, &
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
@@ -78,6 +79,7 @@ CONTAINS
                                                             rab(3), tolerance
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(kpoint_star_type)                             :: star
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(neighbor_list_iterator_p_type), POINTER       :: iterator(:)
@@ -85,7 +87,7 @@ CONTAINS
       TYPE(particle_type), POINTER                       :: atoms(:)
 
       IF (PRESENT(soft_basis)) map%soft_basis = soft_basis
-      CALL get_ks_env(ks_env, matrix_s_kp=overlap, kpoints=kpoints, do_kpoints=map%bloch, sab_orb=sab)
+      CALL get_ks_env(ks_env, matrix_s_kp=overlap, kpoints=kpoints, do_kpoints=map%bloch, sab_orb=sab, dft_control=control)
       CPASSERT(ASSOCIATED(overlap) .AND. ASSOCIATED(sab))
       CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes, group=map%comm)
       map%nao = SUM(sizes)
@@ -103,12 +105,12 @@ CONTAINS
       IF (map%bloch) THEN
          CPASSERT(ASSOCIATED(kpoints))
          DO ik = 1, kpoints%nkp
-            IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry) THEN
-               CPABORT("Spatial k-point symmetry is not implemented")
+            IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry .AND. &
+                (control%qs_control%gapw .OR. control%use_gauxc)) THEN
+               CPABORT("Spatial k-point symmetry currently requires semilocal GPW or GAPW_XC")
             END IF
          END DO
-         ! Time-reversed partners have identical real density and geometry contractions.
-         ! Their combined native weight needs no additional spatial transformation.
+         ! The star retains physical AO actions for both spatial and time-reversed partners.
          CALL kp_transform_plan_create(map%plan, sab, kpoints%cell_to_index, SIZE(overlap, 2), &
                                        block_template=overlap(1, 1)%matrix)
          CPASSERT(map%plan%symmetric)

@@ -16,6 +16,7 @@ MODULE qs_upf_inverse_kpoints
                                               cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
                                               cp_cfm_type
+   USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_clear,&
                                               dbcsr_finalize,&
                                               dbcsr_get_info,&
@@ -63,7 +64,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Prepare each actual Bloch vector on the same physical-cell PW grid.
 !>        All world ranks participate in the same point-integral sequence. Time-reversed
-!>        pairs share a real density contribution. Spatial symmetry rotations are not implemented.
+!>        Spatial partners use physical-cell AO actions and their weighted density/operator adjoints.
 !> \param ks_env Live native KS environment with initialized k-point groups and bases.
 !> \param grid Native physical-cell grid.
 !> \param images Fixed physical-cell images of the Gaussian and original radial fields.
@@ -84,14 +85,16 @@ CONTAINS
       INTEGER                                            :: ik
       INTEGER, POINTER                                   :: sizes(:)
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(kpoint_type), POINTER                         :: kpoints
 
-      CALL get_ks_env(ks_env, kpoints=kpoints, matrix_s_kp=overlap)
+      CALL get_ks_env(ks_env, kpoints=kpoints, matrix_s_kp=overlap, dft_control=control)
       CPASSERT(ASSOCIATED(kpoints))
       CPASSERT(kpoints%nkp > 0)
       DO ik = 1, kpoints%nkp
-         IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry) THEN
-            CPABORT("Spatial k-point symmetry is not implemented")
+         IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry .AND. &
+             (control%qs_control%gapw .OR. control%use_gauxc)) THEN
+            CPABORT("Spatial k-point symmetry currently requires semilocal GPW or GAPW_XC")
          END IF
       END DO
       CPASSERT(ASSOCIATED(kpoints%kp_env))
