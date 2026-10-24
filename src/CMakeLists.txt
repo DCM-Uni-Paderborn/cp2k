@@ -1052,6 +1052,7 @@ list(
   common/bibliography.F
   common/callgraph.F
   common/cg_test.F
+  common/compensated_arithmetic.F
   common/cp_array_sort.F
   common/cp_array_utils.F
   common/cp_error_handling.F

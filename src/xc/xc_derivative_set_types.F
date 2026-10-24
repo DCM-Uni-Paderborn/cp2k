@@ -37,7 +37,7 @@ MODULE xc_derivative_set_types
    LOGICAL, PRIVATE, PARAMETER :: debug_this_module = .TRUE.
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'xc_derivative_set_types'
 
-   PUBLIC :: xc_derivative_set_type
+   PUBLIC :: xc_derivative_set_type, xc_field_response_type
    PUBLIC :: xc_dset_create, xc_dset_release, &
              xc_dset_get_derivative, xc_dset_zero_all, xc_dset_recover_pw
 
@@ -45,6 +45,12 @@ MODULE xc_derivative_set_types
 !> \brief A derivative set contains the different derivatives of a xc-functional
 !>      in form of a linked list
 ! **************************************************************************************************
+   ! Physical Cartesian fields and their independent direction, in rho,gx,gy,gz,tau order per spin.
+   ! The caller owns all arrays and initializes potentials to zero before summing functionals.
+   TYPE xc_field_response_type
+      REAL(dp), ALLOCATABLE :: fields(:, :), directions(:, :), potentials(:, :)
+   END TYPE xc_field_response_type
+
    TYPE xc_derivative_set_type
       TYPE(pw_pool_type), POINTER, PRIVATE :: pw_pool => NULL()
       TYPE(cp_sll_xc_deriv_type), POINTER :: derivs => NULL()

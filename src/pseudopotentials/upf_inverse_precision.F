@@ -6,8 +6,11 @@
 !--------------------------------------------------------------------------------------------------!
 !> \brief Compensated orbital expectations of signed point-density kernels.
 MODULE upf_inverse_precision
+   USE compensated_arithmetic,          ONLY: add => twofold_add,&
+                                              compensated_real_type => twofold_real_type,&
+                                              multiply => twofold_multiply,&
+                                              product => twofold_product
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE iso_c_binding,                   ONLY: c_double
    USE kinds,                           ONLY: dp
 #include "../base/base_uses.f90"
 
@@ -15,21 +18,9 @@ MODULE upf_inverse_precision
    PRIVATE
    PUBLIC :: upf_inverse_orbital_expectation
 
-   TYPE compensated_real_type
-      REAL(dp) :: hi = 0.0_dp, lo = 0.0_dp
-   END TYPE compensated_real_type
-
    TYPE compensated_complex_type
       TYPE(compensated_real_type) :: re, im
    END TYPE compensated_complex_type
-
-   INTERFACE
-      FUNCTION fused_product_sum(a, b, c) RESULT(value) BIND(C, NAME="fma")
-         IMPORT :: c_double
-         REAL(c_double), VALUE, INTENT(IN) :: a, b, c
-         REAL(c_double) :: value
-      END FUNCTION fused_product_sum
-   END INTERFACE
 
 CONTAINS
 
@@ -117,81 +108,6 @@ CONTAINS
       value = accumulator%hi + accumulator%lo
       CPASSERT(ieee_is_finite(value))
    END FUNCTION upf_inverse_orbital_expectation
-
-! **************************************************************************************************
-!> \brief Error-free sum of two FP64 inputs, protected from reassociation across rounding steps.
-!> \param a First input.
-!> \param b Second input.
-!> \param hi Rounded sum.
-!> \param lo Its rounding remainder.
-! **************************************************************************************************
-   SUBROUTINE two_sum(a, b, hi, lo)
-      REAL(dp), INTENT(IN)                               :: a, b
-      REAL(dp), INTENT(OUT)                              :: hi, lo
-
-      REAL(dp), VOLATILE                                 :: remainder_a, remainder_b, rounded, &
-                                                            virtual_a, virtual_b
-
-      rounded = a + b
-      virtual_b = rounded - a
-      virtual_a = rounded - virtual_b
-      remainder_b = b - virtual_b
-      remainder_a = a - virtual_a
-      hi = rounded
-      lo = remainder_a + remainder_b
-   END SUBROUTINE two_sum
-
-! **************************************************************************************************
-!> \brief Product and its rounding remainder from the standard C fused multiply-add.
-!> \param a First factor.
-!> \param b Second factor.
-!> \param hi Rounded product.
-!> \param lo Its rounding remainder.
-! **************************************************************************************************
-   SUBROUTINE product(a, b, hi, lo)
-      REAL(dp), INTENT(IN)                               :: a, b
-      REAL(dp), INTENT(OUT)                              :: hi, lo
-
-      REAL(dp), VOLATILE                                 :: rounded
-
-      rounded = a*b
-      hi = rounded
-      lo = fused_product_sum(a, b, -rounded)
-   END SUBROUTINE product
-
-! **************************************************************************************************
-!> \brief Add normalized two-component FP64 numbers.
-!> \param a First input.
-!> \param b Second input.
-!> \return Compensated sum.
-! **************************************************************************************************
-   FUNCTION add(a, b) RESULT(value)
-      TYPE(compensated_real_type), INTENT(IN)            :: a, b
-      TYPE(compensated_real_type)                        :: value
-
-      REAL(dp)                                           :: hi, lo
-
-      CALL two_sum(a%hi, b%hi, hi, lo)
-      lo = lo + a%lo + b%lo
-      CALL two_sum(hi, lo, value%hi, value%lo)
-   END FUNCTION add
-
-! **************************************************************************************************
-!> \brief Multiply normalized two-component FP64 numbers.
-!> \param a First input.
-!> \param b Second input.
-!> \return Compensated product.
-! **************************************************************************************************
-   FUNCTION multiply(a, b) RESULT(value)
-      TYPE(compensated_real_type), INTENT(IN)            :: a, b
-      TYPE(compensated_real_type)                        :: value
-
-      REAL(dp)                                           :: hi, lo
-
-      CALL PRODUCT(a%hi, b%hi, hi, lo)
-      lo = lo + a%hi*b%lo + a%lo*b%hi + a%lo*b%lo
-      CALL two_sum(hi, lo, value%hi, value%lo)
-   END FUNCTION multiply
 
 ! **************************************************************************************************
 !> \brief Retain the product of two original complex FP64 field coefficients.

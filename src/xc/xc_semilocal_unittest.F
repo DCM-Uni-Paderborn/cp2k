@@ -56,6 +56,7 @@ PROGRAM xc_semilocal_unittest
    USE xc_derivative_desc, ONLY: deriv_gamma, deriv_gamma_aa, deriv_gamma_ab, deriv_gamma_bb, &
                                  deriv_tau_a, &
                                  deriv_tau_b
+   USE qs_upf_inverse_xc, ONLY: qs_upf_inverse_xc_field_kernel
    USE xc_libxc, ONLY: libxc_density_floor, libxc_spin_polarized_eval, &
                        libxc_spin_unpolarized_eval
 #endif
@@ -314,9 +315,54 @@ CONTAINS
       END DO
       WRITE (*, '(A,ES15.6)') 'Cartesian XC kernel error:', error
       IF (error > 3.e-8_dp) ERROR STOP 'The Cartesian XC kernel is not the original potential derivative'
+#if defined (__LIBXC)
+      CALL check_low_density_tau_response()
+#endif
    END SUBROUTINE check_cartesian_kernel
 
 #if defined (__LIBXC)
+! **************************************************************************************************
+!> \brief Resolve the C2 tau response on physical one-orbital tangents near a minority density floor.
+!>        Its large primitive Hessian must retain reciprocal contractions without a symmetry projection.
+! **************************************************************************************************
+   SUBROUTINE check_low_density_tau_response()
+      REAL(dp) :: d_orbital_gradient(3, 2), dgrad(1, 3, 2, 2), dpsi(2), drho(1, 2, 2), &
+         dtau(1, 2, 2), grad(1, 3, 2), orbital_gradient(3), pair(2), psi, rho(1, 2), tau(1, 2), &
+         vg(1, 3, 2, 2), vg_sum(1, 3, 2), vn(1, 2, 2), vn_sum(1, 2), vt(1, 2, 2), vt_sum(1, 2)
+      TYPE(section_type), POINTER                        :: definition
+      TYPE(section_vals_type), POINTER                   :: xc
+
+      INTEGER::i
+      NULLIFY (definition, xc)
+      CALL create_xc_section(definition); CALL section_vals_create(xc, definition)
+      CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_X_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_C_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
+      rho(1, :) = [0.4_dp, 2.e-10_dp]; grad(1, :, 1) = [0.02_dp, 0.01_dp, -0.03_dp]; tau(1, 1) = 0.12_dp
+      psi = SQRT(rho(1, 2)); orbital_gradient = [0.02_dp, -0.01_dp, 0.005_dp]
+      grad(1, :, 2) = 2.0_dp*psi*orbital_gradient; tau(1, 2) = 0.5_dp*SUM(orbital_gradient**2)
+      dpsi = [0.01_dp, -0.02_dp]
+      d_orbital_gradient(:, 1) = [0.017_dp, -0.011_dp, 0.003_dp]
+      d_orbital_gradient(:, 2) = [-0.013_dp, 0.019_dp, -0.007_dp]
+      drho = 0.0_dp; dgrad = 0.0_dp; dtau = 0.0_dp
+      DO i = 1, 2
+         drho(1, 2, i) = 2.0_dp*psi*dpsi(i)
+         dgrad(1, :, 2, i) = 2.0_dp*(dpsi(i)*orbital_gradient + psi*d_orbital_gradient(:, i))
+         dtau(1, 2, i) = DOT_PRODUCT(orbital_gradient, d_orbital_gradient(:, i))
+         CALL qs_upf_inverse_xc_field_kernel(xc, rho, grad, tau, drho(:, :, i), dgrad(:, :, :, i), dtau(:, :, i), &
+                                             vn(:, :, i), vg(:, :, :, i), vt(:, :, i))
+      END DO
+      pair(1) = SUM(drho(:, :, 2)*vn(:, :, 1)) + SUM(dgrad(:, :, :, 2)*vg(:, :, :, 1)) + SUM(dtau(:, :, 2)*vt(:, :, 1))
+      pair(2) = SUM(drho(:, :, 1)*vn(:, :, 2)) + SUM(dgrad(:, :, :, 1)*vg(:, :, :, 2)) + SUM(dtau(:, :, 1)*vt(:, :, 2))
+      WRITE (*, '(A,ES15.6)') 'Low-density kinetic response reciprocity:', ABS(pair(1) - pair(2))
+      IF (ABS(pair(1) - pair(2)) > 1.e-10_dp) ERROR STOP 'The low-density kinetic response is not reciprocal'
+      CALL qs_upf_inverse_xc_field_kernel(xc, rho, grad, tau, SUM(drho, DIM=3), SUM(dgrad, DIM=4), SUM(dtau, DIM=3), &
+                                          vn_sum, vg_sum, vt_sum)
+      IF (MAXVAL(ABS(vn_sum - SUM(vn, DIM=3))) > 1.e-12_dp*MAX(1.0_dp, MAXVAL(ABS(vn_sum)))) THEN
+         ERROR STOP 'The low-density kinetic response is not linear'
+      END IF
+      CALL section_vals_release(xc); CALL section_release(definition)
+   END SUBROUTINE check_low_density_tau_response
+
 ! **************************************************************************************************
 !> \brief Check meta-GGA potentials and kernels against independent differences of the projected energy.
 ! **************************************************************************************************

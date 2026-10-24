@@ -28,6 +28,7 @@
 #:include 'xc_gamma.fypp'
 
 MODULE xc_libxc
+   USE compensated_arithmetic, ONLY: twofold_real_type, twofold_add, twofold_multiply
    USE bibliography, ONLY: Lehtola2018, &
                            Marques2012, &
                            cite_reference
@@ -40,7 +41,7 @@ MODULE xc_libxc
                                   section_vals_val_get
    USE kinds, ONLY: default_string_length, &
                     dp
-   USE xc_derivative_set_types, ONLY: xc_derivative_set_type, &
+   USE xc_derivative_set_types, ONLY: xc_derivative_set_type, xc_field_response_type, &
                                       xc_dset_get_derivative
    USE xc_derivative_types, ONLY: xc_derivative_get, &
                                   xc_derivative_type
@@ -885,13 +886,14 @@ CONTAINS
 !> \param func_name_override optional LibXC functional name overriding the section name
 !> \author F. Tran
 ! **************************************************************************************************
-   SUBROUTINE libxc_spin_unpolarized_eval(rho_set, deriv_set, grad_deriv, libxc_params, func_name_override)
+   SUBROUTINE libxc_spin_unpolarized_eval(rho_set, deriv_set, grad_deriv, libxc_params, func_name_override, field_response)
 
       TYPE(xc_rho_set_type), INTENT(IN)        :: rho_set
       TYPE(xc_derivative_set_type), INTENT(IN) :: deriv_set
       INTEGER, INTENT(in)                      :: grad_deriv
       TYPE(section_vals_type), POINTER         :: libxc_params
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL   :: func_name_override
+      TYPE(xc_field_response_type), INTENT(INOUT), OPTIONAL :: field_response
 
 #if defined (__LIBXC)
       CHARACTER(len=*), PARAMETER :: routineN = 'libxc_spin_unpolarized_eval'
@@ -958,6 +960,13 @@ CONTAINS
                                 grad_deriv)
       END IF
       workers => libxc_cache(iw)
+      IF (PRESENT(field_response) .AND. .NOT. workers%has_laplace .AND. .NOT. workers%no_exc) THEN
+         CPASSERT(grad_deriv == 2)
+         CALL libxc_cartesian_field_kernel(rho_set, workers, func_scale, field_response)
+         NULLIFY (workers)
+         CALL timestop(handle)
+         RETURN
+      END IF
       xc_info = workers%worker(1)%info
       has_laplace = workers%has_laplace
 
@@ -1205,6 +1214,7 @@ CONTAINS
 
       CALL timestop(handle)
 #else
+      MARK_USED(field_response)
       MARK_USED(rho_set)
       MARK_USED(deriv_set)
       MARK_USED(grad_deriv)
@@ -1228,13 +1238,14 @@ CONTAINS
 !> \param func_name_override optional LibXC functional name overriding the section name
 !> \author F. Tran
 ! **************************************************************************************************
-   SUBROUTINE libxc_spin_polarized_eval(rho_set, deriv_set, grad_deriv, libxc_params, func_name_override)
+   SUBROUTINE libxc_spin_polarized_eval(rho_set, deriv_set, grad_deriv, libxc_params, func_name_override, field_response)
 
       TYPE(xc_rho_set_type), INTENT(IN)        :: rho_set
       TYPE(xc_derivative_set_type), INTENT(IN) :: deriv_set
       INTEGER, INTENT(in)                      :: grad_deriv
       TYPE(section_vals_type), POINTER         :: libxc_params
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL   :: func_name_override
+      TYPE(xc_field_response_type), INTENT(INOUT), OPTIONAL :: field_response
 
 #if defined (__LIBXC)
       CHARACTER(len=*), PARAMETER :: routineN = 'libxc_spin_polarized_eval'
@@ -1328,6 +1339,13 @@ CONTAINS
                                 grad_deriv)
       END IF
       workers => libxc_cache(iw)
+      IF (PRESENT(field_response) .AND. .NOT. workers%has_laplace .AND. .NOT. workers%no_exc) THEN
+         CPASSERT(grad_deriv == 2)
+         CALL libxc_cartesian_field_kernel(rho_set, workers, func_scale, field_response)
+         NULLIFY (workers)
+         CALL timestop(handle)
+         RETURN
+      END IF
       xc_info = workers%worker(1)%info
       has_laplace = workers%has_laplace
 
@@ -1836,6 +1854,7 @@ CONTAINS
 
       CALL timestop(handle)
 #else
+      MARK_USED(field_response)
       MARK_USED(rho_set)
       MARK_USED(deriv_set)
       MARK_USED(grad_deriv)
@@ -1849,6 +1868,262 @@ CONTAINS
    END SUBROUTINE libxc_spin_polarized_eval
 
 #if defined (__LIBXC)
+
+! **************************************************************************************************
+!> \brief Apply each Libxc functional before expanding the nonlinear kinetic projection Hessian.
+!>        Contributions are added to physical Cartesian field covectors. Native functionals
+!>        remain in the ordinary derivative set. All original screening and energy conventions apply.
+!> \param rho_set Original density descriptors and bounds.
+!> \param workers Cached functional workers with the original parameters and derivative capability.
+!> \param scale Original functional scale.
+!> \param response Owned Cartesian fields, direction and accumulated response, by point and spin.
+! **************************************************************************************************
+   SUBROUTINE libxc_cartesian_field_kernel(rho_set, workers, scale, response)
+      TYPE(xc_rho_set_type), INTENT(IN)::rho_set
+      TYPE(libxc_worker_set_type), POINTER::workers
+      REAL(dp), INTENT(IN)::scale
+      TYPE(xc_field_response_type), INTENT(INOUT)::response
+      REAL(dp), POINTER::norm(:, :, :), norma(:, :, :), normb(:, :, :)
+      REAL(dp), ALLOCATABLE::norms(:, :)
+      TYPE(libxc_worker_type), POINTER::w
+      INTEGER::np, ns, bsize, nblocks, ib, i, point, first, nb, spin, thread, off
+      LOGICAL::gga, mgga
+      REAL(dp)::product(10)
+      ns = workers%nspin; np = SIZE(response%fields, 2)
+      CPASSERT(ns == 1 .OR. ns == 2)
+      CPASSERT(ALL(SHAPE(response%fields) == [5*ns, np]))
+      CPASSERT(ALL(SHAPE(response%directions) == [5*ns, np]))
+      CPASSERT(ALL(SHAPE(response%potentials) == [5*ns, np]))
+      IF (workers%has_laplace .OR. workers%no_exc) THEN
+         CPABORT("Cartesian field response requires a scalar density/gradient/tau energy")
+      END IF
+      CALL libxc_family_flags(workers%family, gga, mgga, 'Cartesian field response')
+      ALLOCATE (norms(3, np), SOURCE=0.0_dp)
+      IF (gga) THEN
+         CALL xc_rho_set_get(rho_set, norm_drho=norm, norm_drhoa=norma, norm_drhob=normb, can_return_null=.TRUE.)
+         IF (ns == 1) THEN
+            CPASSERT(ASSOCIATED(norm)); norms(1, :) = RESHAPE(norm, [np])
+         ELSE
+            CPASSERT(ASSOCIATED(norm) .AND. ASSOCIATED(norma) .AND. ASSOCIATED(normb))
+            norms(1, :) = RESHAPE(norma, [np]); norms(2, :) = RESHAPE(norm, [np]); norms(3, :) = RESHAPE(normb, [np])
+         END IF
+      END IF
+      bsize = MAX(1, MIN(workers%worker(1)%nb, (np + SIZE(workers%worker) - 1)/SIZE(workers%worker)))
+      IF (libxc_is_gpu()) bsize = np
+      nblocks = (np + bsize - 1)/bsize
+!$OMP PARALLEL DO DEFAULT(NONE) &
+!$OMP SHARED(workers,response,norms,ns,np,bsize,nblocks,gga,mgga,scale) &
+!$OMP PRIVATE(ib,i,point,first,nb,spin,thread,off,w,product)
+      DO ib = 1, nblocks
+         thread = 0
+!$       thread = omp_get_thread_num()
+         w => workers%worker(thread + 1)
+         IF (libxc_is_gpu()) CALL libxc_worker_resize_cuda(w, workers%family, ns, np)
+         first = (ib - 1)*bsize; nb = MIN(bsize, np - first)
+         DO i = 1, nb
+            point = first + i
+            DO spin = 1, ns
+               off = 5*(spin - 1)
+               w%rho(spin, i) = response%fields(off + 1, point)
+               IF (ns == 2) w%rho(spin, i) = MAX(w%rho(spin, i), 0.0_dp)
+            END DO
+            IF (ns == 2) THEN
+               IF (SUM(w%rho(:, i)) >= workers%epsilon_rho) w%rho(:, i) = MAX(w%rho(:, i), libxc_density_floor(workers%epsilon_rho))
+            END IF
+            IF (gga) THEN
+               w%sigma(1, i) = norms(1, point)**2
+               IF (ns == 2) THEN
+                  w%sigma(3, i) = norms(3, point)**2
+                  w%sigma(2, i) = 0.5_dp*(norms(2, point)**2 - w%sigma(1, i) - w%sigma(3, i))
+               END IF
+            END IF
+            IF (mgga) THEN
+               DO spin = 1, ns
+                  w%lapl(spin, i) = 0.0_dp
+                  w%tau(spin, i) = libxc_c2_project_tau(w%rho(spin, i), w%sigma(2*spin - 1, i), &
+                                                        response%fields(5*spin, point), workers%epsilon_rho, workers%epsilon_tau)
+               END DO
+            END IF
+         END DO
+         CALL libxc_worker_eval(w, workers%family, ns, 2, .FALSE., nb)
+         DO i = 1, nb
+            point = first + i
+            IF (ns == 2) THEN
+               w%rho(1, i) = MAX(response%fields(1, point), 0.0_dp)
+               w%rho(2, i) = MAX(response%fields(6, point), 0.0_dp)
+               CALL libxc_spin_floor_pullback(w, i, 2, .FALSE., workers%epsilon_rho)
+            END IF
+            CALL libxc_cartesian_point_product(w, i, ns, mgga, workers%epsilon_rho, workers%epsilon_tau, &
+                                               response%fields(:, point), response%directions(:, point), product(:5*ns))
+            response%potentials(:, point) = response%potentials(:, point) + scale*product(:5*ns)
+         END DO
+      END DO
+!$OMP END PARALLEL DO
+   END SUBROUTINE libxc_cartesian_field_kernel
+
+! **************************************************************************************************
+!> \brief Contract the original primitive Libxc Hessian and factored C2 map with one direction.
+!>        Keep transition curvature as rank-one products. Two-component dot products resolve
+!>        cancellation on physical orbital tangents without altering any independent field.
+!> \param w Original Libxc derivatives, with the spin-floor normalization already applied.
+!> \param point Index in its block.
+!> \param ns Spin count.
+!> \param mgga Whether the kinetic map is part of the functional.
+!> \param epsilon_rho Original density cutoff.
+!> \param epsilon_tau Original kinetic cutoff.
+!> \param fields Physical rho,gx,gy,gz,tau for each spin.
+!> \param direction Independent signed direction in those same fields.
+!> \param result Cartesian response with the same dimensions.
+! **************************************************************************************************
+   SUBROUTINE libxc_cartesian_point_product(w, point, ns, mgga, epsilon_rho, epsilon_tau, fields, direction, result)
+      TYPE(libxc_worker_type), INTENT(IN)::w
+      INTEGER, INTENT(IN)::point, ns
+      LOGICAL, INTENT(IN)::mgga
+      REAL(dp), INTENT(IN)::epsilon_rho, epsilon_tau, fields(:), direction(:)
+      REAL(dp), INTENT(OUT)::result(:)
+      INTEGER::nvar, n, spin, off, r, s, t, i, j, axis
+      REAL(dp)::gradient(9), hessian(9, 9), jacobian(9, 10), map_regular(10, 10, 2), &
+                 lower_vectors(10, 2), final_vectors(10, 2), lower_factors(2), final_factors(2), &
+                 gw(10), hw(10, 10), den, tw, lower, projected, lf(2), ls(2, 2), ff(2), fs(2, 2), ratio
+      TYPE(twofold_real_type)::v(10), jv(9), hv(9), applied(10), a, b, lower_dot, final_dot
+      n = 5*ns; nvar = 4
+      IF (ns == 2) nvar = 9
+      gradient = 0.0_dp; hessian = 0.0_dp; jacobian = 0.0_dp
+      map_regular = 0.0_dp; lower_vectors = 0.0_dp; final_vectors = 0.0_dp
+      lower_factors = 0.0_dp; final_factors = 0.0_dp
+      DO i = 1, n
+         v(i) = twofold_real_type(direction(i), 0.0_dp)
+      END DO
+      IF (ns == 1) THEN
+         #:for descs,arr,idx in umgga_deriv_1
+            #:set a=umgga_vars.index(descs[0])+1
+            #:if not has_lap((descs,arr,idx))
+               IF (ALLOCATED(w%${arr}$)) gradient(${a}$) = w%${arr}$ (${idx}$, point)
+            #:endif
+         #:endfor
+         #:for descs,arr,idx in umgga_deriv_2
+            #:set a,b=[umgga_vars.index(d)+1 for d in descs]
+            #:if not has_lap((descs,arr,idx))
+               IF (ALLOCATED(w%${arr}$)) hessian(${a}$, ${b}$) = w%${arr}$ (${idx}$, point)
+               hessian(${b}$, ${a}$) = hessian(${a}$, ${b}$)
+            #:endif
+         #:endfor
+      ELSE
+         #:for descs,arr,idx in mgga_deriv_1
+            #:set a=mgga_vars.index(descs[0])+1
+            #:if not has_lap((descs,arr,idx))
+               IF (ALLOCATED(w%${arr}$)) gradient(${a}$) = w%${arr}$ (${idx}$, point)
+            #:endif
+         #:endfor
+         #:for descs,arr,idx in mgga_deriv_2
+            #:set a,b=[mgga_vars.index(d)+1 for d in descs]
+            #:if not has_lap((descs,arr,idx))
+               IF (ALLOCATED(w%${arr}$)) hessian(${a}$, ${b}$) = w%${arr}$ (${idx}$, point)
+               hessian(${b}$, ${a}$) = hessian(${a}$, ${b}$)
+            #:endif
+         #:endfor
+      END IF
+      DO spin = 1, ns
+         off = 5*(spin - 1); r = spin; s = 2; t = 4
+         IF (ns == 2) THEN
+            s = 2*spin + 1; t = 7 + spin
+         END IF
+         jacobian(r, off + 1) = 1.0_dp
+         IF (ns == 2 .AND. fields(off + 1) < 0.0_dp) jacobian(r, off + 1) = 0.0_dp
+         DO axis = 1, 3
+            jacobian(s, off + axis + 1) = 2.0_dp*fields(off + axis + 1)
+            IF (ns == 2) THEN
+               jacobian(4, off + axis + 1) = fields(5*(2 - spin) + axis + 1)
+            END IF
+         END DO
+         IF (.NOT. mgga) CYCLE
+         den = MAX(w%rho(spin, point), libxc_density_floor(epsilon_rho))
+         tw = w%sigma(2*spin - 1, point)/(8.0_dp*den)
+         CALL libxc_c2_maximum(tw, MAX(epsilon_tau, EPSILON(0.0_dp)), lower, lf, ls)
+         CALL libxc_c2_maximum(fields(off + 5), lower, projected, ff, fs)
+         gw = 0.0_dp; hw = 0.0_dp
+         IF (w%rho(spin, point) >= libxc_density_floor(epsilon_rho)) THEN
+            gw(off + 1) = -tw/den; hw(off + 1, off + 1) = 2.0_dp*tw/den**2
+            DO axis = 1, 3
+               i = off + axis + 1
+               hw(off + 1, i) = -fields(i)/(4.0_dp*den**2); hw(i, off + 1) = hw(off + 1, i)
+            END DO
+         END IF
+         DO axis = 1, 3
+            i = off + axis + 1; gw(i) = fields(i)/(4.0_dp*den); hw(i, i) = 1.0_dp/(4.0_dp*den)
+         END DO
+         jacobian(t, :) = ff(2)*lf(1)*gw
+         jacobian(t, off + 5) = ff(1)
+         map_regular(:, :, spin) = ff(2)*lf(1)*hw
+         lower_vectors(:, spin) = gw; lower_factors(spin) = ff(2)*ls(1, 1)
+         IF (fs(1, 1) > 0.0_dp) THEN
+            ratio = fields(off + 5)/lower
+            final_vectors(:, spin) = -ratio*lf(1)*gw
+            final_vectors(off + 5, spin) = 1.0_dp
+            final_factors(spin) = fs(1, 1)
+         END IF
+      END DO
+      DO i = 1, nvar
+         jv(i) = libxc_twofold_dot(jacobian(i, :n), v(:n))
+      END DO
+      DO i = 1, nvar
+         hv(i) = libxc_twofold_dot(hessian(i, :nvar), jv(:nvar))
+      END DO
+      DO i = 1, n
+         applied(i) = libxc_twofold_dot(jacobian(:nvar, i), hv(:nvar))
+      END DO
+      DO spin = 1, ns
+         off = 5*(spin - 1); s = 2; t = 4
+         IF (ns == 2) THEN
+            s = 2*spin + 1; t = 7 + spin
+         END IF
+         IF (mgga) THEN
+            lower_dot = libxc_twofold_dot(lower_vectors(:n, spin), v(:n))
+            final_dot = libxc_twofold_dot(final_vectors(:n, spin), v(:n))
+            DO i = 1, n
+               a = libxc_twofold_dot(map_regular(i, :n, spin), v(:n))
+               b = twofold_multiply(twofold_real_type(lower_factors(spin), 0.0_dp), lower_dot)
+               b = twofold_multiply(twofold_real_type(lower_vectors(i, spin), 0.0_dp), b)
+               a = twofold_add(a, b)
+               b = twofold_multiply(twofold_real_type(final_factors(spin), 0.0_dp), final_dot)
+               b = twofold_multiply(twofold_real_type(final_vectors(i, spin), 0.0_dp), b)
+               a = twofold_add(a, b)
+               a = twofold_multiply(twofold_real_type(gradient(t), 0.0_dp), a)
+               applied(i) = twofold_add(applied(i), a)
+            END DO
+         END IF
+         DO axis = 1, 3
+            i = off + axis + 1
+            a = twofold_multiply(twofold_real_type(2.0_dp*gradient(s), 0.0_dp), v(i))
+            applied(i) = twofold_add(applied(i), a)
+            IF (ns == 2) THEN
+               a = twofold_multiply(twofold_real_type(gradient(4), 0.0_dp), v(5*(2 - spin) + axis + 1))
+               applied(i) = twofold_add(applied(i), a)
+            END IF
+         END DO
+      END DO
+      DO i = 1, n
+         result(i) = applied(i)%hi + applied(i)%lo
+      END DO
+   END SUBROUTINE libxc_cartesian_point_product
+
+! **************************************************************************************************
+!> \brief Retain the product remainders in a short real dot product.
+!> \param a Original FP64 coefficients.
+!> \param b Two-component response.
+!> \return Two-component contraction.
+! **************************************************************************************************
+   FUNCTION libxc_twofold_dot(a, b) RESULT(value)
+      REAL(dp), INTENT(IN)::a(:)
+      TYPE(twofold_real_type), INTENT(IN)::b(:)
+      TYPE(twofold_real_type)::value, term
+      INTEGER::i
+      value = twofold_real_type()
+      DO i = 1, SIZE(a)
+         term = twofold_multiply(twofold_real_type(a(i), 0.0_dp), b(i))
+         value = twofold_add(value, term)
+      END DO
+   END FUNCTION libxc_twofold_dot
 
 ! **************************************************************************************************
 !> \brief Compact C2 maximum, with a transition width relative to its positive lower argument.

@@ -8,6 +8,7 @@
 ! **************************************************************************************************
 MODULE xc_atom
 
+   USE cp_array_utils,                  ONLY: cp_3d_r_cp_type
    USE cp_linked_list_xc_deriv,         ONLY: cp_sll_xc_deriv_next,&
                                               cp_sll_xc_deriv_type
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
@@ -21,10 +22,12 @@ MODULE xc_atom
         deriv_norm_drho, deriv_norm_drhoa, deriv_norm_drhob, deriv_rho, deriv_rhoa, deriv_rhob, &
         deriv_tau, deriv_tau_a, deriv_tau_b
    USE xc_derivative_set_types,         ONLY: xc_derivative_set_type,&
-                                              xc_dset_get_derivative
+                                              xc_dset_get_derivative,&
+                                              xc_field_response_type
    USE xc_derivative_types,             ONLY: xc_derivative_get,&
                                               xc_derivative_type
-   USE xc_derivatives,                  ONLY: xc_functionals_eval
+   USE xc_derivatives,                  ONLY: xc_functionals_eval,&
+                                              xc_functionals_get_needs
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_get,&
                                               xc_rho_set_type
@@ -433,7 +436,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'xc_2nd_deriv_of_r'
 
-      INTEGER                                            :: handle, ispin, nspins
+      INTEGER                                            :: axis, bounds(3), handle, ispin, nspins, &
+                                                            offset
       LOGICAL                                            :: lsd, my_do_sf
       REAL(dp)                                           :: drho_cutoff, my_fac_triplet
       TYPE(cp_sll_xc_deriv_type), POINTER                :: pos
@@ -441,6 +445,8 @@ CONTAINS
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: vxc_pw, vxc_tau_pw
       TYPE(section_vals_type), POINTER                   :: xc_fun_section
       TYPE(xc_derivative_type), POINTER                  :: deriv_att
+      TYPE(xc_field_response_type)                       :: field_response
+      TYPE(xc_rho_cflags_type)                           :: field_needs
 
       CALL timeset(routineN, handle)
 
@@ -462,11 +468,15 @@ CONTAINS
                                                    "XC_FUNCTIONAL")
 
       !  Calculate the derivatives
-      CALL xc_functionals_eval(xc_fun_section, &
-                               lsd=lsd, &
-                               rho_set=rho_set, &
-                               deriv_set=deriv_set, &
-                               deriv_order=2)
+      IF (.NOT. my_do_sf .AND. my_fac_triplet == 1.0_dp .AND. (lsd .EQV. (nspins == 2))) THEN
+         CALL collect_cartesian_fields(rho_set, nspins, field_response%fields)
+         CALL collect_cartesian_fields(rho1_set, nspins, field_response%directions)
+         ALLOCATE (field_response%potentials, MOLD=field_response%fields)
+         field_response%potentials = 0.0_dp
+         CALL xc_functionals_eval(xc_fun_section, lsd, rho_set, deriv_set, 2, field_response)
+      ELSE
+         CALL xc_functionals_eval(xc_fun_section, lsd, rho_set, deriv_set, 2)
+      END IF
 
       CALL divide_by_norm_drho(deriv_set, rho_set, lsd)
 
@@ -496,6 +506,25 @@ CONTAINS
                                         xc_section, gapw=.TRUE., vxg=vxg, &
                                         tddfpt_fac=my_fac_triplet, spinflip=do_sf)
 
+      IF (ALLOCATED(field_response%potentials)) THEN
+         CPASSERT(.NOT. my_do_sf .AND. my_fac_triplet == 1.0_dp)
+         field_needs = xc_functionals_get_needs(xc_fun_section, lsd, calc_potential=.TRUE.)
+         IF (field_needs%tau .OR. field_needs%tau_spin) THEN
+            CPASSERT(ASSOCIATED(vxc_tau_pw))
+         END IF
+         bounds = SHAPE(vxc_pw(1)%array)
+         DO ispin = 1, nspins
+            offset = 5*(ispin - 1)
+            vxc_pw(ispin)%array = vxc_pw(ispin)%array + &
+                                  RESHAPE(field_response%potentials(offset + 1, :), bounds)*SPREAD(w, 3, 1)
+            DO axis = 1, 3
+               vxg(axis, :, :, ispin) = vxg(axis, :, :, ispin) + &
+                                        RESHAPE(field_response%potentials(offset + 1 + axis, :), SHAPE(w))*w
+            END DO
+            IF (ASSOCIATED(vxc_tau_pw)) vxc_tau_pw(ispin)%array = vxc_tau_pw(ispin)%array + &
+                                                           RESHAPE(field_response%potentials(offset + 5, :), bounds)*SPREAD(w, 3, 1)
+         END DO
+      END IF
       DEALLOCATE (vxc_pw)
       IF (ASSOCIATED(vxc_tau_pw)) DEALLOCATE (vxc_tau_pw)
 
@@ -508,6 +537,40 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE xc_2nd_deriv_of_r
+
+! **************************************************************************************************
+!> \brief Collect the same physical Cartesian fields used by atomic XC and their signed directions.
+!> \param rho_set Original base or response descriptor set.
+!> \param ns Physical spin count, with no spin-flip or triplet remapping.
+!> \param fields Owned rho,gx,gy,gz,tau fields per spin, retaining original point order and units.
+! **************************************************************************************************
+   SUBROUTINE collect_cartesian_fields(rho_set, ns, fields)
+      TYPE(xc_rho_set_type), INTENT(IN)                  :: rho_set
+      INTEGER, INTENT(IN)                                :: ns
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: fields(:, :)
+
+      REAL(dp), POINTER                                  :: rho(:, :, :), tau(:, :, :)
+      TYPE(cp_3d_r_cp_type)                              :: grad(3)
+
+      INTEGER::np, spin, axis, off
+      np = PRODUCT(rho_set%local_bounds(2, :) - rho_set%local_bounds(1, :) + 1)
+      ALLOCATE (fields(5*ns, np), SOURCE=0.0_dp)
+      DO spin = 1, ns
+         IF (ns == 1) THEN
+            CALL xc_rho_set_get(rho_set, rho=rho, drho=grad, tau=tau, can_return_null=.TRUE.)
+         ELSE IF (spin == 1) THEN
+            CALL xc_rho_set_get(rho_set, rhoa=rho, drhoa=grad, tau_a=tau, can_return_null=.TRUE.)
+         ELSE
+            CALL xc_rho_set_get(rho_set, rhob=rho, drhob=grad, tau_b=tau, can_return_null=.TRUE.)
+         END IF
+         CPASSERT(ASSOCIATED(rho)); off = 5*(spin - 1)
+         fields(off + 1, :) = RESHAPE(rho, [np])
+         DO axis = 1, 3
+            IF (ASSOCIATED(grad(axis)%array)) fields(off + 1 + axis, :) = RESHAPE(grad(axis)%array, [np])
+         END DO
+         IF (ASSOCIATED(tau)) fields(off + 5, :) = RESHAPE(tau, [np])
+      END DO
+   END SUBROUTINE collect_cartesian_fields
 
 ! **************************************************************************************************
 !> \brief ...

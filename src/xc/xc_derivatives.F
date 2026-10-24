@@ -27,7 +27,8 @@ MODULE xc_derivatives
                      cs1_lsd_eval, &
                      cs1_lsd_info
    USE xc_derivative_desc, ONLY: deriv_rhoa, deriv_rhob
-   USE xc_derivative_set_types, ONLY: xc_derivative_set_type, xc_dset_create, xc_dset_get_derivative, xc_dset_release
+   USE xc_derivative_set_types, ONLY: xc_derivative_set_type, xc_field_response_type, &
+                                      xc_dset_create, xc_dset_get_derivative, xc_dset_release
    USE xc_derivative_types, ONLY: xc_derivative_type
    USE xc_exchange_gga, ONLY: xgga_eval, &
                               xgga_info
@@ -378,17 +379,20 @@ CONTAINS
 !>        the code all the derivatives might be calculated, you should ignore
 !>        them when adding derivatives of various functionals they might contain
 !>        the derivative of just one functional)
+!> \param field_response ...
 !> \par History
 !>      11.2003 created [fawzi]
 !> \author fawzi
 ! **************************************************************************************************
-   SUBROUTINE xc_functional_eval(functional, lsd, rho_set, deriv_set, deriv_order)
+   SUBROUTINE xc_functional_eval(functional, lsd, rho_set, deriv_set, deriv_order, field_response)
 
       TYPE(section_vals_type), POINTER                   :: functional
       LOGICAL, INTENT(in)                                :: lsd
       TYPE(xc_rho_set_type), INTENT(IN)                  :: rho_set
       TYPE(xc_derivative_set_type), INTENT(IN)           :: deriv_set
       INTEGER, INTENT(IN)                                :: deriv_order
+      TYPE(xc_field_response_type), INTENT(INOUT), &
+         OPTIONAL                                        :: field_response
 
       CHARACTER(len=*), PARAMETER :: abort_message_skala = &
          "GauXC functionals are evaluated only through the QS GauXC path. "// &
@@ -551,7 +555,7 @@ CONTAINS
          END IF
       CASE ("GAUXC")
          IF (gauxc_model_none_selected(functional)) THEN
-            CALL gauxc_model_none_xc_eval(functional, lsd, rho_set, deriv_set, deriv_order)
+            CALL gauxc_model_none_xc_eval(functional, lsd, rho_set, deriv_set, deriv_order, field_response)
          ELSE
             CPABORT(abort_message_skala)
          END IF
@@ -590,9 +594,9 @@ CONTAINS
       CASE default
          ! If functional not natively supported, ask LibXC
          IF (lsd) THEN
-            CALL libxc_spin_polarized_eval(rho_set, deriv_set, deriv_order, functional)
+            CALL libxc_spin_polarized_eval(rho_set, deriv_set, deriv_order, functional, field_response=field_response)
          ELSE
-            CALL libxc_spin_unpolarized_eval(rho_set, deriv_set, deriv_order, functional)
+            CALL libxc_spin_unpolarized_eval(rho_set, deriv_set, deriv_order, functional, field_response=field_response)
          END IF
       END SELECT
 
@@ -725,13 +729,16 @@ CONTAINS
 !> \param rho_set density ingredients
 !> \param deriv_set derivative accumulator
 !> \param deriv_order derivative order to evaluate
+!> \param field_response ...
 ! **************************************************************************************************
-   SUBROUTINE gauxc_model_none_xc_eval(functional, lsd, rho_set, deriv_set, deriv_order)
+   SUBROUTINE gauxc_model_none_xc_eval(functional, lsd, rho_set, deriv_set, deriv_order, field_response)
       TYPE(section_vals_type), POINTER                   :: functional
       LOGICAL, INTENT(in)                                :: lsd
       TYPE(xc_rho_set_type), INTENT(IN)                  :: rho_set
       TYPE(xc_derivative_set_type), INTENT(IN)           :: deriv_set
       INTEGER, INTENT(IN)                                :: deriv_order
+      TYPE(xc_field_response_type), INTENT(INOUT), &
+         OPTIONAL                                        :: field_response
 
       CHARACTER(LEN=default_string_length)               :: libxc_names(2), xc_fun_name
       INTEGER                                            :: ifunc, nfunc
@@ -740,10 +747,10 @@ CONTAINS
       DO ifunc = 1, nfunc
          IF (lsd) THEN
             CALL libxc_spin_polarized_eval(rho_set, deriv_set, deriv_order, functional, &
-                                           func_name_override=TRIM(libxc_names(ifunc)))
+                                           func_name_override=TRIM(libxc_names(ifunc)), field_response=field_response)
          ELSE
             CALL libxc_spin_unpolarized_eval(rho_set, deriv_set, deriv_order, functional, &
-                                             func_name_override=TRIM(libxc_names(ifunc)))
+                                             func_name_override=TRIM(libxc_names(ifunc)), field_response=field_response)
          END IF
       END DO
    END SUBROUTINE gauxc_model_none_xc_eval
@@ -764,15 +771,18 @@ CONTAINS
 !>        the code all the derivatives might be calculated, you should ignore
 !>        them when adding derivatives of various functionals they might contain
 !>        the derivative of just one functional)
+!> \param field_response ...
 !> \author fawzi
 ! **************************************************************************************************
    SUBROUTINE xc_functionals_eval(functionals, lsd, rho_set, deriv_set, &
-                                  deriv_order)
+                                  deriv_order, field_response)
       TYPE(section_vals_type), POINTER                   :: functionals
       LOGICAL, INTENT(in)                                :: lsd
       TYPE(xc_rho_set_type), INTENT(IN)                  :: rho_set
       TYPE(xc_derivative_set_type), INTENT(IN)           :: deriv_set
       INTEGER, INTENT(in)                                :: deriv_order
+      TYPE(xc_field_response_type), INTENT(INOUT), &
+         OPTIONAL                                        :: field_response
 
       INTEGER                                            :: ifun
       TYPE(section_vals_type), POINTER                   :: xc_fun
@@ -787,7 +797,7 @@ CONTAINS
                                  lsd=lsd, &
                                  rho_set=rho_set, &
                                  deriv_set=deriv_set, &
-                                 deriv_order=deriv_order)
+                                 deriv_order=deriv_order, field_response=field_response)
       END DO
    END SUBROUTINE xc_functionals_eval
 
