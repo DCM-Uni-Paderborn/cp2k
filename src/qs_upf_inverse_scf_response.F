@@ -4,12 +4,19 @@
 !                                                                                                  !
 !   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
 !--------------------------------------------------------------------------------------------------!
-!> \brief Fixed-geometry native electronic operator response for semilocal and native Skala functionals.
+!> \brief Fixed-geometry native electronic operator response for semilocal, Skala and RI hybrid functionals.
 MODULE qs_upf_inverse_scf_response
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_create,&
+                                              dbcsr_p_type,&
+                                              dbcsr_release
+   USE hfx_ri,                          ONLY: hfx_ri_update_ks
+   USE hfx_ri_kp,                       ONLY: hfx_ri_update_ks_kp
+   USE hfx_types,                       ONLY: hfx_type
    USE input_constants,                 ONLY: sic_none,&
                                               xc_vdw_fun_nonloc
+   USE input_cp2k_hfx,                  ONLY: ri_pmat
    USE input_section_types,             ONLY: section_get_ival,&
                                               section_get_rval,&
                                               section_vals_get,&
@@ -44,6 +51,8 @@ MODULE qs_upf_inverse_scf_response
                                               qs_rho_type
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_kinetic
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_operator_response
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather,&
+                                              qs_upf_inverse_matrix_scatter
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_evaluate,&
                                               qs_upf_inverse_paw_xc_kernel
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_model_response,&
@@ -170,8 +179,9 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: available
       LOGICAL, INTENT(IN), OPTIONAL                      :: density_tangent
 
-      COMPLEX(dp), ALLOCATABLE                           :: atomic(:, :, :, :), hartree(:, :, :), &
-                                                            paw(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: atomic(:, :, :, :), &
+                                                            exchange(:, :, :, :), &
+                                                            hartree(:, :, :), paw(:, :, :, :)
       INTEGER                                            :: n, nk, ns, selected, spin
       LOGICAL                                            :: atomic_xc, do_hfx, fine, model, &
                                                             rho_valid, tangent, tau_g_valid, &
@@ -228,7 +238,7 @@ CONTAINS
       END IF
       hf => section_vals_get_subs_vals(xc, "HF")
       CALL section_vals_get(hf, explicit=do_hfx)
-      IF (do_hfx .OR. control%do_admm .OR. control%sic_method_id /= sic_none) RETURN
+      IF (control%do_admm .OR. control%sic_method_id /= sic_none) RETURN
       IF (control%dft_plus_u .OR. control%do_sccs .OR. control%do_fde .OR. control%do_pcc) RETURN
       IF (control%apply_embed_pot .OR. control%apply_dmfet_pot .OR. control%apply_external_density .OR. &
           control%apply_external_vxc .OR. control%qs_control%cdft .OR. control%correct_surf_dip .OR. qs_env%qmmm) RETURN
@@ -267,6 +277,10 @@ CONTAINS
       nk = SIZE(matrices_direction, 3)
       valid = ALL(SHAPE(matrices_direction) == [n, n, nk, ns])
       CPASSERT(valid)
+      IF (do_hfx) THEN
+         CALL native_exchange_response(qs_env, state, matrices_direction, exchange, valid)
+         IF (.NOT. valid) RETURN
+      END IF
       fine = .NOT. pw_grid_compare(native_pool%pw_grid, pool%pw_grid)
       grid => native_r(1)%pw_grid
       IF (fine) grid => pool%pw_grid
@@ -429,6 +443,7 @@ CONTAINS
          CALL combined_rho(spin)%release()
          CALL combined_tau(spin)%release()
       END DO
+      IF (do_hfx) operators_direction = operators_direction + exchange
       IF (model) DEALLOCATE (first_rho, first_tau)
       DEALLOCATE (response_rho, response_tau, density, density_g, kinetic, &
                   direction, direction_g, kinetic_direction)
@@ -436,6 +451,112 @@ CONTAINS
       CALL work_g%release()
       available = .TRUE.
    END SUBROUTINE qs_upf_inverse_scf_electronic_response
+
+! **************************************************************************************************
+!> \brief Fixed-geometry RI exchange response with owned density and operator workspaces.
+!>        Reuse the original integrals and spin factors without changing the accepted SCF histories.
+!>        Frozen-core one-body exchange has zero density response. Its orbital curvature remains
+!>        in the caller's complete KS operator. Unprepared, MO, ACE and non-RI cases stay numerical.
+!> \param qs_env Evaluated native environment and original HF components.
+!> \param state Current USPP/PAW reconstruction and physical Bloch map.
+!> \param direction Unweighted Hermitian AO density directions for every physical contribution.
+!> \param operators New sum of the original HF components, without mesh weights.
+!> \param available Whether every original HF component has a prepared RI-RHO response.
+! **************************************************************************************************
+   SUBROUTINE native_exchange_response(qs_env, state, direction, operators, available)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
+      COMPLEX(dp), INTENT(IN)                            :: direction(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      COMPLEX(dp), ALLOCATABLE                           :: contribution(:, :, :, :), dense(:, :)
+      INTEGER                                            :: component, image, ns, spin
+      LOGICAL                                            :: bloch, imaginary
+      REAL(dp)                                           :: unused_energy
+      TYPE(dbcsr_p_type), POINTER                        :: imag_operator(:, :), imag_source(:, :), &
+                                                            images(:, :), real_operator(:, :), &
+                                                            real_source(:, :)
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+      TYPE(qs_rho_type), POINTER                         :: rho
+
+      available = .FALSE.
+      CALL get_qs_env(qs_env, x_data=exchange, rho=rho)
+      IF (.NOT. ASSOCIATED(exchange)) RETURN
+      IF (SIZE(exchange, 1) == 0) RETURN
+      bloch = ASSOCIATED(state%bloch%kpoints)
+      DO component = 1, SIZE(exchange, 1)
+         ASSOCIATE (hf => exchange(component, 1))
+            IF (.NOT. hf%do_hfx_ri .OR. hf%use_ace) RETURN
+            IF (.NOT. ASSOCIATED(hf%ri_data)) RETURN
+            IF (hf%ri_data%flavor /= ri_pmat) RETURN
+            IF (.NOT. ALLOCATED(hf%ri_data%rho_ao_t)) RETURN
+            IF (.NOT. ALLOCATED(hf%ri_data%ks_t)) RETURN
+            IF (.NOT. ALLOCATED(hf%ri_data%t_3c_int_ctr_2)) RETURN
+         END ASSOCIATE
+      END DO
+      CALL qs_rho_get(rho, rho_ao_kp=images)
+      ns = SIZE(direction, 4)
+      ALLOCATE (operators, MOLD=direction)
+      operators = CMPLX(0.0_dp, 0.0_dp, dp)
+      ALLOCATE (real_operator(ns, SIZE(images, 2)))
+      DO image = 1, SIZE(images, 2)
+         DO spin = 1, ns
+            ALLOCATE (real_operator(spin, image)%matrix)
+            CALL dbcsr_create(real_operator(spin, image)%matrix, template=images(spin, image)%matrix)
+         END DO
+      END DO
+      imaginary = ANY(AIMAG(direction) /= 0.0_dp)
+      IF (.NOT. bloch) THEN
+         CPASSERT(SIZE(direction, 3) == 1)
+         ALLOCATE (real_source(ns, 1), imag_source(ns, 1), imag_operator(ns, 1))
+         DO spin = 1, ns
+            ALLOCATE (real_source(spin, 1)%matrix, imag_source(spin, 1)%matrix, imag_operator(spin, 1)%matrix)
+            CALL qs_upf_inverse_matrix_scatter(state%frame%ao, direction(:, :, 1, spin), images(spin, 1)%matrix, &
+                                               real_source(spin, 1)%matrix, imag_source(spin, 1)%matrix)
+            CALL dbcsr_create(imag_operator(spin, 1)%matrix, template=imag_source(spin, 1)%matrix)
+         END DO
+      END IF
+      DO component = 1, SIZE(exchange, 1)
+         ASSOCIATE (hf => exchange(component, 1))
+            IF (bloch) THEN
+               CALL hfx_ri_update_ks_kp(qs_env, hf%ri_data, real_operator, unused_energy, images, .FALSE., ns, &
+                                        hf%general_parameter%fraction, density_matrices=direction, &
+                                        operators_response=contribution)
+               operators = operators + contribution
+            ELSE
+               CALL hfx_ri_update_ks(qs_env, hf%ri_data, real_operator, unused_energy, rho_ao=real_source, &
+                                     geometry_did_change=.FALSE., nspins=ns, &
+                                     hf_fraction=hf%general_parameter%fraction, response=.TRUE.)
+               IF (imaginary) THEN
+                  CALL hfx_ri_update_ks(qs_env, hf%ri_data, imag_operator, unused_energy, rho_ao=imag_source, &
+                                        geometry_did_change=.FALSE., nspins=ns, &
+                                        hf_fraction=hf%general_parameter%fraction, response=.TRUE.)
+               END IF
+            END IF
+         END ASSOCIATE
+      END DO
+      IF (.NOT. bloch) THEN
+         DO spin = 1, ns
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, real_operator(spin, 1)%matrix, dense, &
+                                              imag_operator(spin, 1)%matrix)
+            operators(:, :, 1, spin) = dense
+            CALL dbcsr_release(real_source(spin, 1)%matrix)
+            CALL dbcsr_release(imag_source(spin, 1)%matrix)
+            CALL dbcsr_release(imag_operator(spin, 1)%matrix)
+            DEALLOCATE (real_source(spin, 1)%matrix, imag_source(spin, 1)%matrix, imag_operator(spin, 1)%matrix)
+         END DO
+         DEALLOCATE (real_source, imag_source, imag_operator)
+      END IF
+      DO image = 1, SIZE(real_operator, 2)
+         DO spin = 1, ns
+            CALL dbcsr_release(real_operator(spin, image)%matrix)
+            DEALLOCATE (real_operator(spin, image)%matrix)
+         END DO
+      END DO
+      DEALLOCATE (real_operator)
+      available = .TRUE.
+   END SUBROUTINE native_exchange_response
 
 ! **************************************************************************************************
 !> \brief Native semilocal XC response using local points and the original Fourier gradient transpose.
