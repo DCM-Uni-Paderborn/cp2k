@@ -44,6 +44,7 @@ MODULE hirshfeld_methods
    USE periodic_table,                  ONLY: get_ptable_info
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
+   USE pw_grid_types,                   ONLY: PW_MODE_DISTRIBUTED
    USE pw_methods,                      ONLY: pw_integrate_function
    USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
@@ -64,6 +65,7 @@ MODULE hirshfeld_methods
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'hirshfeld_methods'
+   REAL(dp), PARAMETER, PRIVATE :: hirshfeld_shape_floor = 1.0e-12_dp
 
    PUBLIC :: create_shape_function, comp_hirshfeld_charges, &
              comp_hirshfeld_i_charges, write_hirshfeld_charges, &
@@ -311,6 +313,7 @@ CONTAINS
          CALL hirshfeld_integration(qs_env, hirshfeld_env, rhonorm, charges(:, is))
          charges(:, is) = charges(:, is)*hirshfeld_env%charges(:)
       END DO
+      CALL gaussian_hirshfeld_tails(qs_env, hirshfeld_env, rho_r, charges)
       CALL auxbas_pw_pool%give_back_pw(rhonorm)
 
    END SUBROUTINE comp_hirshfeld_charges
@@ -323,8 +326,6 @@ CONTAINS
    SUBROUTINE hfun_scale(fout, fun1, fun2)
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(OUT)     :: fout
       REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: fun1, fun2
-
-      REAL(KIND=dp), PARAMETER                           :: small = 1.0e-12_dp
 
       INTEGER                                            :: i1, i2, i3, n1, n2, n3
 
@@ -341,7 +342,7 @@ CONTAINS
       DO i3 = 1, n3
          DO i2 = 1, n2
             DO i1 = 1, n1
-               IF (fun2(i1, i2, i3) > small) THEN
+               IF (fun2(i1, i2, i3) > hirshfeld_shape_floor) THEN
                   fout(i1, i2, i3) = fun1(i1, i2, i3)/fun2(i1, i2, i3)
                ELSE
                   fout(i1, i2, i3) = 0.0_dp
@@ -414,6 +415,7 @@ CONTAINS
             CALL hirshfeld_integration(qs_env, hirshfeld_env, rhonorm, charges(:, is))
             charges(:, is) = charges(:, is)*hirshfeld_env%charges(:)
          END DO
+         CALL gaussian_hirshfeld_tails(qs_env, hirshfeld_env, rho_r, charges)
          ! residual
          res = 0.0_dp
          DO iat = 1, natom
@@ -436,6 +438,112 @@ CONTAINS
       CALL auxbas_pw_pool%give_back_pw(rhonorm)
 
    END SUBROUTINE comp_hirshfeld_i_charges
+
+! **************************************************************************************************
+!> \brief Partition density where the Gaussian promolecule is below the division threshold.
+!>        Scale positive reference Gaussians by their largest logarithm at each point. The
+!>        resulting atomic weights sum to one even when the unscaled references underflow.
+!>        Periodic images are bounded relative to a known reference term at squared machine
+!>        precision. The accepted density and the ordinary resolved-grid partition are unchanged.
+!> \param qs_env Atomic positions and periodic cell.
+!> \param hirshfeld_env Gaussian reference shapes, populations and their normalization grid.
+!> \param density Complete spin densities on that grid.
+!> \param charges Add the missing tail populations separately for each spin.
+! **************************************************************************************************
+   SUBROUTINE gaussian_hirshfeld_tails(qs_env, hirshfeld_env, density, charges)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hirshfeld_type), POINTER                      :: hirshfeld_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
+      REAL(dp), INTENT(INOUT)                            :: charges(:, :)
+
+      INTEGER                                            :: atom, axis, image(3), ix, iy, iz, jx, &
+                                                            jy, jz, kind, lower(3), natom, spin, &
+                                                            upper(3)
+      LOGICAL, ALLOCATABLE                               :: active(:)
+      REAL(dp) :: displacement(3), exponent, fractional(3), inverse_norm(3), largest, point(3), &
+         radius, reference, relative_cutoff, total
+      REAL(dp), ALLOCATABLE                              :: alpha(:), logarithm(:), tails(:, :), &
+                                                            weights(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(particle_type), POINTER                       :: atoms(:)
+
+      IF (hirshfeld_env%shape_function_type /= shape_function_gaussian) RETURN
+      ! Signed reference populations do not define a positive stockholder partition.
+      IF (ANY(hirshfeld_env%charges < 0.0_dp)) RETURN
+      IF (.NOT. ANY(hirshfeld_env%charges > 0.0_dp)) RETURN
+      CALL get_qs_env(qs_env, cell=cell, particle_set=atoms)
+      natom = SIZE(atoms)
+      CPASSERT(ALL(SHAPE(charges) == [natom, SIZE(density)]))
+      ALLOCATE (alpha(natom), logarithm(natom), active(natom), weights(natom), tails(natom, SIZE(density)))
+      active = hirshfeld_env%charges > 0.0_dp
+      DO atom = 1, natom
+         kind = atoms(atom)%atomic_kind%kind_number
+         CPASSERT(hirshfeld_env%kind_shape_fn(kind)%numexp == 1)
+         alpha(atom) = hirshfeld_env%kind_shape_fn(kind)%zet(1)
+         CPASSERT(alpha(atom) > 0.0_dp)
+         IF (.NOT. active(atom)) CYCLE
+         CPASSERT(hirshfeld_env%kind_shape_fn(kind)%coef(1) > 0.0_dp)
+         logarithm(atom) = LOG(hirshfeld_env%charges(atom)) + LOG(hirshfeld_env%kind_shape_fn(kind)%coef(1))
+      END DO
+      inverse_norm = SQRT(SUM(cell%h_inv**2, DIM=2))
+      relative_cutoff = -2.0_dp*LOG(EPSILON(1.0_dp))
+      tails = 0.0_dp
+      ASSOCIATE (grid => density(1)%pw_grid)
+         DO iz = LBOUND(density(1)%array, 3), UBOUND(density(1)%array, 3)
+            DO iy = LBOUND(density(1)%array, 2), UBOUND(density(1)%array, 2)
+               DO ix = LBOUND(density(1)%array, 1), UBOUND(density(1)%array, 1)
+                  IF (hirshfeld_env%fnorm%array(ix, iy, iz) > hirshfeld_shape_floor) CYCLE
+                  point = MATMUL(grid%dh, REAL([ix, iy, iz] - grid%bounds(1, :), dp))
+                  reference = -HUGE(0.0_dp)
+                  DO atom = 1, natom
+                     IF (.NOT. active(atom)) CYCLE
+                     displacement = pbc(point - atoms(atom)%r, cell)
+                     reference = MAX(reference, logarithm(atom) - alpha(atom)*SUM(displacement**2))
+                  END DO
+                  largest = reference
+                  weights = 0.0_dp
+                  DO atom = 1, natom
+                     IF (.NOT. active(atom)) CYCLE
+                     total = logarithm(atom) - reference + relative_cutoff
+                     IF (total < 0.0_dp) CYCLE
+                     radius = SQRT(total/alpha(atom))
+                     fractional = MATMUL(cell%h_inv, point - atoms(atom)%r)
+                     lower = 0
+                     upper = 0
+                     DO axis = 1, 3
+                        IF (cell%perd(axis) == 0) CYCLE
+                        lower(axis) = CEILING(fractional(axis) - radius*inverse_norm(axis))
+                        upper(axis) = FLOOR(fractional(axis) + radius*inverse_norm(axis))
+                     END DO
+                     DO jz = lower(3), upper(3)
+                        DO jy = lower(2), upper(2)
+                           DO jx = lower(1), upper(1)
+                              image = [jx, jy, jz]
+                              displacement = point - atoms(atom)%r - MATMUL(cell%hmat, REAL(image, dp))
+                              exponent = logarithm(atom) - alpha(atom)*SUM(displacement**2)
+                              IF (exponent < reference - relative_cutoff) CYCLE
+                              IF (exponent > largest) THEN
+                                 weights = weights*EXP(largest - exponent)
+                                 largest = exponent
+                              END IF
+                              weights(atom) = weights(atom) + EXP(exponent - largest)
+                           END DO
+                        END DO
+                     END DO
+                  END DO
+                  total = SUM(weights)
+                  CPASSERT(total > 0.0_dp)
+                  weights = weights/total
+                  DO spin = 1, SIZE(density)
+                     tails(:, spin) = tails(:, spin) + weights*density(spin)%array(ix, iy, iz)*grid%dvol
+                  END DO
+               END DO
+            END DO
+         END DO
+         IF (grid%para%mode == PW_MODE_DISTRIBUTED) CALL grid%para%group%mp_comm_type%sum(tails)
+      END ASSOCIATE
+      charges = charges + tails
+   END SUBROUTINE gaussian_hirshfeld_tails
 
 ! **************************************************************************************************
 !> \brief ...

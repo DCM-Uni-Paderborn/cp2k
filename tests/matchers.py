@@ -32,6 +32,9 @@ registry = MatcherRegistry()
 
 # Total energy in Hartree
 registry["E_total"] = GenericMatcher(r"Total energy:", col=3)
+registry["Hirshfeld_total_charge"] = GenericMatcher(
+    r"^  Total Charge ", col=3, regex=True
+)
 registry["OT_SCF_convergence"] = GenericMatcher(
     r"^\s*\d+\s+OT\s+\S+\s+\S+\s+\S+\s+([-+0-9.EeDd]+)", col=1, regex=True
 )

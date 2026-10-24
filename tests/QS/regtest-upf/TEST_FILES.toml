@@ -21,6 +21,7 @@
   {matcher="M011", tol=1e-10, ref=-1.211086328915627},
   {matcher="Atomic_force_1_z", tol=1e-7, ref=0.94605072},
   {matcher="M031", tol=1e-7, ref=1703909.06027},
+  {matcher="Hirshfeld_total_charge", tol=1e-3, ref=0.0},
 ]
 # Complete complex Bloch density and native OT with unequal k-point weights.
 "H2_inverse_GPW_kpoints.inp" = [
