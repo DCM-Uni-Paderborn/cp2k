@@ -9,7 +9,8 @@ PROGRAM skala_atom_grid_unittest
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
-   USE mathconstants,                   ONLY: pi
+   USE mathconstants,                   ONLY: fourpi,&
+                                              pi
    USE mathlib,                         ONLY: det_3x3,&
                                               inv_3x3
    USE message_passing,                 ONLY: mp_comm_self,&
@@ -73,6 +74,7 @@ PROGRAM skala_atom_grid_unittest
                   IF (p < 0.0_dp .OR. p > 1.0_dp .OR. d < 0.0_dp .OR. d > 1.0_dp) THEN
                      ERROR STOP "Invalid partition weight"
                   END IF
+                  IF (d /= 1.0_dp) ERROR STOP "Periodic images truncate the atom descriptor"
                   total = total + p
                END DO
             END DO
@@ -86,8 +88,13 @@ PROGRAM skala_atom_grid_unittest
       CALL skala_partition_weights(displaced, 1, offset, p2, d2)
       IF (ABS(d - d2) > 5.0e-13_dp) ERROR STOP "Foreign atoms change the descriptor domain"
    END DO
-   CALL skala_partition_weights(partition, 1, centres(:, 2) - centres(:, 1), p, d)
-   IF (p /= 0.0_dp .OR. d <= 0.0_dp) ERROR STOP "A foreign nucleus must remain a descriptor-only target"
+   ! Match the Cartesian round trip used by the cached pair geometry at this nucleus.
+   offset = MATMUL(lattice, MATMUL(inverse, centres(:, 2) - centres(:, 1)))
+   CALL skala_partition_weights(partition, 1, offset, p, d)
+   IF (p /= 0.0_dp .OR. d <= 0.0_dp) THEN
+      WRITE (*, '(A,2ES24.15)') "Foreign-nucleus energy/descriptor factors: ", p, d
+      ERROR STOP "A foreign nucleus must remain a descriptor-only target"
+   END IF
    CALL partition_derivatives(centres)
    CALL partition_derivatives(centres(:, :1))
    CALL quadrature_derivatives()
@@ -105,6 +112,7 @@ PROGRAM skala_atom_grid_unittest
       ! Larger image shells are covered by the partition and derivative tests above.
       CALL skala_atom_grid_build(comm, lattice, centres, nr, na, 0, 1.0_dp, points, ew, dw, bs, bc)
       IF (SUM(bs) /= SIZE(ew) .OR. SIZE(dw) /= SIZE(ew)) ERROR STOP "Incomplete atom blocks"
+      IF (ANY(bs /= nr*na) .OR. ANY(dw <= 0.0_dp)) ERROR STOP "Incomplete radial/Lebedev descriptor rule"
       blocks = SIZE(bs)
       empty = 0
       IF (SIZE(ew) == 0) empty = 1
@@ -133,6 +141,13 @@ PROGRAM skala_atom_grid_unittest
    CALL skala_radial_grid(12, 1.0_dp, radius, radial_weight)
    shifted(:, 2) = centres(:, 1) + [radius(6), 0.0_dp, 0.0_dp]
    CALL skala_atom_grid_build(comm, lattice, shifted, 12, 6, 1, 1.0_dp, points, ew, dw, bs, bc)
+   IF (ANY(bs /= 72)) ERROR STOP "Descriptor rows outside the energy support have been discarded"
+   DO i = 1, SIZE(dw)
+      j = MOD(i - 1, 72)/6 + 1
+      IF (ABS(dw(i) - fourpi*radial_weight(j)/6.0_dp) > 1.0e-13_dp*MAX(1.0_dp, ABS(dw(i)))) THEN
+         ERROR STOP "Descriptor weights differ from the raw radial/Lebedev rule"
+      END IF
+   END DO
    descriptor_only = COUNT(ew == 0.0_dp .AND. dw > 0.0_dp)
    CALL comm%sum(descriptor_only)
    IF (descriptor_only == 0) ERROR STOP "Descriptor-only quadrature rows have been discarded"
@@ -209,20 +224,20 @@ CONTAINS
             CASE (2)
                x = positions(:, MOD(atom, SIZE(positions, 2)) + 1) - positions(:, atom)
             CASE (3)
-               ! Exercise the narrow self-image descriptor turn-on rather than its flat region.
+               ! Resolve a nontrivial energy-partition transition.
                lo = 0.0_dp
                hi = 1.0_dp
                DO iteration = 1, 55
                   mid = 0.5_dp*(lo + hi)
                   CALL skala_partition_weights(reference_partition, atom, mid*lattice(:, 1), pp, dpw)
-                  IF (dpw > 0.5_dp) THEN
+                  IF (pp > 0.5_dp) THEN
                      lo = mid
                   ELSE
                      hi = mid
                   END IF
                END DO
                x = mid*lattice(:, 1)
-               IF (ABS(dpw - 0.5_dp) > 1.0e-3_dp) ERROR STOP "Descriptor transition fixture is not resolved"
+               IF (ABS(pp - 0.5_dp) > 1.0e-3_dp) ERROR STOP "Energy partition transition fixture is not resolved"
             CASE (4)
                x = MATMUL(lattice, [2.1_dp, 0.0_dp, 0.0_dp])
             END SELECT
@@ -233,8 +248,8 @@ CONTAINS
                IF (MAXVAL(ABS(SUM(gr, DIM=2))) > 1.0e-10_dp) THEN
                   ERROR STOP "Partition centre derivatives violate translation invariance"
                END IF
-               IF (derivative == 2 .AND. MAXVAL(ABS(gr)) > 1.0e-10_dp) THEN
-                  ERROR STOP "Self-image descriptor depends on independent Cartesian atom centres"
+               IF (derivative == 2 .AND. MAX(MAXVAL(ABS(gx)), MAXVAL(ABS(gr)), MAXVAL(ABS(gh))) /= 0.0_dp) THEN
+                  ERROR STOP "Raw descriptor weights depend on the point, atom centres or lattice"
                END IF
                IF (case_id == 1) THEN
                   rp = positions

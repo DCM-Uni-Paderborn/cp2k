@@ -34,7 +34,6 @@ MODULE skala_atom_grid
       REAL(dp) :: lattice(3, 3) = 0.0_dp, inverse(3, 3) = 0.0_dp
       REAL(dp), ALLOCATABLE :: centres(:, :)
       TYPE(seed_environment_type), ALLOCATABLE :: neighbours(:)
-      TYPE(seed_environment_type) :: self_neighbours
    END TYPE skala_partition_type
 
    PUBLIC :: skala_partition_type, skala_partition_init, skala_partition_weights, &
@@ -67,22 +66,19 @@ CONTAINS
       ALLOCATE (partition%centres(3, SIZE(centres, 2)), partition%neighbours(SIZE(centres, 2)))
       partition%centres(:, :) = centres
       DO a = 1, SIZE(centres, 2)
-         CALL build_environment(partition, a, .FALSE., partition%neighbours(a))
+         CALL build_environment(partition, a, partition%neighbours(a))
       END DO
-      CALL build_environment(partition, 1, .TRUE., partition%self_neighbours)
    END SUBROUTINE skala_partition_init
 
 ! **************************************************************************************************
 !> \brief Each image has the same translated environment, not a finite-cluster edge environment.
 !> \param partition Cached periodic partition geometry.
 !> \param atom Target atom index.
-!> \param self_only Use only translated images of the target atom.
 !> \param environment Translated seed environment.
 ! **************************************************************************************************
-   SUBROUTINE build_environment(partition, atom, self_only, environment)
+   SUBROUTINE build_environment(partition, atom, environment)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
       INTEGER, INTENT(IN)                                :: atom
-      LOGICAL, INTENT(IN)                                :: self_only
       TYPE(seed_environment_type), INTENT(OUT)           :: environment
 
       INTEGER                                            :: b, capacity, count, hi(3), i, j, k, lo(3)
@@ -98,7 +94,6 @@ CONTAINS
       ALLOCATE (atoms(capacity), images(3, capacity))
       count = 0
       DO b = 1, SIZE(partition%centres, 2)
-         IF (self_only .AND. b /= atom) CYCLE
          delta = MATMUL(partition%inverse, partition%centres(:, b) - partition%centres(:, atom))
          lo = CEILING(-delta - (partition%shell + 1))
          hi = FLOOR(-delta + (partition%shell + 1))
@@ -133,12 +128,12 @@ CONTAINS
    END SUBROUTINE build_environment
 
 ! **************************************************************************************************
-!> \brief Energy partition of atom at zero image and descriptor turn-on of its self-image partition.
+!> \brief Periodic energy partition with the complete atom-centred descriptor domain.
 !> \param partition Cached fixed geometry.
 !> \param atom Target atom block.
 !> \param offset Cartesian displacement from the target atom, in bohr.
 !> \param energy All-atom, all-image partition weight.
-!> \param descriptor Self-image domain window, independent of all other atoms.
+!> \param descriptor Unit factor preserving the raw radial/Lebedev descriptor rule.
 ! **************************************************************************************************
    SUBROUTINE skala_partition_weights(partition, atom, offset, energy, descriptor)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
@@ -146,25 +141,13 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: offset(3)
       REAL(dp), INTENT(OUT)                              :: energy, descriptor
 
-      REAL(dp)                                           :: d, z
-
       CPASSERT(atom >= 1 .AND. atom <= SIZE(partition%centres, 2))
       CPASSERT(ALL(ieee_is_finite(offset)))
       energy = 0.0_dp
-      descriptor = 0.0_dp
+      ! The energy support must not truncate the nonlocal descriptor domain.
+      descriptor = 1.0_dp
       IF (compact_window(MATMUL(partition%inverse, offset), partition%shell) == 0.0_dp) RETURN
-      d = normalized_seed(partition, atom, offset, .TRUE.)
-      IF (SIZE(partition%centres, 2) == 1) THEN
-         energy = d
-      ELSE
-         energy = normalized_seed(partition, atom, offset, .FALSE.)
-      END IF
-      IF (d >= 1.0e-11_dp) THEN
-         descriptor = 1.0_dp
-      ELSE IF (d > 1.0e-12_dp) THEN
-         z = (d - 1.0e-12_dp)/9.0e-12_dp
-         descriptor = z**3*(10.0_dp - 15.0_dp*z + 6.0_dp*z*z)
-      END IF
+      energy = normalized_seed(partition, atom, offset)
    END SUBROUTINE skala_partition_weights
 
 ! **************************************************************************************************
@@ -172,16 +155,14 @@ CONTAINS
 !> \param partition Cached periodic partition geometry.
 !> \param atom Target atom index.
 !> \param offset Displacement from the target atom, in bohr.
-!> \param self_only Use only translated images of the target atom.
 !> \param log_max Largest log seed used in the normalization.
 !> \param scaled_sum Sum of seeds relative to log_max.
 !> \return Normalized periodic seed weight.
 ! **************************************************************************************************
-   FUNCTION normalized_seed(partition, atom, offset, self_only, log_max, scaled_sum) RESULT(weight)
+   FUNCTION normalized_seed(partition, atom, offset, log_max, scaled_sum) RESULT(weight)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
       INTEGER, INTENT(IN)                                :: atom
       REAL(dp), INTENT(IN)                               :: offset(3)
-      LOGICAL, INTENT(IN)                                :: self_only
       REAL(dp), INTENT(OUT), OPTIONAL                    :: log_max, scaled_sum
       REAL(dp)                                           :: weight
 
@@ -194,7 +175,6 @@ CONTAINS
       largest = TARGET
       total = 0.0_dp
       DO b = 1, SIZE(partition%centres, 2)
-         IF (self_only .AND. b /= atom) CYCLE
          relative = offset + partition%centres(:, atom) - partition%centres(:, b)
          fractional = MATMUL(partition%inverse, relative)
          lo = CEILING(fractional - (partition%shell + 1))
@@ -203,11 +183,7 @@ CONTAINS
             DO j = lo(2), hi(2)
                DO i = lo(1), hi(1)
                   x = relative - MATMUL(partition%lattice, REAL([i, j, k], dp))
-                  IF (self_only) THEN
-                     value = log_seed(partition, partition%self_neighbours, x)
-                  ELSE
-                     value = log_seed(partition, partition%neighbours(b), x)
-                  END IF
+                  value = log_seed(partition, partition%neighbours(b), x)
                   IF (b == atom .AND. ALL([i, j, k] == 0)) TARGET = value
                   IF (value == -HUGE(1.0_dp)) CYCLE
                   IF (value > largest) THEN
@@ -228,12 +204,12 @@ CONTAINS
    END FUNCTION normalized_seed
 
 ! **************************************************************************************************
-!> \brief Pull back independent energy and descriptor partition weights at fixed row topology.
+!> \brief Pull back the energy partition. Raw descriptor weights are geometry-independent.
 !> \param partition Cached geometry.
 !> \param atom Target atom block.
 !> \param offset Cartesian displacement from that atom, independent of the lattice.
 !> \param energy_adjoint Derivative with respect to the energy partition weight.
-!> \param descriptor_adjoint Derivative with respect to the descriptor domain window.
+!> \param descriptor_adjoint Descriptor covector, with zero partition-geometry derivative.
 !> \param doffset Derivative with respect to the independent Cartesian offset.
 !> \param dcentres Derivatives with respect to all Cartesian atom positions at fixed offset.
 !> \param dlattice Derivative with respect to lattice columns at fixed Cartesian centres and offset.
@@ -247,8 +223,6 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: doffset(3), dcentres(:, :), &
                                                             dlattice(3, 3)
 
-      REAL(dp)                                           :: adjoint, d, z
-
       CPASSERT(atom >= 1 .AND. atom <= SIZE(partition%centres, 2))
       CPASSERT(ALL(SHAPE(dcentres) == SHAPE(partition%centres)))
       CPASSERT(ALL(ieee_is_finite(offset)))
@@ -257,21 +231,8 @@ CONTAINS
       dcentres = 0.0_dp
       dlattice = 0.0_dp
       IF (compact_window(MATMUL(partition%inverse, offset), partition%shell) == 0.0_dp) RETURN
-      adjoint = 0.0_dp
-      IF (descriptor_adjoint /= 0.0_dp) THEN
-         d = normalized_seed(partition, atom, offset, .TRUE.)
-         IF (d > 1.0e-12_dp .AND. d < 1.0e-11_dp) THEN
-            z = (d - 1.0e-12_dp)/9.0e-12_dp
-            adjoint = descriptor_adjoint*30.0_dp*z*z*(1.0_dp - z)**2/9.0e-12_dp
-         END IF
-      END IF
-      IF (SIZE(partition%centres, 2) == 1) THEN
-         adjoint = adjoint + energy_adjoint
-      ELSE IF (energy_adjoint /= 0.0_dp) THEN
-         CALL seed_pullback(partition, atom, offset, .FALSE., energy_adjoint, doffset, dcentres, dlattice)
-      END IF
-      IF (adjoint /= 0.0_dp) THEN
-         CALL seed_pullback(partition, atom, offset, .TRUE., adjoint, doffset, dcentres, dlattice)
+      IF (energy_adjoint /= 0.0_dp) THEN
+         CALL seed_pullback(partition, atom, offset, energy_adjoint, doffset, dcentres, dlattice)
       END IF
       CPASSERT(ALL(ieee_is_finite(doffset)))
       CPASSERT(ALL(ieee_is_finite(dcentres)))
@@ -283,18 +244,15 @@ CONTAINS
 !> \param partition Cached periodic partition geometry.
 !> \param atom Target atom index.
 !> \param offset Displacement from the target atom, in bohr.
-!> \param self_only Use only translated images of the target atom.
 !> \param adjoint Incoming scalar covector.
 !> \param doffset Displacement covector.
 !> \param dcentres Atom-centre covectors.
 !> \param dlattice Cell-vector covectors.
 ! **************************************************************************************************
-   SUBROUTINE seed_pullback(partition, atom, offset, self_only, adjoint, doffset, dcentres, dlattice)
+   SUBROUTINE seed_pullback(partition, atom, offset, adjoint, doffset, dcentres, dlattice)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
       INTEGER, INTENT(IN)                                :: atom
-      REAL(dp), INTENT(IN)                               :: offset(3)
-      LOGICAL, INTENT(IN)                                :: self_only
-      REAL(dp), INTENT(IN)                               :: adjoint
+      REAL(dp), INTENT(IN)                               :: offset(3), adjoint
       REAL(dp), INTENT(INOUT)                            :: doffset(3), dcentres(:, :), &
                                                             dlattice(3, 3)
 
@@ -303,10 +261,9 @@ CONTAINS
                                                             largest, relative(3), total, value, &
                                                             weight, x(3)
 
-      weight = normalized_seed(partition, atom, offset, self_only, largest, total)
+      weight = normalized_seed(partition, atom, offset, largest, total)
       IF (weight == 0.0_dp) RETURN
       DO b = 1, SIZE(partition%centres, 2)
-         IF (self_only .AND. b /= atom) CYCLE
          relative = offset + partition%centres(:, atom) - partition%centres(:, b)
          fractional = MATMUL(partition%inverse, relative)
          lo = CEILING(fractional - (partition%shell + 1))
@@ -315,23 +272,14 @@ CONTAINS
             DO j = lo(2), hi(2)
                DO i = lo(1), hi(1)
                   x = relative - MATMUL(partition%lattice, REAL([i, j, k], dp))
-                  IF (self_only) THEN
-                     value = log_seed(partition, partition%self_neighbours, x)
-                  ELSE
-                     value = log_seed(partition, partition%neighbours(b), x)
-                  END IF
+                  value = log_seed(partition, partition%neighbours(b), x)
                   IF (value == -HUGE(1.0_dp)) CYCLE
                   coefficient = -EXP(value - largest)/total
                   IF (b == atom .AND. ALL([i, j, k] == 0)) coefficient = coefficient + 1.0_dp
                   coefficient = coefficient*weight*adjoint
                   IF (coefficient == 0.0_dp) CYCLE
-                  IF (self_only) THEN
-                     CALL log_seed_pullback(partition, partition%self_neighbours, b, .TRUE., x, coefficient, &
-                                            gx, dcentres, dlattice)
-                  ELSE
-                     CALL log_seed_pullback(partition, partition%neighbours(b), b, .FALSE., x, coefficient, &
-                                            gx, dcentres, dlattice)
-                  END IF
+                  CALL log_seed_pullback(partition, partition%neighbours(b), b, x, coefficient, &
+                                         gx, dcentres, dlattice)
                   doffset = doffset + gx
                   dcentres(:, atom) = dcentres(:, atom) + gx
                   dcentres(:, b) = dcentres(:, b) - gx
@@ -347,18 +295,16 @@ CONTAINS
 !> \param partition Cached periodic partition geometry.
 !> \param environment Translated seed environment.
 !> \param atom Target atom index.
-!> \param self_only Use only translated images of the target atom.
 !> \param x Cartesian displacement, in bohr.
 !> \param adjoint Incoming scalar covector.
 !> \param gx Cartesian displacement covector.
 !> \param dcentres Atom-centre covectors.
 !> \param dlattice Cell-vector covectors.
 ! **************************************************************************************************
-   SUBROUTINE log_seed_pullback(partition, environment, atom, self_only, x, adjoint, gx, dcentres, dlattice)
+   SUBROUTINE log_seed_pullback(partition, environment, atom, x, adjoint, gx, dcentres, dlattice)
       TYPE(skala_partition_type), INTENT(IN)             :: partition
       TYPE(seed_environment_type), INTENT(IN)            :: environment
       INTEGER, INTENT(IN)                                :: atom
-      LOGICAL, INTENT(IN)                                :: self_only
       REAL(dp), INTENT(IN)                               :: x(3), adjoint
       REAL(dp), INTENT(OUT)                              :: gx(3)
       REAL(dp), INTENT(INOUT)                            :: dcentres(:, :), dlattice(3, 3)
@@ -399,7 +345,6 @@ CONTAINS
          gc = MATMUL(TRANSPOSE(partition%inverse), window_grad)*(adjoint*(switch - 1.0_dp)/factor)
          gd = gd + gc
          b = environment%atom(n)
-         IF (self_only) b = atom
          dcentres(:, b) = dcentres(:, b) + gd
          dcentres(:, atom) = dcentres(:, atom) - gd
          dlattice = dlattice + SPREAD(gd, 2, 3)*SPREAD(REAL(environment%image(:, n), dp), 1, 3) - &

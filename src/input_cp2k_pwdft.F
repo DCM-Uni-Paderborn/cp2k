@@ -104,8 +104,9 @@ CONTAINS
                           description="Experimental periodic atom quadrature for native Skala with SIRIUS. "// &
                           "Required for joint PAW, ultrasoft or FP-LAPW field reconstruction. "// &
                           "Uses Gauss-Legendre radial and Lebedev "// &
-                          "angular integration, periodic Becke energy partitions and independent self-image "// &
-                          "descriptor windows. Geometry changes require SIRIUS with the point-quadrature update API. "// &
+                          "angular integration and periodic Becke energy partitions. Nonlocal descriptors retain "// &
+                          "the complete radial/Lebedev rule without an image-domain window. "// &
+                          "Geometry changes require SIRIUS with the point-quadrature update API. "// &
                           "CPU and GPU scalar, collinear and noncollinear calculations use host-staged fields. "// &
                           "Skala CUDA inference is selected independently in XC_FUNCTIONAL/GAUXC. "// &
                           "Crystal symmetry requires invariant atom blocks and both quadrature weights. "// &
@@ -141,7 +142,8 @@ CONTAINS
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="IMAGE_SHELL", default_i_val=1, &
                           description="Compact periodic seed window is unity through this fractional-cell "// &
-                          "distance and vanishes smoothly one cell farther out in each direction.")
+                          "distance and vanishes smoothly one cell farther out in each direction. "// &
+                          "Applies only to the energy partition, not to the descriptor quadrature.")
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="RADIAL_SCALE", default_r_val=1.0_dp, &
