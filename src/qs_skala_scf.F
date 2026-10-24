@@ -15,7 +15,8 @@ MODULE qs_skala_scf
    USE cp_external_control,             ONLY: external_control
    USE cp_fm_types,                     ONLY: cp_fm_set_all
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE input_constants,                 ONLY: smear_fermi_dirac
+   USE input_constants,                 ONLY: ot_precond_none,&
+                                              smear_fermi_dirac
    USE input_section_types,             ONLY: section_get_ival,&
                                               section_get_rval,&
                                               section_vals_get_subs_vals,&
@@ -3670,17 +3671,24 @@ CONTAINS
       TYPE(dbcsr_p_type), POINTER :: matrices(:, :)
       INTEGER :: i, offset, local, spin, ik, first, last
       LOGICAL :: owner
-      REAL(dp) :: energy, log_inverse
+      REAL(dp) :: energy, log_inverse, curvature_floor
 
       available = .FALSE.
       inverse_diagonal = 1.0_dp
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
-         IF (.NOT. context%state%thermal) RETURN
          IF (.NOT. ASSOCIATED(context%state%qs_env%scf_env)) RETURN
          IF (.NOT. ASSOCIATED(context%state%qs_env%scf_env%qs_ot_env)) RETURN
          IF (SIZE(context%state%qs_env%scf_env%qs_ot_env) == 0) RETURN
-         IF (.NOT. context%state%qs_env%scf_env%qs_ot_env(1)%settings%occupation_preconditioner) RETURN
+         IF (context%state%thermal) THEN
+            IF (.NOT. context%state%qs_env%scf_env%qs_ot_env(1)%settings%occupation_preconditioner) RETURN
+            curvature_floor = context%state%temperature
+         ELSE
+            IF (context%state%qs_env%scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_none) RETURN
+            ! A positive gap regularizes only the search metric, not the zero-temperature energy.
+            curvature_floor = context%state%qs_env%scf_env%qs_ot_env(1)%settings%energy_gap
+            IF (curvature_floor <= 0.0_dp) RETURN
+         END IF
          IF (.NOT. context%state%evaluated .OR. .NOT. context%state%operator_current .OR. &
              ANY(context%state%coordinate /= coordinate)) THEN
             ALLOCATE (gradient(SIZE(coordinate)))
@@ -3711,12 +3719,16 @@ CONTAINS
                last = first + context%state%dimensions(ik, spin) - 1
                ALLOCATE (block_inverse(last - first + 1))
                CALL skala_orbital_chart_response_inverse(context%state%orbitals(local, spin)%chart, &
-                                                         diagonal, context%state%temperature, block_inverse)
+                                                         diagonal, curvature_floor, block_inverse)
                inverse_diagonal(first:last) = block_inverse
                DEALLOCATE (block_inverse)
             END DO
          END DO
          CALL context%state%para_env%sum(inverse_diagonal(:context%state%orbital_size))
+         IF (.NOT. context%state%thermal) THEN
+            available = .TRUE.
+            RETURN
+         END IF
          offset = context%state%orbital_size
          DO i = 1, SIZE(context%state%band_response)
             IF (context%state%band_response(i) <= 0.0_dp) CYCLE

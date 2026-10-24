@@ -162,7 +162,7 @@ CONTAINS
       INTEGER                                            :: i, iterations, method
       LOGICAL                                            :: converged, valid
       REAL(dp) :: anisotropic(9), coordinate(4), derivative(9), empty(0), energy, energy_zero, &
-         implicit_derivative, jacobian(1, 4), midpoint(4), values(1)
+         implicit_derivative, jacobian(1, 4), midpoint(4), negative(2), values(1)
       TYPE(skala_constraint_chart_type)                  :: curve
 
       coordinate(:3) = [0.01_dp, 0.02_dp, 0.03_dp]
@@ -233,7 +233,53 @@ CONTAINS
          ERROR STOP 'Anisotropic curvature did not reach the original gradient tolerance'
       END IF
       END DO
+      ! A stiff stable direction must not hide descent along negative curvature.
+      negative = [0.001_dp, 0.05_dp]
+      CALL skala_constrained_stationarity(empty_constraints, negative_curvature_energy_gradient, energy_zero, &
+                                          negative, empty, tolerance, converged, max_iterations=1, max_step=0.1_dp, &
+                                          retain_progress=.TRUE., curvature_steps=.TRUE., apply_hessian=negative_curvature_hessian)
+      CALL negative_curvature_energy_gradient(negative, energy, derivative(:2), energy_zero)
+      IF (energy >= -0.005_dp) ERROR STOP 'Negative curvature did not supply a resolved downhill step'
+      IF (NORM2(negative - [0.001_dp, 0.05_dp]) > 0.1_dp*(1.0_dp + 128.0_dp*EPSILON(1.0_dp))) THEN
+         ERROR STOP 'Negative-curvature step exceeded the original step bound'
+      END IF
    END SUBROUTINE check_constrained_curvature
+
+! **************************************************************************************************
+!> \brief Smooth bounded double well coupled to a stiff positive direction.
+!> \param coordinate Two real coordinates.
+!> \param energy Original quartic energy.
+!> \param gradient Exact gradient.
+!> \param context Unused caller state.
+! **************************************************************************************************
+   SUBROUTINE negative_curvature_energy_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+
+      energy = 50.0_dp*coordinate(1)**2 - 0.5_dp*coordinate(2)**2 + 0.25_dp*coordinate(2)**4
+      gradient = [100.0_dp*coordinate(1), coordinate(2)**3 - coordinate(2)]
+   END SUBROUTINE negative_curvature_energy_gradient
+
+! **************************************************************************************************
+!> \brief Exact second derivative of the same double well.
+!> \param coordinate Original coordinates.
+!> \param direction Same-coordinate tangent.
+!> \param context Unused caller state.
+!> \param PRODUCT Original Hessian applied to the tangent.
+!> \param available Complete analytical response is supplied.
+! **************************************************************************************************
+   SUBROUTINE negative_curvature_hessian(coordinate, direction, context, PRODUCT, available)
+      REAL(dp), INTENT(IN)                               :: coordinate(:), direction(:)
+
+      CLASS(*), INTENT(INOUT) :: context
+      REAL(dp), INTENT(OUT) :: PRODUCT(:)
+      LOGICAL, INTENT(OUT) :: available
+
+      PRODUCT = [100.0_dp*direction(1), (3.0_dp*coordinate(2)**2 - 1.0_dp)*direction(2)]
+      available = .TRUE.
+   END SUBROUTINE negative_curvature_hessian
 
 ! **************************************************************************************************
 !> \brief Positive quadratic with rotated axes, eigenvalues 1e-3 through 1e3 and exact minimum zero.

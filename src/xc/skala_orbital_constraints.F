@@ -1051,8 +1051,8 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Inexact Newton direction from central differences of the native derivatives.
 !>        Truncated conjugate gradients reuse the positive BFGS inverse as a fixed preconditioner
-!>        and retain linear storage. Indefinite curvature returns
-!>        the current descent direction, or failure if none was found. The outer line search
+!>        and retain linear storage. Indefinite curvature and an oversized CG iterate
+!>        terminate at the original maximum-step sphere. The outer line search
 !>        retains its original energy and derivative checks.
 !> \param center Accepted orbital coordinates.
 !> \param derivative Derivative at the accepted state.
@@ -1067,9 +1067,9 @@ CONTAINS
 
       INTEGER                                            :: iteration
       LOGICAL                                            :: valid_trial
-      REAL(dp)                                           :: alpha, beta, curvature, next_residual2, &
-                                                            next_residual_dot, norm_direction, &
-                                                            residual_dot, TARGET
+      REAL(dp)                                           :: alpha, beta, boundary, curvature, &
+                                                            next_residual2, next_residual_dot, &
+                                                            norm_direction, residual_dot, TARGET
       REAL(dp), ALLOCATABLE                              :: preconditioned(:), PRODUCT(:), &
                                                             residual(:), search(:)
 
@@ -1101,8 +1101,16 @@ CONTAINS
             CALL reduced_hessian_product(center, search, PRODUCT, valid_trial, stopped_direction)
             IF (.NOT. valid_trial .OR. stopped_direction) RETURN
             curvature = DOT_PRODUCT(search, product)
-            IF (curvature <= 128.0_dp*EPSILON(0.0_dp)*norm_direction*NORM2(product)) EXIT
+            boundary = boundary_length(newton_step, search, norm_direction)
+            IF (curvature <= 128.0_dp*EPSILON(0.0_dp)*norm_direction*NORM2(product)) THEN
+               newton_step = newton_step + boundary*(search/norm_direction)
+               EXIT
+            END IF
             alpha = residual_dot/curvature
+            IF (alpha >= boundary/norm_direction) THEN
+               newton_step = newton_step + boundary*(search/norm_direction)
+               EXIT
+            END IF
             newton_step(:) = newton_step + alpha*search
             residual(:) = residual - alpha*product
             next_residual2 = DOT_PRODUCT(residual, residual)
@@ -1121,6 +1129,30 @@ CONTAINS
          END DO
          valid_direction = ALL(ieee_is_finite(newton_step)) .AND. DOT_PRODUCT(derivative, newton_step) < 0.0_dp
       END SUBROUTINE newton_direction
+! **************************************************************************************************
+!> \brief Distance along a normalized CG direction to the original maximum-step sphere.
+!>        Normalize by the radius and avoid cancellation at an outward-facing boundary.
+!> \param step Current interior Newton step.
+!> \param direction Current CG search direction.
+!> \param norm_direction Positive norm of that direction.
+!> \return Nonnegative distance to the sphere along the same direction.
+! **************************************************************************************************
+      FUNCTION boundary_length(step, direction, norm_direction) RESULT(length)
+      REAL(dp), INTENT(IN)                               :: step(:), direction(:), norm_direction
+      REAL(dp)                                           :: length
+
+      REAL(dp)                                           :: projection, root, slack
+
+         projection = DOT_PRODUCT(step/radius, direction/norm_direction)
+         slack = MAX(0.0_dp, 1.0_dp - SUM((step/radius)**2))
+         root = SQRT(projection**2 + slack)
+         length = 0.0_dp
+         IF (projection < 0.0_dp) THEN
+            length = radius*(root - projection)
+         ELSE IF (root + projection > 0.0_dp) THEN
+            length = radius*(slack/(root + projection))
+         END IF
+      END FUNCTION boundary_length
 ! **************************************************************************************************
 !> \brief Use the complete analytical unconstrained response when supplied, otherwise resolve native curvature.
 !>        Dependent physical constraints retain their existing implicit-curve response.
