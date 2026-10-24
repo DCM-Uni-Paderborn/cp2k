@@ -13,12 +13,13 @@ PROGRAM kpoint_smearing_unittest
                                               smear_mv
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_smearing_edge_status
-   USE qs_ot,                           ONLY: qs_ot_fixed_n_energy_hessian
    USE reference_manager,               ONLY: remove_all_references
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: Smearkp,&
                                               Smearkp2,&
-                                              smearing_response_weight
+                                              smearing_response_weight,&
+                                              smearing_separate_spin,&
+                                              smearing_spin_targets
 
    IMPLICIT NONE
 
@@ -73,9 +74,10 @@ PROGRAM kpoint_smearing_unittest
       ERROR STOP "Disabled smearing produced an edge status"
    END IF
 
+   CALL test_fixed_n_smearing_response()
+   CALL test_fixed_spin_populations()
    CALL test_empty_spin()
    CALL test_particle_count_precision()
-   CALL test_fixed_n_smearing_response()
    CALL remove_all_references()
 
 CONTAINS
@@ -142,6 +144,28 @@ CONTAINS
    END SUBROUTINE test_empty_spin
 
 ! **************************************************************************************************
+!> \brief Check fractional, zero, integer-preserving, and unconstrained spin targets.
+! **************************************************************************************************
+   SUBROUTINE test_fixed_spin_populations()
+      REAL(KIND=dp), DIMENSION(2)                        :: targets
+
+      IF (smearing_separate_spin(-100.0_dp)) ERROR STOP "Unconstrained spin was fixed"
+      IF (.NOT. smearing_separate_spin(-1.0_dp)) ERROR STOP "Integer spin populations were released"
+      IF (.NOT. smearing_separate_spin(0.0_dp)) ERROR STOP "Zero magnetization was not constrained"
+      IF (.NOT. smearing_separate_spin(0.5_dp)) ERROR STOP "Fractional magnetization was not constrained"
+      targets(:) = smearing_spin_targets([3, 1], -1.0_dp)
+      IF (MAXVAL(ABS(targets - [3.0_dp, 1.0_dp])) > 1.0E-14_dp) THEN
+         ERROR STOP "Integer spin targets changed"
+      END IF
+      targets(:) = smearing_spin_targets([3, 1], 0.0_dp)
+      IF (MAXVAL(ABS(targets - 2.0_dp)) > 1.0E-14_dp) ERROR STOP "Zero-moment targets are wrong"
+      targets(:) = smearing_spin_targets([3, 1], 0.5_dp)
+      IF (MAXVAL(ABS(targets - [2.25_dp, 1.75_dp])) > 1.0E-14_dp) THEN
+         ERROR STOP "Fractional spin targets were rounded"
+      END IF
+   END SUBROUTINE test_fixed_spin_populations
+
+! **************************************************************************************************
 !> \brief Check the fixed-N occupation response for every supported K-point smearing method.
 ! **************************************************************************************************
    SUBROUTINE test_fixed_n_smearing_response()
@@ -154,9 +178,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: error, kTS, mu, response_sum
       REAL(KIND=dp), DIMENSION(nkpoint)                  :: kpoint_weight
       REAL(KIND=dp), DIMENSION(nstate*nkpoint)           :: fd_response, flat_direction, &
-                                                            predicted_response
-      REAL(KIND=dp), &
-         DIMENSION(nstate*nkpoint, nstate*nkpoint)       :: hessian
+                                                            flat_response, predicted_response
       REAL(KIND=dp), DIMENSION(nstate, nkpoint) :: direction, eigenvalue, eigenvalue_minus, &
          eigenvalue_plus, occupation, occupation_minus, occupation_plus, response
 
@@ -185,8 +207,7 @@ CONTAINS
              .NOT. ANY(response < 0.0_dp)) THEN
             ERROR STOP "Signed smearing-response branch was not exercised"
          END IF
-         CALL qs_ot_fixed_n_energy_hessian( &
-            RESHAPE(response, [nstate*nkpoint]), response_sum, hessian)
+         flat_response = RESHAPE(response, [nstate*nkpoint])
 
          eigenvalue_plus(:, :) = eigenvalue + fd_step*direction
          eigenvalue_minus(:, :) = eigenvalue - fd_step*direction
@@ -199,10 +220,14 @@ CONTAINS
                kpoint_weight(ikpoint)*(occupation_plus(:, ikpoint) - &
                                        occupation_minus(:, ikpoint))/(2.0_dp*fd_step)
          END DO
-         predicted_response(:) = -MATMUL(hessian, flat_direction)
+         predicted_response = -flat_response* &
+                              (flat_direction - DOT_PRODUCT(flat_response, flat_direction)/response_sum)
          error = MAXVAL(ABS(fd_response - predicted_response))
          error = MAX(error, ABS(SUM(fd_response)))
-         error = MAX(error, MAXVAL(ABS(MATMUL(hessian, SPREAD(1.0_dp, 1, nstate*nkpoint)))))
+         ! A common energy shift leaves fixed-N occupations unchanged.
+         CALL Smearkp(occupation_plus, mu, kTS, eigenvalue + 0.37_dp, TARGET, kpoint_weight, &
+                      sigma, maxocc, methods(imethod))
+         error = MAX(error, MAXVAL(ABS(occupation_plus - occupation)))
          IF (error > 2.0E-6_dp) ERROR STOP "Fixed-N smearing response finite difference failed"
       END DO
 

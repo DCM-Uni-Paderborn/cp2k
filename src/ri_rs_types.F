@@ -57,6 +57,8 @@ MODULE ri_rs_types
       REAL(KIND=dp), ALLOCATABLE                       :: chunk_centroids(:, :)
       INTEGER, ALLOCATABLE                             :: grid_atom_boundaries(:)
       INTEGER, ALLOCATABLE                             :: pan_first(:), pan_last(:)
+      ! Panel plans share a fixed grid, process layout and message limit until release.
+      REAL(KIND=dp)                                    :: panel_plan_cutoff = 0.0_dp
 
       ! Atom-specific grids used directly by the grid assembler
       TYPE(rirs_grid_type), ALLOCATABLE                :: atomic_grids(:)
@@ -67,6 +69,10 @@ MODULE ri_rs_types
       TYPE(dbcsr_type)                                 :: mat_Z_lP = dbcsr_type()
       REAL(KIND=dp), ALLOCATABLE                       :: grid_points(:, :)
       LOGICAL                                          :: Z_lP_exists = .FALSE.
+
+      ! Dense Gram + phi + threaded RHS memory model, collected during fitting setup.
+      INTEGER                                          :: fit_max_grid = 0
+      REAL(KIND=dp)                                    :: fit_peak_bytes = 0.0_dp
 
       ! Spatial extent of most diffuse Gaussian primitive of AO/RI basis for each atom
       REAL(KIND=dp), ALLOCATABLE                       :: radius_ao_per_atom(:)
@@ -127,7 +133,10 @@ CONTAINS
       IF (ALLOCATED(ri_rs%grid_atom_boundaries)) DEALLOCATE (ri_rs%grid_atom_boundaries)
       IF (ALLOCATED(ri_rs%pan_first)) DEALLOCATE (ri_rs%pan_first)
       IF (ALLOCATED(ri_rs%pan_last)) DEALLOCATE (ri_rs%pan_last)
+      ri_rs%panel_plan_cutoff = 0.0_dp
       NULLIFY (ri_rs%atomic_kind_set, ri_rs%cell, ri_rs%particle_set)
+      ri_rs%fit_max_grid = 0
+      ri_rs%fit_peak_bytes = 0.0_dp
       ri_rs%n_grid_points = 0
       ri_rs%grid_built = .FALSE.
       ri_rs%V_grid_built = .FALSE.

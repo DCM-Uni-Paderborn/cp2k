@@ -265,6 +265,7 @@ list(
   free_energy_types.F
   gce_methods.F
   generic_os_integrals.F
+  generic_function_input.F
   gle_system_types.F
   global_types.F
   graphcon.F
@@ -272,8 +273,10 @@ list(
   group_dist_types.F
   grrm_utils.F
   gapw_1c_basis_set.F
+  gw_ri_rs_chi_sigma_kernels.F
   gw_auto_ri_generate_RI_basis.F
   gw_auto_ri_types.F
+  gw_compute_V_and_W.F
   gw_utils_dbcsr.F
   gw_utils_fm.F
   gw.F
@@ -344,7 +347,6 @@ list(
   input_cp2k_field.F
   input_cp2k_force_eval.F
   input_cp2k_free_energy.F
-  input_cp2k_function.F
   input_cp2k_global.F
   input_cp2k_hfx.F
   input_cp2k_kpoints.F
@@ -854,6 +856,7 @@ list(
   qs_wannier90.F
   qs_wf_history_methods.F
   qs_wf_history_types.F
+  r12_fundamentals.F
   rel_control_types.F
   replica_methods.F
   replica_types.F
@@ -1710,9 +1713,11 @@ set(CP2K_PROGS_F
     gx_ac_unittest.F)
 
 if(CP2K_USE_MPI)
-  list(APPEND CP2K_PROGS_F mpiwrap/message_passing_thread_unittest.F)
+  list(APPEND CP2K_PROGS_F mpiwrap/message_passing_thread_unittest.F
+       fm/cp_fm_diag_utils_unittest.F)
 else()
-  list(APPEND CP2K_EXCLUDED_SRCS_F mpiwrap/message_passing_thread_unittest.F)
+  list(APPEND CP2K_EXCLUDED_SRCS_F mpiwrap/message_passing_thread_unittest.F
+       fm/cp_fm_diag_utils_unittest.F)
 endif()
 
 if(CP2K_USE_CUDA
@@ -2016,6 +2021,7 @@ target_compile_definitions(
     $<$<BOOL:${CP2K_USE_MPI_F08}>:__MPI_F08>
     __COMPILE_HOST=\"${CP2K_HOST_NAME}\"
     __DATA_DIR=\"${CP2K_DATA_DIR}\"
+    __COMPILE_DIR=\"${CMAKE_BINARY_DIR}\"
     __COMPILE_ARCH=\"${CMAKE_SYSTEM_PROCESSOR}\"
     $<$<BOOL:${CP2K_USE_PLUMED}>:__PLUMED2>
     $<$<BOOL:${CP2K_USE_MAXWELL}>:__LIBMAXWELL>
@@ -2098,10 +2104,8 @@ add_library(cp2k::cp2k ALIAS cp2k)
 if(CP2K_USE_LIBXS)
   message(STATUS "Adding libxs_jit.F from dependency libxs for compilation")
   get_target_property(_libxs_incdirs libxs::libxs INTERFACE_INCLUDE_DIRECTORIES)
-  find_path(CP2K_LIBXS_JIT_DIR "libxs_jit.F" HINTS ${_libxs_incdirs})
-  if(CP2K_LIBXS_JIT_DIR)
-    target_sources(cp2k PRIVATE "${CP2K_LIBXS_JIT_DIR}/libxs_jit.F")
-  endif()
+  find_path(CP2K_LIBXS_JIT_DIR "libxs_jit.F" HINTS ${_libxs_incdirs} REQUIRED)
+  target_sources(cp2k PRIVATE "${CP2K_LIBXS_JIT_DIR}/libxs_jit.F")
   unset(_libxs_incdirs)
 endif()
 
@@ -2156,7 +2160,8 @@ list(
   "gx_ac_unittest")
 
 if(CP2K_USE_MPI)
-  list(APPEND __CP2K_APPS "message_passing_thread_unittest")
+  list(APPEND __CP2K_APPS "message_passing_thread_unittest"
+       "cp_fm_diag_utils_unittest")
 endif()
 
 add_executable(cp2k-bin start/cp2k.F)
@@ -2214,6 +2219,7 @@ add_executable(gx_ac_unittest gx_ac_unittest.F)
 if(CP2K_USE_MPI)
   add_executable(message_passing_thread_unittest
                  mpiwrap/message_passing_thread_unittest.F)
+  add_executable(cp_fm_diag_utils_unittest fm/cp_fm_diag_utils_unittest.F)
 endif()
 
 set_target_properties(

@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -238,8 +239,9 @@ static bool can_load_directly_to_device(const torch::Device &device) {
 
 static torch::jit::Module load_module_for_device(
     const char *filename, const torch::Device &device,
-    std::unordered_map<std::string, std::string> *extra_files = nullptr) {
-  if (can_load_directly_to_device(device)) {
+    std::unordered_map<std::string, std::string> *extra_files = nullptr,
+    const bool load_on_cpu = false) {
+  if (!load_on_cpu && can_load_directly_to_device(device)) {
     if (extra_files != nullptr) {
       return torch::jit::load(filename, device, *extra_files);
     }
@@ -987,7 +989,9 @@ void torch_c_model_load_with_metadata(torch_c_model_t **model_out,
                                                               {key2, ""}};
   set_jit_fusion_strategy();
   torch::jit::Module *model = new torch::jit::Module();
-  *model = load_module_for_device(filename, device, &extra_files);
+  // Deduplicate Skala constants on CPU without repeated CUDA synchronization.
+  *model =
+      load_module_for_device(filename, device, &extra_files, device.is_cuda());
   model->eval(); // Set inference behavior for modules such as dropout.
   *model_out = model;
   copy_string_to_c_buffer(extra_files[key1], content1, length1);

@@ -31,23 +31,23 @@ MODULE gw_utils
                                               cp_cfm_to_fm,&
                                               cp_cfm_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_dbcsr_api,                    ONLY: &
-        dbcsr_create, dbcsr_distribution_release, dbcsr_distribution_type, dbcsr_p_type, &
-        dbcsr_release, dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry, dbcsr_type_symmetric
+   USE cp_dbcsr_api,                    ONLY: dbcsr_create,&
+                                              dbcsr_p_type,&
+                                              dbcsr_set,&
+                                              dbcsr_type_symmetric
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr,&
-                                              cp_dbcsr_dist2d_to_dist,&
                                               dbcsr_allocate_matrix_set,&
                                               dbcsr_deallocate_matrix_set
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_fm_basic_linalg,              ONLY: cp_fm_scale_and_add
-   USE cp_fm_redistribution,            ONLY: cp_fm_to_replicated_array
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_diag,&
+                                              cp_fm_get_info,&
                                               cp_fm_release,&
                                               cp_fm_set_all,&
                                               cp_fm_to_fm,&
@@ -59,9 +59,9 @@ MODULE gw_utils
         dbt_clear, dbt_create, dbt_destroy, dbt_filter, dbt_iterator_blocks_left, &
         dbt_iterator_next_block, dbt_iterator_start, dbt_iterator_stop, dbt_iterator_type, &
         dbt_mp_environ_pgrid, dbt_pgrid_create, dbt_pgrid_destroy, dbt_pgrid_type, dbt_type
-   USE distribution_2d_types,           ONLY: distribution_2d_type
    USE gw_auto_ri_generate_RI_basis,    ONLY: generate_auto_ri_basis
    USE gw_auto_ri_types,                ONLY: auto_ri_type
+   USE gw_compute_V_and_W,              ONLY: get_V_tr_R
    USE gw_utils_compute_integrals,      ONLY: build_3c_integral_block
    USE gw_utils_fm,                     ONLY: cfm_contract_ABA,&
                                               fm_invert,&
@@ -84,7 +84,6 @@ MODULE gw_utils
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_create,&
                                               kpoint_type
-   USE libint_2c_3c,                    ONLY: libint_potential_type
    USE libint_wrapper,                  ONLY: cp_libint_static_cleanup,&
                                               cp_libint_static_init
    USE machine,                         ONLY: m_walltime
@@ -96,6 +95,7 @@ MODULE gw_utils
    USE mp2_gpw,                         ONLY: create_mat_munu
    USE mp2_ri_2c,                       ONLY: RI_2c_integral_mat,&
                                               trunc_coulomb_for_exchange
+   USE parallel_gemm_api,               ONLY: parallel_gemm
    USE particle_methods,                ONLY: get_particle_set
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: angstrom,&
@@ -113,11 +113,8 @@ MODULE gw_utils
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
    USE qs_ks_methods,                   ONLY: qs_ks_build_kohn_sham_matrix
-   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type,&
-                                              release_neighbor_list_sets
-   USE qs_tensors,                      ONLY: build_2c_integrals,&
-                                              build_2c_neighbor_lists,&
-                                              build_3c_integrals,&
+   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_tensors,                      ONLY: build_3c_integrals,&
                                               build_3c_neighbor_lists,&
                                               get_tensor_occupancy,&
                                               neighbor_list_3c_destroy
@@ -136,10 +133,14 @@ MODULE gw_utils
 
    PRIVATE
 
-   PUBLIC :: create_and_init_bs_env_for_gw, de_init_bs_env, &
-             compute_xkp, analyt_conti_and_print, &
-             add_R, is_cell_in_index_to_cell, get_V_tr_R, &
-             rtbse_resolve_rirs_flag
+   PUBLIC :: create_and_init_bs_env_for_gw, &
+             de_init_bs_env, &
+             compute_xkp, &
+             analyt_conti_and_print, &
+             add_R, &
+             is_cell_in_index_to_cell, &
+             rtbse_resolve_rirs_flag, &
+             G_occ_vir
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'gw_utils'
 
@@ -3223,93 +3224,6 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief ...
-!> \param V_tr_R ...
-!> \param pot_type ...
-!> \param regularization_RI ...
-!> \param bs_env ...
-!> \param qs_env ...
-! **************************************************************************************************
-   SUBROUTINE get_V_tr_R(V_tr_R, pot_type, regularization_RI, bs_env, qs_env)
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: V_tr_R
-      TYPE(libint_potential_type)                        :: pot_type
-      REAL(KIND=dp)                                      :: regularization_RI
-      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
-      TYPE(qs_environment_type), POINTER                 :: qs_env
-
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'get_V_tr_R'
-
-      INTEGER                                            :: handle, img, nimages_scf_desymm
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: sizes_RI
-      INTEGER, DIMENSION(:), POINTER                     :: col_bsize, row_bsize
-      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: fm_V_tr_R
-      TYPE(dbcsr_distribution_type)                      :: dbcsr_dist
-      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: mat_V_tr_R
-      TYPE(distribution_2d_type), POINTER                :: dist_2d
-      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_RI
-      TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
-      TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
-
-      CALL timeset(routineN, handle)
-
-      NULLIFY (sab_RI, dist_2d)
-
-      CALL get_qs_env(qs_env=qs_env, &
-                      blacs_env=blacs_env, &
-                      distribution_2d=dist_2d, &
-                      qs_kind_set=qs_kind_set, &
-                      particle_set=particle_set)
-
-      ALLOCATE (sizes_RI(bs_env%n_atom))
-      CALL get_particle_set(particle_set, qs_kind_set, nsgf=sizes_RI, basis=bs_env%basis_set_RI)
-      CALL build_2c_neighbor_lists(sab_RI, bs_env%basis_set_RI, bs_env%basis_set_RI, &
-                                   pot_type, "2c_nl_RI", qs_env, sym_ij=.FALSE., &
-                                   dist_2d=dist_2d)
-      CALL cp_dbcsr_dist2d_to_dist(dist_2d, dbcsr_dist)
-      ALLOCATE (row_bsize(SIZE(sizes_RI)))
-      ALLOCATE (col_bsize(SIZE(sizes_RI)))
-      row_bsize(:) = sizes_RI
-      col_bsize(:) = sizes_RI
-
-      nimages_scf_desymm = bs_env%nimages_scf_desymm
-      ALLOCATE (mat_V_tr_R(nimages_scf_desymm))
-      CALL dbcsr_create(mat_V_tr_R(1), "(RI|RI)", dbcsr_dist, dbcsr_type_no_symmetry, &
-                        row_bsize, col_bsize)
-      DEALLOCATE (row_bsize, col_bsize)
-
-      DO img = 2, nimages_scf_desymm
-         CALL dbcsr_create(mat_V_tr_R(img), template=mat_V_tr_R(1))
-      END DO
-
-      CALL build_2c_integrals(mat_V_tr_R, 0.0_dp, qs_env, sab_RI, bs_env%basis_set_RI, &
-                              bs_env%basis_set_RI, pot_type, do_kpoints=.TRUE., &
-                              ext_kpoints=bs_env%kpoints_scf_desymm, &
-                              regularization_RI=regularization_RI)
-
-      ALLOCATE (fm_V_tr_R(nimages_scf_desymm))
-      DO img = 1, nimages_scf_desymm
-         CALL cp_fm_create(fm_V_tr_R(img), bs_env%fm_RI_RI%matrix_struct)
-         CALL copy_dbcsr_to_fm(mat_V_tr_R(img), fm_V_tr_R(img))
-         CALL dbcsr_release(mat_V_tr_R(img))
-      END DO
-
-      IF (.NOT. ALLOCATED(V_tr_R)) THEN
-         ALLOCATE (V_tr_R(bs_env%n_RI, bs_env%n_RI, nimages_scf_desymm))
-      END IF
-
-      CALL cp_fm_to_replicated_array(fm_V_tr_R, V_tr_R)
-
-      CALL cp_fm_release(fm_V_tr_R)
-      CALL dbcsr_distribution_release(dbcsr_dist)
-      CALL release_neighbor_list_sets(sab_RI)
-
-      CALL timestop(handle)
-
-   END SUBROUTINE get_V_tr_R
-
-! **************************************************************************************************
-!> \brief ...
 !> \param bs_env ...
 ! **************************************************************************************************
    SUBROUTINE setup_time_and_frequency_minimax_grid(bs_env)
@@ -3691,5 +3605,75 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE correct_obvious_fitting_fails
+
+! **************************************************************************************************
+!> \brief Build the real Gamma occupied or virtual one-particle propagator.
+!> \param bs_env MO coefficients, eigenvalues and reusable work matrix
+!> \param tau imaginary time
+!> \param fm_G_Gamma output AO propagator
+!> \param ispin spin channel
+!> \param occ select the occupied sector
+!> \param vir select the virtual sector
+! **************************************************************************************************
+   SUBROUTINE G_occ_vir(bs_env, tau, fm_G_Gamma, ispin, occ, vir)
+      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
+      REAL(KIND=dp)                                      :: tau
+      TYPE(cp_fm_type)                                   :: fm_G_Gamma
+      INTEGER                                            :: ispin
+      LOGICAL                                            :: occ, vir
+
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'G_occ_vir'
+
+      INTEGER                                            :: handle, homo, i_row_local, j_col, &
+                                                            j_col_local, n_mo, ncol_local, &
+                                                            nrow_local
+      INTEGER, DIMENSION(:), POINTER                     :: col_indices
+      REAL(KIND=dp)                                      :: tau_E
+
+      CALL timeset(routineN, handle)
+
+      CPASSERT(occ .NEQV. vir)
+
+      CALL cp_fm_get_info(matrix=bs_env%fm_work_mo(1), &
+                          nrow_local=nrow_local, &
+                          ncol_local=ncol_local, &
+                          col_indices=col_indices)
+
+      n_mo = bs_env%n_ao
+      homo = bs_env%n_occ(ispin)
+
+      CALL cp_fm_to_fm(bs_env%fm_mo_coeff_Gamma(ispin), bs_env%fm_work_mo(1))
+
+      DO i_row_local = 1, nrow_local
+         DO j_col_local = 1, ncol_local
+
+            j_col = col_indices(j_col_local)
+
+            tau_E = ABS(tau*0.5_dp*(bs_env%eigenval_scf_Gamma(j_col, ispin) - bs_env%e_fermi(ispin)))
+
+            IF (tau_E < bs_env%stabilize_exp) THEN
+               bs_env%fm_work_mo(1)%local_data(i_row_local, j_col_local) = &
+                  bs_env%fm_work_mo(1)%local_data(i_row_local, j_col_local)*EXP(-tau_E)
+            ELSE
+               bs_env%fm_work_mo(1)%local_data(i_row_local, j_col_local) = 0.0_dp
+            END IF
+
+            ! the modes above n_mo_retained are removed by the canonical orthogonalization
+            ! (EPS_EIGVAL) and carry no MO coefficients
+            IF ((occ .AND. j_col > homo) .OR. (vir .AND. j_col <= homo) .OR. &
+                j_col > bs_env%n_mo_retained) THEN
+               bs_env%fm_work_mo(1)%local_data(i_row_local, j_col_local) = 0.0_dp
+            END IF
+
+         END DO
+      END DO
+
+      CALL parallel_gemm(transa="N", transb="T", m=n_mo, n=n_mo, k=n_mo, alpha=1.0_dp, &
+                         matrix_a=bs_env%fm_work_mo(1), matrix_b=bs_env%fm_work_mo(1), &
+                         beta=0.0_dp, matrix_c=fm_G_Gamma)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE G_occ_vir
 
 END MODULE gw_utils
