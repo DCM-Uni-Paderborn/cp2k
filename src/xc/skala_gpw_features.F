@@ -113,6 +113,7 @@ MODULE skala_gpw_features
       REAL(KIND=dp)                                      :: dvol = 0.0_dp, weight_sum = 0.0_dp, &
                                                             weight_sumsq = 0.0_dp
       REAL(KIND=dp), DIMENSION(3, 3)                     :: cell_hmat = 0.0_dp, dh = 0.0_dp
+      REAL(dp), ALLOCATABLE :: weight_values(:, :, :)
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: atomic_grid_weights, chunk_atomic_grid_weights, &
                                                             chunk_grid_weights, grid_weights
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: atom_coords, chunk_coarse_0_atomic_coords, &
@@ -564,11 +565,11 @@ CONTAINS
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: weights
       LOGICAL                                            :: matches
 
+      INTEGER                                            :: mismatch
       LOGICAL                                            :: has_weights
       REAL(KIND=dp)                                      :: weight_sum, weight_sumsq
 
       matches = .FALSE.
-      MARK_USED(pw_grid)
       IF (PRESENT(weights)) THEN
          CALL weights_signature(weights, has_weights, weight_sum, weight_sumsq)
       ELSE
@@ -576,11 +577,23 @@ CONTAINS
                                 weight_sumsq=weight_sumsq)
       END IF
 
-      IF (cached_layout%has_weights .NEQV. has_weights) RETURN
-      IF (ABS(cached_layout%weight_sum - weight_sum) > layout_tol) RETURN
-      IF (ABS(cached_layout%weight_sumsq - weight_sumsq) > layout_tol) RETURN
-
-      matches = .TRUE.
+      mismatch = 0
+      IF (cached_layout%has_weights .NEQV. has_weights) mismatch = 1
+      IF (ABS(cached_layout%weight_sum - weight_sum) > layout_tol) mismatch = 1
+      IF (ABS(cached_layout%weight_sumsq - weight_sumsq) > layout_tol) mismatch = 1
+      IF (has_weights) THEN
+         IF (.NOT. ALLOCATED(cached_layout%weight_values)) THEN
+            mismatch = 1
+         ELSE IF (ANY(SHAPE(cached_layout%weight_values) /= SHAPE(weights%array))) THEN
+            mismatch = 1
+         ELSE IF (ANY(cached_layout%weight_values /= weights%array)) THEN
+            mismatch = 1
+         END IF
+      END IF
+      ! Local moment signatures do not distinguish point permutations or opposite perturbations.
+      ! All ranks must choose the same branch before the collective layout rebuild.
+      CALL pw_grid%para%group%max(mismatch)
+      matches = mismatch == 0
 
    END FUNCTION layout_weights_match
 
@@ -945,6 +958,9 @@ CONTAINS
       cached_layout%weight_sum = weight_sum
       cached_layout%weight_sumsq = weight_sumsq
       cached_layout%has_weights = has_weights
+      IF (has_weights) THEN
+         ALLOCATE (cached_layout%weight_values, SOURCE=weights%array)
+      END IF
       CALL timeset("skala_gpw_layout_tensors", phase_handle)
       IF (needs_full_static_tensors) CALL build_full_static_layout_tensors(cached_layout)
       IF (cached_layout%chunk_feature_count > 0) THEN
@@ -1705,6 +1721,7 @@ CONTAINS
       IF (ALLOCATED(cache%chunk_atomic_grid_weights)) DEALLOCATE (cache%chunk_atomic_grid_weights)
       IF (ALLOCATED(cache%chunk_grid_weights)) DEALLOCATE (cache%chunk_grid_weights)
       IF (ALLOCATED(cache%grid_weights)) DEALLOCATE (cache%grid_weights)
+      IF (ALLOCATED(cache%weight_values)) DEALLOCATE (cache%weight_values)
       IF (ALLOCATED(cache%atom_coords)) DEALLOCATE (cache%atom_coords)
       IF (ALLOCATED(cache%chunk_coarse_0_atomic_coords)) THEN
          DEALLOCATE (cache%chunk_coarse_0_atomic_coords)
