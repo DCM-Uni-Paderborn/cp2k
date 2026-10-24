@@ -3619,13 +3619,16 @@ CONTAINS
 !> \param qs_env ...
 !> \param diis_step ...
 !> \param output_unit ...
+!> \param density_current The native minimizer already installed matching MOs, density and KS matrix.
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_inner_finalize(scf_env, qs_env, diis_step, output_unit)
+   SUBROUTINE qs_scf_inner_finalize(scf_env, qs_env, diis_step, output_unit, density_current)
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL                                            :: diis_step
       INTEGER, INTENT(IN)                                :: output_unit
+      LOGICAL, INTENT(IN), OPTIONAL                      :: density_current
 
+      LOGICAL                                            :: rebuild_density
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -3634,6 +3637,15 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
 
       NULLIFY (energy, rho, dft_control, ks_env)
+
+      rebuild_density = .TRUE.
+      IF (PRESENT(density_current)) THEN
+         IF (density_current) THEN
+            CPASSERT(scf_env%method == ot_method_nr)
+            CPASSERT(scf_env%mixing_method == no_mixing_nr)
+            rebuild_density = .FALSE.
+         END IF
+      END IF
 
       CALL get_qs_env(qs_env=qs_env, energy=energy, ks_env=ks_env, &
                       rho=rho, dft_control=dft_control, para_env=para_env, &
@@ -3651,7 +3663,9 @@ CONTAINS
       !   *** update rspace rho since the mo changed
       !   *** this might not always be needed (i.e. no post calculation / no forces )
       !   *** but guarantees that rho and wfn are consistent at this point
-      CALL qs_scf_rho_update(rho, qs_env, scf_env, ks_env, mix_rho=.FALSE.)
+      ! A native minimizer has already installed the final density and its matching MO factors.
+      ! Rebuilding it here would invalidate those factors before forces without changing P.
+      IF (rebuild_density) CALL qs_scf_rho_update(rho, qs_env, scf_env, ks_env, mix_rho=.FALSE.)
 
    END SUBROUTINE qs_scf_inner_finalize
 

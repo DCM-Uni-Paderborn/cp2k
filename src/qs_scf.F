@@ -973,7 +973,8 @@ CONTAINS
             ! is really the last SCF step
             IF (exit_inner_loop) THEN
 
-               CALL qs_scf_inner_finalize(scf_env, qs_env, density_full_step, output_unit)
+               CALL qs_scf_inner_finalize(scf_env, qs_env, density_full_step, output_unit, &
+                                          density_current=inverse_ot_handled)
 
                CALL qs_scf_check_outer_exit(qs_env, scf_env, scf_control, should_stop, &
                                             outer_loop_converged, exit_outer_loop)

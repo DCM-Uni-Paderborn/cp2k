@@ -500,11 +500,9 @@ CONTAINS
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: coefficients(:, :, :)
       INTEGER                                            :: bfirst, blast, first, group, ik, last, &
-                                                            local, nao, nk, nmo, ns, spin
-      LOGICAL                                            :: owner, valid
-      REAL(dp), ALLOCATABLE                              :: occupations(:, :)
+                                                            local, spin
+      LOGICAL                                            :: valid
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: densities(:, :)
       TYPE(particle_type), POINTER                       :: particles(:)
@@ -563,7 +561,24 @@ CONTAINS
       END DO
       CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
       CALL qs_rho_update_rho(state%rho, state%qs_env)
-      ! Retain the original factors only after this trial has installed its density.
+      CALL retain_native_orbital_factors(state)
+   END SUBROUTINE install_native_trial
+
+! **************************************************************************************************
+!> \brief Publish MO factors belonging to the newly installed native density.
+!>        Use the same publication after trial installation and canonical acceptance, so the
+!>        stabilized point-density evaluation retains the factors of the actual current MOs.
+!> \param state Native orbital blocks with their density already rebuilt.
+! **************************************************************************************************
+   SUBROUTINE retain_native_orbital_factors(state)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+
+      COMPLEX(dp), ALLOCATABLE                           :: coefficients(:, :, :)
+      INTEGER                                            :: ik, local, nao, nk, nmo, ns, spin
+      LOGICAL                                            :: owner, valid
+      REAL(dp), ALLOCATABLE                              :: occupations(:, :)
+
+      ! Retain the original factors only after their matching density is installed.
       ! Mixed or externally replaced densities have a different evaluation stamp.
       nao = SIZE(state%orbitals(1, 1)%coefficients, 1)
       nk = SIZE(state%dimensions, 1)
@@ -608,7 +623,7 @@ CONTAINS
          END IF
       END IF
       state%inverse%orbital_factors%density_evaluation = state%inverse%density_evaluations
-   END SUBROUTINE install_native_trial
+   END SUBROUTINE retain_native_orbital_factors
 
 ! **************************************************************************************************
 !> \brief Check whether the requested coordinates are already installed in the native state.
@@ -3261,6 +3276,7 @@ CONTAINS
          CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=gradient)
          RETURN
       END IF
+      state%inverse%orbital_factors%density_evaluation = -1
       IF (.NOT. state%bloch) THEN
          CALL qs_rho_get(state%rho, rho_ao_kp=densities)
          CALL get_ks_env(state%ks_env, matrix_w=weighted)
@@ -3299,6 +3315,7 @@ CONTAINS
       END DO
       CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
       CALL qs_rho_update_rho(state%rho, state%qs_env)
+      CALL retain_native_orbital_factors(state)
       CALL skala_density_samples_begin(state%constraints)
       CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
       CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.FALSE., print_active=.FALSE.)
