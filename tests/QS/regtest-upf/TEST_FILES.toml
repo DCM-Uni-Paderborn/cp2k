@@ -51,3 +51,7 @@
   {matcher="Atomic_force_1_z", tol=1e-7, ref=-1.85090022},
   {matcher="M031", tol=1e-7, ref=2406666.13564},
 ]
+# General inverse RI fitting needs auxiliary images beyond the compact AO cell map.
+"H2_inverse_RI_images.inp" = [
+  {matcher="M011", tol=1e-10, ref=13.892550283574097},
+]

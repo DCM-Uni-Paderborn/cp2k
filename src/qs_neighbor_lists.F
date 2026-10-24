@@ -308,7 +308,7 @@ CONTAINS
                                                             maxatom, ngp, nkind, zat
       LOGICAL :: all_potential_present, almo, cneo_potential_present, dftb, do_hfx, dokp, &
          gth_potential_present, lri_optbas, lrigpw, mic, molecule_only, nddo, paw_atom, &
-         paw_atom_present, rigpw, sgp_potential_present, stable_images, xtb
+         paw_atom_present, rigpw, sgp_potential_present, stable_images, upf_present, xtb
       LOGICAL, ALLOCATABLE, DIMENSION(:) :: all_present, aux_fit_present, aux_present, &
          cneo_present, core_present, default_present, nonbond1_atom, nonbond2_atom, oce_present, &
          orb_present, ppl_present, ppnl_present, ri_present, xb1_atom, xb2_atom
@@ -692,66 +692,67 @@ CONTAINS
          ELSE
             CALL pair_radius_setup(orb_present, orb_present, orb_radius, orb_radius, pair_radius)
          END IF
-         IF (dft_control%qs_control%uspp_method == uspp_method_direct .OR. &
-             dft_control%qs_control%uspp_method == uspp_method_inverse_1c) THEN
-            ! Two original projectors reach 2*r_beta beyond the Gaussian pair radius.
-            ! A Gaussian/difference-field product reaches r_beta+r_delta. The exact
-            ! original support supplies both bounds, without changing Gaussian screening.
-            ! This includes physical AO pairs and their cells before any RI image selection.
-            ! The coupled general inverse has no such atom-local support bound.
-            upf_reach = 0.0_dp
-            DO ikind = 1, nkind
-               IF (qs_kind_set(ikind)%ghost) CYCLE
-               sgp_potential => qs_kind_set(ikind)%sgp_potential
-               IF (.NOT. ASSOCIATED(sgp_potential)) CYCLE
-               IF (.NOT. ALLOCATED(sgp_potential%upf_data)) CYCLE
-               ASSOCIATE (pot => sgp_potential%upf_data)
-                  IF (.NOT. (pot%is_ultrasoft .OR. pot%is_paw)) CYCLE
-                  IF (pot%number_of_proj == 0) CYCLE
+         upf_present = .FALSE.
+         upf_reach = 0.0_dp
+         DO ikind = 1, nkind
+            IF (qs_kind_set(ikind)%ghost) CYCLE
+            sgp_potential => qs_kind_set(ikind)%sgp_potential
+            IF (.NOT. ASSOCIATED(sgp_potential)) CYCLE
+            IF (.NOT. ALLOCATED(sgp_potential%upf_data)) CYCLE
+            ASSOCIATE (pot => sgp_potential%upf_data)
+               IF (.NOT. (pot%is_ultrasoft .OR. pot%is_paw)) CYCLE
+               upf_present = .TRUE.
+               IF (pot%number_of_proj == 0) CYCLE
+               IF (dft_control%qs_control%uspp_method == uspp_method_direct .OR. &
+                   dft_control%qs_control%uspp_method == uspp_method_inverse_1c) THEN
+                  ! Only the local representations have an atom-local support bound.
+                  ! Projector pairs reach 2*r_beta, Gaussian/difference pairs r_beta+r_delta.
                   CALL upf_inverse_fields_init(pot, upf_beta, upf_delta, &
                                                dft_control%qs_control%uspp_method == uspp_method_direct)
                   upf_reach = MAX(upf_reach, upf_beta%radius + MAX(upf_beta%radius, upf_delta%radius))
-               END ASSOCIATE
-            END DO
-            IF (upf_reach > 0.0_dp) THEN
-               ALLOCATE (upf_orb_radius, SOURCE=orb_radius)
-               upf_ri_reach = 0.0_dp
-               IF (do_hfx) THEN
-                  ! The local fit uses the largest AO radius for every atom. Its
-                  ! RI sites, local metric pairs and RI/RI exchange images must also
-                  ! occur in the global map, independently of Gaussian AO overlap.
-                  CALL section_vals_val_get(hfx_sections, "RI%EPS_PGF_ORB", r_val=upf_eps_pgf)
-                  DO ikind = 1, nkind
-                     CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set, basis_type="ORB")
-                     IF (ASSOCIATED(orb_basis_set)) THEN
-                        ! Evaluate the same radii as RI-HFX on a copy, preserving
-                        ! the native orbital and auxiliary screening arrays.
-                        CALL copy_gto_basis_set(orb_basis_set, screening_basis)
-                        CALL init_interaction_radii_orb_basis(screening_basis, upf_eps_pgf)
-                        upf_orb_radius(ikind) = MAX(upf_orb_radius(ikind), screening_basis%kind_radius)
-                        CALL deallocate_gto_basis_set(screening_basis)
-                     END IF
-                     CALL get_qs_kind(qs_kind_set(ikind), basis_set=ri_basis_set, basis_type="RI_HFX")
-                     IF (.NOT. ASSOCIATED(ri_basis_set)) CYCLE
-                     CALL copy_gto_basis_set(ri_basis_set, screening_basis)
-                     CALL init_interaction_radii_orb_basis(screening_basis, upf_eps_pgf)
-                     upf_ri_reach = MAX(upf_ri_reach, 2.0_dp*screening_basis%kind_radius + &
-                                        cutoff_screen_factor*roperator)
-                     CALL deallocate_gto_basis_set(screening_basis)
-                  END DO
-                  upf_ri_reach = MAX(upf_ri_reach, 2.0_dp*MAXVAL(upf_orb_radius))
                END IF
-               DO jkind = 1, nkind
-                  IF (.NOT. orb_present(jkind)) CYCLE
-                  DO ikind = 1, nkind
-                     IF (.NOT. orb_present(ikind)) CYCLE
-                     pair_radius(ikind, jkind) = MAX(pair_radius(ikind, jkind), upf_ri_reach, &
-                                                     upf_orb_radius(ikind) + upf_orb_radius(jkind) + upf_reach + &
-                                                     cutoff_screen_factor*roperator)
-                  END DO
+            END ASSOCIATE
+         END DO
+         ! RI fitting sites and auxiliary pairs need their full image domain in every
+         ! UPF orbital representation, including the coupled general inverse.
+         IF (upf_present .AND. (do_hfx .OR. upf_reach > 0.0_dp)) THEN
+            ALLOCATE (upf_orb_radius, SOURCE=orb_radius)
+            upf_ri_reach = 0.0_dp
+            IF (do_hfx) THEN
+               ! The local fit uses the largest AO radius for every atom. Its
+               ! RI sites, local metric pairs and RI/RI exchange images must also
+               ! occur in the global map, independently of Gaussian AO overlap.
+               CALL section_vals_val_get(hfx_sections, "RI%EPS_PGF_ORB", r_val=upf_eps_pgf)
+               DO ikind = 1, nkind
+                  CALL get_qs_kind(qs_kind_set(ikind), basis_set=orb_basis_set, basis_type="ORB")
+                  IF (ASSOCIATED(orb_basis_set)) THEN
+                     ! Evaluate the same radii as RI-HFX on a copy, preserving
+                     ! the native orbital and auxiliary screening arrays.
+                     CALL copy_gto_basis_set(orb_basis_set, screening_basis)
+                     CALL init_interaction_radii_orb_basis(screening_basis, upf_eps_pgf)
+                     upf_orb_radius(ikind) = MAX(upf_orb_radius(ikind), screening_basis%kind_radius)
+                     CALL deallocate_gto_basis_set(screening_basis)
+                  END IF
+                  CALL get_qs_kind(qs_kind_set(ikind), basis_set=ri_basis_set, basis_type="RI_HFX")
+                  IF (.NOT. ASSOCIATED(ri_basis_set)) CYCLE
+                  CALL copy_gto_basis_set(ri_basis_set, screening_basis)
+                  CALL init_interaction_radii_orb_basis(screening_basis, upf_eps_pgf)
+                  upf_ri_reach = MAX(upf_ri_reach, 2.0_dp*screening_basis%kind_radius + &
+                                     cutoff_screen_factor*roperator)
+                  CALL deallocate_gto_basis_set(screening_basis)
                END DO
-               DEALLOCATE (upf_orb_radius)
+               upf_ri_reach = MAX(upf_ri_reach, 2.0_dp*MAXVAL(upf_orb_radius))
             END IF
+            DO jkind = 1, nkind
+               IF (.NOT. orb_present(jkind)) CYCLE
+               DO ikind = 1, nkind
+                  IF (.NOT. orb_present(ikind)) CYCLE
+                  pair_radius(ikind, jkind) = MAX(pair_radius(ikind, jkind), upf_ri_reach, &
+                                                  upf_orb_radius(ikind) + upf_orb_radius(jkind) + upf_reach + &
+                                                  cutoff_screen_factor*roperator)
+               END DO
+            END DO
+            DEALLOCATE (upf_orb_radius)
          END IF
          CALL build_neighbor_lists(sab_kp, particle_set, atom2d, cell, pair_radius, &
                                    subcells=subcells, nlname="sab_kp", stable_images=stable_images)
