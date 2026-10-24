@@ -178,6 +178,7 @@ MODULE qs_skala_scf
       TYPE(qs_skala_scf_crossing_type), POINTER :: crossings => NULL()
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: targets(:), density_floors(:)
+      INTEGER :: iteration_unit = -1, iteration_offset = 0
       REAL(dp) :: gradient_tolerance = 0.0_dp
       REAL(dp) :: max_coordinate_norm = 0.0_dp
       LOGICAL :: rechart = .FALSE.
@@ -2423,11 +2424,14 @@ CONTAINS
 !>        Raw kinetic thresholds are selected separately from the functional's projection.
 !> \param admit_crossings Resolve continuous-floor candidates after failed line searches and admit downhill normal minima.
 !>        Default false preserves the raw endpoint scan. Admission does not prove tangential stationarity.
+!> \param output_unit Optional native SCF output unit for stored iteration scalars.
+!> \param iteration_offset Previously consumed native SCF steps for the displayed counter.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
                                         max_iterations, max_step, targets, iterations, check_external, stopped, crossings, &
-                                        max_coordinate_norm, rechart, retain_progress, crossing_density_floor, admit_crossings)
+                                        max_coordinate_norm, rechart, retain_progress, crossing_density_floor, admit_crossings, &
+                                        output_unit, iteration_offset)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -2448,6 +2452,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: retain_progress
       REAL(dp), INTENT(IN), OPTIONAL                     :: crossing_density_floor
       LOGICAL, INTENT(IN), OPTIONAL                      :: admit_crossings
+      INTEGER, INTENT(IN), OPTIONAL                      :: output_unit, iteration_offset
 
       INTEGER                                            :: i, m
       LOGICAL                                            :: coupled_curvature, valid
@@ -2466,6 +2471,8 @@ CONTAINS
       CPASSERT(valid)
       context%state => state
       context%gradient_tolerance = gradient_tolerance
+      IF (PRESENT(output_unit)) context%iteration_unit = output_unit
+      IF (PRESENT(iteration_offset)) context%iteration_offset = iteration_offset
       IF (PRESENT(admit_crossings)) context%admit_crossings = admit_crossings
       IF (PRESENT(check_external)) context%check_external = check_external
       IF (PRESENT(crossings)) THEN
@@ -2541,7 +2548,8 @@ CONTAINS
                                           check_stalled_segment=check_native_stall, coordinate_scales=coordinate_scales, &
                                           curvature_steps=coupled_curvature, check_curvature_segment=check_native_curvature, &
                                           precondition=evaluate_native_preconditioner, apply_hessian=evaluate_native_hessian, &
-                                          apply_lagrangian_hessian=evaluate_native_lagrangian_hessian)
+                                          apply_lagrangian_hessian=evaluate_native_lagrangian_hessian, &
+                                          report_iteration=report_native_iteration)
       IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) THEN
          IF (context%crossings%resolved) THEN
             ! Classification has already verified this downhill root in the native fields.
@@ -3477,6 +3485,40 @@ CONTAINS
          CPABORT("Invalid native orbital convergence context.")
       END SELECT
    END SUBROUTINE evaluate_native_stationarity
+
+! **************************************************************************************************
+!> \brief Print accepted-state scalars without changing fields, orbitals or operators.
+!>        The reduced covector norm is distinct from the final physical stationarity test.
+!> \param iteration Attempted step in the current orbital chart, zero at its reference.
+!> \param energy Last accepted energy.
+!> \param gradient_norm Original-unit independent-coordinate covector norm.
+!> \param moved Whether a new feasible step was accepted.
+!> \param context Native state, original step offset and existing SCF print unit.
+! **************************************************************************************************
+   SUBROUTINE report_native_iteration(iteration, energy, gradient_norm, moved, context)
+      INTEGER, INTENT(IN)                                :: iteration
+      REAL(dp), INTENT(IN)                               :: energy, gradient_norm
+      LOGICAL, INTENT(IN)                                :: moved
+
+      CLASS(*), INTENT(INOUT) :: context
+      CHARACTER(LEN=6) :: action
+
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (context%iteration_unit < 0) RETURN
+         IF (context%state%para_env%mepos /= 0) RETURN
+         action = 'reject'
+         IF (moved) action = 'accept'
+         IF (iteration == 0) THEN
+            action = 'start'
+            WRITE (context%iteration_unit, '(A)') &
+               ' INVERSE_SCF|   Step State             Energy [Ha]     Reduced gradient [Ha] Constraints'
+         END IF
+         WRITE (context%iteration_unit, '(A,I6,1X,A6,2ES24.14,1X,I8)') ' INVERSE_SCF| ', &
+            context%iteration_offset + iteration, action, energy, gradient_norm, SIZE(context%points, 2)
+         FLUSH (context%iteration_unit)
+      END SELECT
+   END SUBROUTINE report_native_iteration
 
 ! **************************************************************************************************
 !> \brief Poll normal CP2K stop files, external communication and the target runtime.

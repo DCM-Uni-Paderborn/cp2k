@@ -1244,7 +1244,8 @@ CONTAINS
                                         scf_control%eps_scf, energy, converged, max_iterations=inner_limit, &
                                         max_step=step_radius, iterations=steps, check_external=.TRUE., stopped=stopped, &
                                         targets=targets, max_coordinate_norm=coordinate_bound, &
-                                        rechart=rechart, retain_progress=.TRUE., crossings=event, admit_crossings=.TRUE.)
+                                        rechart=rechart, retain_progress=.TRUE., crossings=event, admit_crossings=.TRUE., &
+                                        output_unit=output_unit, iteration_offset=scf_env%iter_count + iterations)
          iterations = iterations + steps
          remaining = remaining - steps
          IF (event%encountered .AND. .NOT. stopped) THEN

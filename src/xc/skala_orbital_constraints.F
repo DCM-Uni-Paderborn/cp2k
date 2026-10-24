@@ -165,6 +165,21 @@ MODULE skala_orbital_constraints
          REAL(dp), INTENT(OUT) :: inverse_diagonal(:)
          LOGICAL, INTENT(OUT) :: available
       END SUBROUTINE orbital_preconditioner
+! **************************************************************************************************
+!> \brief Report stored accepted-state scalars without another physical evaluation.
+!> \param iteration Attempted iteration in the current chart, zero at its reference.
+!> \param energy Energy of the last accepted feasible coordinates.
+!> \param gradient_norm Norm of the unscaled independent-coordinate covector.
+!> \param moved Whether this iteration accepted a new step.
+!> \param context Borrowed caller output context.
+! **************************************************************************************************
+      SUBROUTINE orbital_iteration_report(iteration, energy, gradient_norm, moved, context)
+         IMPORT :: dp
+         INTEGER, INTENT(IN) :: iteration
+         REAL(dp), INTENT(IN) :: energy, gradient_norm
+         LOGICAL, INTENT(IN) :: moved
+         CLASS(*), INTENT(INOUT) :: context
+      END SUBROUTINE orbital_iteration_report
    END INTERFACE
 
 CONTAINS
@@ -767,13 +782,14 @@ CONTAINS
 !>        An unavailable response retains the original numerical curvature and acceptance tests.
 !> \param apply_lagrangian_hessian Optional analytical response on the original physical constraint curve.
 !>        Constraint curvature and original-unit multipliers are included before tangent projection.
+!> \param report_iteration Optional scalar-only report after reference evaluation and attempted steps.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
                                              max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
                                              check_segment, interrupted, retain_progress, check_stalled_segment, &
                                              coordinate_scales, curvature_steps, check_curvature_segment, precondition, &
-                                             apply_hessian, apply_lagrangian_hessian)
+                                             apply_hessian, apply_lagrangian_hessian, report_iteration)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
@@ -784,6 +800,7 @@ CONTAINS
       PROCEDURE(orbital_preconditioner), OPTIONAL :: precondition
       PROCEDURE(orbital_hessian_product), OPTIONAL :: apply_hessian
       PROCEDURE(orbital_lagrangian_hessian), OPTIONAL :: apply_lagrangian_hessian
+      PROCEDURE(orbital_iteration_report), OPTIONAL :: report_iteration
       CLASS(*), INTENT(INOUT) :: context
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(IN) :: density_tolerances(:), gradient_tolerance
@@ -847,6 +864,7 @@ CONTAINS
                 inverse_diagonal(d), free_inverse(nf))
       CALL reduced_evaluation(x, energy, reduced, valid)
       IF (.NOT. valid) RETURN
+      IF (PRESENT(report_iteration)) CALL report_iteration(0, energy, free_gradient_norm(reduced), .FALSE., context)
       history = 0
       progress_norm = NORM2(reduced)
       last_progress_check = 1
@@ -1003,6 +1021,7 @@ CONTAINS
             fraction = 0.5_dp*fraction
          END DO
          IF (.NOT. accepted) THEN
+            IF (PRESENT(report_iteration)) CALL report_iteration(iteration, energy, free_gradient_norm(reduced), .FALSE., context)
             IF (PRESENT(check_stalled_segment) .AND. have_segment) THEN
                ! A rejected wide trial can enclose a downhill cusp. Keep its original
                ! feasible endpoints rather than the last nearly coincident shortened trial.
@@ -1037,6 +1056,7 @@ CONTAINS
          x(:) = trial
          reduced(:) = trial_reduced
          energy = trial_energy
+         IF (PRESENT(report_iteration)) CALL report_iteration(iteration, energy, free_gradient_norm(reduced), .TRUE., context)
       END DO
       IF (stop_requested()) RETURN
       IF (stationary(x, reduced)) THEN
