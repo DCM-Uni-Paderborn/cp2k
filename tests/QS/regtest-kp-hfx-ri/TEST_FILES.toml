@@ -2,8 +2,8 @@
 "diamond_gpw_extRI.inp"                 = [{matcher="M011", tol=1.0E-10, ref=-8.128237166870234}]
 "diamond_gpw_extRI_kpsym.inp"           = [{matcher="M011", tol=1.0E-10, ref=-8.128237166870234},
                                            {matcher="N_special_kpoints", tol=0.0, ref=2}]
-"hBN_gapw_ovlp.inp"                     = [{matcher="M011", tol=1.0E-10, ref=-86.213599739489808}]
-"hBN_gapw_tc.inp"                       = [{matcher="M011", tol=1.0E-10, ref=-77.588144157636464}]
-"hBN_gapw_mix_cl_tc.inp"                = [{matcher="M011", tol=1.0E-10, ref=-81.58088407995704}]
+"hBN_gapw_ovlp.inp"                     = [{matcher="M011", tol=1.0E-10, ref=-86.214228469347920}]
+"hBN_gapw_tc.inp"                       = [{matcher="M011", tol=1.0E-10, ref=-77.588148899396770}]
+"hBN_gapw_mix_cl_tc.inp"                = [{matcher="M011", tol=1.0E-10, ref=-81.580904462445630}]
 "hBN_gpw_pbe0.inp"                      = [{matcher="M011", tol=1.0E-10, ref=-11.615352786474942}]
 "hBN_gpw_pbe0_kpsym.inp"                = [{matcher="M011", tol=1.0E-10, ref=-11.615352786474942}]
