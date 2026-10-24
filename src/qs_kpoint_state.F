@@ -69,7 +69,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Reconstructs fixed-rank complex k-point orbitals from a density kernel.
-!>        The density and overlap must first be transferred to kp%ot_hmat and kp%ot_smat. The
+!>        The overlap must first be transferred to kp%ot_smat. Use the complete native density
+!>        when active, otherwise the density transferred to kp%ot_hmat. The
 !>        largest natural-orbital subspace gives a metric-defined fixed-rank projector without
 !>        replacing the guess by the ground-state projector of its initial Hamiltonian.
 !> \param kpoints K-point environment containing the transferred density and overlap matrices.
@@ -77,8 +78,8 @@ CONTAINS
    SUBROUTINE qs_kpoint_state_prepare_fixed_density(kpoints)
       TYPE(kpoint_type), POINTER                         :: kpoints
 
-      INTEGER                                            :: ikpoint_local, ispin, nao, nmo, nocc, &
-                                                            nactive
+      INTEGER                                            :: ikpoint_local, ispin, nactive, nao, nmo, &
+                                                            nocc
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: density_eigenvalues
       TYPE(cp_cfm_type)                                  :: density_metric, density_work, matrix_p, &
@@ -122,7 +123,13 @@ CONTAINS
 
             CALL cp_fm_struct_create(active_struct, template_fmstruct=cmo_coeff%matrix_struct, &
                                      ncol_global=nactive)
-            CALL cp_fm_to_cfm(kp%ot_hmat(1, ispin), kp%ot_hmat(2, ispin), matrix_p)
+            IF (kpoint_density_state_active(kpoints)) THEN
+               CPASSERT(kpoints%native_density_seeded)
+               ! The real-space density can omit images of the complete Bloch kernel.
+               CALL cp_cfm_to_cfm(kpoints%native_density(ikpoint_local, ispin), matrix_p)
+            ELSE
+               CALL cp_fm_to_cfm(kp%ot_hmat(1, ispin), kp%ot_hmat(2, ispin), matrix_p)
+            END IF
             CALL cp_cfm_create(projected, active_struct, name="fixed-density natural orbitals")
             CALL cp_cfm_create(density_metric, square_struct, name="natural-orbital metric")
             CALL cp_cfm_create(density_work, square_struct, name="natural-orbital work")
