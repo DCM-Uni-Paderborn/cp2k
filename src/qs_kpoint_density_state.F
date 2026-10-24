@@ -13,6 +13,8 @@ MODULE qs_kpoint_density_state
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_submatrix,&
                                               cp_cfm_set_submatrix
+   USE input_constants,                 ONLY: uspp_method_inverse,&
+                                              uspp_method_inverse_1c
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
@@ -122,6 +124,8 @@ CONTAINS
 !> \brief Restore complete Bloch densities, preserving occupations in the current physical metric.
 !>        For M = R^H R, A = R_new^-1 R_old gives P_new = A P_old A^H. This congruence
 !>        preserves positivity, all occupation eigenvalues and charge, including empty spins.
+!>        The two inverse methods share reconstructed Gaussian orbital variables and can
+!>        use this transport. Direct soft-orbital densities require a separate transformation.
 !> \param kpoints ...
 !> \param unit Restart unit on the world source, nonpositive on other ranks.
 ! **************************************************************************************************
@@ -134,7 +138,7 @@ CONTAINS
                                                             transform(:, :), upper(:, :)
       INTEGER                                            :: i, ik, info, ios, local, n, nao, nk, &
                                                             nspin, representation, spin
-      LOGICAL                                            :: owns
+      LOGICAL                                            :: compatible_representation, owns
       REAL(dp)                                           :: charge, tolerance
       REAL(dp), ALLOCATABLE                              :: coordinates(:, :), weights(:)
 
@@ -148,8 +152,13 @@ CONTAINS
       CALL kpoints%para_env%bcast(nspin)
       CALL kpoints%para_env%bcast(nao)
       CALL kpoints%para_env%bcast(representation)
+      compatible_representation = representation == kpoints%native_density_representation
+      IF (ANY(representation == [uspp_method_inverse, uspp_method_inverse_1c])) THEN
+         compatible_representation = &
+            ANY(kpoints%native_density_representation == [uspp_method_inverse, uspp_method_inverse_1c])
+      END IF
       IF (nk /= kpoints%nkp .OR. nspin /= SIZE(kpoints%native_density, 2) .OR. nao /= n .OR. &
-          representation /= kpoints%native_density_representation) THEN
+          .NOT. compatible_representation) THEN
          CPABORT("Native k-point restart mesh, spin, basis or representation mismatch")
       END IF
       ALLOCATE (coordinates(3, nk), weights(nk))

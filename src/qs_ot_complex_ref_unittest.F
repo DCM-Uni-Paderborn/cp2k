@@ -26,6 +26,8 @@ PROGRAM qs_ot_complex_ref_unittest
         dbcsr_finalize, dbcsr_finalize_lib, dbcsr_get_block_p, dbcsr_init_lib, dbcsr_put_block, &
         dbcsr_release, dbcsr_reserve_blocks, dbcsr_type, dbcsr_type_no_symmetry, &
         dbcsr_type_symmetric
+   USE cp_files,                        ONLY: close_file,&
+                                              open_file
    USE cp_fm_basic_linalg,              ONLY: cp_complex_fm_gemm
    USE cp_fm_diag,                      ONLY: diag_finalize,&
                                               diag_init
@@ -47,9 +49,10 @@ PROGRAM qs_ot_complex_ref_unittest
         ot_precond_full_all_covariant, ot_precond_full_kinetic, ot_precond_full_single, &
         ot_precond_full_single_inverse, ot_precond_none, ot_precond_s_inverse, &
         ot_precond_solver_chebyshev, ot_precond_solver_default, ot_precond_solver_direct, &
-        ot_precond_solver_inv_chol
+        ot_precond_solver_inv_chol, uspp_method_inverse, uspp_method_inverse_1c
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_ot_energy_weighted_density
+   USE kpoint_types,                    ONLY: kpoint_type
    USE machine,                         ONLY: default_output_unit
    USE mathlib,                         ONLY: diag_complex
    USE message_passing,                 ONLY: mp_comm_self,&
@@ -70,6 +73,10 @@ PROGRAM qs_ot_complex_ref_unittest
    USE preconditioner_types,            ONLY: destroy_preconditioner,&
                                               init_preconditioner,&
                                               preconditioner_type
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_initialize,&
+                                              kpoint_density_state_read,&
+                                              kpoint_density_state_write
+   USE qs_kpoint_operators,             ONLY: kpoint_slot_s
    USE qs_ot,                           ONLY: &
         qs_ot_antihermitian_spectral_norm, qs_ot_apply_complex_frechet_dbcsr, &
         qs_ot_complex_exp_frechet_kernel, qs_ot_density_secant_hessian, &
@@ -147,6 +154,7 @@ PROGRAM qs_ot_complex_ref_unittest
    CALL test_complex_preconditioner_gauge(para_env, nfail)
    CALL test_complex_occupation_block_preconditioner(para_env, nfail)
    CALL test_kpoint_ot_energy_weighted_density(para_env, io_unit, nfail)
+   CALL test_inverse_density_restart(para_env, nfail)
 
    x(:, 1) = [CMPLX(1.10_dp, 0.10_dp, KIND=dp), CMPLX(0.20_dp, -0.30_dp, KIND=dp), &
               CMPLX(-0.10_dp, 0.20_dp, KIND=dp)]
@@ -559,6 +567,114 @@ CONTAINS
       CALL cp_blacs_env_release(blacs_env)
 
    END SUBROUTINE test_kpoint_ot_energy_weighted_density
+
+! **************************************************************************************************
+!> \brief Transfer a complex density and an empty spin between inverse methods and changed metrics.
+!> \param para_env ...
+!> \param nfail ...
+! **************************************************************************************************
+   SUBROUTINE test_inverse_density_restart(para_env, nfail)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(INOUT)                             :: nfail
+
+      COMPLEX(dp)                                        :: actual(n, n), density(n, n), &
+                                                            expected(n, n), metric(n, n), &
+                                                            transformed_metric(n, n), upper(n, n), &
+                                                            vector(n)
+      INTEGER                                            :: direction, i, j, part, spin, unit
+      REAL(dp)                                           :: error, imaginary_part(n, n), &
+                                                            real_part(n, n), scaling(n)
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
+      TYPE(kpoint_type)                                  :: points
+
+      NULLIFY (blacs_env, matrix_struct)
+      CALL cp_blacs_env_create(blacs_env=blacs_env, para_env=para_env)
+      CALL cp_fm_struct_create(matrix_struct, nrow_global=n, ncol_global=n, &
+                               context=blacs_env, para_env=para_env)
+      points%nkp = 1
+      points%kp_range = [1, 1]
+      points%para_env => para_env
+      points%para_env_kp => para_env
+      points%use_real_wfn = .FALSE.
+      ALLOCATE (points%xkp(3, 1), points%wkp(1), points%kp_env(1))
+      points%xkp(:, 1) = [0.17_dp, -0.09_dp, 0.03_dp]
+      points%wkp = 1.0_dp
+      ALLOCATE (points%kp_env(1)%kpoint_env)
+      ALLOCATE (points%kp_env(1)%kpoint_env%pmat(2, 2))
+      DO spin = 1, 2
+         DO part = 1, 2
+            CALL cp_fm_create(points%kp_env(1)%kpoint_env%pmat(part, spin), matrix_struct)
+         END DO
+      END DO
+      ALLOCATE (points%native_operators(kpoint_slot_s)%matrices(1, 1))
+      CALL cp_cfm_create(points%native_operators(kpoint_slot_s)%matrices(1, 1), matrix_struct)
+      CALL kpoint_density_state_initialize(points, uspp_method_inverse)
+      upper = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO i = 1, n
+         upper(i, i) = 1.0_dp + 0.1_dp*i
+      END DO
+      upper(1, 2) = CMPLX(0.1_dp, 0.05_dp, dp)
+      upper(2, 3) = CMPLX(0.07_dp, -0.03_dp, dp)
+      metric = MATMUL(CONJG(TRANSPOSE(upper)), upper)
+      vector = [CMPLX(0.4_dp, 0.1_dp, dp), CMPLX(0.2_dp, -0.3_dp, dp), CMPLX(-0.15_dp, 0.22_dp, dp)]
+      scaling = [1.2_dp, 0.85_dp, 1.1_dp]
+      DO j = 1, n
+         DO i = 1, n
+            density(i, j) = vector(i)*CONJG(vector(j))
+            transformed_metric(i, j) = metric(i, j)/(scaling(i)*scaling(j))
+         END DO
+         density(j, j) = density(j, j) + 0.03_dp
+      END DO
+      CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), metric)
+      CALL cp_cfm_set_submatrix(points%native_density(1, 1), density)
+      CALL cp_cfm_set_all(points%native_density(1, 2), CMPLX(0.0_dp, 0.0_dp, dp))
+      points%native_density_seeded = .TRUE.
+      error = 0.0_dp
+      DO direction = 1, 2
+         unit = -1
+         IF (para_env%is_source()) THEN
+            CALL open_file(unit_number=unit, file_status="SCRATCH", file_form="UNFORMATTED", file_action="READWRITE")
+         END IF
+         CALL kpoint_density_state_write(points, unit)
+         points%native_density_representation = MERGE(uspp_method_inverse_1c, uspp_method_inverse, direction == 1)
+         IF (direction == 1) THEN
+            CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), transformed_metric)
+            DO j = 1, n
+               expected(:, j) = scaling(:)*density(:, j)*scaling(j)
+            END DO
+         ELSE
+            CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), metric)
+            expected = density
+         END IF
+         points%native_trial_valid = .TRUE.
+         IF (unit > 0) REWIND (unit)
+         CALL kpoint_density_state_read(points, unit)
+         IF (unit > 0) CALL close_file(unit)
+         IF (.NOT. points%native_density_seeded .OR. points%native_trial_valid) nfail = nfail + 1
+         CALL cp_cfm_get_submatrix(points%native_density(1, 1), actual)
+         error = MAX(error, MAXVAL(ABS(actual - expected)))
+         CALL cp_fm_get_submatrix(points%kp_env(1)%kpoint_env%pmat(1, 1), real_part)
+         CALL cp_fm_get_submatrix(points%kp_env(1)%kpoint_env%pmat(2, 1), imaginary_part)
+         error = MAX(error, MAXVAL(ABS(CMPLX(real_part, imaginary_part, dp) - expected)))
+         CALL cp_cfm_get_submatrix(points%native_density(1, 2), actual)
+         error = MAX(error, MAXVAL(ABS(actual)))
+      END DO
+      IF (error > 5.0E-12_dp) nfail = nfail + 1
+      DO spin = 1, 2
+         CALL cp_cfm_release(points%native_density(1, spin))
+         CALL cp_cfm_release(points%native_trial(1, spin))
+         DO part = 1, 2
+            CALL cp_fm_release(points%kp_env(1)%kpoint_env%pmat(part, spin))
+         END DO
+      END DO
+      CALL cp_cfm_release(points%native_operators(kpoint_slot_s)%matrices(1, 1))
+      DEALLOCATE (points%kp_env(1)%kpoint_env%pmat)
+      DEALLOCATE (points%kp_env(1)%kpoint_env)
+      DEALLOCATE (points%kp_env, points%xkp, points%wkp)
+      CALL cp_fm_struct_release(matrix_struct)
+      CALL cp_blacs_env_release(blacs_env)
+   END SUBROUTINE test_inverse_density_restart
 ! **************************************************************************************************
 !> \brief Check the complex rotation norm against an analytic pair and a unitary gauge change.
 !> \param io_unit output unit
@@ -697,19 +813,15 @@ CONTAINS
       REAL(KIND=dp), PARAMETER :: fd_step = 1.0E-6_dp, kpoint_weight = 0.75_dp, maxocc = 2.0_dp, &
          target_electrons = 2.10_dp, temperature = 0.09_dp
 
-      COMPLEX(KIND=dp), DIMENSION(nbands, nbands)        :: dchc, derivative, derivative_fd, &
-                                                            hamiltonian, projector_minus, &
-                                                            projector_plus, vectors
-      COMPLEX(KIND=dp), DIMENSION(nbands, nbands)        :: derivative2, hamiltonian2, &
-                                                            projector2_minus, projector2_plus, &
-                                                            vectors2, zero
+      COMPLEX(KIND=dp), DIMENSION(nbands, nbands) :: dchc, derivative, derivative2, derivative_fd, &
+         hamiltonian, hamiltonian2, projector2_minus, projector2_plus, projector_minus, &
+         projector_plus, vectors, vectors2, zero
       INTEGER                                            :: i, sign
       REAL(KIND=dp)                                      :: error, mu, trace_error, weighted_response
-      REAL(KIND=dp), DIMENSION(nbands)                   :: eigenvalues, occupation, response, &
-                                                            weights
-      REAL(KIND=dp), DIMENSION(nbands)                   :: eigenvalues2
       REAL(KIND=dp), DIMENSION(2*nbands)                 :: energies_all, occupation_all, &
                                                             response_all, weights_all
+      REAL(KIND=dp), DIMENSION(nbands)                   :: eigenvalues, eigenvalues2, occupation, &
+                                                            response, weights
 
       hamiltonian(:, :) = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       hamiltonian(1, 1) = CMPLX(-0.22_dp, 0.0_dp, KIND=dp)
@@ -779,12 +891,12 @@ CONTAINS
                                         maxocc, occupation_all, mu)
          IF (sign > 0) THEN
             projector_plus = kpoint_weight*MATMUL(vectors*SPREAD(occupation_all(:nbands), 1, nbands), &
-                                                   CONJG(TRANSPOSE(vectors)))
+                                                  CONJG(TRANSPOSE(vectors)))
             projector2_plus = (1.0_dp - kpoint_weight)* &
                               MATMUL(vectors2*SPREAD(occupation_all(nbands + 1:), 1, nbands), CONJG(TRANSPOSE(vectors2)))
          ELSE
             projector_minus = kpoint_weight*MATMUL(vectors*SPREAD(occupation_all(:nbands), 1, nbands), &
-                                                    CONJG(TRANSPOSE(vectors)))
+                                                   CONJG(TRANSPOSE(vectors)))
             projector2_minus = (1.0_dp - kpoint_weight)* &
                                MATMUL(vectors2*SPREAD(occupation_all(nbands + 1:), 1, nbands), CONJG(TRANSPOSE(vectors2)))
          END IF
