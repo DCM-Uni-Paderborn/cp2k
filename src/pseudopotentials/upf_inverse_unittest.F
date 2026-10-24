@@ -2421,6 +2421,19 @@ CONTAINS
          CALL check(MAXVAL(ABS((samples(:, :, :, :, 2) - samples(:, :, :, :, 1))/(2.0_dp*step) - response)), &
                     "Translated Coulomb joint response", 3.e-9_dp)
       END DO
+      ! Different source radii share the contained-shell map, including their distinct radial motion.
+      b = [1.6_dp, 2.1_dp]
+      d = [0.06_dp, -0.04_dp, 0.03_dp]
+      CALL upf_inverse_coulomb_pair_kernel(a, ls, indices, b, ls, indices, d, &
+                                           kernel, response, da, db, dd)
+      DO side = 1, 2
+         shift = REAL(2*side - 3, dp)*step
+         CALL upf_inverse_coulomb_pair_kernel(a + shift*da, ls, indices, b + shift*db, ls, indices, &
+                                              d + shift*dd, samples(:, :, :, :, side))
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, :, :, 2) - samples(:, :, :, :, 1))/(2.0_dp*step) - response)), &
+                 "Contained shell radial response", 3.e-9_dp)
+      b = [0.5_dp, 1.1_dp]
       ! A source sphere passing through a target angular node is integrated in separate polar caps.
       d = [0.7_dp, 0.0_dp, 0.0_dp]
       CALL upf_inverse_coulomb_pair_kernel(a, ls, indices, b, ls, indices, d, &

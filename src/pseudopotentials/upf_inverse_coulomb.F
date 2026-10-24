@@ -54,6 +54,12 @@ MODULE upf_inverse_coulomb
       REAL(dp), ALLOCATABLE :: values(:), response(:), gradient(:, :)
    END TYPE harmonic_work_type
 
+   TYPE contained_shell_type
+      LOGICAL :: ready(2) = .FALSE.
+      REAL(dp) :: source_radius(2) = 0.0_dp
+      REAL(dp), ALLOCATABLE :: values(:, :, :), response(:, :, :)
+   END TYPE contained_shell_type
+
    TYPE upf_inverse_coulomb_map_type
       PRIVATE
       INTEGER :: periodicity(3) = [1, 1, 1]
@@ -546,6 +552,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: ab(:, :), ba(:, :), dab(:, :), &
                                                             dba(:, :), dpoint(:, :), nodes(:), &
                                                             point(:, :), weights(:)
+      TYPE(contained_shell_type), ALLOCATABLE            :: contained_a(:), contained_b(:)
       TYPE(harmonic_work_type)                           :: work_a, work_b
 
       CPASSERT(ALL(radii_a > 0.0_dp) .AND. ALL(ieee_is_finite(radii_a)))
@@ -614,6 +621,7 @@ CONTAINS
       nq = MAX(32, MAXVAL(l_a) + MAXVAL(l_b) + 2)
       ALLOCATE (nodes(nq), weights(nq))
       CALL polar_rule(nodes, weights)
+      ALLOCATE (contained_a(SIZE(radii_a)), contained_b(SIZE(radii_b)))
       ! Separated harmonic shells have an exact point-multipole interaction.
       ! Higher orders retain the general angular rule, without discarding any channel.
       separated = MAXVAL(l_a) + MAXVAL(l_b) <= 8 .AND. distance > MINVAL(radii_a) + MINVAL(radii_b)
@@ -646,7 +654,19 @@ CONTAINS
                END DO
                CYCLE
             END IF
-            IF (PRESENT(response)) THEN
+            IF (ABS(radii_a(i) - radii_b(j)) > distance) THEN
+               IF (PRESENT(response)) THEN
+                  CALL contained_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
+                                       displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i), dab)
+                  CALL contained_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
+                                       -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j), dba)
+               ELSE
+                  CALL contained_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
+                                       displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i))
+                  CALL contained_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
+                                       -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j))
+               END IF
+            ELSE IF (PRESENT(response)) THEN
                CALL translated_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
                                      displacement, da, db, delta, ab, nodes, weights, work_a, work_b, dab)
                CALL translated_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
@@ -662,6 +682,74 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE upf_inverse_coulomb_pair_kernel
+
+! **************************************************************************************************
+!> \brief Reuse the same angular rule when one radial shell fully contains the other.
+!>        At fixed target radius its nodes and boundaries do not depend on the source radius.
+!>        The source potential scales as b**(-l-1) inside and b**l outside its shell.
+!>        Cache the response at fixed source radius and add its explicit radial derivative.
+!> \param a Target radius, fixed across calls using the same cache.
+!> \param b Source radius.
+!> \param la Target harmonic orders.
+!> \param ia Target harmonic indices.
+!> \param lb Source harmonic orders.
+!> \param ib Source harmonic indices.
+!> \param d Target center minus source center, fixed for this cache.
+!> \param da Target radial motion, fixed for this cache.
+!> \param db Source radial motion.
+!> \param dd Center displacement response, fixed for this cache.
+!> \param value Angular Coulomb map.
+!> \param nodes Unchanged polar quadrature nodes.
+!> \param weights Unchanged polar quadrature weights.
+!> \param work_a Target harmonic scratch fields.
+!> \param work_b Source harmonic scratch fields.
+!> \param cache Owned maps for source shells enclosing or enclosed by the target.
+!> \param response Optional joint response, requested consistently for this cache.
+! **************************************************************************************************
+   SUBROUTINE contained_shell(a, b, la, ia, lb, ib, d, da, db, dd, value, nodes, weights, work_a, work_b, cache, response)
+      REAL(dp), INTENT(IN)                               :: a, b
+      INTEGER, INTENT(IN)                                :: la(:), ia(:), lb(:), ib(:)
+      REAL(dp), INTENT(IN)                               :: d(3), da, db, dd(3)
+      REAL(dp), INTENT(OUT)                              :: value(:, :)
+      REAL(dp), INTENT(IN)                               :: nodes(:), weights(:)
+      TYPE(harmonic_work_type), INTENT(INOUT)            :: work_a, work_b
+      TYPE(contained_shell_type), INTENT(INOUT)          :: cache
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :)
+
+      INTEGER                                            :: channel, power, side
+      REAL(dp)                                           :: factor
+
+      side = MERGE(1, 2, b > a)
+      IF (.NOT. ALLOCATED(cache%values)) THEN
+         ALLOCATE (cache%values(SIZE(la), SIZE(lb), 2))
+         IF (PRESENT(response)) ALLOCATE (cache%response, MOLD=cache%values)
+      END IF
+      IF (.NOT. cache%ready(side)) THEN
+         IF (PRESENT(response)) THEN
+            CALL translated_shell(a, b, la, ia, lb, ib, d, da, 0.0_dp, dd, cache%values(:, :, side), &
+                                  nodes, weights, work_a, work_b, cache%response(:, :, side))
+         ELSE
+            CALL translated_shell(a, b, la, ia, lb, ib, d, da, 0.0_dp, dd, cache%values(:, :, side), &
+                                  nodes, weights, work_a, work_b)
+         END IF
+         cache%source_radius(side) = b
+         cache%ready(side) = .TRUE.
+      END IF
+      DO channel = 1, SIZE(lb)
+         IF (side == 1) THEN
+            power = -lb(channel) - 1
+            factor = (cache%source_radius(side)/b)**(-power)
+         ELSE
+            power = lb(channel)
+            factor = (b/cache%source_radius(side))**power
+         END IF
+         value(:, channel) = factor*cache%values(:, channel, side)
+         IF (PRESENT(response)) THEN
+            response(:, channel) = factor*(cache%response(:, channel, side) + &
+                                           power*db/b*cache%values(:, channel, side))
+         END IF
+      END DO
+   END SUBROUTINE contained_shell
 
 ! **************************************************************************************************
 !> \brief Point-multipole map for disjoint shells in the native real solid-harmonic convention.
