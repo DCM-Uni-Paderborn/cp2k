@@ -1957,7 +1957,14 @@ CONTAINS
 
       NULLIFY (ENTRY)
       entry_key = key
-      IF (ASSOCIATED(cache%auxiliary_images)) THEN
+      IF (ASSOCIATED(cache%site_images)) THEN
+         ! Atom-specific folding supplies the actual auxiliary-site translations.
+         ! Reuse the same relative fields while keeping physical geometry factors outside the cache.
+         CPASSERT(cache%natom > 0)
+         CPASSERT(key(5) >= 1 .AND. key(5) <= SIZE(cache%site_images, 2))
+         entry_key(2:4) = key(2:4) - cache%site_images(:, key(5))
+         entry_key(5) = MODULO(key(5) - 1, cache%natom) + 1
+      ELSE IF (ASSOCIATED(cache%auxiliary_images)) THEN
          ! A common lattice translation leaves the original Q integral and auxiliary field
          ! unchanged. Only the lookup uses the relative translation. Atomic and cell
          ! contractions still use each center's actual translation and displacement.
