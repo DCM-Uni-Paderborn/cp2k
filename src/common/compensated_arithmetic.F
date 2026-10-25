@@ -11,10 +11,32 @@ MODULE compensated_arithmetic
 
    IMPLICIT NONE
    PRIVATE
-   PUBLIC :: twofold_real_type, twofold_add, twofold_multiply, twofold_product
+   PUBLIC :: twofold_real_type, twofold_add, twofold_multiply, twofold_product, twofold_divide, twofold_value
+   PUBLIC :: OPERATOR(+), OPERATOR(-), OPERATOR(*), OPERATOR(/), OPERATOR(>=), OPERATOR(<=), OPERATOR(<)
    TYPE twofold_real_type
       REAL(dp) :: hi = 0.0_dp, lo = 0.0_dp
    END TYPE twofold_real_type
+   INTERFACE OPERATOR(+)
+      MODULE PROCEDURE twofold_add
+   END INTERFACE
+   INTERFACE OPERATOR(-)
+      MODULE PROCEDURE twofold_subtract, twofold_negate
+   END INTERFACE
+   INTERFACE OPERATOR(*)
+      MODULE PROCEDURE twofold_multiply
+   END INTERFACE
+   INTERFACE OPERATOR(/)
+      MODULE PROCEDURE twofold_divide
+   END INTERFACE
+   INTERFACE OPERATOR(>=)
+      MODULE PROCEDURE twofold_ge
+   END INTERFACE
+   INTERFACE OPERATOR(<=)
+      MODULE PROCEDURE twofold_le
+   END INTERFACE
+   INTERFACE OPERATOR(<)
+      MODULE PROCEDURE twofold_lt
+   END INTERFACE
    INTERFACE
       FUNCTION fused_product_sum(a, b, c) RESULT(value) BIND(C, NAME="fma")
          IMPORT :: c_double
@@ -70,7 +92,7 @@ CONTAINS
 !> \param b Second input.
 !> \return Compensated sum.
 ! **************************************************************************************************
-   FUNCTION twofold_add(a, b) RESULT(value)
+   IMPURE ELEMENTAL FUNCTION twofold_add(a, b) RESULT(value)
       TYPE(twofold_real_type), INTENT(IN)                :: a, b
       TYPE(twofold_real_type)                            :: value
 
@@ -87,7 +109,7 @@ CONTAINS
 !> \param b Second input.
 !> \return Compensated product.
 ! **************************************************************************************************
-   FUNCTION twofold_multiply(a, b) RESULT(value)
+   IMPURE ELEMENTAL FUNCTION twofold_multiply(a, b) RESULT(value)
       TYPE(twofold_real_type), INTENT(IN)                :: a, b
       TYPE(twofold_real_type)                            :: value
 
@@ -97,5 +119,100 @@ CONTAINS
       lo = lo + a%hi*b%lo + a%lo*b%hi + a%lo*b%lo
       CALL two_sum(hi, lo, value%hi, value%lo)
    END FUNCTION twofold_multiply
+
+! **************************************************************************************************
+!> \brief Difference retaining both input components.
+!> \param a First input.
+!> \param b Second input.
+!> \return Compensated difference.
+! **************************************************************************************************
+   IMPURE ELEMENTAL FUNCTION twofold_subtract(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a, b
+      TYPE(twofold_real_type)                            :: value
+
+      value = twofold_add(a, twofold_real_type(-b%hi, -b%lo))
+   END FUNCTION twofold_subtract
+
+! **************************************************************************************************
+!> \brief Exact negation of both components.
+!> \param a Original value.
+!> \return Negated value.
+! **************************************************************************************************
+   PURE ELEMENTAL FUNCTION twofold_negate(a) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a
+      TYPE(twofold_real_type)                            :: value
+
+      value = twofold_real_type(-a%hi, -a%lo)
+   END FUNCTION twofold_negate
+
+! **************************************************************************************************
+!> \brief Quotient corrected with compensated multiplication remainders.
+!> \param a Numerator.
+!> \param b Nonzero normalized denominator.
+!> \return Compensated quotient.
+! **************************************************************************************************
+   IMPURE ELEMENTAL FUNCTION twofold_divide(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a, b
+      TYPE(twofold_real_type)                            :: value
+
+      TYPE(twofold_real_type)                            :: remainder
+
+      value = twofold_real_type(a%hi/b%hi, 0.0_dp)
+      remainder = a - b*value
+      value = value + twofold_real_type((remainder%hi + remainder%lo)/b%hi, 0.0_dp)
+      remainder = a - b*value
+      value = value + twofold_real_type((remainder%hi + remainder%lo)/b%hi, 0.0_dp)
+   END FUNCTION twofold_divide
+
+! **************************************************************************************************
+!> \brief Round a normalized two-component value only at its consumer.
+!> \param a Compensated value.
+!> \return FP64 value.
+! **************************************************************************************************
+   PURE ELEMENTAL FUNCTION twofold_value(a) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a
+      REAL(dp)                                           :: value
+
+      value = a%hi + a%lo
+   END FUNCTION twofold_value
+
+! **************************************************************************************************
+!> \brief Compare normalized components without discarding the remainder.
+!> \param a First value.
+!> \param b Second value.
+!> \return Whether a is greater than or equal to b.
+! **************************************************************************************************
+   PURE ELEMENTAL FUNCTION twofold_ge(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a, b
+      LOGICAL                                            :: value
+
+      value = a%hi > b%hi .OR. (a%hi == b%hi .AND. a%lo >= b%lo)
+   END FUNCTION twofold_ge
+
+! **************************************************************************************************
+!> \brief Compare normalized components without discarding the remainder.
+!> \param a First value.
+!> \param b Second value.
+!> \return Whether a is less than or equal to b.
+! **************************************************************************************************
+   PURE ELEMENTAL FUNCTION twofold_le(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a, b
+      LOGICAL                                            :: value
+
+      value = a%hi < b%hi .OR. (a%hi == b%hi .AND. a%lo <= b%lo)
+   END FUNCTION twofold_le
+
+! **************************************************************************************************
+!> \brief Strict comparison of normalized components.
+!> \param a First value.
+!> \param b Second value.
+!> \return Whether a is less than b.
+! **************************************************************************************************
+   PURE ELEMENTAL FUNCTION twofold_lt(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a, b
+      LOGICAL                                            :: value
+
+      value = a%hi < b%hi .OR. (a%hi == b%hi .AND. a%lo < b%lo)
+   END FUNCTION twofold_lt
 
 END MODULE compensated_arithmetic

@@ -28,7 +28,8 @@
 #:include 'xc_gamma.fypp'
 
 MODULE xc_libxc
-   USE compensated_arithmetic, ONLY: twofold_real_type, twofold_add, twofold_multiply
+   USE compensated_arithmetic, ONLY: twofold_real_type, twofold_add, twofold_multiply, twofold_value, &
+                                     OPERATOR(+), OPERATOR(-), OPERATOR(*), OPERATOR(/), OPERATOR(>=), OPERATOR(<=), OPERATOR(<)
    USE bibliography, ONLY: Lehtola2018, &
                            Marques2012, &
                            cite_reference
@@ -184,6 +185,9 @@ MODULE xc_libxc
    ! run rather than allocated per evaluation, and like the cache above it is
    ! only ever touched from a serial region.
    REAL(KIND=dp), DIMENSION(:), ALLOCATABLE, TARGET, PRIVATE, SAVE :: libxc_unused
+   INTERFACE libxc_twofold_dot
+      MODULE PROCEDURE libxc_twofold_dot_real, libxc_twofold_dot_precise
+   END INTERFACE
 #endif
 
    ! Backend initialization bookkeeping
@@ -1190,7 +1194,7 @@ CONTAINS
 !$OMP SHARED(e_${'_'.join(descs)}$),&
       #:endfor
 !$OMP SHARED(grad_deriv,npoints),&
-!$OMP SHARED(func_name,func_scale,workers)
+!$OMP SHARED(func_name,func_scale,workers,rho_set)
 
       CALL libxc_spin_unpolarized_calc(rho=rho, norm_drho=norm_drho, &
                                        laplace_rho=laplace_rho, tau=tau, &
@@ -1205,7 +1209,7 @@ CONTAINS
                                        e_${'_'.join(descs)}$=e_${'_'.join(descs)}$, &
                                        #:endfor
                                        grad_deriv=grad_deriv, npoints=npoints, &
-                                       func_name=func_name, sc=func_scale, workers=workers)
+                                       func_name=func_name, sc=func_scale, workers=workers, rho_set=rho_set)
 
 !$OMP END PARALLEL
 
@@ -1845,7 +1849,7 @@ CONTAINS
                                       #:endfor
                                      grad_deriv=grad_deriv, npoints=npoints, &
                                      func_name=func_name, sc=func_scale, workers=workers, &
-                                     floor_slopes=rho_set%spin_floor_slopes, floor_tolerance=rho_set%spin_floor_tolerance)
+                              floor_slopes=rho_set%spin_floor_slopes, floor_tolerance=rho_set%spin_floor_tolerance, rho_set=rho_set)
 
 !$OMP END PARALLEL
 
@@ -1870,6 +1874,68 @@ CONTAINS
 #if defined (__LIBXC)
 
 ! **************************************************************************************************
+!> \brief Retain Cartesian product remainders before the nonlinear kinetic projection.
+!>        Norm-only callers retain their original independent norm coordinates.
+!> \param rho_set Original density data and local bounds.
+!> \param point Flattened local point index.
+!> \param ns Spin count.
+!> \param norms Original alpha,total,beta gradient norms, or total norm for one spin.
+!> \param sigma Compensated aa,ab,bb contractions, with only the first used for one spin.
+! **************************************************************************************************
+   SUBROUTINE libxc_precise_sigma(rho_set, point, ns, norms, sigma)
+      TYPE(xc_rho_set_type), INTENT(IN) :: rho_set
+      INTEGER, INTENT(IN) :: point, ns
+      REAL(dp), INTENT(IN) :: norms(3)
+      TYPE(twofold_real_type), INTENT(OUT) :: sigma(3)
+      TYPE(twofold_real_type) :: a, b
+      TYPE(twofold_real_type), PARAMETER :: half = twofold_real_type(0.5_dp, 0.0_dp)
+      INTEGER :: axis, ix, iy, iz, nx, ny
+      LOGICAL :: cartesian
+
+      cartesian = .FALSE.
+      IF (ns == 1) THEN
+         cartesian = rho_set%has%drho
+         DO axis = 1, 3
+            cartesian = cartesian .AND. ASSOCIATED(rho_set%drho(axis)%array)
+         END DO
+      ELSE
+         cartesian = rho_set%has%drho_spin
+         DO axis = 1, 3
+            cartesian = cartesian .AND. ASSOCIATED(rho_set%drhoa(axis)%array) .AND. &
+                        ASSOCIATED(rho_set%drhob(axis)%array)
+         END DO
+      END IF
+      sigma = twofold_real_type()
+      IF (cartesian) THEN
+         nx = rho_set%local_bounds(2, 1) - rho_set%local_bounds(1, 1) + 1
+         ny = rho_set%local_bounds(2, 2) - rho_set%local_bounds(1, 2) + 1
+         ix = rho_set%local_bounds(1, 1) + MOD(point - 1, nx)
+         iy = rho_set%local_bounds(1, 2) + MOD((point - 1)/nx, ny)
+         iz = rho_set%local_bounds(1, 3) + (point - 1)/(nx*ny)
+         DO axis = 1, 3
+            IF (ns == 1) THEN
+               a = twofold_real_type(rho_set%drho(axis)%array(ix, iy, iz), 0.0_dp)
+            ELSE
+               a = twofold_real_type(rho_set%drhoa(axis)%array(ix, iy, iz), 0.0_dp)
+               b = twofold_real_type(rho_set%drhob(axis)%array(ix, iy, iz), 0.0_dp)
+               sigma(2) = sigma(2) + a*b
+               sigma(3) = sigma(3) + b*b
+            END IF
+            sigma(1) = sigma(1) + a*a
+         END DO
+      ELSE
+         a = twofold_real_type(norms(1), 0.0_dp)
+         sigma(1) = a*a
+         IF (ns == 2) THEN
+            a = twofold_real_type(norms(3), 0.0_dp)
+            sigma(3) = a*a
+            a = twofold_real_type(norms(2), 0.0_dp)
+            sigma(2) = half*(a*a - sigma(1) - sigma(3))
+         END IF
+      END IF
+   END SUBROUTINE libxc_precise_sigma
+
+! **************************************************************************************************
 !> \brief Apply each Libxc functional before expanding the nonlinear kinetic projection Hessian.
 !>        Contributions are added to physical Cartesian field covectors. Native functionals
 !>        remain in the ordinary derivative set. All original screening and energy conventions apply.
@@ -1889,6 +1955,7 @@ CONTAINS
       INTEGER::np, ns, bsize, nblocks, ib, i, point, first, nb, spin, thread, off
       LOGICAL::gga, mgga
       REAL(dp)::product(10)
+      TYPE(twofold_real_type) :: sigma_precise(3)
       ns = workers%nspin; np = SIZE(response%fields, 2)
       CPASSERT(ns == 1 .OR. ns == 2)
       CPASSERT(ALL(SHAPE(response%fields) == [5*ns, np]))
@@ -1912,8 +1979,8 @@ CONTAINS
       IF (libxc_is_gpu()) bsize = np
       nblocks = (np + bsize - 1)/bsize
 !$OMP PARALLEL DO DEFAULT(NONE) &
-!$OMP SHARED(workers,response,norms,ns,np,bsize,nblocks,gga,mgga,scale) &
-!$OMP PRIVATE(ib,i,point,first,nb,spin,thread,off,w,product)
+!$OMP SHARED(workers,response,norms,ns,np,bsize,nblocks,gga,mgga,scale,rho_set) &
+!$OMP PRIVATE(ib,i,point,first,nb,spin,thread,off,w,product,sigma_precise)
       DO ib = 1, nblocks
          thread = 0
 !$       thread = omp_get_thread_num()
@@ -1938,10 +2005,13 @@ CONTAINS
                END IF
             END IF
             IF (mgga) THEN
+               CALL libxc_precise_sigma(rho_set, point, ns, norms(:, point), sigma_precise)
+               w%sigma(:2*ns - 1, i) = twofold_value(sigma_precise(:2*ns - 1))
                DO spin = 1, ns
                   w%lapl(spin, i) = 0.0_dp
                   w%tau(spin, i) = libxc_c2_project_tau(w%rho(spin, i), w%sigma(2*spin - 1, i), &
-                                                        response%fields(5*spin, point), workers%epsilon_rho, workers%epsilon_tau)
+                                                        response%fields(5*spin, point), workers%epsilon_rho, workers%epsilon_tau, &
+                                                        sigma_precise=sigma_precise(2*spin - 1))
                END DO
             END IF
          END DO
@@ -1953,8 +2023,11 @@ CONTAINS
                w%rho(2, i) = MAX(response%fields(6, point), 0.0_dp)
                CALL libxc_spin_floor_pullback(w, i, 2, .FALSE., workers%epsilon_rho)
             END IF
+            sigma_precise = twofold_real_type()
+            IF (mgga) CALL libxc_precise_sigma(rho_set, point, ns, norms(:, point), sigma_precise)
             CALL libxc_cartesian_point_product(w, i, ns, mgga, workers%epsilon_rho, workers%epsilon_tau, &
-                                               response%fields(:, point), response%directions(:, point), product(:5*ns))
+                                               response%fields(:, point), response%directions(:, point), product(:5*ns), &
+                                               sigma_precise)
             response%potentials(:, point) = response%potentials(:, point) + scale*product(:5*ns)
          END DO
       END DO
@@ -1974,23 +2047,30 @@ CONTAINS
 !> \param fields Physical rho,gx,gy,gz,tau for each spin.
 !> \param direction Independent signed direction in those same fields.
 !> \param result Cartesian response with the same dimensions.
+!> \param sigma_precise Original compensated Cartesian contractions.
 ! **************************************************************************************************
-   SUBROUTINE libxc_cartesian_point_product(w, point, ns, mgga, epsilon_rho, epsilon_tau, fields, direction, result)
+   SUBROUTINE libxc_cartesian_point_product(w, point, ns, mgga, epsilon_rho, epsilon_tau, fields, direction, result, &
+                                            sigma_precise)
       TYPE(libxc_worker_type), INTENT(IN)::w
       INTEGER, INTENT(IN)::point, ns
       LOGICAL, INTENT(IN)::mgga
       REAL(dp), INTENT(IN)::epsilon_rho, epsilon_tau, fields(:), direction(:)
       REAL(dp), INTENT(OUT)::result(:)
+      TYPE(twofold_real_type), INTENT(IN) :: sigma_precise(3)
       INTEGER::nvar, n, spin, off, r, s, t, i, j, axis
-      REAL(dp)::gradient(9), hessian(9, 9), jacobian(9, 10), map_regular(10, 10, 2), &
-                 lower_vectors(10, 2), final_vectors(10, 2), lower_factors(2), final_factors(2), &
-                 gw(10), hw(10, 10), den, tw, lower, projected, lf(2), ls(2, 2), ff(2), fs(2, 2), ratio
+      REAL(dp)::gradient(9), hessian(9, 9)
+      TYPE(twofold_real_type) :: jacobian(9, 10), map_regular(10, 10, 2), &
+                                 lower_vectors(10, 2), final_vectors(10, 2), lower_factors(2), final_factors(2), &
+                                 gw(10), hw(10, 10), den, tw, lower, projected, lf(2), ls(2, 2), ff(2), fs(2, 2), ratio
       TYPE(twofold_real_type)::v(10), jv(9), hv(9), applied(10), a, b, lower_dot, final_dot
+      TYPE(twofold_real_type), PARAMETER :: zero = twofold_real_type(), one = twofold_real_type(1.0_dp, 0.0_dp), &
+                                            two = twofold_real_type(2.0_dp, 0.0_dp), four = twofold_real_type(4.0_dp, 0.0_dp), &
+                                            eight = twofold_real_type(8.0_dp, 0.0_dp)
       n = 5*ns; nvar = 4
       IF (ns == 2) nvar = 9
-      gradient = 0.0_dp; hessian = 0.0_dp; jacobian = 0.0_dp
-      map_regular = 0.0_dp; lower_vectors = 0.0_dp; final_vectors = 0.0_dp
-      lower_factors = 0.0_dp; final_factors = 0.0_dp
+      gradient = 0.0_dp; hessian = 0.0_dp; jacobian = zero
+      map_regular = zero; lower_vectors = zero; final_vectors = zero
+      lower_factors = zero; final_factors = zero
       DO i = 1, n
          v(i) = twofold_real_type(direction(i), 0.0_dp)
       END DO
@@ -2028,38 +2108,41 @@ CONTAINS
          IF (ns == 2) THEN
             s = 2*spin + 1; t = 7 + spin
          END IF
-         jacobian(r, off + 1) = 1.0_dp
-         IF (ns == 2 .AND. fields(off + 1) < 0.0_dp) jacobian(r, off + 1) = 0.0_dp
+         jacobian(r, off + 1) = one
+         IF (ns == 2 .AND. fields(off + 1) < 0.0_dp) jacobian(r, off + 1) = zero
          DO axis = 1, 3
-            jacobian(s, off + axis + 1) = 2.0_dp*fields(off + axis + 1)
+            jacobian(s, off + axis + 1) = two*twofold_real_type(fields(off + axis + 1), 0.0_dp)
             IF (ns == 2) THEN
-               jacobian(4, off + axis + 1) = fields(5*(2 - spin) + axis + 1)
+               jacobian(4, off + axis + 1) = twofold_real_type(fields(5*(2 - spin) + axis + 1), 0.0_dp)
             END IF
          END DO
          IF (.NOT. mgga) CYCLE
-         den = MAX(w%rho(spin, point), libxc_density_floor(epsilon_rho))
-         tw = w%sigma(2*spin - 1, point)/(8.0_dp*den)
-         CALL libxc_c2_maximum(tw, MAX(epsilon_tau, EPSILON(0.0_dp)), lower, lf, ls)
-         CALL libxc_c2_maximum(fields(off + 5), lower, projected, ff, fs)
-         gw = 0.0_dp; hw = 0.0_dp
+         den = twofold_real_type(MAX(w%rho(spin, point), libxc_density_floor(epsilon_rho)), 0.0_dp)
+         tw = sigma_precise(2*spin - 1)/(eight*den)
+         CALL libxc_c2_maximum_precise(tw, twofold_real_type(MAX(epsilon_tau, EPSILON(0.0_dp)), 0.0_dp), lower, lf, ls)
+         CALL libxc_c2_maximum_precise(twofold_real_type(fields(off + 5), 0.0_dp), lower, projected, ff, fs)
+         gw = zero; hw = zero
          IF (w%rho(spin, point) >= libxc_density_floor(epsilon_rho)) THEN
-            gw(off + 1) = -tw/den; hw(off + 1, off + 1) = 2.0_dp*tw/den**2
+            gw(off + 1) = -tw/den; hw(off + 1, off + 1) = two*tw/(den*den)
             DO axis = 1, 3
                i = off + axis + 1
-               hw(off + 1, i) = -fields(i)/(4.0_dp*den**2); hw(i, off + 1) = hw(off + 1, i)
+               hw(off + 1, i) = -twofold_real_type(fields(i), 0.0_dp)/(four*den*den)
+               hw(i, off + 1) = hw(off + 1, i)
             END DO
          END IF
          DO axis = 1, 3
-            i = off + axis + 1; gw(i) = fields(i)/(4.0_dp*den); hw(i, i) = 1.0_dp/(4.0_dp*den)
+            i = off + axis + 1
+            gw(i) = twofold_real_type(fields(i), 0.0_dp)/(four*den)
+            hw(i, i) = one/(four*den)
          END DO
          jacobian(t, :) = ff(2)*lf(1)*gw
          jacobian(t, off + 5) = ff(1)
          map_regular(:, :, spin) = ff(2)*lf(1)*hw
          lower_vectors(:, spin) = gw; lower_factors(spin) = ff(2)*ls(1, 1)
-         IF (fs(1, 1) > 0.0_dp) THEN
-            ratio = fields(off + 5)/lower
+         IF (twofold_value(fs(1, 1)) > 0.0_dp) THEN
+            ratio = twofold_real_type(fields(off + 5), 0.0_dp)/lower
             final_vectors(:, spin) = -ratio*lf(1)*gw
-            final_vectors(off + 5, spin) = 1.0_dp
+            final_vectors(off + 5, spin) = one
             final_factors(spin) = fs(1, 1)
          END IF
       END DO
@@ -2082,11 +2165,11 @@ CONTAINS
             final_dot = libxc_twofold_dot(final_vectors(:n, spin), v(:n))
             DO i = 1, n
                a = libxc_twofold_dot(map_regular(i, :n, spin), v(:n))
-               b = twofold_multiply(twofold_real_type(lower_factors(spin), 0.0_dp), lower_dot)
-               b = twofold_multiply(twofold_real_type(lower_vectors(i, spin), 0.0_dp), b)
+               b = lower_factors(spin)*lower_dot
+               b = lower_vectors(i, spin)*b
                a = twofold_add(a, b)
-               b = twofold_multiply(twofold_real_type(final_factors(spin), 0.0_dp), final_dot)
-               b = twofold_multiply(twofold_real_type(final_vectors(i, spin), 0.0_dp), b)
+               b = final_factors(spin)*final_dot
+               b = final_vectors(i, spin)*b
                a = twofold_add(a, b)
                a = twofold_multiply(twofold_real_type(gradient(t), 0.0_dp), a)
                applied(i) = twofold_add(applied(i), a)
@@ -2113,7 +2196,7 @@ CONTAINS
 !> \param b Two-component response.
 !> \return Two-component contraction.
 ! **************************************************************************************************
-   FUNCTION libxc_twofold_dot(a, b) RESULT(value)
+   FUNCTION libxc_twofold_dot_real(a, b) RESULT(value)
       REAL(dp), INTENT(IN)::a(:)
       TYPE(twofold_real_type), INTENT(IN)::b(:)
       TYPE(twofold_real_type)::value, term
@@ -2123,7 +2206,24 @@ CONTAINS
          term = twofold_multiply(twofold_real_type(a(i), 0.0_dp), b(i))
          value = twofold_add(value, term)
       END DO
-   END FUNCTION libxc_twofold_dot
+   END FUNCTION libxc_twofold_dot_real
+
+! **************************************************************************************************
+!> \brief Contract a compensated map with a compensated direction.
+!> \param a Original two-component map coefficients.
+!> \param b Two-component direction.
+!> \return Compensated contraction.
+! **************************************************************************************************
+   FUNCTION libxc_twofold_dot_precise(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN) :: a(:), b(:)
+      TYPE(twofold_real_type) :: value
+      INTEGER :: i
+
+      value = twofold_real_type()
+      DO i = 1, SIZE(a)
+         value = value + a(i)*b(i)
+      END DO
+   END FUNCTION libxc_twofold_dot_precise
 
 ! **************************************************************************************************
 !> \brief Compact C2 maximum, with a transition width relative to its positive lower argument.
@@ -2135,49 +2235,53 @@ CONTAINS
 !> \param active Optional indication that the first argument is not on the identity branch.
 !> \param third Optional third derivatives inside each smooth branch.
 ! **************************************************************************************************
-   PURE SUBROUTINE libxc_c2_maximum(a, b, value, first, second, active, third)
-      REAL(dp), INTENT(IN) :: a, b
-      REAL(dp), INTENT(OUT) :: value, first(2), second(2, 2)
+   SUBROUTINE libxc_c2_maximum_precise(a, b, value, first, second, active, third)
+      TYPE(twofold_real_type), INTENT(IN) :: a, b
+      TYPE(twofold_real_type), INTENT(OUT) :: value, first(2), second(2, 2)
       LOGICAL, INTENT(OUT), OPTIONAL :: active
-      REAL(dp), INTENT(OUT), OPTIONAL :: third(2, 2, 2)
-      REAL(dp), PARAMETER :: relative_width = 64.0_dp*SQRT(EPSILON(0.0_dp))
-      REAL(dp) :: width, u, polynomial, slope, curvature, ratio, curvature_derivative
+      TYPE(twofold_real_type), INTENT(OUT), OPTIONAL :: third(2, 2, 2)
+      TYPE(twofold_real_type), PARAMETER :: relative_width = twofold_real_type(64.0_dp*SQRT(EPSILON(0.0_dp)), 0.0_dp)
+      TYPE(twofold_real_type) :: width, u, polynomial, slope, curvature, ratio, curvature_derivative
 
+      TYPE(twofold_real_type), PARAMETER :: zero = twofold_real_type(), one = twofold_real_type(1.0_dp, 0.0_dp), &
+                                            two = twofold_real_type(2.0_dp, 0.0_dp), three = twofold_real_type(3.0_dp, 0.0_dp), &
+                                           four = twofold_real_type(4.0_dp, 0.0_dp), sixteen = twofold_real_type(16.0_dp, 0.0_dp), &
+                               three_quarters = twofold_real_type(0.75_dp, 0.0_dp), three_halves = twofold_real_type(1.5_dp, 0.0_dp)
       width = relative_width*b
       IF (PRESENT(active)) active = a - b < width
-      second = 0.0_dp
-      IF (PRESENT(third)) third = 0.0_dp
+      second = zero
+      IF (PRESENT(third)) third = zero
       IF (a - b >= width) THEN
          value = a
-         first = [1.0_dp, 0.0_dp]
+         first = [one, zero]
       ELSE IF (a - b <= -width) THEN
          value = b
-         first = [0.0_dp, 1.0_dp]
+         first = [zero, one]
       ELSE
          u = (a - b)/width
-         polynomial = (1.0_dp + u)**3*(3.0_dp - u)/16.0_dp
-         slope = (1.0_dp + u)**2*(2.0_dp - u)/4.0_dp
-         curvature = 0.75_dp*(1.0_dp - u*u)/width
+         polynomial = (one + u)*(one + u)*(one + u)*(three - u)/sixteen
+         slope = (one + u)*(one + u)*(two - u)/four
+         curvature = three_quarters*(one - u*u)/width
          ratio = a/b
          value = b + width*polynomial
-         first = [slope, 1.0_dp + relative_width*polynomial - ratio*slope]
+         first = [slope, one + relative_width*polynomial - ratio*slope]
          second(1, 1) = curvature
          second(1, 2) = -ratio*curvature
          second(2, 1) = second(1, 2)
          second(2, 2) = ratio*ratio*curvature
          IF (PRESENT(third)) THEN
-            curvature_derivative = -1.5_dp*u/width**2
+            curvature_derivative = -three_halves*u/(width*width)
             third(1, 1, 1) = curvature_derivative
             third(1, 1, 2) = -curvature/b - ratio*curvature_derivative
             third(1, 2, 1) = third(1, 1, 2)
             third(2, 1, 1) = third(1, 1, 2)
-            third(1, 2, 2) = 2.0_dp*ratio*curvature/b + ratio**2*curvature_derivative
+            third(1, 2, 2) = two*ratio*curvature/b + (ratio*ratio)*curvature_derivative
             third(2, 1, 2) = third(1, 2, 2)
             third(2, 2, 1) = third(1, 2, 2)
-            third(2, 2, 2) = -3.0_dp*ratio**2*curvature/b - ratio**3*curvature_derivative
+            third(2, 2, 2) = -three*(ratio*ratio)*curvature/b - (ratio*ratio*ratio)*curvature_derivative
          END IF
       END IF
-   END SUBROUTINE libxc_c2_maximum
+   END SUBROUTINE libxc_c2_maximum_precise
 
 ! **************************************************************************************************
 !> \brief Positive density floor above Libxc's closed per-spin screening threshold.
@@ -2206,25 +2310,35 @@ CONTAINS
 !> \param third Optional third derivatives inside each smooth branch.
 !> \param density_slope Optional positive-side weight at a satisfied density-floor constraint.
 !>        A negative value retains the ordinary branch. Only a first derivative is selected.
+!> \param sigma_precise Optional contraction retaining the original Cartesian product remainders.
 !> \return Projected kinetic density.
 ! **************************************************************************************************
    FUNCTION libxc_c2_project_tau(rho, sigma, raw_tau, epsilon_rho, epsilon_tau, first, second, active, third, &
-                                 density_slope) RESULT(value)
+                                 density_slope, sigma_precise) RESULT(value)
       REAL(dp), INTENT(IN) :: rho, sigma, raw_tau, epsilon_rho, epsilon_tau
       REAL(dp), INTENT(IN), OPTIONAL :: density_slope
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL :: sigma_precise
       REAL(dp), INTENT(OUT), OPTIONAL :: first(3), second(3, 3), third(3, 3, 3)
       LOGICAL, INTENT(OUT), OPTIONAL :: active
       LOGICAL :: projection_active
-      REAL(dp) :: value, denominator, tau_w, lower, lower_first(2), lower_second(2, 2), &
-                  final_first(2), final_second(2, 2), w_first(2), w_second(2, 2), outer(2, 2)
-      REAL(dp) :: lower_third(2, 2, 2), final_third(2, 2, 2), w_third(2, 2, 2), &
-                  inner_first(2, 3), inner_second(3, 3), inner_third(3, 3, 3)
+      REAL(dp) :: value
+      TYPE(twofold_real_type) :: denominator, tau_w, lower, projected, lower_first(2), lower_second(2, 2), &
+                                 final_first(2), final_second(2, 2), w_first(2), w_second(2, 2), outer(2, 2)
+      TYPE(twofold_real_type) :: lower_third(2, 2, 2), final_third(2, 2, 2), w_third(2, 2, 2), &
+                                 inner_first(2, 3), inner_second(3, 3), inner_third(3, 3, 3), result_third(3, 3, 3)
+      TYPE(twofold_real_type), PARAMETER :: zero = twofold_real_type(), one = twofold_real_type(1.0_dp, 0.0_dp), &
+                                            two = twofold_real_type(2.0_dp, 0.0_dp), six = twofold_real_type(6.0_dp, 0.0_dp), &
+                                            eight = twofold_real_type(8.0_dp, 0.0_dp)
       INTEGER :: i, j, k, a, b, c
 
-      denominator = MAX(rho, libxc_density_floor(epsilon_rho))
-      tau_w = sigma/(8.0_dp*denominator)
-      CALL libxc_c2_maximum(tau_w, MAX(epsilon_tau, EPSILON(0.0_dp)), lower, lower_first, lower_second)
-      CALL libxc_c2_maximum(raw_tau, lower, value, final_first, final_second, projection_active)
+      denominator = twofold_real_type(MAX(rho, libxc_density_floor(epsilon_rho)), 0.0_dp)
+      tau_w = twofold_real_type(sigma, 0.0_dp)/(eight*denominator)
+      IF (PRESENT(sigma_precise)) tau_w = sigma_precise/(eight*denominator)
+      CALL libxc_c2_maximum_precise(tau_w, twofold_real_type(MAX(epsilon_tau, EPSILON(0.0_dp)), 0.0_dp), &
+                                    lower, lower_first, lower_second)
+      CALL libxc_c2_maximum_precise(twofold_real_type(raw_tau, 0.0_dp), lower, projected, &
+                                    final_first, final_second, projection_active)
+      value = twofold_value(projected)
       IF (PRESENT(active)) active = projection_active
       IF (.NOT. projection_active) THEN
          IF (PRESENT(first)) first = [0.0_dp, 0.0_dp, 1.0_dp]
@@ -2233,20 +2347,20 @@ CONTAINS
          RETURN
       END IF
       IF (.NOT. PRESENT(first) .AND. .NOT. PRESENT(second) .AND. .NOT. PRESENT(third)) RETURN
-      w_first = [0.0_dp, 1.0_dp/(8.0_dp*denominator)]
-      w_second = 0.0_dp
+      w_first = [zero, one/(eight*denominator)]
+      w_second = zero
       IF (rho >= libxc_density_floor(epsilon_rho)) THEN
          w_first(1) = -tau_w/denominator
-         w_second(1, 1) = 2.0_dp*tau_w/denominator**2
+         w_second(1, 1) = two*tau_w/(denominator*denominator)
          w_second(1, 2) = -w_first(2)/denominator
          w_second(2, 1) = w_second(1, 2)
       END IF
       IF (PRESENT(density_slope)) THEN
-         IF (density_slope >= 0.0_dp) w_first(1) = -density_slope*tau_w/denominator
+         IF (density_slope >= 0.0_dp) w_first(1) = -twofold_real_type(density_slope, 0.0_dp)*tau_w/denominator
       END IF
       IF (PRESENT(first)) THEN
-         first(1:2) = final_first(2)*lower_first(1)*w_first
-         first(3) = final_first(1)
+         first(1:2) = twofold_value(final_first(2)*lower_first(1)*w_first)
+         first(3) = twofold_value(final_first(1))
       END IF
       IF (PRESENT(second) .OR. PRESENT(third)) THEN
          DO j = 1, 2
@@ -2257,29 +2371,30 @@ CONTAINS
       END IF
       IF (PRESENT(second)) THEN
          second = 0.0_dp
-         second(1:2, 1:2) = final_first(2)*(lower_first(1)*w_second + lower_second(1, 1)*outer) + &
-                            final_second(2, 2)*lower_first(1)**2*outer
-         second(1:2, 3) = final_second(1, 2)*lower_first(1)*w_first
+         second(1:2, 1:2) = twofold_value(final_first(2)*(lower_first(1)*w_second + lower_second(1, 1)*outer) + &
+                                          final_second(2, 2)*lower_first(1)*lower_first(1)*outer)
+         second(1:2, 3) = twofold_value(final_second(1, 2)*lower_first(1)*w_first)
          second(3, 1:2) = second(1:2, 3)
-         second(3, 3) = final_second(1, 1)
+         second(3, 3) = twofold_value(final_second(1, 1))
       END IF
       IF (PRESENT(third)) THEN
-         CALL libxc_c2_maximum(tau_w, MAX(epsilon_tau, EPSILON(0.0_dp)), lower, &
-                               lower_first, lower_second, third=lower_third)
-         CALL libxc_c2_maximum(raw_tau, lower, value, final_first, final_second, third=final_third)
-         w_third = 0.0_dp
+         CALL libxc_c2_maximum_precise(tau_w, twofold_real_type(MAX(epsilon_tau, EPSILON(0.0_dp)), 0.0_dp), lower, &
+                                       lower_first, lower_second, third=lower_third)
+         CALL libxc_c2_maximum_precise(twofold_real_type(raw_tau, 0.0_dp), lower, projected, &
+                                       final_first, final_second, third=final_third)
+         w_third = zero
          IF (rho >= libxc_density_floor(epsilon_rho)) THEN
-            w_third(1, 1, 1) = -6.0_dp*tau_w/denominator**3
-            w_third(1, 1, 2) = 2.0_dp*w_first(2)/denominator**2
+            w_third(1, 1, 1) = -six*tau_w/(denominator*denominator*denominator)
+            w_third(1, 1, 2) = two*w_first(2)/(denominator*denominator)
             w_third(1, 2, 1) = w_third(1, 1, 2)
             w_third(2, 1, 1) = w_third(1, 1, 2)
          END IF
-         inner_first = 0.0_dp
-         inner_first(1, 3) = 1.0_dp
+         inner_first = zero
+         inner_first(1, 3) = one
          inner_first(2, 1:2) = lower_first(1)*w_first
-         inner_second = 0.0_dp
+         inner_second = zero
          inner_second(1:2, 1:2) = lower_first(1)*w_second + lower_second(1, 1)*outer
-         inner_third = 0.0_dp
+         inner_third = zero
          DO k = 1, 2
             DO j = 1, 2
                DO i = 1, 2
@@ -2293,21 +2408,22 @@ CONTAINS
          DO k = 1, 3
             DO j = 1, 3
                DO i = 1, 3
-                  third(i, j, k) = final_first(2)*inner_third(i, j, k)
+                  result_third(i, j, k) = final_first(2)*inner_third(i, j, k)
                   DO a = 1, 2
-                     third(i, j, k) = third(i, j, k) + final_second(a, 2)* &
-                                      (inner_first(a, i)*inner_second(j, k) + inner_first(a, j)*inner_second(i, k) + &
-                                       inner_first(a, k)*inner_second(i, j))
+                     result_third(i, j, k) = result_third(i, j, k) + final_second(a, 2)* &
+                                             (inner_first(a, i)*inner_second(j, k) + inner_first(a, j)*inner_second(i, k) + &
+                                              inner_first(a, k)*inner_second(i, j))
                      DO b = 1, 2
                         DO c = 1, 2
-                           third(i, j, k) = third(i, j, k) + &
-                                            final_third(a, b, c)*inner_first(a, i)*inner_first(b, j)*inner_first(c, k)
+                           result_third(i, j, k) = result_third(i, j, k) + &
+                                                   final_third(a, b, c)*inner_first(a, i)*inner_first(b, j)*inner_first(c, k)
                         END DO
                      END DO
                   END DO
                END DO
             END DO
          END DO
+         third = twofold_value(result_third)
       END IF
    END FUNCTION libxc_c2_project_tau
 
@@ -2322,14 +2438,17 @@ CONTAINS
 !> \param epsilon_rho Density cutoff used in the projection denominator.
 !> \param epsilon_tau Kinetic-density cutoff used as a positive floor.
 !> \param positive_slopes Optional first-derivative selection at each spin-density floor.
+!> \param sigma_precise Optional original compensated Cartesian contractions.
 ! **************************************************************************************************
    SUBROUTINE libxc_mgga_tau_pullback(w, point, raw_tau, nspin, grad_deriv, has_laplace, &
-                                      epsilon_rho, epsilon_tau, positive_slopes)
+                                      epsilon_rho, epsilon_tau, positive_slopes, sigma_precise)
       TYPE(libxc_worker_type), INTENT(INOUT)             :: w
       INTEGER, INTENT(IN)                                :: point, nspin, grad_deriv
       REAL(dp), INTENT(IN)                               :: raw_tau(nspin), epsilon_rho, epsilon_tau
       LOGICAL, INTENT(IN)                                :: has_laplace
       REAL(dp), INTENT(IN), OPTIONAL                     :: positive_slopes(nspin)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL :: sigma_precise(3)
+      TYPE(twofold_real_type) :: sigma_local
 
       INTEGER                                            :: channel, i, irho, isigma, itau, nvar
       REAL(dp)                                           :: projected, tau_first(3), tau_second(3, 3), tau_third(3, 3, 3)
@@ -2364,18 +2483,20 @@ CONTAINS
             isigma = 2*channel + 1
             itau = 7 + channel
          END IF
+         sigma_local = twofold_real_type(w%sigma(isigma - nspin, point), 0.0_dp)
+         IF (PRESENT(sigma_precise)) sigma_local = sigma_precise(isigma - nspin)
          IF (PRESENT(positive_slopes)) THEN
             projected = libxc_c2_project_tau(w%rho(channel, point), w%sigma(isigma - nspin, point), &
                                              raw_tau(channel), epsilon_rho, epsilon_tau, tau_first, tau_second, active(channel), &
-                                             density_slope=positive_slopes(channel))
+                                             density_slope=positive_slopes(channel), sigma_precise=sigma_local)
          ELSE
             projected = libxc_c2_project_tau(w%rho(channel, point), w%sigma(isigma - nspin, point), &
-                                             raw_tau(channel), epsilon_rho, epsilon_tau, tau_first, tau_second, active(channel))
+                      raw_tau(channel), epsilon_rho, epsilon_tau, tau_first, tau_second, active(channel), sigma_precise=sigma_local)
          END IF
          IF (.NOT. active(channel)) CYCLE
          IF (grad_deriv >= 3) THEN
             projected = libxc_c2_project_tau(w%rho(channel, point), w%sigma(isigma - nspin, point), &
-                                             raw_tau(channel), epsilon_rho, epsilon_tau, third=tau_third)
+                                             raw_tau(channel), epsilon_rho, epsilon_tau, third=tau_third, sigma_precise=sigma_local)
          END IF
          jacobian(itau, :) = 0.0_dp
          indices = [irho, isigma, itau]
@@ -2774,7 +2895,7 @@ CONTAINS
 #:for descs, arr, idx in umgga_all
                                           e_${'_'.join(descs)}$, &
 #:endfor
-                                          grad_deriv, npoints, func_name, sc, workers)
+                                          grad_deriv, npoints, func_name, sc, workers, rho_set)
 
    REAL(KIND=dp), DIMENSION(*), INTENT(IN)            :: rho, norm_drho, laplace_rho, tau
    REAL(KIND=dp), DIMENSION(*), INTENT(INOUT) :: e_0, e_rho, e_ndrho, e_laplace_rho, e_tau, &
@@ -2790,6 +2911,8 @@ CONTAINS
    CHARACTER(LEN=default_string_length), INTENT(IN)   :: func_name
    REAL(KIND=dp), INTENT(in)                          :: sc
    TYPE(libxc_worker_set_type), INTENT(INOUT)         :: workers
+   TYPE(xc_rho_set_type), INTENT(IN) :: rho_set
+   TYPE(twofold_real_type) :: sigma_precise(3)
 
    INTEGER                                            :: bsize, family, i, i0, ib, ii, ithread, &
                                                          nb, nblocks, nthreads
@@ -2846,7 +2969,10 @@ CONTAINS
             ! Continue at nonpositive tau without discarding finite density.
             ! The projection's Jacobian and curvature are applied after evaluation.
             DO i = 1, nb
-               w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau(i0 + i), eps_rho, eps_tau)
+               CALL libxc_precise_sigma(rho_set, i0 + i, 1, [norm_drho(i0 + i), 0.0_dp, 0.0_dp], sigma_precise)
+               w%sigma(1, i) = twofold_value(sigma_precise(1))
+               w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau(i0 + i), eps_rho, eps_tau, &
+                                                  sigma_precise=sigma_precise(1))
             END DO
          END IF
 
@@ -2854,7 +2980,9 @@ CONTAINS
          CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
          IF (is_mgga .AND. grad_deriv >= 1) THEN
             DO i = 1, nb
-               CALL libxc_mgga_tau_pullback(w, i, [tau(i0 + i)], 1, grad_deriv, has_laplace, eps_rho, eps_tau)
+               CALL libxc_precise_sigma(rho_set, i0 + i, 1, [norm_drho(i0 + i), 0.0_dp, 0.0_dp], sigma_precise)
+               CALL libxc_mgga_tau_pullback(w, i, [tau(i0 + i)], 1, grad_deriv, has_laplace, eps_rho, eps_tau, &
+                                            sigma_precise=sigma_precise)
             END DO
          END IF
 
@@ -3069,7 +3197,7 @@ SUBROUTINE libxc_spin_polarized_calc(rhoa, rhob, norm_drho, norm_drhoa, &
                                         #:for descs, arr, idx in mgga_all
                                      e_${'_'.join(descs)}$, &
                                         #:endfor
-                                     grad_deriv, npoints, func_name, sc, workers, floor_slopes, floor_tolerance)
+                                     grad_deriv, npoints, func_name, sc, workers, floor_slopes, floor_tolerance, rho_set)
 
 REAL(KIND=dp), DIMENSION(*), INTENT(IN)            :: rhoa, rhob, norm_drho, norm_drhoa, &
                                                       norm_drhob, laplace_rhoa, &
@@ -3094,6 +3222,8 @@ INTEGER, INTENT(in)                                :: grad_deriv, npoints
 CHARACTER(LEN=default_string_length), INTENT(IN)   :: func_name
 REAL(KIND=dp), INTENT(in)                          :: sc
 TYPE(libxc_worker_set_type), INTENT(INOUT)         :: workers
+TYPE(xc_rho_set_type), INTENT(IN) :: rho_set
+TYPE(twofold_real_type) :: sigma_precise(3)
 REAL(dp), INTENT(IN), OPTIONAL :: floor_slopes(:, :)
 REAL(dp), INTENT(IN) :: floor_tolerance
 
@@ -3173,8 +3303,13 @@ ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace,
          END DO
          ! Apply the same continuous kinetic-density projection per spin channel.
          DO i = 1, nb
-            w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau_a(i0 + i), eps_rho, eps_tau)
-            w%tau(2, i) = libxc_c2_project_tau(w%rho(2, i), w%sigma(3, i), tau_b(i0 + i), eps_rho, eps_tau)
+            CALL libxc_precise_sigma(rho_set, i0 + i, 2, &
+                                     [norm_drhoa(i0 + i), norm_drho(i0 + i), norm_drhob(i0 + i)], sigma_precise)
+            w%sigma(:, i) = twofold_value(sigma_precise)
+            w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau_a(i0 + i), eps_rho, eps_tau, &
+                                               sigma_precise=sigma_precise(1))
+            w%tau(2, i) = libxc_c2_project_tau(w%rho(2, i), w%sigma(3, i), tau_b(i0 + i), eps_rho, eps_tau, &
+                                               sigma_precise=sigma_precise(3))
          END DO
       END IF
 
@@ -3194,12 +3329,14 @@ ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace,
       END IF
       IF (is_mgga .AND. grad_deriv >= 1) THEN
          DO i = 1, nb
+            CALL libxc_precise_sigma(rho_set, i0 + i, 2, &
+                                     [norm_drhoa(i0 + i), norm_drho(i0 + i), norm_drhob(i0 + i)], sigma_precise)
             IF (PRESENT(floor_slopes)) THEN
                CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
-                                            grad_deriv, has_laplace, eps_rho, eps_tau, floor_slopes(:, i0 + i))
+                                    grad_deriv, has_laplace, eps_rho, eps_tau, floor_slopes(:, i0 + i), sigma_precise=sigma_precise)
             ELSE
                CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
-                                            grad_deriv, has_laplace, eps_rho, eps_tau)
+                                            grad_deriv, has_laplace, eps_rho, eps_tau, sigma_precise=sigma_precise)
             END IF
          END DO
       END IF

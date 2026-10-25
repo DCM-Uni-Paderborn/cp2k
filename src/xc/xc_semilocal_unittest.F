@@ -566,11 +566,12 @@ CONTAINS
          IF (spin_case == 2) nvar = 7
          ALLOCATE (x(nvar), probe(nvar), gradient(nvar), gp(nvar), hessian(nvar, nvar), hp(nvar, nvar))
          DO family = 1, SIZE(names)
+            ! Exact binary transition locations keep rounding of the reference out of the curvature check.
             IF (spin_case == 1) THEN
-               x(:) = [0.4_dp, 0.8_dp, 0.3_dp]
+               x(:) = [0.5_dp, 1.0_dp, 0.3_dp]
                w(1) = x(2)**2/(8.0_dp*x(1))
             ELSE
-               x(:) = [0.3_dp, 0.2_dp, 0.6_dp, 0.4_dp, 0.3_dp, 0.12_dp, 0.10_dp]
+               x(:) = [0.5_dp, 0.25_dp, 0.5_dp, 0.5_dp, 0.25_dp, 0.125_dp, 0.0625_dp]
                w(1) = x(4)**2/(8.0_dp*x(1))
                w(2) = x(5)**2/(8.0_dp*x(2))
             END IF
