@@ -1162,6 +1162,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
       TYPE(qs_ks_env_type), POINTER                      :: native_ks
       TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
@@ -1285,14 +1286,16 @@ CONTAINS
       END DO
       IF (ALLOCATED(state%paw_potential)) THEN
          CPASSERT(state%paw_density_evaluation == state%density_evaluations)
+         NULLIFY (orbital_factors)
+         IF (state%orbital_factors%density_evaluation == state%density_evaluations) orbital_factors => state%orbital_factors
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_paw_response(state%bloch%frames, state%paw_density, state%bloch%weights, &
                                              state%paw_potential, atom_response, cell_response, reduced_k_response, &
-                                             paw_response, dw_all)
+                                             paw_response, dw_all, orbital_factors)
          ELSE
             CALL qs_upf_inverse_paw_response([state%frame], state%paw_density, [1.0_dp], &
                                              state%paw_potential, atom_response, cell_response, reduced_k_response, &
-                                             paw_response, dw_all)
+                                             paw_response, dw_all, orbital_factors)
          END IF
          response = response + paw_response
       END IF

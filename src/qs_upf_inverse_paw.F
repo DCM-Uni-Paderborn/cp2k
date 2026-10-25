@@ -11,6 +11,7 @@
 ! **************************************************************************************************
 MODULE qs_upf_inverse_paw
    USE compensated_arithmetic,          ONLY: twofold_add,&
+                                              twofold_multiply,&
                                               twofold_real_type,&
                                               twofold_value
    USE hfx_types,                       ONLY: hfx_type
@@ -656,6 +657,7 @@ CONTAINS
          CALL frames(1)%ao%point_comm%sum(potential_components%hi)
          CALL frames(1)%ao%point_comm%sum(potential_components%lo)
          potential(center)%matrix = twofold_value(potential_components)
+         ALLOCATE (potential(center)%components, SOURCE=potential_components)
          ALLOCATE (atomic_operator(SIZE(density, 1), SIZE(density, 2)))
          DO spin = 1, ns
             DO ik = 1, nk
@@ -889,9 +891,10 @@ CONTAINS
 !> \param reduced_k_response Response of the reduced Bloch vectors, one per global k point.
 !> \param derivative Energy response. Rigid atomic quadratures have no additional measure response.
 !> \param coefficients_response Optional responses of the same frames and geometry variation, in global k order.
+!> \param orbital_factors Optional original factors of the same installed density as potential.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_response(frames, density, kweights, potential, atom_response, cell_response, &
-                                          reduced_k_response, derivative, coefficients_response)
+                                          reduced_k_response, derivative, coefficients_response, orbital_factors)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :)
       REAL(dp), INTENT(IN)                               :: kweights(:)
@@ -901,16 +904,21 @@ CONTAINS
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: derivative
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors
 
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
       COMPLEX(dp), POINTER                               :: dw(:, :)
-      INTEGER                                            :: center, first, ik, info, last, nao, nk, &
-                                                            nproj, ns, spin
+      INTEGER                                            :: center, first, ik, info, last, n, nao, &
+                                                            nk, nproj, ns, p, q, spin
+      LOGICAL                                            :: assertion_valid
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
                                                             volume_response
       REAL(dp), ALLOCATABLE                              :: points_response(:, :), &
                                                             weights_response(:)
+      TYPE(twofold_real_type)                            :: retained_response
+      TYPE(twofold_real_type), ALLOCATABLE               :: occupation_response(:, :)
 
       nk = SIZE(frames)
       CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
@@ -927,7 +935,17 @@ CONTAINS
       ELSE
          ALLOCATE (owned_dw(nproj, nao))
       END IF
+      IF (PRESENT(orbital_factors)) THEN
+         assertion_valid = ALLOCATED(orbital_factors%coefficients) .AND. ALLOCATED(orbital_factors%occupations)
+         CPASSERT(assertion_valid)
+         assertion_valid = SIZE(orbital_factors%coefficients, 1) == nao .AND. &
+                           SIZE(orbital_factors%coefficients, 3) == nk .AND. SIZE(orbital_factors%coefficients, 4) == ns
+         CPASSERT(assertion_valid)
+         assertion_valid = ALL(SHAPE(orbital_factors%occupations) == [SIZE(orbital_factors%coefficients, 2), nk, ns])
+         CPASSERT(assertion_valid)
+      END IF
       derivative = 0.0_dp
+      retained_response = twofold_real_type()
       DO ik = 1, nk
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frames(ik)%ao%positions)))
          IF (PRESENT(coefficients_response)) THEN
@@ -954,6 +972,27 @@ CONTAINS
             CPASSERT(SIZE(potential(center)%matrix, 1) == last - first + 1)
             CPASSERT(SIZE(potential(center)%matrix, 2) == last - first + 1)
             CPASSERT(SIZE(potential(center)%matrix, 3) == ns)
+            IF (PRESENT(orbital_factors) .AND. ALLOCATED(potential(center)%components)) THEN
+               n = last - first + 1
+               assertion_valid = ALL(SHAPE(potential(center)%components) == [n, n, ns])
+               CPASSERT(assertion_valid)
+               ALLOCATE (occupation_response(n, n))
+               DO spin = 1, ns
+                  CALL upf_inverse_orbital_projector_density( &
+                     RESHAPE(frames(ik)%ao%coefficients(first:last, :), [n, nao, 1]), &
+                     orbital_factors%coefficients(:, :, ik:ik, spin), orbital_factors%occupations(:, ik:ik, spin), &
+                     [kweights(ik)], occupation_response, &
+                     fields_direction=RESHAPE(dw(first:last, :), [n, nao, 1]))
+                  DO q = 1, n
+                     DO p = 1, n
+                        retained_response = twofold_add(retained_response, &
+                                              twofold_multiply(potential(center)%components(p, q, spin), occupation_response(q, p)))
+                     END DO
+                  END DO
+               END DO
+               DEALLOCATE (occupation_response)
+               CYCLE
+            END IF
             ALLOCATE (projected(last - first + 1, last - first + 1))
             DO spin = 1, ns
                projected(:, :) = MATMUL(dw(first:last, :), MATMUL(density(:, :, ik, spin), &
@@ -964,6 +1003,7 @@ CONTAINS
             DEALLOCATE (projected)
          END DO
       END DO
+      derivative = derivative + twofold_value(retained_response)
    END SUBROUTINE qs_upf_inverse_paw_response
 
 END MODULE qs_upf_inverse_paw

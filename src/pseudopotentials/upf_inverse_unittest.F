@@ -2807,8 +2807,9 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_projector_density()
       COMPLEX(dp) :: c(2, 2), complex_operator(2, 2), density(2, 2), expected_operator(2, 2), &
-         fields(2, 2, 2), orbital_direction(2, 1, 2), orbitals(2, 1, 2), projected(3, 3), &
-         projector_rows(2, 1), q(3, 3), reference(3, 3), stable_operator(1, 1), w(3, 2), wc(3, 2)
+         fields(2, 2, 2), fields_direction(2, 2, 2), orbital_direction(2, 1, 2), &
+         orbitals(2, 1, 2), projected(3, 3), projector_rows(2, 1), q(3, 3), reference(3, 3), &
+         stable_operator(1, 1), w(3, 2), wc(3, 2)
       INTEGER                                            :: i, j
       REAL(dp)                                           :: displacement(2), expected, kernel(2, 2), &
                                                             occupation_direction(1, 2), &
@@ -2872,6 +2873,13 @@ CONTAINS
       value = twofold_value(twofold_add(retained(1, 1), &
                                         twofold_real_type(-retained(2, 2)%hi, -retained(2, 2)%lo)))
       CALL check(ABS(value - expected), 'Retained coefficient and occupation response', 1.e-31_dp)
+      fields_direction = 0.5_dp*fields
+      CALL upf_inverse_orbital_projector_density(fields, orbitals, occupations, weights, retained, &
+                                                 orbital_direction, occupation_direction, fields_direction)
+      expected = -5.0_dp*SUM(weights*(3.0_dp + occupation_direction(1, :))*displacement**2)
+      value = twofold_value(twofold_add(retained(1, 1), &
+                                        twofold_real_type(-retained(2, 2)%hi, -retained(2, 2)%lo)))
+      CALL check(ABS(value - expected), 'Joint moving-projector coefficient and occupation response', 1.e-31_dp)
       operator_kernel = twofold_real_type()
       operator_kernel(1, 1)%hi = 1.0_dp
       operator_kernel(2, 2)%hi = -1.0_dp

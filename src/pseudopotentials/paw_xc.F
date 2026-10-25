@@ -274,6 +274,8 @@ CONTAINS
 
       assertion_valid = ALL(SHAPE(density) == [onecenter%nproj, onecenter%nproj, SIZE(coefficients, 3)])
       CPASSERT(assertion_valid)
+      assertion_valid = SIZE(density, 3) == 1 .OR. SIZE(density, 3) == 2
+      CPASSERT(assertion_valid)
       CPASSERT(SIZE(coefficients, 1) == onecenter%npair)
       assertion_valid = SIZE(coefficients, 2) == SIZE(onecenter%gaunt, 3)
       CPASSERT(assertion_valid)

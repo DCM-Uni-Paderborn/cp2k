@@ -9,6 +9,7 @@
 !> \brief PAW one-center cache types without dependencies on Kohn-Sham or XC evaluators.
 ! **************************************************************************************************
 MODULE paw_types
+   USE compensated_arithmetic,          ONLY: twofold_real_type
    USE kinds,                           ONLY: dp
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_type
    USE upf_projector_integrals,         ONLY: upf_projector_type
@@ -58,6 +59,8 @@ MODULE paw_types
 
    TYPE paw_potential_type
       REAL(dp), ALLOCATABLE :: matrix(:, :, :)
+      ! Retain the same one-center potential for geometry contractions before AO rounding.
+      TYPE(twofold_real_type), ALLOCATABLE :: components(:, :, :)
    END TYPE paw_potential_type
 
    TYPE paw_kind_type

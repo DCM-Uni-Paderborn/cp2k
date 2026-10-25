@@ -112,7 +112,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Real projector occupation or its response, retaining the original orbital products.
 !>        Two FP64 components preserve cancellation through subsequent atomic field contractions.
-!>        Supplying either variation returns the matching signed occupation response instead.
+!>        Supplying any variation returns the matching signed occupation response instead.
 !> \param fields Projector rows, indexed (projector,AO,k).
 !> \param coefficients Original Gaussian orbital coefficients, indexed (AO,MO,k).
 !> \param occupations Original physical occupations, indexed (MO,k).
@@ -120,14 +120,16 @@ CONTAINS
 !> \param density Real symmetric projector occupation or its signed response.
 !> \param coefficients_direction Optional original coefficient variation at fixed geometry.
 !> \param occupations_direction Optional signed occupation variation.
+!> \param fields_direction Optional moving-projector variation in the same row and k order.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_orbital_projector_density(fields, coefficients, occupations, weights, density, &
-                                                    coefficients_direction, occupations_direction)
+                                                    coefficients_direction, occupations_direction, fields_direction)
       COMPLEX(dp), INTENT(IN)                            :: fields(:, :, :), coefficients(:, :, :)
       REAL(dp), INTENT(IN)                               :: occupations(:, :), weights(:)
       TYPE(compensated_real_type), INTENT(OUT)           :: density(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL :: coefficients_direction(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: occupations_direction(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: fields_direction(:, :, :)
 
       INTEGER                                            :: a, b, i, ik, mu, nao, nf, nk, nmo
       LOGICAL                                            :: assertion_valid, response, valid
@@ -147,13 +149,17 @@ CONTAINS
       CPASSERT(assertion_valid)
       assertion_valid = ALL(ieee_is_finite(occupations)) .AND. ALL(ieee_is_finite(weights))
       CPASSERT(assertion_valid)
-      response = PRESENT(coefficients_direction) .OR. PRESENT(occupations_direction)
+      response = PRESENT(coefficients_direction) .OR. PRESENT(occupations_direction) .OR. PRESENT(fields_direction)
       IF (PRESENT(coefficients_direction)) THEN
          assertion_valid = ALL(SHAPE(coefficients_direction) == SHAPE(coefficients))
          CPASSERT(assertion_valid)
       END IF
       IF (PRESENT(occupations_direction)) THEN
          assertion_valid = ALL(SHAPE(occupations_direction) == SHAPE(occupations))
+         CPASSERT(assertion_valid)
+      END IF
+      IF (PRESENT(fields_direction)) THEN
+         assertion_valid = ALL(SHAPE(fields_direction) == SHAPE(fields))
          CPASSERT(assertion_valid)
       END IF
       ALLOCATE (projected(nf), tangent(nf))
@@ -173,6 +179,11 @@ CONTAINS
                   projected(a)%im = add(projected(a)%im, term%im)
                   IF (PRESENT(coefficients_direction)) THEN
                      term = complex_product(fields(a, mu, ik), coefficients_direction(mu, i, ik))
+                     tangent(a)%re = add(tangent(a)%re, term%re)
+                     tangent(a)%im = add(tangent(a)%im, term%im)
+                  END IF
+                  IF (PRESENT(fields_direction)) THEN
+                     term = complex_product(fields_direction(a, mu, ik), coefficients(mu, i, ik))
                      tangent(a)%re = add(tangent(a)%re, term%re)
                      tangent(a)%im = add(tangent(a)%im, term%im)
                   END IF
