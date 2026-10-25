@@ -214,6 +214,7 @@ CONTAINS
       TYPE(pw_r3d_rs_type), TARGET                       :: transferred_weights
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(section_vals_type), POINTER                   :: functional, hf, xc
       TYPE(skala_density_constraints_type), POINTER      :: constraints, response_constraints
@@ -402,6 +403,8 @@ CONTAINS
          CALL native_hartree_response(ks_env, matrices_direction, atomic)
          operators_direction = operators_direction + atomic
       END IF
+      NULLIFY (orbital_factors)
+      IF (state%orbital_factors%density_evaluation == state%density_evaluations) orbital_factors => state%orbital_factors
       IF (ANY(state%paw%active)) THEN
          ALLOCATE (paw(n, n, nk, ns))
          functional => section_vals_get_subs_vals(xc, "XC_FUNCTIONAL")
@@ -425,10 +428,10 @@ CONTAINS
             CPASSERT(state%paw_density_evaluation == state%density_evaluations)
             IF (ASSOCIATED(state%bloch%kpoints)) THEN
                CALL qs_upf_inverse_paw_xc_kernel(state%paw, state%bloch%frames, state%paw_density, &
-                                                 matrices_direction, kweights, xc, paw)
+                                                 matrices_direction, kweights, xc, paw, orbital_factors, orbital_direction)
             ELSE
                CALL qs_upf_inverse_paw_xc_kernel(state%paw, [state%frame], state%paw_density, &
-                                                 matrices_direction, kweights, xc, paw)
+                                                 matrices_direction, kweights, xc, paw, orbital_factors, orbital_direction)
             END IF
             operators_direction = operators_direction + paw
          END IF

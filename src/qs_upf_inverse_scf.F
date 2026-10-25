@@ -104,6 +104,7 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_paw_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
+                                              qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_scf_release,&
                                               qs_upf_inverse_scf_type
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
@@ -467,6 +468,7 @@ CONTAINS
       TYPE(paw_potential_type), ALLOCATABLE              :: core_potential(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(section_vals_type), POINTER                   :: functional
       TYPE(skala_density_constraints_type), POINTER      :: samples
@@ -490,6 +492,8 @@ CONTAINS
             END ASSOCIATE
          END DO
       END IF
+      NULLIFY (orbital_factors)
+      IF (state%orbital_factors%density_evaluation == state%density_evaluations) orbital_factors => state%orbital_factors
       nk = 1
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
          nk = SIZE(state%bloch%weights)
@@ -517,13 +521,13 @@ CONTAINS
                                           functional, density_cutoff, gradient_cutoff, energies, &
                                           state%paw_operator, state%paw_potential, &
                                           semilocal_xc=.NOT. ALLOCATED(state%paw_reconstruction), &
-                                          core_energy=core_energy, core_potential=core_potential, samples=samples)
+                           core_energy=core_energy, core_potential=core_potential, samples=samples, orbital_factors=orbital_factors)
       ELSE
          CALL qs_upf_inverse_paw_evaluate(state%paw, [state%frame], state%paw_density, [1.0_dp], &
                                           functional, density_cutoff, gradient_cutoff, energies, &
                                           state%paw_operator, state%paw_potential, &
                                           semilocal_xc=.NOT. ALLOCATED(state%paw_reconstruction), &
-                                          core_energy=core_energy, core_potential=core_potential, samples=samples)
+                           core_energy=core_energy, core_potential=core_potential, samples=samples, orbital_factors=orbital_factors)
       END IF
       energies(3) = energies(3) + state%gth_paw_energy
       state%paw_density_evaluation = state%density_evaluations

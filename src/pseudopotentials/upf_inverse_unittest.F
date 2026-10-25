@@ -16,6 +16,9 @@ PROGRAM upf_inverse_unittest
                                               deallocate_gto_basis_set,&
                                               gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
+   USE compensated_arithmetic,          ONLY: twofold_add,&
+                                              twofold_real_type,&
+                                              twofold_value
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_evaluate,&
@@ -48,6 +51,7 @@ PROGRAM upf_inverse_unittest
                                               paw_core_radial_value
    USE paw_types,                       ONLY: paw_kind_type
    USE paw_xc,                          ONLY: paw_xc_ae_core_cartesian,&
+                                              paw_xc_point_adjoint,&
                                               paw_xc_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_harmonics_atom,               ONLY: harmonics_atom_type
@@ -100,7 +104,9 @@ PROGRAM upf_inverse_unittest
         upf_inverse_lattice_error_bounds, upf_inverse_lattice_init, upf_inverse_lattice_project, &
         upf_inverse_lattice_residual, upf_inverse_lattice_response, &
         upf_inverse_lattice_response_residual, upf_inverse_lattice_type
-   USE upf_inverse_precision,           ONLY: upf_inverse_orbital_expectation
+   USE upf_inverse_precision,           ONLY: upf_inverse_orbital_expectation,&
+                                              upf_inverse_orbital_projector_density,&
+                                              upf_inverse_projector_operator
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_density_residual,&
                                               upf_inverse_pair,&
@@ -1361,6 +1367,15 @@ CONTAINS
          grid%core(:, 2) = 0.0_dp
          grid%radial(:, 1, 0, 1) = EXP(-grid%r)
          grid%radial(:, 1, 0, 2) = 0.7_dp*EXP(-2.0_dp*grid%r)
+         ALLOCATE (grid%kinetic_radial(4, 1, 0:0, 2), SOURCE=2.3_dp*grid%radial)
+         DO spin = 1, 2
+            CALL paw_xc_point_adjoint(grid, kind%onecenter, 3, 2, spin, .FALSE., local_operator)
+            CALL check(ABS(local_operator(1, 1) - grid%radial(3, 1, 0, spin)/fourpi), &
+                       'PAW density point transpose', 3.e-15_dp)
+            CALL paw_xc_point_adjoint(grid, kind%onecenter, 3, 2, spin, .TRUE., local_operator)
+            CALL check(ABS(local_operator(1, 1) - grid%kinetic_radial(3, 1, 0, spin)/fourpi), &
+                       'PAW kinetic point transpose', 3.e-15_dp)
+         END DO
          projected(1, 1, :) = [0.7_dp, 0.2_dp]
          position = [0.3_dp, -0.2_dp, 0.1_dp]
          g(:, 1) = 0.0_dp
@@ -2791,11 +2806,15 @@ CONTAINS
 !> \brief Compare density congruence to independently projected occupied orbitals.
 ! **************************************************************************************************
    SUBROUTINE check_projector_density()
-      COMPLEX(dp) :: c(2, 2), density(2, 2), fields(2, 2, 2), orbitals(2, 1, 2), projected(3, 3), &
-         q(3, 3), reference(3, 3), w(3, 2), wc(3, 2)
+      COMPLEX(dp) :: c(2, 2), complex_operator(2, 2), density(2, 2), expected_operator(2, 2), &
+         fields(2, 2, 2), orbital_direction(2, 1, 2), orbitals(2, 1, 2), projected(3, 3), &
+         projector_rows(2, 1), q(3, 3), reference(3, 3), stable_operator(1, 1), w(3, 2), wc(3, 2)
       INTEGER                                            :: i, j
       REAL(dp)                                           :: displacement(2), expected, kernel(2, 2), &
+                                                            occupation_direction(1, 2), &
                                                             occupations(1, 2), value, weights(2)
+      TYPE(twofold_real_type)                            :: complex_kernel(3, 3), &
+                                                            operator_kernel(2, 2), retained(2, 2)
 
       DO j = 1, 2
          DO i = 1, 2
@@ -2815,6 +2834,12 @@ CONTAINS
       CALL check(ABS(SUM(projected*CONJG(q)) - &
                      SUM(density*CONJG(MATMUL(CONJG(TRANSPOSE(w)), MATMUL(q, w)))))/MAXVAL(ABS(reference)), &
                  'projector density operator adjoint')
+      complex_kernel%hi = REAL(q, dp)
+      complex_kernel%lo = 0.0_dp
+      CALL upf_inverse_projector_operator(w, complex_kernel, complex_operator)
+      expected_operator = MATMUL(CONJG(TRANSPOSE(w)), MATMUL(CMPLX(REAL(q, dp), KIND=dp), w))
+      CALL check(MAXVAL(ABS(complex_operator - expected_operator))/MAXVAL(ABS(expected_operator)), &
+                 'Complex projector-potential congruence')
       ! Forming the occupation matrix first loses this signed quadratic contribution.
       fields = CMPLX(0.0_dp, 0.0_dp, dp)
       fields(1, 1, :) = CMPLX(1.5_dp, 0.5_dp, dp)
@@ -2832,6 +2857,30 @@ CONTAINS
       expected = -5.0_dp*SUM(weights*displacement**2)
       value = upf_inverse_orbital_expectation(fields, kernel, orbitals, occupations, weights, 0.0_dp)
       CALL check(ABS(value - expected), 'Compensated signed orbital density with unequal k weights', 1.e-31_dp)
+      CALL upf_inverse_orbital_projector_density(fields, orbitals, occupations, weights, retained)
+      value = twofold_value(twofold_add(retained(1, 1), &
+                                        twofold_real_type(-retained(2, 2)%hi, -retained(2, 2)%lo)))
+      CALL check(ABS(value - expected), 'Retained signed projector occupation', 1.e-31_dp)
+      orbital_direction = CMPLX(0.0_dp, 0.0_dp, dp)
+      occupation_direction(1, :) = [0.1_dp, -0.2_dp]
+      DO i = 1, 2
+         orbital_direction(2, 1, i) = CMPLX(-displacement(i), displacement(i), dp)
+      END DO
+      CALL upf_inverse_orbital_projector_density(fields, orbitals, occupations, weights, retained, &
+                                                 orbital_direction, occupation_direction)
+      expected = -5.0_dp*SUM(weights*(2.0_dp + occupation_direction(1, :))*displacement**2)
+      value = twofold_value(twofold_add(retained(1, 1), &
+                                        twofold_real_type(-retained(2, 2)%hi, -retained(2, 2)%lo)))
+      CALL check(ABS(value - expected), 'Retained coefficient and occupation response', 1.e-31_dp)
+      operator_kernel = twofold_real_type()
+      operator_kernel(1, 1)%hi = 1.0_dp
+      operator_kernel(2, 2)%hi = -1.0_dp
+      operator_kernel(2, 2)%lo = 2.0_dp**(-80)
+      projector_rows = CMPLX(1.5_dp, 0.5_dp, dp)
+      CALL upf_inverse_projector_operator(projector_rows, operator_kernel, stable_operator)
+      CALL check(ABS(stable_operator(1, 1) - 2.5_dp*2.0_dp**(-80)), &
+                 'Retained signed projector-potential congruence', 1.e-40_dp)
+
    END SUBROUTINE check_projector_density
 
 ! **************************************************************************************************

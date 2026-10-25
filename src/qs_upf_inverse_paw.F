@@ -10,6 +10,9 @@
 !>        Fixed kinetic and ionic terms remain in the original PP_DIJ.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_paw
+   USE compensated_arithmetic,          ONLY: twofold_add,&
+                                              twofold_real_type,&
+                                              twofold_value
    USE hfx_types,                       ONLY: hfx_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_potential_coulomb,&
@@ -36,11 +39,14 @@ MODULE qs_upf_inverse_paw
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
+                                              qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_type
    USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE upf_inverse,                     ONLY: upf_inverse_density_evaluate,&
                                               upf_inverse_kinetic_type
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_fourier_kernel
+   USE upf_inverse_precision,           ONLY: upf_inverse_orbital_projector_density,&
+                                              upf_inverse_projector_operator
    USE upf_projector_integrals,         ONLY: upf_projector_type
    USE upf_types,                       ONLY: atom_upfpot_type
    USE uspp_augmentation,               ONLY: uspp_augmentation_realspace,&
@@ -544,10 +550,11 @@ CONTAINS
 !> \param core_energy Optional kind-indexed core-core exchange constants for the native HF interactions.
 !> \param core_potential Optional kind-indexed core-valence operators, with one spin-independent matrix.
 !> \param samples Optional physical XC arguments, retained on the existing atomic owners.
+!> \param orbital_factors Optional original factors certified for the installed density.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_evaluate(kinds, frames, density, kweights, functional, density_cutoff, &
                                           gradient_cutoff, energies, hamiltonian, potential, semilocal_xc, &
-                                          core_energy, core_potential, samples)
+                                          core_energy, core_potential, samples, orbital_factors)
       TYPE(paw_kind_type), INTENT(IN)                    :: kinds(:)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :)
@@ -562,12 +569,20 @@ CONTAINS
       TYPE(paw_potential_type), INTENT(IN), OPTIONAL     :: core_potential(:)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT), OPTIONAL, POINTER                :: samples
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors
 
+      COMPLEX(dp), ALLOCATABLE                           :: atomic_operator(:, :)
       INTEGER                                            :: center, first, ik, ikind, last, n, nk, &
-                                                            ns, spin
+                                                            ns, p, q, spin
+      LOGICAL                                            :: use_semilocal
       REAL(dp)                                           :: eh, ex
       REAL(dp), ALLOCATABLE                              :: dm(:, :, :), vh(:, :), vxc(:, :, :)
+      TYPE(twofold_real_type), ALLOCATABLE               :: density_components(:, :, :), &
+                                                            potential_components(:, :, :)
 
+      use_semilocal = .TRUE.
+      IF (PRESENT(semilocal_xc)) use_semilocal = semilocal_xc
       nk = SIZE(frames)
       CPASSERT(PRESENT(core_energy) .EQV. PRESENT(core_potential))
       IF (PRESENT(core_energy)) THEN
@@ -600,41 +615,55 @@ CONTAINS
          IF (MODULO(center - 1, frames(1)%ao%point_comm%num_pe) == frames(1)%ao%point_comm%mepos) THEN
             ALLOCATE (dm(n, n, ns), vh(n, n), vxc(n, n, ns))
             CALL project_paw_density(frames, density, kweights, first, last, dm)
+            ALLOCATE (potential_components(n, n, ns))
+            potential_components = twofold_real_type()
             CALL paw_onecenter_hartree(kinds(ikind)%onecenter, SUM(dm, DIM=3), eh, vh)
             ex = 0.0_dp
             vxc = 0.0_dp
-            IF (PRESENT(semilocal_xc)) THEN
-               IF (semilocal_xc) THEN
-                  CALL paw_xc_evaluate(kinds(ikind)%xcgrid, kinds(ikind)%onecenter, functional, dm, &
-                                       density_cutoff, gradient_cutoff, ex, vxc, &
-                                       samples=samples, atom=frames(1)%ao%center_atoms(center))
-               END IF
-            ELSE
+            IF (use_semilocal) THEN
+               ALLOCATE (density_components(n, n, ns))
+               CALL retained_projector_density(frames, kweights, first, last, dm, density_components, orbital_factors)
                CALL paw_xc_evaluate(kinds(ikind)%xcgrid, kinds(ikind)%onecenter, functional, dm, &
                                     density_cutoff, gradient_cutoff, ex, vxc, &
-                                    samples=samples, atom=frames(1)%ao%center_atoms(center))
+                                    samples=samples, atom=frames(1)%ao%center_atoms(center), &
+                                    density_components=density_components, potential_components=potential_components)
+               DEALLOCATE (density_components)
             END IF
             IF (PRESENT(core_energy)) THEN
                ex = ex + core_energy(ikind) + SUM(SUM(dm, DIM=3)*core_potential(ikind)%matrix(:, :, 1))
                DO spin = 1, ns
                   vxc(:, :, spin) = vxc(:, :, spin) + core_potential(ikind)%matrix(:, :, 1)
+                  DO q = 1, n
+                     DO p = 1, n
+                        potential_components(p, q, spin) = twofold_add(potential_components(p, q, spin), &
+                                                                   twofold_real_type(core_potential(ikind)%matrix(p, q, 1), 0.0_dp))
+                     END DO
+                  END DO
                END DO
             END IF
             energies = energies + [eh, ex, kinds(ikind)%core_energy]
             DO spin = 1, ns
-               potential(center)%matrix(:, :, spin) = vh + vxc(:, :, spin)
+               DO q = 1, n
+                  DO p = 1, n
+               potential_components(p, q, spin) = twofold_add(potential_components(p, q, spin), twofold_real_type(vh(p, q), 0.0_dp))
+                  END DO
+               END DO
+               potential(center)%matrix(:, :, spin) = twofold_value(potential_components(:, :, spin))
             END DO
             DEALLOCATE (dm, vh, vxc)
          END IF
-         CALL frames(1)%ao%point_comm%sum(potential(center)%matrix)
+         IF (.NOT. ALLOCATED(potential_components)) ALLOCATE (potential_components(n, n, ns), SOURCE=twofold_real_type())
+         CALL frames(1)%ao%point_comm%sum(potential_components%hi)
+         CALL frames(1)%ao%point_comm%sum(potential_components%lo)
+         potential(center)%matrix = twofold_value(potential_components)
+         ALLOCATE (atomic_operator(SIZE(density, 1), SIZE(density, 2)))
          DO spin = 1, ns
             DO ik = 1, nk
-               hamiltonian(:, :, ik, spin) = hamiltonian(:, :, ik, spin) + &
-                                             MATMUL(CONJG(TRANSPOSE(frames(ik)%ao%coefficients(first:last, :))), &
-                                                    MATMUL(CMPLX(potential(center)%matrix(:, :, spin), KIND=dp), &
-                                                           frames(ik)%ao%coefficients(first:last, :)))
+   CALL upf_inverse_projector_operator(frames(ik)%ao%coefficients(first:last, :), potential_components(:, :, spin), atomic_operator)
+               hamiltonian(:, :, ik, spin) = hamiltonian(:, :, ik, spin) + atomic_operator
             END DO
          END DO
+         DEALLOCATE (atomic_operator, potential_components)
       END DO
       CALL frames(1)%ao%point_comm%sum(energies)
    END SUBROUTINE qs_upf_inverse_paw_evaluate
@@ -715,6 +744,59 @@ CONTAINS
    END SUBROUTINE project_paw_density
 
 ! **************************************************************************************************
+!> \brief Retain original orbital projector products when supplied by the installed-density owner.
+!> \param frames Original projector maps, in physical k-point order.
+!> \param kweights Original k weights.
+!> \param first First projector of this atom.
+!> \param last Last projector of this atom.
+!> \param native_density Existing real projector matrix, used when original factors are unavailable.
+!> \param components Retained real occupation or its response.
+!> \param orbitals Optional original orbital factors of the installed density.
+!> \param direction Optional matching coefficient and occupation variation.
+! **************************************************************************************************
+   SUBROUTINE retained_projector_density(frames, kweights, first, last, native_density, components, orbitals, direction)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
+      REAL(dp), INTENT(IN)                               :: kweights(:)
+      INTEGER, INTENT(IN)                                :: first, last
+      REAL(dp), INTENT(IN)                               :: native_density(:, :, :)
+      TYPE(twofold_real_type), INTENT(OUT)               :: components(:, :, :)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbitals, direction
+
+      COMPLEX(dp), ALLOCATABLE                           :: fields(:, :, :)
+      INTEGER                                            :: ik, spin
+      LOGICAL                                            :: assertion_valid
+
+      components%hi = native_density
+      components%lo = 0.0_dp
+      IF (.NOT. PRESENT(orbitals)) RETURN
+      IF (PRESENT(direction)) THEN
+         assertion_valid = direction%density_evaluation == orbitals%density_evaluation
+         CPASSERT(assertion_valid)
+      END IF
+      assertion_valid = ALLOCATED(orbitals%coefficients) .AND. ALLOCATED(orbitals%occupations)
+      CPASSERT(assertion_valid)
+      assertion_valid = SIZE(orbitals%coefficients, 3) == SIZE(frames)
+      CPASSERT(assertion_valid)
+      assertion_valid = SIZE(orbitals%coefficients, 4) == SIZE(native_density, 3)
+      CPASSERT(assertion_valid)
+      ALLOCATE (fields(last - first + 1, SIZE(frames(1)%ao%coefficients, 2), SIZE(frames)))
+      DO ik = 1, SIZE(frames)
+         fields(:, :, ik) = frames(ik)%ao%coefficients(first:last, :)
+      END DO
+      DO spin = 1, SIZE(native_density, 3)
+         IF (PRESENT(direction)) THEN
+            CALL upf_inverse_orbital_projector_density(fields, orbitals%coefficients(:, :, :, spin), &
+                                                       orbitals%occupations(:, :, spin), kweights, components(:, :, spin), &
+                                                       direction%coefficients(:, :, :, spin), direction%occupations(:, :, spin))
+         ELSE
+            CALL upf_inverse_orbital_projector_density(fields, orbitals%coefficients(:, :, :, spin), &
+                                                       orbitals%occupations(:, :, spin), kweights, components(:, :, spin))
+         END IF
+      END DO
+   END SUBROUTINE retained_projector_density
+
+! **************************************************************************************************
 !> \brief Apply the PAW one-center semilocal XC kernel to a complete AO density direction.
 !>        Sum the original k weights before the nonlinear atomic XC evaluation. The AO
 !>        Hamiltonian responses carry no k weight. Frozen-core fields remain in the base
@@ -727,8 +809,11 @@ CONTAINS
 !> \param kweights Original normalized k weights.
 !> \param xc_section The original complete XC section.
 !> \param hamiltonian New unweighted one-center XC Hamiltonian responses.
+!> \param orbital_factors Optional original factors certified for the installed density.
+!> \param orbital_direction Optional matching coefficient and occupation response.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_paw_xc_kernel(kinds, frames, density, direction, kweights, xc_section, hamiltonian)
+   SUBROUTINE qs_upf_inverse_paw_xc_kernel(kinds, frames, density, direction, kweights, xc_section, hamiltonian, &
+                                           orbital_factors, orbital_direction)
       TYPE(paw_kind_type), INTENT(IN)                    :: kinds(:)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :), &
@@ -736,11 +821,17 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: kweights(:)
       TYPE(section_vals_type), POINTER                   :: xc_section
       COMPLEX(dp), INTENT(OUT)                           :: hamiltonian(:, :, :, :)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors, orbital_direction
 
+      COMPLEX(dp), ALLOCATABLE                           :: atomic_operator(:, :)
       INTEGER                                            :: center, first, ik, kind, last, n, ns, &
                                                             spin
       REAL(dp), ALLOCATABLE                              :: delta(:, :, :), dm(:, :, :), &
                                                             potential(:, :, :)
+      TYPE(twofold_real_type), ALLOCATABLE               :: density_components(:, :, :), &
+                                                            direction_components(:, :, :), &
+                                                            potential_components(:, :, :)
 
       CALL check_paw_density(frames, density, kweights)
       CALL check_paw_density(frames, direction, kweights)
@@ -757,22 +848,33 @@ CONTAINS
          n = last - first + 1
          CPASSERT(n == kinds(kind)%onecenter%nproj)
          ALLOCATE (potential(n, n, ns), SOURCE=0.0_dp)
+         ALLOCATE (potential_components(n, n, ns), SOURCE=twofold_real_type())
          IF (MODULO(center - 1, frames(1)%ao%point_comm%num_pe) == frames(1)%ao%point_comm%mepos) THEN
             ALLOCATE (dm(n, n, ns), delta(n, n, ns))
             CALL project_paw_density(frames, density, kweights, first, last, dm)
             CALL project_paw_density(frames, direction, kweights, first, last, delta)
-            CALL paw_xc_response(kinds(kind)%xcgrid, kinds(kind)%onecenter, xc_section, dm, delta, potential)
+            ALLOCATE (density_components(n, n, ns), direction_components(n, n, ns))
+            CALL retained_projector_density(frames, kweights, first, last, dm, density_components, orbital_factors)
+            direction_components%hi = delta
+            direction_components%lo = 0.0_dp
+            IF (PRESENT(orbital_direction)) THEN
+     CALL retained_projector_density(frames, kweights, first, last, delta, direction_components, orbital_factors, orbital_direction)
+            END IF
+            CALL paw_xc_response(kinds(kind)%xcgrid, kinds(kind)%onecenter, xc_section, dm, delta, potential, &
+        density_components=density_components, direction_components=direction_components, potential_components=potential_components)
+            DEALLOCATE (density_components, direction_components)
             DEALLOCATE (dm, delta)
          END IF
-         CALL frames(1)%ao%point_comm%sum(potential)
+         CALL frames(1)%ao%point_comm%sum(potential_components%hi)
+         CALL frames(1)%ao%point_comm%sum(potential_components%lo)
+         ALLOCATE (atomic_operator(SIZE(density, 1), SIZE(density, 2)))
          DO spin = 1, ns
             DO ik = 1, SIZE(frames)
-               hamiltonian(:, :, ik, spin) = hamiltonian(:, :, ik, spin) + &
-                                             MATMUL(CONJG(TRANSPOSE(frames(ik)%ao%coefficients(first:last, :))), &
-                                        MATMUL(CMPLX(potential(:, :, spin), 0.0_dp, dp), frames(ik)%ao%coefficients(first:last, :)))
+   CALL upf_inverse_projector_operator(frames(ik)%ao%coefficients(first:last, :), potential_components(:, :, spin), atomic_operator)
+               hamiltonian(:, :, ik, spin) = hamiltonian(:, :, ik, spin) + atomic_operator
             END DO
          END DO
-         DEALLOCATE (potential)
+         DEALLOCATE (potential, potential_components, atomic_operator)
       END DO
    END SUBROUTINE qs_upf_inverse_paw_xc_kernel
 

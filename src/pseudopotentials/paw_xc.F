@@ -10,6 +10,12 @@
 !>        Evaluates AE minus compensated-PS densities, including the corresponding frozen cores.
 ! **************************************************************************************************
 MODULE paw_xc
+   USE compensated_arithmetic,          ONLY: twofold_add,&
+                                              twofold_divide,&
+                                              twofold_multiply,&
+                                              twofold_product,&
+                                              twofold_real_type,&
+                                              twofold_value
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_section_types,             ONLY: section_get_rval,&
                                               section_vals_get_subs_vals,&
@@ -254,92 +260,153 @@ CONTAINS
 !> \param onecenter Magnetic/radial mappings and angular integrals.
 !> \param density Projector density matrix, one or two spin channels.
 !> \param coefficients Radial-pair and real-harmonic coefficients for each spin.
+!> \param density_components Optional retained original projector occupation.
 ! **************************************************************************************************
-   SUBROUTINE density_coefficients(onecenter, density, coefficients)
+   SUBROUTINE density_coefficients(onecenter, density, coefficients, density_components)
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       REAL(dp), INTENT(IN)                               :: density(:, :, :)
-      REAL(dp), INTENT(OUT)                              :: coefficients(:, :, :)
+      TYPE(twofold_real_type), INTENT(OUT)               :: coefficients(:, :, :)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :)
 
-      INTEGER                                            :: p, pair, q, spin
+      INTEGER                                            :: lm, p, pair, q, spin
+      LOGICAL                                            :: assertion_valid
+      TYPE(twofold_real_type)                            :: component
 
-      CPASSERT(SIZE(density, 1) == onecenter%nproj)
-      CPASSERT(SIZE(density, 2) == onecenter%nproj)
-      CPASSERT(SIZE(density, 3) == 1 .OR. SIZE(density, 3) == 2)
+      assertion_valid = ALL(SHAPE(density) == [onecenter%nproj, onecenter%nproj, SIZE(coefficients, 3)])
+      CPASSERT(assertion_valid)
       CPASSERT(SIZE(coefficients, 1) == onecenter%npair)
-      CPASSERT(SIZE(coefficients, 2) == SIZE(onecenter%gaunt, 3))
-      CPASSERT(SIZE(coefficients, 3) == SIZE(density, 3))
-      coefficients = 0.0_dp
+      assertion_valid = SIZE(coefficients, 2) == SIZE(onecenter%gaunt, 3)
+      CPASSERT(assertion_valid)
+      IF (PRESENT(density_components)) THEN
+         assertion_valid = ALL(SHAPE(density_components) == SHAPE(density))
+         CPASSERT(assertion_valid)
+      END IF
+      coefficients = twofold_real_type()
       DO spin = 1, SIZE(density, 3)
          DO q = 1, onecenter%nproj
             DO p = 1, onecenter%nproj
                pair = onecenter%pair_index(p, q)
-               coefficients(pair, :, spin) = coefficients(pair, :, spin) + onecenter%gaunt(p, q, :)*density(p, q, spin)
+               component = twofold_real_type(density(p, q, spin), 0.0_dp)
+               IF (PRESENT(density_components)) component = density_components(p, q, spin)
+               DO lm = 1, SIZE(coefficients, 2)
+                  coefficients(pair, lm, spin) = twofold_add(coefficients(pair, lm, spin), &
+                                                  twofold_multiply(component, twofold_real_type(onecenter%gaunt(p, q, lm), 0.0_dp)))
+               END DO
             END DO
          END DO
       END DO
    END SUBROUTINE density_coefficients
 
 ! **************************************************************************************************
-!> \brief One radial shell of the spin density and Cartesian gradient, including frozen core.
-!> \param grid Prepared radial and angular data.
-!> \param coefficients Contracted projector-density coefficients.
-!> \param ir Radial index with nonzero radius.
+!> \brief Dot product retaining the original linear field and quadrature contractions.
+!> \param a Retained first factors.
+!> \param b Original FP64 second factors.
+!> \return Retained dot product.
+! **************************************************************************************************
+   FUNCTION component_dot(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a(:)
+      REAL(dp), INTENT(IN)                               :: b(:)
+      TYPE(twofold_real_type)                            :: value
+
+      INTEGER                                            :: i
+
+      CPASSERT(SIZE(a) == SIZE(b))
+      value = twofold_real_type()
+      DO i = 1, SIZE(a)
+         value = twofold_add(value, twofold_multiply(a(i), twofold_real_type(b(i), 0.0_dp)))
+      END DO
+   END FUNCTION component_dot
+
+! **************************************************************************************************
+!> \brief Dot product retaining the original FP64 products.
+!> \param a First factors.
+!> \param b Second factors.
+!> \return Retained dot product.
+! **************************************************************************************************
+   FUNCTION original_dot(a, b) RESULT(value)
+      REAL(dp), INTENT(IN)                               :: a(:), b(:)
+      TYPE(twofold_real_type)                            :: value
+
+      INTEGER                                            :: i
+      TYPE(twofold_real_type)                            :: term
+
+      CPASSERT(SIZE(a) == SIZE(b))
+      value = twofold_real_type()
+      DO i = 1, SIZE(a)
+         CALL twofold_product(a(i), b(i), term%hi, term%lo)
+         value = twofold_add(value, term)
+      END DO
+   END FUNCTION original_dot
+
+! **************************************************************************************************
+!> \brief One original AE or compensated-PS shell, rounded only after each complete field sum.
+!> \param grid Original PAW radial and angular fields.
+!> \param coefficients Retained Gaunt coefficients of the projector occupation.
+!> \param ir Positive radial node.
 !> \param side AE (1) or compensated PS (2).
-!> \param rho Angular point by spin density.
-!> \param gradient Cartesian direction by angular point by spin gradient.
-!> \param kinetic Optional valence partial-wave kinetic density; frozen core is not included.
-!> \param include_core Include original fixed core density and gradient, default true.
-!>        Set false for a signed projector-density direction.
+!> \param rho Density including the prescribed frozen core.
+!> \param gradient Cartesian density gradient.
+!> \param kinetic Optional independent valence kinetic density, without core or charge compensation.
+!> \param include_core Include frozen-core charge and gradient, default true.
 ! **************************************************************************************************
    SUBROUTINE collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic, include_core)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
-      REAL(dp), INTENT(IN)                               :: coefficients(:, :, :)
+      TYPE(twofold_real_type), INTENT(IN)                :: coefficients(:, :, :)
       INTEGER, INTENT(IN)                                :: ir, side
       REAL(dp), INTENT(OUT)                              :: rho(:, :), gradient(:, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: include_core
 
-      INTEGER                                            :: axis, l, lm, nlm, nspin, spin
-      REAL(dp) :: core_scale, radial_derivative(SIZE(coefficients, 2)), &
-         harmonics(SIZE(coefficients, 2)), radial_field(grid%na)
+      INTEGER                                            :: angular, axis, l, lm, nlm, nspin, spin
+      LOGICAL                                            :: assertion_valid
+      REAL(dp)                                           :: core_scale
+      TYPE(twofold_real_type) :: core, field, radial, radius, slope(SIZE(coefficients, 2)), &
+         harmonics(SIZE(coefficients, 2))
 
-      nspin = SIZE(coefficients, 3)
+      nspin = SIZE(coefficients, 3); nlm = SIZE(coefficients, 2)
       core_scale = 1.0_dp/REAL(nspin, dp)
       IF (PRESENT(include_core)) THEN
          IF (.NOT. include_core) core_scale = 0.0_dp
       END IF
-      nlm = SIZE(coefficients, 2)
-      CPASSERT(side == 1 .OR. side == 2)
-      CPASSERT(ir >= 1 .AND. ir <= grid%nr)
-      CPASSERT(grid%r(ir) > 0.0_dp)
+      CPASSERT(side >= 1 .AND. side <= 2)
+      assertion_valid = ir >= 1 .AND. ir <= grid%nr .AND. grid%r(ir) > 0.0_dp
+      CPASSERT(assertion_valid)
       CPASSERT(ALL(SHAPE(rho) == [grid%na, nspin]))
-      CPASSERT(ALL(SHAPE(gradient) == [3, grid%na, nspin]))
+      assertion_valid = ALL(SHAPE(gradient) == [3, grid%na, nspin])
+      CPASSERT(assertion_valid)
+      radius = twofold_real_type(grid%r(ir), 0.0_dp)
       DO spin = 1, nspin
-         harmonics = 0.0_dp
-         radial_derivative = 0.0_dp
+         harmonics = twofold_real_type(); slope = twofold_real_type()
          IF (ir <= grid%nval) THEN
             DO lm = 1, nlm
                l = INT(SQRT(REAL(lm - 1, dp)))
-               harmonics(lm) = SUM(coefficients(:, lm, spin)*grid%radial(ir, :, l, side))
-               radial_derivative(lm) = SUM(coefficients(:, lm, spin)*grid%radial_gradient(ir, :, l, side))
+               harmonics(lm) = component_dot(coefficients(:, lm, spin), grid%radial(ir, :, l, side))
+               slope(lm) = component_dot(coefficients(:, lm, spin), grid%radial_gradient(ir, :, l, side))
             END DO
          END IF
-         rho(:, spin) = MATMUL(grid%harmonics, harmonics) + core_scale*grid%core(ir, side)
-         radial_field = MATMUL(grid%harmonics, radial_derivative) + core_scale*grid%core_gradient(ir, side)
-         DO axis = 1, 3
-            gradient(axis, :, spin) = grid%directions(axis, :)*radial_field + &
-                                      MATMUL(grid%angular_gradient(axis, :, :), harmonics)/grid%r(ir)
+         DO angular = 1, grid%na
+            CALL twofold_product(core_scale, grid%core(ir, side), core%hi, core%lo)
+            rho(angular, spin) = twofold_value(twofold_add(component_dot(harmonics, grid%harmonics(angular, :)), core))
+            CALL twofold_product(core_scale, grid%core_gradient(ir, side), core%hi, core%lo)
+            radial = twofold_add(component_dot(slope, grid%harmonics(angular, :)), core)
+            DO axis = 1, 3
+               field = twofold_add(twofold_multiply(twofold_real_type(grid%directions(axis, angular), 0.0_dp), radial), &
+                                   twofold_divide(component_dot(harmonics, grid%angular_gradient(axis, angular, :)), radius))
+               gradient(axis, angular, spin) = twofold_value(field)
+            END DO
          END DO
          IF (PRESENT(kinetic)) THEN
             CPASSERT(ALL(SHAPE(kinetic) == SHAPE(rho)))
-            harmonics = 0.0_dp
+            harmonics = twofold_real_type()
             IF (ir <= grid%nval) THEN
                DO lm = 1, nlm
                   l = INT(SQRT(REAL(lm - 1, dp)))
-                  harmonics(lm) = SUM(coefficients(:, lm, spin)*grid%kinetic_radial(ir, :, l, side))
+                  harmonics(lm) = component_dot(coefficients(:, lm, spin), grid%kinetic_radial(ir, :, l, side))
                END DO
             END IF
-            kinetic(:, spin) = MATMUL(grid%harmonics, harmonics)
+            DO angular = 1, grid%na
+               kinetic(angular, spin) = twofold_value(component_dot(harmonics, grid%harmonics(angular, :)))
+            END DO
          END IF
       END DO
    END SUBROUTINE collocate_coefficients
@@ -354,19 +421,24 @@ CONTAINS
 !> \param rho Angular point by spin density including frozen core.
 !> \param gradient Cartesian direction by angular point by spin gradient.
 !> \param kinetic Optional valence partial-wave kinetic density, excluding frozen core and charge compensation.
+!> \param density_components Optional retained occupation used by the corresponding energy.
 ! **************************************************************************************************
-   SUBROUTINE paw_xc_collocate(grid, onecenter, density, ir, side, rho, gradient, kinetic)
+   SUBROUTINE paw_xc_collocate(grid, onecenter, density, ir, side, rho, gradient, kinetic, density_components)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       REAL(dp), INTENT(IN)                               :: density(:, :, :)
       INTEGER, INTENT(IN)                                :: ir, side
       REAL(dp), INTENT(OUT)                              :: rho(:, :), gradient(:, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :)
 
-      REAL(dp) :: coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3))
+      LOGICAL                                            :: assertion_valid
+      TYPE(twofold_real_type) :: &
+         coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3))
 
-      CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
-      CALL density_coefficients(onecenter, density, coefficients)
+      assertion_valid = grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax
+      CPASSERT(assertion_valid)
+      CALL density_coefficients(onecenter, density, coefficients, density_components)
       CALL collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic)
    END SUBROUTINE paw_xc_collocate
 
@@ -391,6 +463,7 @@ CONTAINS
 
       INTEGER                                            :: l, lm, p, pair, q
       REAL(dp)                                           :: value
+      TYPE(twofold_real_type)                            :: retained, term
 
       CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
       CPASSERT(ir >= 1 .AND. ir <= grid%nr)
@@ -402,12 +475,15 @@ CONTAINS
       DO q = 1, onecenter%nproj
          DO p = 1, onecenter%nproj
             pair = onecenter%pair_index(p, q)
+            retained = twofold_real_type()
             DO lm = 1, SIZE(onecenter%gaunt, 3)
                l = INT(SQRT(REAL(lm - 1, dp)))
                value = grid%radial(ir, pair, l, side)
                IF (kinetic) value = grid%kinetic_radial(ir, pair, l, side)
-               potential(p, q) = potential(p, q) + onecenter%gaunt(p, q, lm)*grid%harmonics(angular, lm)*value
+               CALL twofold_product(onecenter%gaunt(p, q, lm), grid%harmonics(angular, lm), term%hi, term%lo)
+               retained = twofold_add(retained, twofold_multiply(term, twofold_real_type(value, 0.0_dp)))
             END DO
+            potential(p, q) = twofold_value(retained)
          END DO
       END DO
    END SUBROUTINE paw_xc_point_adjoint
@@ -469,9 +545,11 @@ CONTAINS
 !>        Required for tau-dependent XC when either frozen-core density is nonzero.
 !> \param samples Optional native physical-input samples on this atomic functional's MPI owner.
 !> \param atom Global atom index required when sampling is active.
+!> \param density_components Optional retained occupation of the installed density.
+!> \param potential_components Optional retained atomic covector before Gaussian congruence.
 ! **************************************************************************************************
    SUBROUTINE paw_xc_evaluate(grid, onecenter, functional, density, density_cutoff, gradient_cutoff, energy, potential, &
-                              core_kinetic, samples, atom)
+                              core_kinetic, samples, atom, density_components, potential_components)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       TYPE(section_vals_type), POINTER                   :: functional
@@ -482,27 +560,36 @@ CONTAINS
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT), OPTIONAL, POINTER                :: samples
       INTEGER, INTENT(IN), OPTIONAL                      :: atom
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :)
+      TYPE(twofold_real_type), INTENT(OUT), OPTIONAL     :: potential_components(:, :, :)
 
       INTEGER                                            :: angular, bounds(2, 3), domain, first, &
                                                             ir, jr, na, nr, nspin, p, pair, q, &
                                                             side, spin
       INTEGER, ALLOCATABLE                               :: selected_keys(:, :)
-      LOGICAL                                            :: lsd, record_samples, use_tau
+      LOGICAL                                            :: assertion_valid, lsd, record_samples, &
+                                                            use_tau
       REAL(dp)                                           :: batch_energy, sign
       REAL(dp), ALLOCATABLE                              :: drho(:, :, :, :), rho(:, :, :), &
                                                             tau(:, :, :), weights(:, :)
       REAL(dp), POINTER                                  :: vtau(:, :, :), vxc(:, :, :), &
                                                             vxg(:, :, :, :)
-      REAL(dp) :: &
+      TYPE(twofold_real_type) :: &
          coefficient_derivative(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3)), &
-         coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3))
+         coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3)), energy_sum, &
+         potential_sum
       TYPE(xc_derivative_set_type)                       :: derivatives
       TYPE(xc_rho_cflags_type)                           :: needs
       TYPE(xc_rho_set_type)                              :: rho_set
 
-      CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+      assertion_valid = grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax
+      CPASSERT(assertion_valid)
       CPASSERT(ALL(SHAPE(potential) == SHAPE(density)))
-      CALL density_coefficients(onecenter, density, coefficients)
+      IF (PRESENT(potential_components)) THEN
+         assertion_valid = ALL(SHAPE(potential_components) == SHAPE(density))
+         CPASSERT(assertion_valid)
+      END IF
+      CALL density_coefficients(onecenter, density, coefficients, density_components)
       nspin = SIZE(density, 3)
       lsd = nspin == 2
       na = grid%na
@@ -540,7 +627,8 @@ CONTAINS
       CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
       CALL xc_dset_create(derivatives, local_bounds=bounds)
       energy = 0.0_dp
-      coefficient_derivative = 0.0_dp
+      coefficient_derivative = twofold_real_type()
+      energy_sum = twofold_real_type()
       DO side = 1, 2
          sign = REAL(3 - 2*side, dp)
          DO first = 1, grid%nr, nr
@@ -600,16 +688,19 @@ CONTAINS
             vtau = 0.0_dp
             CALL vxc_of_r_new(functional, rho_set, derivatives, 1, needs, weights, lsd, na, nr, &
                               batch_energy, vxc, vxg, vtau)
-            energy = energy + sign*batch_energy
+    energy_sum = twofold_add(energy_sum, twofold_multiply(twofold_real_type(sign, 0.0_dp), twofold_real_type(batch_energy, 0.0_dp)))
             CALL accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative)
          END DO
       END DO
+      energy = twofold_value(energy_sum)
       potential = 0.0_dp
       DO spin = 1, nspin
          DO q = 1, onecenter%nproj
             DO p = 1, onecenter%nproj
                pair = onecenter%pair_index(p, q)
-               potential(p, q, spin) = SUM(onecenter%gaunt(p, q, :)*coefficient_derivative(pair, :, spin))
+               potential_sum = component_dot(coefficient_derivative(pair, :, spin), onecenter%gaunt(p, q, :))
+               potential(p, q, spin) = twofold_value(potential_sum)
+               IF (PRESENT(potential_components)) potential_components(p, q, spin) = potential_sum
             END DO
          END DO
       END DO
@@ -636,84 +727,96 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: vxc(:, :, :), vxg(:, :, :, :), &
                                                             vtau(:, :, :)
       LOGICAL, INTENT(IN)                                :: use_tau
-      REAL(dp), INTENT(INOUT) :: coefficient_derivative(:, :, :)
+      TYPE(twofold_real_type), INTENT(INOUT) :: coefficient_derivative(:, :, :)
 
-      INTEGER                                            :: axis, ir, jr, l, lm, nlm, nr, nspin, spin
-      REAL(dp) :: sign, radial_value(SIZE(coefficient_derivative, 2)), &
-         kinetic_value(SIZE(coefficient_derivative, 2)), &
-         angular_value(SIZE(coefficient_derivative, 2))
+      INTEGER                                            :: angular, axis, ir, jr, l, lm, spin
+      TYPE(twofold_real_type)                            :: av, radius, rv, sign, term, tv, &
+                                                            weighted(grid%na)
 
-      nr = SIZE(vxc, 2); nspin = SIZE(vxc, 3); nlm = SIZE(coefficient_derivative, 2)
-      sign = REAL(3 - 2*side, dp)
-      DO jr = 1, MIN(nr, grid%nval - first + 1)
+      sign = twofold_real_type(REAL(3 - 2*side, dp), 0.0_dp)
+      DO jr = 1, MIN(SIZE(vxc, 2), grid%nval - first + 1)
          ir = first + jr - 1
          IF (grid%r(ir) == 0.0_dp) CYCLE
-         DO spin = 1, nspin
-            angular_value(:) = MATMUL(TRANSPOSE(grid%harmonics), vxc(:, jr, spin))
-            radial_value = 0.0_dp
-            DO axis = 1, 3
-               angular_value(:) = angular_value + &
-                                  MATMUL(TRANSPOSE(grid%angular_gradient(axis, :, :)), vxg(axis, :, jr, spin))/grid%r(ir)
-               radial_value(:) = radial_value + &
-                                 MATMUL(TRANSPOSE(grid%harmonics), grid%directions(axis, :)*vxg(axis, :, jr, spin))
-            END DO
-            DO lm = 1, nlm
+         radius = twofold_real_type(grid%r(ir), 0.0_dp)
+         DO spin = 1, SIZE(vxc, 3)
+            DO lm = 1, SIZE(coefficient_derivative, 2)
                l = INT(SQRT(REAL(lm - 1, dp)))
-               coefficient_derivative(:, lm, spin) = coefficient_derivative(:, lm, spin) + sign*( &
-                              angular_value(lm)*grid%radial(ir, :, l, side) + radial_value(lm)*grid%radial_gradient(ir, :, l, side))
-            END DO
-            IF (use_tau) THEN
-               ! Covectors already include radial and angular quadrature weights.
-               kinetic_value(:) = MATMUL(TRANSPOSE(grid%harmonics), vtau(:, jr, spin))
-               DO lm = 1, nlm
-                  l = INT(SQRT(REAL(lm - 1, dp)))
-                  coefficient_derivative(:, lm, spin) = coefficient_derivative(:, lm, spin) + &
-                                                        sign*kinetic_value(lm)*grid%kinetic_radial(ir, :, l, side)
+               av = original_dot(grid%harmonics(:, lm), vxc(:, jr, spin))
+               rv = twofold_real_type()
+               DO axis = 1, 3
+              av = twofold_add(av, twofold_divide(original_dot(grid%angular_gradient(axis, :, lm), vxg(axis, :, jr, spin)), radius))
+                  DO angular = 1, grid%na
+      CALL twofold_product(grid%directions(axis, angular), vxg(axis, angular, jr, spin), weighted(angular)%hi, weighted(angular)%lo)
+                  END DO
+                  rv = twofold_add(rv, component_dot(weighted, grid%harmonics(:, lm)))
                END DO
-            END IF
+               tv = twofold_real_type()
+               IF (use_tau) tv = original_dot(grid%harmonics(:, lm), vtau(:, jr, spin))
+               DO angular = 1, SIZE(coefficient_derivative, 1)
+                  term = twofold_add(twofold_multiply(av, twofold_real_type(grid%radial(ir, angular, l, side), 0.0_dp)), &
+                                     twofold_multiply(rv, twofold_real_type(grid%radial_gradient(ir, angular, l, side), 0.0_dp)))
+                  IF (use_tau) THEN
+                term = twofold_add(term, twofold_multiply(tv, twofold_real_type(grid%kinetic_radial(ir, angular, l, side), 0.0_dp)))
+                  END IF
+    coefficient_derivative(angular, lm, spin) = twofold_add(coefficient_derivative(angular, lm, spin), twofold_multiply(sign, term))
+               END DO
+            END DO
          END DO
       END DO
    END SUBROUTINE accumulate_xc_shells
 
 ! **************************************************************************************************
 !> \brief Analytic fixed-geometry PAW XC response to a projector-density direction.
-!>        Keep AE and compensated-PS quadratures and independent valence kinetic densities.
-!>        Original frozen-core density and kinetic density enter the base fields only. This is
-!>        the derivative on a differentiable branch, with no finite density trials.
+!>        Both fields and their response retain the original AE and compensated-PS kernels.
+!>        The prescribed frozen core enters only the base fields.
 !> \param grid Prepared PAW radial and angular fields.
 !> \param onecenter Original projector-pair and harmonic mapping.
-!> \param xc_section Original complete XC section, including the active functional and cutoffs.
-!> \param density Physical spin-resolved projector density, summed over the complete k mesh.
-!> \param direction Matching signed projector-density direction, with fixed frozen cores.
-!> \param potential_response Analytic derivative of the original one-center XC potential.
+!> \param xc_section Original functional and cutoffs.
+!> \param density Physical spin-resolved projector occupation.
+!> \param direction Matching signed projector-occupation response.
+!> \param potential_response Original one-center XC potential response.
 !> \param core_kinetic Optional original spin-summed AE/PS frozen-core kinetic density.
+!> \param density_components Optional retained occupation of the installed density.
+!> \param direction_components Optional matching retained occupation response.
+!> \param potential_components Optional retained covector before Gaussian congruence.
 ! **************************************************************************************************
-   SUBROUTINE paw_xc_response(grid, onecenter, xc_section, density, direction, potential_response, core_kinetic)
+   SUBROUTINE paw_xc_response(grid, onecenter, xc_section, density, direction, potential_response, core_kinetic, &
+                              density_components, direction_components, potential_components)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(dp), INTENT(IN)                               :: density(:, :, :), direction(:, :, :)
       REAL(dp), INTENT(OUT)                              :: potential_response(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: core_kinetic(:, :)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :), &
+                                                            direction_components(:, :, :)
+      TYPE(twofold_real_type), INTENT(OUT), OPTIONAL     :: potential_components(:, :, :)
 
       INTEGER                                            :: bounds(2, 3), first, ir, jr, na, nr, ns, &
                                                             p, pair, q, side, spin
-      LOGICAL                                            :: lsd, use_tau
+      LOGICAL                                            :: assertion_valid, lsd, use_tau
       REAL(dp)                                           :: density_cutoff, gradient_cutoff
-      REAL(dp), ALLOCATABLE :: coefficient_response(:, :, :), coefficients(:, :, :), &
-         delta_drho(:, :, :, :), delta_rho(:, :, :), delta_tau(:, :, :), &
-         direction_coefficients(:, :, :), drho(:, :, :, :), rho(:, :, :), tau(:, :, :), &
-         weights(:, :)
+      REAL(dp), ALLOCATABLE :: delta_drho(:, :, :, :), delta_rho(:, :, :), delta_tau(:, :, :), &
+         drho(:, :, :, :), rho(:, :, :), tau(:, :, :), weights(:, :)
       REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
       REAL(dp), POINTER                                  :: vg(:, :, :, :)
       TYPE(section_vals_type), POINTER                   :: functional
+      TYPE(twofold_real_type)                            :: potential_sum
+      TYPE(twofold_real_type), ALLOCATABLE :: coefficient_response(:, :, :), &
+         coefficients(:, :, :), direction_coefficients(:, :, :)
       TYPE(xc_derivative_set_type)                       :: derivatives
       TYPE(xc_rho_cflags_type)                           :: needs
       TYPE(xc_rho_set_type)                              :: base, delta
 
-      CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+      assertion_valid = grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax
+      CPASSERT(assertion_valid)
       CPASSERT(ALL(SHAPE(direction) == SHAPE(density)))
-      CPASSERT(ALL(SHAPE(potential_response) == SHAPE(density)))
+      assertion_valid = ALL(SHAPE(potential_response) == SHAPE(density))
+      CPASSERT(assertion_valid)
+      IF (PRESENT(potential_components)) THEN
+         assertion_valid = ALL(SHAPE(potential_components) == SHAPE(density))
+         CPASSERT(assertion_valid)
+      END IF
       ns = SIZE(density, 3); lsd = ns == 2; na = grid%na
       CPASSERT(ns == 1 .OR. ns == 2)
       functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
@@ -734,8 +837,8 @@ CONTAINS
       ALLOCATE (coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), ns), &
                 direction_coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), ns), &
                 coefficient_response(onecenter%npair, SIZE(onecenter%gaunt, 3), ns))
-      CALL density_coefficients(onecenter, density, coefficients)
-      CALL density_coefficients(onecenter, direction, direction_coefficients)
+      CALL density_coefficients(onecenter, density, coefficients, density_components)
+      CALL density_coefficients(onecenter, direction, direction_coefficients, direction_components)
       density_cutoff = section_get_rval(xc_section, 'DENSITY_CUTOFF')
       gradient_cutoff = section_get_rval(xc_section, 'GRADIENT_CUTOFF')
       nr = MIN(grid%nr, MAX(1, 2048/na)); bounds = 1; bounds(2, 1) = na; bounds(2, 2) = nr
@@ -747,7 +850,7 @@ CONTAINS
       CALL xc_rho_set_create(delta, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
       CALL xc_rho_set_atom_update(delta, needs, ns, bounds)
       CALL xc_dset_create(derivatives, local_bounds=bounds)
-      coefficient_response = 0.0_dp
+      coefficient_response = twofold_real_type()
       DO side = 1, 2
          DO first = 1, grid%nr, nr
             rho = 0.0_dp; drho = 0.0_dp; tau = 0.0_dp; weights = 0.0_dp
@@ -788,7 +891,9 @@ CONTAINS
          DO q = 1, onecenter%nproj
             DO p = 1, onecenter%nproj
                pair = onecenter%pair_index(p, q)
-               potential_response(p, q, spin) = SUM(onecenter%gaunt(p, q, :)*coefficient_response(pair, :, spin))
+               potential_sum = component_dot(coefficient_response(pair, :, spin), onecenter%gaunt(p, q, :))
+               potential_response(p, q, spin) = twofold_value(potential_sum)
+               IF (PRESENT(potential_components)) potential_components(p, q, spin) = potential_sum
             END DO
          END DO
       END DO
