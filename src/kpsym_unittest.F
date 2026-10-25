@@ -80,6 +80,8 @@ PROGRAM kpsym_unittest
    ! Rounded coordinates put seven operations within a few ulps of the boundary.
    CALL check_mesh(coords, cell, 1.0e-6_dp, 6, .FALSE., .TRUE.)
    CALL check_mesh(coords, cell, 1.0e-7_dp, 14, .FALSE., .TRUE.)
+   ! FULL_GRID overrides both atomic symmetry and time-reversal reduction.
+   CALL check_mesh(coords, cell, 1.0e-6_dp, 27, .FALSE., .FALSE., full_grid=.TRUE.)
    shifted = coords + SPREAD([0.137_dp, -0.231_dp, 0.319_dp], 2, 36)
    CALL check_mesh(shifted, cell, 1.0e-6_dp, 6, .FALSE., .TRUE.)
    CALL check_mesh(coords, 1.3_dp*cell, 1.0e-6_dp, 6, .FALSE., .TRUE.)
@@ -251,11 +253,13 @@ CONTAINS
 !> \param expected expected irreducible k-point count
 !> \param fallback expected inversion fallback
 !> \param closed whether to check closure of the retained atomic operations
+!> \param full_grid keep every mesh point, including time-reversed partners
 ! **************************************************************************************************
-   SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed)
+   SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid)
       REAL(dp), INTENT(IN)                               :: x(:, :), h(3, 3), delta
       INTEGER, INTENT(IN)                                :: expected
       LOGICAL, INTENT(IN)                                :: fallback, closed
+      LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid
 
       INTEGER                                            :: a, i, j, k
       LOGICAL                                            :: found
@@ -263,11 +267,20 @@ CONTAINS
       TYPE(csym_type)                                    :: csym
 
       CALL crys_sym_gen(csym, x, types, h, delta=delta, use_spglib=.FALSE.)
-      CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp])
+      CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp], full_grid=full_grid)
       IF (csym%nkpoint /= expected) ERROR STOP "Incorrect irreducible mesh size"
       IF (csym%inversion_only .NEQV. fallback) ERROR STOP "Incorrect orbit-guard decision"
       IF (ABS(SUM(csym%wkpoint) - 27.0_dp) > 1.0e-12_dp) ERROR STOP "Incorrect weight sum"
       IF (ANY(csym%kplink <= 0)) ERROR STOP "Incomplete mesh mapping"
+      IF (PRESENT(full_grid)) THEN
+         IF (full_grid) THEN
+            DO i = 1, 27
+               IF (ANY(csym%kplink(:, i) /= i)) ERROR STOP "Full mesh has a reduced point mapping"
+            END DO
+            IF (ANY(ABS(csym%wkpoint - 1.0_dp) > 1.0e-12_dp)) ERROR STOP "Full mesh has reduced weights"
+            IF (ANY(ABS(csym%xkpoint - csym%kpmesh) > 1.0e-12_dp)) ERROR STOP "Full mesh reordered points"
+         END IF
+      END IF
       DO k = 1, SIZE(csym%rt, 3)
          DO a = 1, SIZE(types)
             IF (COUNT(csym%f0(:, k) == a) /= 1) ERROR STOP "Nonbijective atom mapping"

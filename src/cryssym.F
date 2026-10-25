@@ -340,25 +340,19 @@ CONTAINS
       csym%kplink = 0
       kpop = 0
 
-      ! go through all the options
-      IF (csym%symlib) THEN
+      CALL full_grid_gen(nk, xkp, wkp, shift, gamma_centered=gamma_mesh)
+      IF (fullmesh) THEN
+         ! FULL_GRID retains every point, including time-reversed partners.
+         DO i = 1, nkpts
+            csym%kplink(1, i) = i
+         END DO
+      ELSE IF (csym%symlib) THEN
          ! symmetry library is available
-         IF (fullmesh) THEN
-            ! full mesh requested
-            CALL full_grid_gen(nk, xkp, wkp, shift, gamma_centered=gamma_mesh)
-            IF (csym%istriz == 1) THEN
-               ! use inversion symmetry
-               CALL inversion_symm(xkp, wkp, csym%kplink(1, :))
-            ELSE
-               ! full kpoint mesh is used
-            END IF
-         ELSE IF (csym%istriz /= 1 .OR. inversion_only) THEN
+         IF (csym%istriz /= 1 .OR. inversion_only) THEN
             ! use inversion symmetry
-            CALL full_grid_gen(nk, xkp, wkp, shift, gamma_centered=gamma_mesh)
             CALL inversion_symm(xkp, wkp, csym%kplink(1, :))
          ELSE
             ! use symmetry library to reduce k-points
-            CALL full_grid_gen(nk, xkp, wkp, shift, gamma_centered=gamma_mesh)
             IF (spglib_backend) THEN
                CALL kp_symmetry_spglib(csym, xkp, wkp, kpop)
             ELSE
@@ -368,15 +362,9 @@ CONTAINS
          END IF
       ELSE
          ! no symmetry library is available
-         CALL full_grid_gen(nk, xkp, wkp, shift, gamma_centered=gamma_mesh)
-         IF (csym%istriz == 1 .AND. .NOT. fullmesh .AND. .NOT. inversion_only) THEN
+         IF (csym%istriz == 1 .AND. .NOT. inversion_only) THEN
             ! fall back to the K290 atom mapping when SPGLIB is not linked
             CALL kp_symmetry(csym, xkp, wkp, kpop, use_spglib_reduction=.FALSE.)
-         ELSE IF (csym%istriz /= 1 .AND. fullmesh) THEN
-            ! full kpoint mesh is used
-            DO i = 1, nkpts
-               csym%kplink(1, i) = i
-            END DO
          ELSE
             ! use inversion symmetry
             CALL inversion_symm(xkp, wkp, csym%kplink(1, :))
