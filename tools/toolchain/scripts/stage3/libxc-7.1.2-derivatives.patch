@@ -9,7 +9,55 @@
      if _opz_pow_n_gen_helper is None:
          _zg = sp.Symbol("z", real=True)
          _ng = sp.Symbol("n", real=True)
-@@ -4160,7 +4160,7 @@
+@@ -426,6 +426,16 @@
+
+ # --- spin-resolved kinetic / laplacian aggregates ---
+ def t_total(z, ts0, ts1):
++    # Cancel reduced spin-kinetic normalization before differentiation.
++    # The ratio helper preserves the original threshold below saturation.
++    symbols = {s.name: s for s in getattr(z, "free_symbols", ())}
++    if set(symbols) == {"na", "nb"}:
++        na, nb = symbols["na"], symbols["nb"]
++        nt = na + nb
++        if na.is_positive and nb.is_positive and z == (na - nb) / nt:
++            exponent = _R3(5, 3)
++            return (ts0 * na**exponent * spin_fraction_rescale(2*na/nt, exponent)
++                    + ts1 * nb**exponent * spin_fraction_rescale(2*nb/nt, exponent)) / nt**exponent
+     # Route (1+-z)^(5/3) through opz_pow_n (clamped via the opz_pow_n_m1 helper),
+     # NOT raw ((1+-z)/2)^(5/3): the raw power's second z-derivative diverges like
+     # (1+-z)^(-1/3) at full polarization (z -> -+1), giving 0*inf = NaN in v2rho2
+@@ -2243,7 +2253,20 @@
+         -z + 1: 2 * nb / ntot,
+         1 - z: 2 * nb / ntot,
+     }
+-    return expr.xreplace(rules)
++    expr = expr.xreplace(rules)
++    # Evaluate a visible 1 +/- z spin power directly from its raw density.
++    # The threshold and power remain in an opaque helper, so unused singular
++    # derivative branches cannot be hoisted into the generated kernel.
++    fractions = {z: 2 * na / ntot, -z: 2 * nb / ntot}
++
++    def direct_spin_power(node):
++        cls = node.func
++        return (isinstance(node, sp.Function) and hasattr(cls, "helper")
++                and cls.helper.name == "opz_pow_n_positive"
++                and sum(cls.multiindex) == 0 and node.args[0] in fractions)
++
++    return expr.replace(direct_spin_power,
++                        lambda node: spin_fraction_power(fractions[node.args[0]], node.args[1]))
+
+
+ def _numeric_clean_source(expr):
+@@ -3951,6 +3974,8 @@
+     # callee-before-caller); per-functional ones are toposorted. kmap is left
+     # over the full set, so it still resolves any helper.
+     reachable = set(_reachable_helpers(mod.f, helper_pool))
++    # Raw-density cleanup may introduce this helper after discovery.
++    reachable.update(h for h in helper_pool if h.name in ("spin_fraction_power", "spin_fraction_rescale"))
+     # Screen-reaching helpers are force-inlined into the kernel (so the screen
+     # resolves against na/nb); they must not also be emitted standalone, where
+     # the unresolved _screen_dens marker would be undefined C. They stay in
+@@ -4160,7 +4185,7 @@
      def fdiff(self, argindex=1):
          y, = self.args
          if argindex == 1:
@@ -18,7 +66,7 @@
          return 0
 
 
-@@ -4208,6 +4208,11 @@
+@@ -4208,6 +4233,24 @@
 
  def to_elementary(expr):
      return maple_eval(expr, xc_expm1, (lambda q: exp(q) - Integer(1)), xc_log1p, (lambda q: log(Integer(1) + q)), xc_asinh, (lambda q: asinh(q)), xc_atanh, (lambda q: atanh(q)), xc_x_minus_log1p, (lambda q: q - log(Integer(1) + q)), my_dilog, (lambda q: polylog(Integer(2), q)), m_recexp, (lambda q: exp(-Integer(1)/q)), m_one_minus_recexp, (lambda q: Integer(1) - exp(-Integer(1)/q)), xc_erfcx, (lambda q: exp(q**Integer(2))*erfc(q)), xc_E1_scaled, (lambda q: exp(q)*expint(Integer(1), q)))
@@ -27,10 +75,23 @@
 +@helper
 +def opz_pow_n_positive(z, n):
 +    return my_piecewise3(Integer(1) + z <= p_a_zeta_threshold, (p_a_zeta_threshold)**n, exp(n*xc_log1p(m_max(z, p_a_zeta_threshold - Integer(1)))))
++
++
++@helper
++def spin_fraction_rescale(fraction, n):
++    return my_piecewise3(fraction > p_a_zeta_threshold, Integer(1),
++                        exp(n*(log(p_a_zeta_threshold) - log(m_min(fraction, p_a_zeta_threshold)))))
++
++
++@helper
++def spin_fraction_power(fraction, n):
++    return my_piecewise3(fraction <= p_a_zeta_threshold,
++                        p_a_zeta_threshold**n,
++                        exp(n*log(m_max(fraction, p_a_zeta_threshold))))
 
 
  @helper
-@@ -4449,7 +4454,6 @@
+@@ -4449,7 +4492,6 @@
      return (t - x**Integer(2)/Integer(8))/K_FACTOR_C
 
 
@@ -38,7 +99,7 @@
  def mgga_alpha_reg(x, t, eta):
      return (t - x**Integer(2)/Integer(8))/(K_FACTOR_C + eta*x**Integer(2)/Integer(8))
 
-@@ -4511,7 +4515,6 @@
+@@ -4511,7 +4553,6 @@
      return (t_total(z, ts0, ts1) - xt**Integer(2)/Integer(8))/(K_FACTOR_C*t_total(z, Integer(1), Integer(1)))
 
 
@@ -46,12 +107,16 @@
  def mgga_alpha_total_reg(z, xt, ts0, ts1, eta):
      return (t_total(z, ts0, ts1) - xt**Integer(2)/Integer(8))/(K_FACTOR_C*t_total(z, Integer(1), Integer(1)) + eta*xt**Integer(2)/Integer(8))
 
-@@ -4592,3 +4595,5 @@
+@@ -4592,3 +4633,9 @@
 
 
  __all__ += ["att_erf_aux1", "att_erf_aux2", "att_erf_aux3", "attenuation_erf0", "attenuation_erf", "one_minus_attenuation_erf0", "one_minus_attenuation_erf", "a_cnst", "lda_x_ax", "lda_x_erf_spin"]
 +
 +__all__ += ["opz_pow_n_positive"]
++
++__all__ += ["spin_fraction_power"]
++
++__all__ += ["spin_fraction_rescale"]
 --- a/python/mgga_exc/mgga_c_r2scan.py
 +++ b/python/mgga_exc/mgga_c_r2scan.py
 @@ -108,7 +108,6 @@
