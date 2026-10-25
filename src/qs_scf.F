@@ -892,16 +892,17 @@ CONTAINS
                   scf_env%iter_param = dft_control%qs_control%xtb_control%tblite_mixer_damping
                END IF
             END IF
-            IF (.NOT. inverse_ot_handled .AND. scf_control%smear%do_smear .AND. &
-                scf_env%method == ot_method_nr .AND. .NOT. just_energy .AND. &
-                (scf_env%iter_delta < SQRT(scf_control%eps_scf) .OR. &
-                 (scf_env%iter_count > 1 .AND. &
-                  ABS(energy%total - energy%tot_old) <= 64.0_dp*EPSILON(1.0_dp)* &
-                  MAX(ABS(energy%total), ABS(energy%tot_old), TINY(1.0_dp))))) THEN
-               ! Certify the complete physical thermal state before reporting convergence.
-               ! Hand over before the preconditioned OT search must resolve the final
-               ! physical tolerance. This square-root threshold only starts refinement.
-               ! The original unscaled stationarity bound still determines acceptance.
+            IF (.NOT. inverse_ot_handled .AND. scf_env%method == ot_method_nr .AND. .NOT. just_energy .AND. &
+                ((scf_control%smear%do_smear .AND. &
+                  (scf_env%iter_delta < SQRT(scf_control%eps_scf) .OR. &
+                   (scf_env%iter_count > 1 .AND. &
+                    ABS(energy%total - energy%tot_old) <= 64.0_dp*EPSILON(1.0_dp)* &
+                    MAX(ABS(energy%total), ABS(energy%tot_old), TINY(1.0_dp))))) .OR. &
+                 (.NOT. scf_control%smear%do_smear .AND. scf_env%iter_delta < scf_control%eps_scf))) THEN
+               ! Certify the complete physical USPP/PAW state before reporting convergence.
+               ! Fixed occupations enter at the ordinary OT tolerance. Thermal searches
+               ! retain their earlier handover threshold. Both use the original physical
+               ! stationarity bound and count refinement against the same SCF budget.
                CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
                                       inverse_ot_stopped, output_unit, refine_final=.TRUE.)
                IF (inverse_ot_handled) THEN
@@ -1101,7 +1102,7 @@ CONTAINS
    END SUBROUTINE scf_env_do_scf
 
 ! **************************************************************************************************
-!> \brief Minimize inverse orbitals and optional Fermi occupations after initializing native OT.
+!> \brief Minimize native USPP/PAW orbitals and optional Fermi occupations after initializing OT.
 !>        Count the bounded minimization against the original SCF limit. Acceptance reconstructs
 !>        matching MOs, P and energy-weighted W in the original charge metric. Physical density
 !>        and kinetic-density boundaries use the shared active constraint search.
@@ -1117,7 +1118,7 @@ CONTAINS
 !> \param iterations Number of attempted minimization iterations.
 !> \param stopped Whether the minimization received an external stop request.
 !> \param output_unit Native SCF output stream for automatic virtual-space growth.
-!> \param refine_final Refine a thermal candidate after ordinary OT, independent of its minimizer.
+!> \param refine_final Refine an ordinary OT candidate in the physical norm for fixed or thermal occupations.
 ! **************************************************************************************************
    SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations, stopped, output_unit, refine_final)
       TYPE(qs_environment_type), POINTER                 :: qs_env
@@ -1157,7 +1158,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(scf_env%qs_ot_env)) RETURN
       IF (SIZE(scf_env%qs_ot_env) == 0) RETURN
       IF (scf_env%qs_ot_env(1)%settings%ot_method /= "LBFG") THEN
-         IF (.NOT. final_stage .OR. .NOT. scf_control%smear%do_smear) RETURN
+         IF (.NOT. final_stage) RETURN
       END IF
       IF (scf_control%outer_scf%have_scf .OR. scf_control%gce%do_gce) RETURN
       IF (scf_control%smear%do_smear) THEN
@@ -1190,7 +1191,8 @@ CONTAINS
          handled = .FALSE.
          RETURN
       END IF
-      IF (final_stage .AND. remaining > 0 .AND. do_kpoints .AND. SIZE(tolerances) == 0) THEN
+      IF (final_stage .AND. scf_control%smear%do_smear .AND. remaining > 0 .AND. &
+          do_kpoints .AND. SIZE(tolerances) == 0) THEN
          ! Reuse the physical metallic-OT subspace refresh before the final coupled check.
          ! Original active density constraints keep their existing orbital representation.
          CALL qs_skala_scf_release(state)
