@@ -43,7 +43,8 @@ MODULE skala_gpw_functional
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
         skala_gpw_atom_subchunk_count, skala_gpw_atom_subchunk_layout, skala_gpw_feature_build, &
         skala_gpw_feature_build_atom_subchunk_bounds, skala_gpw_feature_release, &
-        skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, &
+        skala_gpw_feature_type, skala_gpw_periodic_partition_response, &
+        skala_gpw_periodic_weight_derivative, skala_gpw_smooth_partition_derivatives, &
         smooth_partition_atomic_weight_scale_derivative
    USE skala_torch_api,                 ONLY: skala_torch_model_density_floors,&
                                               skala_torch_model_descriptor_limits,&
@@ -453,7 +454,8 @@ CONTAINS
          use_atom_subchunks, use_density_constraints
       REAL(dp), ALLOCATABLE :: density_response(:, :), grad_response(:, :, :), kin_response(:, :), &
          model_density_direction(:, :), model_grad_direction(:, :, :), model_kin_direction(:, :)
-      REAL(KIND=dp)                                      :: density_contraction, tau_contraction
+      REAL(KIND=dp)                                      :: context_radius, density_contraction, &
+                                                            tau_contraction
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: density_grad, kin_grad
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: grad_grad
       REAL(KIND=dp), DIMENSION(3, 3)                     :: virial_before
@@ -538,6 +540,7 @@ CONTAINS
                                 i_val=native_grid_atom_chunk_max_rows)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_PARTITION", &
                                 i_val=native_grid_atom_partition)
+      context_radius = section_get_rval(gauxc_section, "NATIVE_GRID_CONTEXT_RADIUS")
       SELECT CASE (native_grid_atom_partition)
       CASE (1)
          native_grid_atom_partition = skala_gpw_atom_partition_hard
@@ -618,7 +621,7 @@ CONTAINS
                                 xc_deriv_method_id, xc_rho_smooth_id, pw_pool)
          CALL skala_gpw_feature_build(direction_features, direction_rho_set, rho_direction, particle_set, cell, &
                                       requires_grad=.FALSE., weights=weights, use_atom_chunks=native_grid_atom_chunks, &
-                                      route_atom_chunks=native_grid_atom_chunk_routing, atom_partition=native_grid_atom_partition)
+         route_atom_chunks=native_grid_atom_chunk_routing, atom_partition=native_grid_atom_partition, context_radius=context_radius)
          response_collapsed_rks = direction_features%uses_collapsed_rks_dynamic
          IF (direction_features%uses_atom_chunks) THEN
             IF (direction_features%chunk_feature_count > 0) THEN
@@ -644,7 +647,7 @@ CONTAINS
                                    requires_stress_grad=compute_virial, &
                                    use_atom_chunks=native_grid_atom_chunks, &
                                    route_atom_chunks=native_grid_atom_chunk_routing, &
-                                   atom_partition=native_grid_atom_partition)
+                                   atom_partition=native_grid_atom_partition, context_radius=context_radius)
       IF (need_response) THEN
          CPASSERT(response_collapsed_rks .EQV. features%uses_collapsed_rks_dynamic)
       END IF
@@ -880,7 +883,7 @@ CONTAINS
       INTEGER, DIMENSION(2, 3)                           :: bo
       LOGICAL                                            :: lsd, native_grid_use_cuda
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: included
-      REAL(KIND=dp)                                      :: exc, local_derivative
+      REAL(KIND=dp)                                      :: context_radius, exc, local_derivative
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: partition_weights
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: atom_coords_pbc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: dweights_datom, dweights_dstrain
@@ -907,6 +910,7 @@ CONTAINS
                                 i_val=native_grid_cuda_device)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_ATOM_PARTITION", &
                                 i_val=native_grid_atom_partition)
+      context_radius = section_get_rval(gauxc_section, "NATIVE_GRID_CONTEXT_RADIUS")
       SELECT CASE (native_grid_atom_partition)
       CASE (1)
          native_grid_atom_partition = skala_gpw_atom_partition_hard
@@ -951,7 +955,7 @@ CONTAINS
                                    requires_coordinate_grad=.FALSE., &
                                    requires_stress_grad=.TRUE., &
                                    use_atom_chunks=.FALSE., route_atom_chunks=.FALSE., &
-                                   atom_partition=native_grid_atom_partition)
+                                   atom_partition=native_grid_atom_partition, context_radius=context_radius)
       CALL skala_torch_model_get_exc(cached_model, features%inputs, features%grid_weights_t, &
                                      exc_tensor, exc)
       CALL torch_tensor_backward_scalar(exc_tensor)
@@ -960,7 +964,7 @@ CONTAINS
       CALL torch_tensor_data_ptr(grid_weight_grad_t, grid_weight_grad)
 
       natom = SIZE(particle_set)
-      IF (native_grid_atom_partition == skala_gpw_atom_partition_smooth) THEN
+      IF (native_grid_atom_partition == skala_gpw_atom_partition_smooth .AND. .NOT. features%periodic_context) THEN
          ALLOCATE (atom_coords_pbc(3, natom), included(natom), partition_weights(natom), &
                    dweights_datom(3, natom, natom), dweights_dstrain(3, 3, natom))
          DO iatom = 1, natom
@@ -968,40 +972,45 @@ CONTAINS
          END DO
       END IF
 
-      bo = rho_r(1)%pw_grid%bounds_local
-      local_row = 0
-      DO k = bo(1, 3), bo(2, 3)
-         DO j = bo(1, 2), bo(2, 2)
-            DO i = bo(1, 1), bo(2, 1)
-               local_row = local_row + 1
-               feature_begin = features%local_feature_offsets(local_row)
-               feature_end = features%local_feature_offsets(local_row + 1) - 1
-               local_derivative = 0.0_dp
-               IF (native_grid_atom_partition == skala_gpw_atom_partition_hard) THEN
-                  CPASSERT(feature_end == feature_begin)
-                  row = features%local_feature_rows(feature_begin)
-                  local_derivative = grid_weight_grad(row)
-               ELSE
-                  grid_point = native_grid_coordinate(rho_r(1)%pw_grid, [i, j, k])
-                  CALL skala_gpw_smooth_partition_derivatives( &
-                     grid_point, atom_coords_pbc, cell, partition_weights, included, &
-                     dweights_datom, dweights_dstrain)
-                  CPASSERT(feature_end - feature_begin + 1 == COUNT(included))
-                  feature_pos = feature_begin
-                  DO iatom = 1, natom
-                     IF (.NOT. included(iatom)) CYCLE
-                     row = features%local_feature_rows(feature_pos)
-                     local_derivative = local_derivative + &
-                                        partition_weights(iatom)*grid_weight_grad(row)
-                     feature_pos = feature_pos + 1
-                  END DO
-                  CPASSERT(feature_pos == feature_end + 1)
-               END IF
-               weight_deriv_r%array(i, j, k) = local_derivative
+      IF (features%periodic_context) THEN
+         CALL skala_gpw_periodic_weight_derivative(features, particle_set, cell, rho_r(1)%pw_grid, &
+                                                   grid_weight_grad, weight_deriv_r)
+      ELSE
+         bo = rho_r(1)%pw_grid%bounds_local
+         local_row = 0
+         DO k = bo(1, 3), bo(2, 3)
+            DO j = bo(1, 2), bo(2, 2)
+               DO i = bo(1, 1), bo(2, 1)
+                  local_row = local_row + 1
+                  feature_begin = features%local_feature_offsets(local_row)
+                  feature_end = features%local_feature_offsets(local_row + 1) - 1
+                  local_derivative = 0.0_dp
+                  IF (native_grid_atom_partition == skala_gpw_atom_partition_hard) THEN
+                     CPASSERT(feature_end == feature_begin)
+                     row = features%local_feature_rows(feature_begin)
+                     local_derivative = grid_weight_grad(row)
+                  ELSE
+                     grid_point = native_grid_coordinate(rho_r(1)%pw_grid, [i, j, k])
+                     CALL skala_gpw_smooth_partition_derivatives( &
+                        grid_point, atom_coords_pbc, cell, partition_weights, included, &
+                        dweights_datom, dweights_dstrain)
+                     CPASSERT(feature_end - feature_begin + 1 == COUNT(included))
+                     feature_pos = feature_begin
+                     DO iatom = 1, natom
+                        IF (.NOT. included(iatom)) CYCLE
+                        row = features%local_feature_rows(feature_pos)
+                        local_derivative = local_derivative + &
+                                           partition_weights(iatom)*grid_weight_grad(row)
+                        feature_pos = feature_pos + 1
+                     END DO
+                     CPASSERT(feature_pos == feature_end + 1)
+                  END IF
+                  weight_deriv_r%array(i, j, k) = local_derivative
+               END DO
             END DO
          END DO
-      END DO
-      CPASSERT(local_row == features%nflat_local)
+         CPASSERT(local_row == features%nflat_local)
+      END IF
 
       IF (ALLOCATED(atom_coords_pbc)) THEN
          DEALLOCATE (atom_coords_pbc, dweights_datom, dweights_dstrain, included, &
@@ -2054,8 +2063,9 @@ CONTAINS
       IF (root_rank) THEN
          CALL torch_tensor_data_ptr(atom_coord_grad_t, atom_coord_grad)
          CPASSERT(SIZE(atom_force, 1) == SIZE(atom_coord_grad, 1))
-         CPASSERT(SIZE(atom_force, 2) == SIZE(atom_coord_grad, 2))
-         atom_force(:, :) = atom_force(:, :) + atom_coord_grad(:, :)
+         CPASSERT(SIZE(atom_coord_grad, 2) >= SIZE(atom_force, 2))
+         CPASSERT(SIZE(atom_coord_grad, 2) <= SIZE(atom_force, 2) + 1)
+         atom_force(:, :) = atom_force(:, :) + atom_coord_grad(:, :SIZE(atom_force, 2))
       END IF
 
    END SUBROUTINE add_explicit_coordinate_force
@@ -2085,6 +2095,8 @@ CONTAINS
                                                             natom, row
       INTEGER, DIMENSION(2, 3)                           :: bo
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: included
+      REAL(dp)                                           :: periodic_strain_response(3, 3)
+      REAL(dp), ALLOCATABLE                              :: periodic_atom_response(:, :)
       REAL(KIND=dp)                                      :: grid_base_weight, weight_grad
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: weights
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: atom_coords_pbc
@@ -2097,6 +2109,16 @@ CONTAINS
       CALL torch_tensor_grad(features%atomic_grid_weights_t, atomic_grid_weight_grad_t)
       CALL torch_tensor_data_ptr(grid_weight_grad_t, grid_weight_grad)
       CALL torch_tensor_data_ptr(atomic_grid_weight_grad_t, atomic_grid_weight_grad)
+      IF (features%periodic_context) THEN
+         ALLOCATE (periodic_atom_response(3, SIZE(particle_set)))
+         CALL skala_gpw_periodic_partition_response(features, particle_set, cell, rho_r(1)%pw_grid, &
+                                                    grid_weight_grad, atomic_grid_weight_grad, &
+                                                    periodic_atom_response, periodic_strain_response)
+         atom_force = atom_force + periodic_atom_response
+         CALL torch_tensor_release(grid_weight_grad_t)
+         CALL torch_tensor_release(atomic_grid_weight_grad_t)
+         RETURN
+      END IF
 
       natom = SIZE(particle_set)
       CPASSERT(SIZE(atom_force, 1) == 3)
@@ -2175,6 +2197,8 @@ CONTAINS
                                                             natom, row
       INTEGER, DIMENSION(2, 3)                           :: bo
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: included
+      REAL(dp)                                           :: periodic_strain_response(3, 3)
+      REAL(dp), ALLOCATABLE                              :: periodic_atom_response(:, :)
       REAL(KIND=dp)                                      :: grid_base_weight, tmp, weight_grad
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: weights
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: atom_coords_pbc
@@ -2187,6 +2211,16 @@ CONTAINS
       CALL torch_tensor_grad(features%atomic_grid_weights_t, atomic_grid_weight_grad_t)
       CALL torch_tensor_data_ptr(grid_weight_grad_t, grid_weight_grad)
       CALL torch_tensor_data_ptr(atomic_grid_weight_grad_t, atomic_grid_weight_grad)
+      IF (features%periodic_context) THEN
+         ALLOCATE (periodic_atom_response(3, SIZE(particle_set)))
+         CALL skala_gpw_periodic_partition_response(features, particle_set, cell, rho_r(1)%pw_grid, &
+                                                    grid_weight_grad, atomic_grid_weight_grad, &
+                                                    periodic_atom_response, periodic_strain_response)
+         virial_xc = virial_xc + periodic_strain_response
+         CALL torch_tensor_release(grid_weight_grad_t)
+         CALL torch_tensor_release(atomic_grid_weight_grad_t)
+         RETURN
+      END IF
 
       natom = SIZE(particle_set)
       ALLOCATE (atom_coords_pbc(3, natom), included(natom), weights(natom), &

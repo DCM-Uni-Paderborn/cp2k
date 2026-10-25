@@ -17,6 +17,32 @@ MODULE qs_atom_grid_partition
    INTEGER, PARAMETER :: periodic_partition_image_shell = 1
    PUBLIC :: build_periodic_atom_image_layout, periodic_atom_image_partition
    PUBLIC :: periodic_atom_image_partition_from_layout, becke_shape, becke_shape_derivative
+   PUBLIC :: periodic_context_type, periodic_context_point_type
+   PUBLIC :: periodic_context_prepare, periodic_context_weights, periodic_context_adjoint
+
+   TYPE periodic_context_neighbors_type
+      INTEGER, ALLOCATABLE :: atoms(:), shifts(:, :)
+      REAL(dp), ALLOCATABLE :: positions(:, :), pairs(:, :), radii(:), switches(:), drops(:), derivatives(:)
+   END TYPE periodic_context_neighbors_type
+
+   TYPE periodic_context_type
+      PRIVATE
+      REAL(dp), ALLOCATABLE :: positions(:, :)
+      REAL(dp) :: cell(3, 3) = 0.0_dp, inverse_cell(3, 3) = 0.0_dp, radius = 0.0_dp
+      INTEGER :: periodicity(3) = 0
+      TYPE(periodic_context_neighbors_type), ALLOCATABLE :: neighbors(:)
+   END TYPE periodic_context_type
+
+   TYPE periodic_context_point_type
+      ! Index zero is a local background with no nonlocal quadrature weight.
+      INTEGER, ALLOCATABLE :: atoms(:), shifts(:, :)
+      REAL(dp), ALLOCATABLE :: positions(:, :), energy(:), internal(:)
+      ! Owned fixed-geometry history for the exact weight transpose.
+      REAL(dp), ALLOCATABLE :: probabilities(:), windows(:), drops(:), derivatives(:), &
+                               radii(:), directions(:, :), switches(:), switch_derivatives(:)
+      REAL(dp) :: point(3) = 0.0_dp, cell(3, 3) = 0.0_dp, radius = 0.0_dp, energy_norm = 0.0_dp
+   END TYPE periodic_context_point_type
+
 CONTAINS
 
 ! **************************************************************************************************
@@ -506,5 +532,390 @@ CONTAINS
       END DO
 
    END FUNCTION becke_shape_derivative
+
+! **************************************************************************************************
+!> \brief Smooth finite periodic atomic contexts with an explicit local background.
+!>        The physical radius is independent of the chosen primitive or replicated cell.
+!>        Neighbor factors vanish smoothly at twice this radius.
+!> \param positions Physical base-atom positions, without a discontinuous cell wrapping.
+!> \param cell Native physical cell and periodic directions.
+!> \param radius Fixed physical context radius in bohr.
+!> \param state Owned image neighborhoods.
+! **************************************************************************************************
+   SUBROUTINE periodic_context_prepare(positions, cell, radius, state)
+      REAL(dp), INTENT(IN)                               :: positions(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      REAL(dp), INTENT(IN)                               :: radius
+      TYPE(periodic_context_type), INTENT(OUT)           :: state
+
+      INTEGER                                            :: atom, count_images, image, ix, iy, iz, &
+                                                            lower(3), other, pass, upper(3)
+      REAL(dp)                                           :: derivative, distance, drop, &
+                                                            fractional(3), image_position(3), &
+                                                            pair(3), reach(3), value
+
+      CPASSERT(ASSOCIATED(cell))
+      CPASSERT(SIZE(positions, 1) == 3 .AND. SIZE(positions, 2) > 0)
+      CPASSERT(radius > 0.0_dp .AND. radius < SQRT(HUGE(1.0_dp)))
+      state%positions = positions
+      state%cell = cell%hmat
+      state%inverse_cell = cell%h_inv
+      state%periodicity = cell%perd
+      state%radius = radius
+      CPASSERT(ALL(state%periodicity == 0 .OR. state%periodicity == 1))
+      ALLOCATE (state%neighbors(SIZE(positions, 2)))
+      reach = 2.0_dp*radius*SQRT(SUM(state%inverse_cell**2, DIM=2))
+      DO atom = 1, SIZE(positions, 2)
+         count_images = 0
+         DO pass = 1, 2
+            image = 0
+            DO other = 1, SIZE(positions, 2)
+               fractional = MATMUL(state%inverse_cell, positions(:, atom) - positions(:, other))
+               lower = CEILING(fractional - reach) - 1
+               upper = FLOOR(fractional + reach) + 1
+               WHERE (state%periodicity == 0)
+                  lower = 0
+                  upper = 0
+               END WHERE
+               DO iz = lower(3), upper(3)
+                  DO iy = lower(2), upper(2)
+                     DO ix = lower(1), upper(1)
+                        image_position = positions(:, other) + MATMUL(state%cell, REAL([ix, iy, iz], dp))
+                        pair = positions(:, atom) - image_position
+                        distance = NORM2(pair)
+                        IF (distance <= layout_tol .OR. distance >= 2.0_dp*radius) CYCLE
+                        image = image + 1
+                        IF (pass == 1) CYCLE
+                        CALL context_window(distance, 2.0_dp*radius, value, drop, derivative)
+                        ASSOCIATE (neighbors => state%neighbors(atom))
+                           neighbors%atoms(image) = other
+                           neighbors%shifts(:, image) = [ix, iy, iz]
+                           neighbors%positions(:, image) = image_position
+                           neighbors%pairs(:, image) = pair
+                           neighbors%radii(image) = distance
+                           neighbors%switches(image) = value
+                           neighbors%drops(image) = drop
+                           neighbors%derivatives(image) = derivative
+                        END ASSOCIATE
+                     END DO
+                  END DO
+               END DO
+            END DO
+            IF (pass == 1) THEN
+               count_images = image
+               ASSOCIATE (neighbors => state%neighbors(atom))
+                  ALLOCATE (neighbors%atoms(image), neighbors%shifts(3, image), neighbors%positions(3, image), &
+                            neighbors%pairs(3, image), neighbors%radii(image), neighbors%switches(image), &
+                            neighbors%drops(image), neighbors%derivatives(image))
+               END ASSOCIATE
+            ELSE
+               CPASSERT(image == count_images)
+            END IF
+         END DO
+      END DO
+   END SUBROUTINE periodic_context_prepare
+
+! **************************************************************************************************
+!> \brief Periodic partition of one physical grid point and its complete image contexts.
+!>        Energy fractions sum to one including the local background. Internal fractions
+!>        use the original smooth sparse-row taper and the physical context window.
+!> \param state Fixed native geometry and physical support.
+!> \param point Physical Cartesian grid coordinate.
+!> \param values Owned image rows and normalized, dimensionless quadrature fractions.
+! **************************************************************************************************
+   SUBROUTINE periodic_context_weights(state, point, values)
+      TYPE(periodic_context_type), INTENT(IN)            :: state
+      REAL(dp), INTENT(IN)                               :: point(3)
+      TYPE(periodic_context_point_type), INTENT(OUT)     :: values
+
+      INTEGER                                            :: atom, count_images, image, ix, iy, iz, &
+                                                            lower(3), nearest, pass, upper(3)
+      REAL(dp) :: derivative, displacement(3), distance, drop, fractional(3), maximum, &
+         normalization, reach(3), reference, screen, value
+      REAL(dp), ALLOCATABLE                              :: logarithms(:)
+
+      CPASSERT(ALLOCATED(state%positions))
+      values%point = point
+      values%cell = state%cell
+      values%radius = state%radius
+      reach = state%radius*SQRT(SUM(state%inverse_cell**2, DIM=2))
+      count_images = 0
+      DO pass = 1, 2
+         image = 0
+         DO atom = 1, SIZE(state%positions, 2)
+            fractional = MATMUL(state%inverse_cell, point - state%positions(:, atom))
+            lower = CEILING(fractional - reach) - 1
+            upper = FLOOR(fractional + reach) + 1
+            WHERE (state%periodicity == 0)
+               lower = 0
+               upper = 0
+            END WHERE
+            DO iz = lower(3), upper(3)
+               DO iy = lower(2), upper(2)
+                  DO ix = lower(1), upper(1)
+                     displacement = point - state%positions(:, atom) - &
+                                    MATMUL(state%cell, REAL([ix, iy, iz], dp))
+                     distance = NORM2(displacement)
+                     IF (distance >= state%radius) CYCLE
+                     image = image + 1
+                     IF (pass == 1) CYCLE
+                     CALL context_window(distance, state%radius, value, drop, derivative)
+                     values%atoms(image) = atom
+                     values%shifts(:, image) = [ix, iy, iz]
+                     values%positions(:, image) = point - MATMUL(state%cell, REAL([ix, iy, iz], dp))
+                     values%windows(image) = value
+                     values%drops(image) = drop
+                     values%derivatives(image) = derivative
+                     values%radii(image) = distance
+                     IF (distance > layout_tol) values%directions(:, image) = displacement/distance
+                  END DO
+               END DO
+            END DO
+         END DO
+         IF (pass == 1) THEN
+            count_images = image
+            ALLOCATE (values%atoms(0:image), values%shifts(3, 0:image), values%positions(3, 0:image), &
+                      values%energy(0:image), values%internal(0:image), values%probabilities(0:image), &
+                      values%windows(0:image), values%drops(0:image), values%derivatives(0:image), &
+                      values%radii(0:image), values%directions(3, 0:image), values%switches(0:image), &
+                      values%switch_derivatives(0:image), logarithms(0:image))
+            values%atoms = 0
+            values%shifts = 0
+            values%positions = 0.0_dp
+            values%directions = 0.0_dp
+            values%windows = 0.0_dp
+            values%drops = 1.0_dp
+            values%derivatives = 0.0_dp
+            values%radii = 0.0_dp
+            values%probabilities = 0.0_dp
+            values%energy = 0.0_dp
+            values%internal = 0.0_dp
+            values%switches = 0.0_dp
+            values%switch_derivatives = 0.0_dp
+         ELSE
+            CPASSERT(image == count_images)
+         END IF
+      END DO
+      logarithms = -HUGE(1.0_dp)
+      IF (ALL(values%drops(1:) > 0.0_dp)) logarithms(0) = SUM(LOG(values%drops(1:)))
+      nearest = 0
+      reference = logarithms(0)
+      IF (count_images > 0) THEN
+         nearest = MINLOC(values%radii(1:), DIM=1)
+         logarithms(nearest) = context_raw_log(state, values, nearest, -HUGE(1.0_dp))
+         reference = MAX(reference, logarithms(nearest))
+      END IF
+      CPASSERT(reference > -0.5_dp*HUGE(1.0_dp))
+      screen = reference + LOG(EPSILON(1.0_dp)/REAL(count_images + 1, dp))
+      DO image = 1, count_images
+         IF (image == nearest) CYCLE
+         logarithms(image) = context_raw_log(state, values, image, screen)
+      END DO
+      maximum = MAXVAL(logarithms)
+      WHERE (logarithms > -0.5_dp*HUGE(1.0_dp))
+         values%probabilities = EXP(logarithms - maximum)
+      END WHERE
+      normalization = SUM(values%probabilities)
+      CPASSERT(normalization > 0.0_dp)
+      values%probabilities = values%probabilities/normalization
+      values%energy(0) = values%probabilities(0)
+      DO image = 1, count_images
+         CALL context_sparse_switch(values%probabilities(image), values%switches(image), &
+                                    values%switch_derivatives(image))
+         values%energy(image) = values%probabilities(image)*values%switches(image)
+         values%internal(image) = values%windows(image)*values%switches(image)
+      END DO
+      values%energy_norm = SUM(values%energy)
+      CPASSERT(values%energy_norm > 0.0_dp)
+      values%energy = values%energy/values%energy_norm
+   END SUBROUTINE periodic_context_weights
+
+! **************************************************************************************************
+!> \brief Exact geometry transpose of the finite periodic context quadrature fractions.
+!>        Lattice derivatives hold the physical grid coordinate and base atoms fixed.
+!>        The caller adds their affine response and the integration-volume response.
+!> \param state Fixed geometry used to build values.
+!> \param values Unchanged point partition and its normalization history.
+!> \param energy_adjoint Covectors of dimensionless energy fractions, including background at zero.
+!> \param internal_adjoint Covectors of dimensionless internal fractions.
+!> \param point_gradient New Cartesian derivative with respect to the physical grid coordinate.
+!> \param atom_gradient New Cartesian derivatives of physical base-atom positions.
+!> \param cell_gradient New explicit derivative with respect to lattice matrix elements.
+! **************************************************************************************************
+   SUBROUTINE periodic_context_adjoint(state, values, energy_adjoint, internal_adjoint, &
+                                       point_gradient, atom_gradient, cell_gradient)
+      TYPE(periodic_context_type), INTENT(IN)            :: state
+      TYPE(periodic_context_point_type), INTENT(IN)      :: values
+      REAL(dp), INTENT(IN)                               :: energy_adjoint(0:), internal_adjoint(0:)
+      REAL(dp), INTENT(OUT)                              :: point_gradient(3), atom_gradient(:, :), &
+                                                            cell_gradient(3, 3)
+
+      INTEGER                                            :: atom, image, neighbor, other
+      REAL(dp) :: coefficient_mu, coefficient_switch, cutoff_adjoint, direction(3), &
+         displacement(3), distance, factor, ga(3), gb(3), gx(3), local_point(3), mean_energy, &
+         mean_extra, mu, pair_direction(3), radial_difference, switch, switch_derivative
+      REAL(dp), ALLOCATABLE                              :: extra(:), logarithm_adjoint(:)
+
+      CPASSERT(values%radius == state%radius .AND. ALL(values%cell == state%cell))
+      CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(state%positions)))
+      CPASSERT(SIZE(energy_adjoint) == SIZE(values%energy))
+      CPASSERT(SIZE(internal_adjoint) == SIZE(values%internal))
+      point_gradient = 0.0_dp
+      atom_gradient = 0.0_dp
+      cell_gradient = 0.0_dp
+      ALLOCATE (extra(0:SIZE(values%energy) - 1), logarithm_adjoint(0:SIZE(values%energy) - 1))
+      extra = 0.0_dp
+      mean_energy = SUM(energy_adjoint*values%energy)
+      DO image = 1, SIZE(values%energy) - 1
+         extra(image) = ((energy_adjoint(image) - mean_energy)*values%probabilities(image)/values%energy_norm + &
+                         internal_adjoint(image)*values%windows(image))*values%switch_derivatives(image)
+      END DO
+      mean_extra = SUM(values%probabilities*extra)
+      logarithm_adjoint = values%energy*(energy_adjoint - mean_energy) + &
+                          values%probabilities*(extra - mean_extra)
+      DO image = 1, SIZE(values%energy) - 1
+         atom = values%atoms(image)
+         cutoff_adjoint = internal_adjoint(image)*values%switches(image)
+         IF (values%windows(image) > 0.0_dp) THEN
+            cutoff_adjoint = cutoff_adjoint + logarithm_adjoint(image)/values%windows(image)
+         END IF
+         IF (values%probabilities(0) > 0.0_dp) THEN
+            cutoff_adjoint = cutoff_adjoint - logarithm_adjoint(0)/values%drops(image)
+         END IF
+         gx = cutoff_adjoint*values%derivatives(image)*values%directions(:, image)
+         point_gradient = point_gradient + gx
+         atom_gradient(:, atom) = atom_gradient(:, atom) - gx
+         cell_gradient = cell_gradient - context_outer(gx, REAL(values%shifts(:, image), dp))
+         IF (logarithm_adjoint(image) == 0.0_dp) CYCLE
+         local_point = values%point - MATMUL(state%cell, REAL(values%shifts(:, image), dp))
+         ASSOCIATE (neighbors => state%neighbors(atom))
+            DO neighbor = 1, SIZE(neighbors%atoms)
+               other = neighbors%atoms(neighbor)
+               displacement = local_point - neighbors%positions(:, neighbor)
+               distance = NORM2(displacement)
+               direction = 0.0_dp
+               IF (distance > layout_tol) direction = displacement/distance
+               radial_difference = values%radii(image) - distance
+               mu = radial_difference/neighbors%radii(neighbor)
+               switch = 0.5_dp*(1.0_dp - becke_shape(MAX(-1.0_dp, MIN(1.0_dp, mu))))
+               switch_derivative = 0.0_dp
+               IF (ABS(mu) < 1.0_dp) switch_derivative = -0.5_dp*becke_shape_derivative(mu)
+               factor = neighbors%drops(neighbor) + neighbors%switches(neighbor)*switch
+               CPASSERT(factor > 0.0_dp)
+               coefficient_mu = logarithm_adjoint(image)*neighbors%switches(neighbor)*switch_derivative/factor
+               coefficient_switch = logarithm_adjoint(image)*(switch - 1.0_dp)*neighbors%derivatives(neighbor)/factor
+               pair_direction = neighbors%pairs(:, neighbor)/neighbors%radii(neighbor)
+               gx = coefficient_mu*(values%directions(:, image) - direction)/neighbors%radii(neighbor)
+               ga = coefficient_mu*(-values%directions(:, image)/neighbors%radii(neighbor) - &
+                                    radial_difference*pair_direction/neighbors%radii(neighbor)**2) + &
+                    coefficient_switch*pair_direction
+               gb = coefficient_mu*(direction/neighbors%radii(neighbor) + &
+                                    radial_difference*pair_direction/neighbors%radii(neighbor)**2) - &
+                    coefficient_switch*pair_direction
+               point_gradient = point_gradient + gx
+               atom_gradient(:, atom) = atom_gradient(:, atom) + ga
+               atom_gradient(:, other) = atom_gradient(:, other) + gb
+               cell_gradient = cell_gradient + context_outer(ga, REAL(values%shifts(:, image), dp)) + &
+                               context_outer(gb, REAL(values%shifts(:, image) + neighbors%shifts(:, neighbor), dp))
+            END DO
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE periodic_context_adjoint
+
+! **************************************************************************************************
+!> \brief Logarithm of an unnormalized image partition weight on a fixed periodic context.
+!> \param state Physical cell and atom-centered neighbor image lists.
+!> \param values Query point and its contributing atom images with context windows.
+!> \param image Index of the atom image whose weight is evaluated.
+!> \param screen Lower logarithmic cutoff for negligible weights.
+!> \return Log weight, or the negative finite sentinel for an excluded contribution.
+! **************************************************************************************************
+   FUNCTION context_raw_log(state, values, image, screen) RESULT(value)
+      TYPE(periodic_context_type), INTENT(IN)            :: state
+      TYPE(periodic_context_point_type), INTENT(IN)      :: values
+      INTEGER, INTENT(IN)                                :: image
+      REAL(dp), INTENT(IN)                               :: screen
+      REAL(dp)                                           :: value
+
+      INTEGER                                            :: atom, neighbor
+      REAL(dp)                                           :: distance, factor, mu, point(3), switch
+
+      IF (values%windows(image) <= 0.0_dp) THEN
+         value = -HUGE(1.0_dp)
+         RETURN
+      END IF
+      value = LOG(values%windows(image))
+      atom = values%atoms(image)
+      point = values%point - MATMUL(state%cell, REAL(values%shifts(:, image), dp))
+      ASSOCIATE (neighbors => state%neighbors(atom))
+         DO neighbor = 1, SIZE(neighbors%atoms)
+            distance = NORM2(point - neighbors%positions(:, neighbor))
+            mu = (values%radii(image) - distance)/neighbors%radii(neighbor)
+            switch = 0.5_dp*(1.0_dp - becke_shape(MAX(-1.0_dp, MIN(1.0_dp, mu))))
+            factor = neighbors%drops(neighbor) + neighbors%switches(neighbor)*switch
+            IF (factor <= 0.0_dp) THEN
+               value = -HUGE(1.0_dp)
+               RETURN
+            END IF
+            value = value + LOG(factor)
+            IF (value <= screen) THEN
+               value = -HUGE(1.0_dp)
+               RETURN
+            END IF
+         END DO
+      END ASSOCIATE
+   END FUNCTION context_raw_log
+
+! **************************************************************************************************
+!> \brief Complementary C2 radial windows between three quarters and the full context radius.
+!> \param distance Physical point-image or neighbor separation.
+!> \param radius Positive finite context cutoff in the same units as distance.
+!> \param value Retained window, equal to one inside its inner plateau.
+!> \param drop Complementary window, evaluated without subtractive cancellation.
+!> \param derivative Derivative of the retained window with respect to distance.
+! **************************************************************************************************
+   SUBROUTINE context_window(distance, radius, value, drop, derivative)
+      REAL(dp), INTENT(IN)                               :: distance, radius
+      REAL(dp), INTENT(OUT)                              :: value, drop, derivative
+
+      REAL(dp)                                           :: u
+
+      u = MAX(0.0_dp, MIN(1.0_dp, (distance/radius - 0.75_dp)/0.25_dp))
+      drop = u**3*(10.0_dp - 15.0_dp*u + 6.0_dp*u*u)
+      value = (1.0_dp - u)**3*(1.0_dp + 3.0_dp*u + 6.0_dp*u*u)
+      derivative = -30.0_dp*u*u*(1.0_dp - u)**2/(0.25_dp*radius)
+   END SUBROUTINE context_window
+
+! **************************************************************************************************
+!> \brief C2 switch that removes negligible normalized image weights.
+!> \param probability Normalized nonnegative partition weight.
+!> \param value Smooth retention factor between zero and one.
+!> \param derivative Derivative of the factor with respect to probability.
+! **************************************************************************************************
+   SUBROUTINE context_sparse_switch(probability, value, derivative)
+      REAL(dp), INTENT(IN)                               :: probability
+      REAL(dp), INTENT(OUT)                              :: value, derivative
+
+      REAL(dp), PARAMETER                                :: lower = 1.0e-12_dp, upper = 10.0_dp*lower
+
+      REAL(dp)                                           :: u
+
+      u = MAX(0.0_dp, MIN(1.0_dp, (probability - lower)/(upper - lower)))
+      value = u**3*(10.0_dp - 15.0_dp*u + 6.0_dp*u*u)
+      derivative = 30.0_dp*u*u*(1.0_dp - u)**2/(upper - lower)
+   END SUBROUTINE context_sparse_switch
+
+! **************************************************************************************************
+!> \brief Cartesian outer product for the cell-coordinate adjoint.
+!> \param first Cartesian covector.
+!> \param second Coordinate or dimensionless image-shift vector.
+!> \return Matrix with element first(i)*second(j).
+! **************************************************************************************************
+   FUNCTION context_outer(first, second) RESULT(matrix)
+      REAL(dp), INTENT(IN)                               :: first(3), second(3)
+      REAL(dp)                                           :: matrix(3, 3)
+
+      matrix = SPREAD(first, 2, 3)*SPREAD(second, 1, 3)
+   END FUNCTION context_outer
 
 END MODULE qs_atom_grid_partition

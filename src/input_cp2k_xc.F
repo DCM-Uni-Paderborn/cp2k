@@ -1545,6 +1545,16 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="NATIVE_GRID_CONTEXT_RADIUS", &
+                          description="Physical radius of smooth periodic atomic contexts in native-grid Skala. "// &
+                          "All contributing lattice images are retained within this radius, independent of "// &
+                          "the primitive cell or supercell. Smooth context and neighbor windows include "// &
+                          "their analytical force and stress derivatives. Applies to the periodic SMOOTH "// &
+                          "COMMON_GRID layout. Molecular quadratures are unchanged.", &
+                          usage="NATIVE_GRID_CONTEXT_RADIUS 20.0", default_r_val=20.0_dp, unit_str="bohr")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create( &
          keyword, __LOCATION__, name="NATIVE_GRID_LAYOUT", &
          description="Select the numerical layout for native-grid Skala irrespective of the "// &

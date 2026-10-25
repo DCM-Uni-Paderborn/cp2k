@@ -18,11 +18,11 @@ MODULE skala_gpw_features
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
-   USE qs_atom_grid_partition,          ONLY: becke_shape,&
-                                              becke_shape_derivative,&
-                                              build_periodic_atom_image_layout,&
-                                              periodic_atom_image_partition,&
-                                              periodic_atom_image_partition_from_layout
+   USE qs_atom_grid_partition,          ONLY: &
+        becke_shape, becke_shape_derivative, build_periodic_atom_image_layout, &
+        periodic_atom_image_partition, periodic_atom_image_partition_from_layout, &
+        periodic_context_adjoint, periodic_context_point_type, periodic_context_prepare, &
+        periodic_context_type, periodic_context_weights
    USE torch_api,                       ONLY: &
         torch_dict_clone, torch_dict_create, torch_dict_insert, torch_dict_release, &
         torch_dict_type, torch_tensor_expand_dim, torch_tensor_from_array, torch_tensor_narrow, &
@@ -52,7 +52,8 @@ MODULE skala_gpw_features
              skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, &
              build_periodic_atom_image_layout, periodic_atom_image_partition, &
              periodic_atom_image_partition_from_layout, smooth_atom_partition, &
-             smooth_partition_atomic_weight_scale, smooth_partition_atomic_weight_scale_derivative
+             smooth_partition_atomic_weight_scale, smooth_partition_atomic_weight_scale_derivative, &
+             skala_gpw_periodic_partition_response, skala_gpw_periodic_weight_derivative
 
    TYPE skala_gpw_layout_cache_type
       INTEGER                                            :: chunk_atom_begin = 1, chunk_atom_end = 0, &
@@ -60,7 +61,9 @@ MODULE skala_gpw_features
                                                             chunk_feature_count = 0, chunk_natom = 0, &
                                                             natom = 0, nflat = 0, nflat_local = 0, &
                                                             npoint = 0, nproc = 0, &
-                                                            atom_partition = skala_gpw_atom_partition_hard
+                                                            atom_partition = skala_gpw_atom_partition_hard, physical_natom = 0
+      REAL(dp) :: context_radius = 20.0_dp
+      LOGICAL :: periodic_context = .FALSE.
       INTEGER, DIMENSION(2, 3)                           :: bo = 0, bounds = 0
       INTEGER, DIMENSION(3)                              :: npts = 0
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: dynamic_counts, dynamic_displs, &
@@ -131,6 +134,8 @@ MODULE skala_gpw_features
    END TYPE skala_gpw_layout_cache_type
 
    TYPE skala_gpw_feature_type
+      LOGICAL :: periodic_context = .FALSE.
+      REAL(dp) :: context_radius = 20.0_dp
       INTEGER                                            :: chunk_feature_count = 0, nflat = 0, &
                                                             nflat_local = 0, &
                                                             atom_partition = skala_gpw_atom_partition_hard
@@ -201,11 +206,12 @@ CONTAINS
 !> \param use_atom_chunks ...
 !> \param route_atom_chunks ...
 !> \param atom_partition ...
+!> \param context_radius Fixed physical radius of smooth periodic atomic contexts in bohr.
 ! **************************************************************************************************
    SUBROUTINE skala_gpw_feature_build(features, rho_set, rho_r, particle_set, cell, &
                                       requires_grad, weights, requires_coordinate_grad, &
                                       requires_stress_grad, use_atom_chunks, route_atom_chunks, &
-                                      atom_partition)
+                                      atom_partition, context_radius)
       TYPE(skala_gpw_feature_type), INTENT(INOUT)        :: features
       TYPE(xc_rho_set_type), INTENT(IN)                  :: rho_set
       TYPE(pw_r3d_rs_type), DIMENSION(:), INTENT(IN)     :: rho_r
@@ -217,6 +223,7 @@ CONTAINS
                                                             requires_stress_grad, use_atom_chunks, &
                                                             route_atom_chunks
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_partition
+      REAL(dp), INTENT(IN), OPTIONAL                     :: context_radius
 
       INTEGER :: handle, i, ipt, ispin, j, k, local_row, my_atom_partition, &
          ndynamic_local_per_point, nflat, nflat_local, nspins, phase_handle, real_base, row
@@ -224,6 +231,7 @@ CONTAINS
       LOGICAL :: collapse_spin_dynamics, my_requires_coordinate_grad, my_requires_grad, &
          my_requires_stress_grad, my_route_atom_chunks, my_use_atom_chunks, &
          use_atom_chunk_protocol, use_atom_chunk_routing
+      REAL(dp)                                           :: my_context_radius
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: global_dynamic, local_dynamic
       REAL(KIND=dp), DIMENSION(3)                        :: integrals
       REAL(KIND=dp), DIMENSION(:, :, :), POINTER         :: rho, rhoa, rhob, tau_a, tau_b, tau_total
@@ -244,6 +252,9 @@ CONTAINS
       IF (PRESENT(use_atom_chunks)) my_use_atom_chunks = use_atom_chunks
       my_route_atom_chunks = .FALSE.
       IF (PRESENT(route_atom_chunks)) my_route_atom_chunks = route_atom_chunks
+      my_context_radius = 20.0_dp
+      IF (PRESENT(context_radius)) my_context_radius = context_radius
+      CPASSERT(my_context_radius > 0.0_dp)
       my_atom_partition = skala_gpw_atom_partition_hard
       IF (PRESENT(atom_partition)) my_atom_partition = atom_partition
       IF (my_atom_partition /= skala_gpw_atom_partition_hard .AND. &
@@ -270,7 +281,7 @@ CONTAINS
       use_atom_chunk_routing = use_atom_chunk_protocol .AND. my_route_atom_chunks
       CALL timeset("skala_gpw_layout_cache", phase_handle)
       CALL ensure_layout_cache(pw_grid, particle_set, cell, weights, my_atom_partition, &
-                               needs_full_static_tensors=.NOT. use_atom_chunk_protocol)
+                               needs_full_static_tensors=.NOT. use_atom_chunk_protocol, context_radius=my_context_radius)
       CALL timestop(phase_handle)
       nflat = cached_layout%nflat
       collapse_spin_dynamics = nspins == 1 .AND. use_atom_chunk_routing
@@ -457,15 +468,17 @@ CONTAINS
 !> \param weights ...
 !> \param atom_partition ...
 !> \param needs_full_static_tensors ...
+!> \param context_radius Fixed physical radius of periodic atomic contexts in bohr.
 ! **************************************************************************************************
    SUBROUTINE ensure_layout_cache(pw_grid, particle_set, cell, weights, atom_partition, &
-                                  needs_full_static_tensors)
+                                  needs_full_static_tensors, context_radius)
       TYPE(pw_grid_type), POINTER                        :: pw_grid
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: weights
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_partition
       LOGICAL, INTENT(IN)                                :: needs_full_static_tensors
+      REAL(dp), INTENT(IN)                               :: context_radius
 
       INTEGER                                            :: my_atom_partition, phase_handle
       LOGICAL                                            :: cache_matches
@@ -475,12 +488,12 @@ CONTAINS
       IF (PRESENT(weights)) THEN
          CALL timeset("skala_gpw_layout_match", phase_handle)
          cache_matches = layout_cache_matches(pw_grid, particle_set, cell, weights, &
-                                              my_atom_partition)
+                                              my_atom_partition, context_radius)
          CALL timestop(phase_handle)
       ELSE
          CALL timeset("skala_gpw_layout_match", phase_handle)
          cache_matches = layout_cache_matches(pw_grid, particle_set, cell, &
-                                              atom_partition=my_atom_partition)
+                                              atom_partition=my_atom_partition, context_radius=context_radius)
          CALL timestop(phase_handle)
       END IF
 
@@ -496,11 +509,11 @@ CONTAINS
       CALL timeset("skala_gpw_layout_rebuild", phase_handle)
       IF (PRESENT(weights)) THEN
          CALL rebuild_layout_cache(pw_grid, particle_set, cell, weights, my_atom_partition, &
-                                   needs_full_static_tensors)
+                                   needs_full_static_tensors, context_radius)
       ELSE
          CALL rebuild_layout_cache(pw_grid, particle_set, cell, &
                                    atom_partition=my_atom_partition, &
-                                   needs_full_static_tensors=needs_full_static_tensors)
+                                   needs_full_static_tensors=needs_full_static_tensors, context_radius=context_radius)
       END IF
       CALL timestop(phase_handle)
 
@@ -513,14 +526,16 @@ CONTAINS
 !> \param cell ...
 !> \param weights ...
 !> \param atom_partition ...
+!> \param context_radius Fixed physical radius of periodic atomic contexts in bohr.
 !> \return ...
 ! **************************************************************************************************
-   FUNCTION layout_cache_matches(pw_grid, particle_set, cell, weights, atom_partition) RESULT(matches)
+   FUNCTION layout_cache_matches(pw_grid, particle_set, cell, weights, atom_partition, context_radius) RESULT(matches)
       TYPE(pw_grid_type), POINTER                        :: pw_grid
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: weights
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_partition
+      REAL(dp), INTENT(IN)                               :: context_radius
       LOGICAL                                            :: matches
 
       INTEGER                                            :: iatom, my_atom_partition
@@ -531,7 +546,8 @@ CONTAINS
       matches = .FALSE.
       IF (.NOT. cached_layout%active) RETURN
       IF (cached_layout%atom_partition /= my_atom_partition) RETURN
-      IF (cached_layout%natom /= SIZE(particle_set)) RETURN
+      IF (cached_layout%physical_natom /= SIZE(particle_set)) RETURN
+      IF (cached_layout%context_radius /= context_radius) RETURN
       IF (cached_layout%nflat_local /= PRODUCT(MAX(0, pw_grid%npts_local))) RETURN
       IF (cached_layout%nproc /= pw_grid%para%group%num_pe) RETURN
       IF (ANY(cached_layout%bo /= pw_grid%bounds_local)) RETURN
@@ -608,26 +624,29 @@ CONTAINS
 !> \param weights ...
 !> \param atom_partition ...
 !> \param needs_full_static_tensors ...
+!> \param context_radius Fixed physical radius of periodic atomic contexts in bohr.
 ! **************************************************************************************************
    SUBROUTINE rebuild_layout_cache(pw_grid, particle_set, cell, weights, atom_partition, &
-                                   needs_full_static_tensors)
+                                   needs_full_static_tensors, context_radius)
       TYPE(pw_grid_type), POINTER                        :: pw_grid
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: weights
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_partition
       LOGICAL, INTENT(IN)                                :: needs_full_static_tensors
+      REAL(dp), INTENT(IN)                               :: context_radius
 
-      INTEGER :: feature_local, feature_slot, i, iatom, ipt, j, jatom, k, local_feature, &
-         local_row, max_grid_size, max_local_features, my_atom_partition, natom, nfeature_local, &
-         nflat, nflat_local, npoint, nproc, nx, ny, owner, pe, pe_index, phase_handle, row, &
-         source_global, source_local, static_base
+      INTEGER :: background, feature_local, feature_slot, i, iatom, image, image_offset, ipt, j, &
+         jatom, k, local_feature, local_row, max_grid_size, max_local_features, my_atom_partition, &
+         natom, nfeature_local, nflat, nflat_local, npoint, nproc, nx, ny, owner, pe, pe_index, &
+         phase_handle, physical_natom, row, source_global, source_local, static_base
+      INTEGER, ALLOCATABLE                               :: local_background(:), periodic_offsets(:)
       INTEGER, ALLOCATABLE, DIMENSION(:) :: atom_offset, atom_position, chunk_atom_begin, &
          chunk_atom_end, cursor, feature_counts, feature_displs, global_owner, &
          global_source_points, local_feature_counts_tmp, local_owner, local_source_global, &
          local_source_points, point_counts, point_displs, static_counts, static_displs
       INTEGER, DIMENSION(2, 3)                           :: bo
-      LOGICAL                                            :: has_weights, nonperiodic
+      LOGICAL                                            :: has_weights, nonperiodic, use_context
       REAL(KIND=dp)                                      :: atomic_base_weight, base_weight, &
                                                             included_sum, partition_weight, &
                                                             weight_sum, weight_sumsq
@@ -636,12 +655,17 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: atom_coords_pbc, pair_distances, &
                                                             partition_atom_coords
       REAL(KIND=dp), DIMENSION(3)                        :: grid_point
+      TYPE(periodic_context_point_type)                  :: context_point
+      TYPE(periodic_context_type)                        :: context
 
       CALL release_layout_cache(cached_layout)
 
       my_atom_partition = skala_gpw_atom_partition_hard
       IF (PRESENT(atom_partition)) my_atom_partition = atom_partition
-      natom = SIZE(particle_set)
+      physical_natom = SIZE(particle_set)
+      natom = physical_natom
+      nonperiodic = ALL(cell%perd == 0)
+      use_context = my_atom_partition == skala_gpw_atom_partition_smooth .AND. .NOT. nonperiodic
       bo = pw_grid%bounds_local
       nflat_local = PRODUCT(MAX(0, pw_grid%npts_local))
       nproc = pw_grid%para%group%num_pe
@@ -654,25 +678,56 @@ CONTAINS
                                 weight_sumsq=weight_sumsq)
       END IF
 
-      max_local_features = nflat_local
-      IF (my_atom_partition == skala_gpw_atom_partition_smooth) THEN
-         max_local_features = nflat_local*natom
-      END IF
-      ALLOCATE (local_owner(max_local_features), &
-                local_source_points(max_local_features), &
-                local_static(nstatic_per_point*max_local_features), &
-                local_feature_counts_tmp(nflat_local), feature_counts(nproc), &
-                feature_displs(nproc), point_counts(nproc), point_displs(nproc), &
-                static_counts(nproc), static_displs(nproc), atom_coords_pbc(3, natom))
-      ALLOCATE (cached_layout%feature_index(bo(1, 1):bo(2, 1), &
-                                            bo(1, 2):bo(2, 2), &
-                                            bo(1, 3):bo(2, 3)))
-      cached_layout%feature_index = 0
-      local_feature_counts_tmp = 0
-      DO iatom = 1, natom
-         atom_coords_pbc(:, iatom) = pbc(particle_set(iatom)%r, cell, positive_range=.TRUE.)
+      ALLOCATE (local_feature_counts_tmp(nflat_local), atom_coords_pbc(3, physical_natom))
+      DO iatom = 1, physical_natom
+         IF (use_context) THEN
+            atom_coords_pbc(:, iatom) = particle_set(iatom)%r
+         ELSE
+            atom_coords_pbc(:, iatom) = pbc(particle_set(iatom)%r, cell, positive_range=.TRUE.)
+         END IF
       END DO
-      nonperiodic = ALL(cell%perd == 0)
+      IF (use_context) THEN
+         CALL periodic_context_prepare(atom_coords_pbc, cell, context_radius, context)
+         ALLOCATE (local_background(nflat_local), periodic_offsets(nflat_local + 1))
+         local_background = 0
+         nx = bo(2, 1) - bo(1, 1) + 1
+         ny = bo(2, 2) - bo(1, 2) + 1
+!$OMP PARALLEL DO DEFAULT(NONE) COLLAPSE(3) &
+!$OMP SHARED(bo, context, local_background, local_feature_counts_tmp, nx, ny, pw_grid) &
+!$OMP PRIVATE(context_point, grid_point, i, j, k, local_row)
+         DO k = bo(1, 3), bo(2, 3)
+            DO j = bo(1, 2), bo(2, 2)
+               DO i = bo(1, 1), bo(2, 1)
+                  local_row = i - bo(1, 1) + 1 + nx*(j - bo(1, 2) + ny*(k - bo(1, 3)))
+                  grid_point = grid_coordinate(pw_grid, [i, j, k])
+                  CALL periodic_context_weights(context, grid_point, context_point)
+                  local_feature_counts_tmp(local_row) = COUNT(context_point%energy > 0.0_dp .OR. &
+                                                              context_point%internal > 0.0_dp)
+                  IF (context_point%energy(0) > 0.0_dp) local_background(local_row) = 1
+               END DO
+            END DO
+         END DO
+!$OMP END PARALLEL DO
+         background = MAX(0, MAXVAL(local_background))
+         CALL pw_grid%para%group%max(background)
+         natom = physical_natom + background
+         periodic_offsets(1) = 1
+         DO local_row = 1, nflat_local
+            periodic_offsets(local_row + 1) = periodic_offsets(local_row) + local_feature_counts_tmp(local_row)
+         END DO
+         max_local_features = periodic_offsets(nflat_local + 1) - 1
+      ELSE
+         max_local_features = nflat_local
+         IF (my_atom_partition == skala_gpw_atom_partition_smooth) max_local_features = nflat_local*natom
+         local_feature_counts_tmp = 0
+      END IF
+      ALLOCATE (local_owner(max_local_features), local_source_points(max_local_features), &
+                local_static(nstatic_per_point*max_local_features), feature_counts(nproc), &
+                feature_displs(nproc), point_counts(nproc), point_displs(nproc), &
+                static_counts(nproc), static_displs(nproc))
+      ALLOCATE (cached_layout%feature_index(bo(1, 1):bo(2, 1), &
+                                            bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)))
+      cached_layout%feature_index = 0
       IF (my_atom_partition == skala_gpw_atom_partition_smooth .AND. nonperiodic) THEN
          ALLOCATE (pair_distances(natom, natom))
          pair_distances = 0.0_dp
@@ -690,7 +745,45 @@ CONTAINS
       CALL timeset("skala_gpw_layout_local", phase_handle)
       nx = bo(2, 1) - bo(1, 1) + 1
       ny = bo(2, 2) - bo(1, 2) + 1
-      IF (my_atom_partition == skala_gpw_atom_partition_hard) THEN
+      IF (use_context) THEN
+         nfeature_local = max_local_features
+!$OMP PARALLEL DO DEFAULT(NONE) COLLAPSE(3) &
+!$OMP SHARED(bo, cached_layout, context, local_feature_counts_tmp, local_owner, local_source_points, &
+!$OMP        local_static, nx, ny, periodic_offsets, physical_natom, pw_grid, weights) &
+!$OMP PRIVATE(atomic_base_weight, base_weight, context_point, grid_point, i, image, image_offset, j, k, &
+!$OMP         local_row, owner, static_base)
+         DO k = bo(1, 3), bo(2, 3)
+            DO j = bo(1, 2), bo(2, 2)
+               DO i = bo(1, 1), bo(2, 1)
+                  local_row = i - bo(1, 1) + 1 + nx*(j - bo(1, 2) + ny*(k - bo(1, 3)))
+                  grid_point = grid_coordinate(pw_grid, [i, j, k])
+                  CALL periodic_context_weights(context, grid_point, context_point)
+                  atomic_base_weight = pw_grid%dvol
+                  base_weight = pw_grid%dvol
+                  IF (PRESENT(weights)) THEN
+                     IF (ASSOCIATED(weights)) base_weight = base_weight*weights%array(i, j, k)
+                  END IF
+                  cached_layout%feature_index(i, j, k) = local_row
+                  image_offset = periodic_offsets(local_row)
+                  DO image = 0, SIZE(context_point%energy) - 1
+                     IF (context_point%energy(image) == 0.0_dp .AND. context_point%internal(image) == 0.0_dp) CYCLE
+                     owner = context_point%atoms(image)
+                     IF (image == 0) owner = physical_natom + 1
+                     local_owner(image_offset) = owner
+                     local_source_points(image_offset) = local_row
+                     static_base = nstatic_per_point*(image_offset - 1)
+                     local_static(static_base + 1:static_base + 3) = context_point%positions(:, image)
+                     IF (image == 0) local_static(static_base + 1:static_base + 3) = grid_point
+                     local_static(static_base + 4) = base_weight*context_point%energy(image)
+                     local_static(static_base + 5) = atomic_base_weight*context_point%internal(image)
+                     image_offset = image_offset + 1
+                  END DO
+                  CPASSERT(image_offset == periodic_offsets(local_row + 1))
+               END DO
+            END DO
+         END DO
+!$OMP END PARALLEL DO
+      ELSE IF (my_atom_partition == skala_gpw_atom_partition_hard) THEN
          nfeature_local = nflat_local
 !$OMP PARALLEL DO DEFAULT(NONE) COLLAPSE(3) &
 !$OMP SHARED(atom_coords_pbc, bo, cached_layout, cell, local_feature_counts_tmp, local_owner, &
@@ -890,13 +983,14 @@ CONTAINS
                 cached_layout%atomic_grid_weights(nflat), &
                 cached_layout%coarse_0_atomic_coords(3, natom), &
                 cached_layout%atomic_grid_size_bound_shape(0, max_grid_size), &
-                cached_layout%atom_coords(3, natom))
+                cached_layout%atom_coords(3, physical_natom))
       cached_layout%grid_coords = 0.0_dp
       cached_layout%grid_weights = 0.0_dp
       cached_layout%atomic_grid_weights = 0.0_dp
       cached_layout%atomic_grid_size_bound_shape = 0_int_8
 
-      DO iatom = 1, natom
+      cached_layout%coarse_0_atomic_coords = 0.0_dp
+      DO iatom = 1, physical_natom
          cached_layout%atom_coords(:, iatom) = particle_set(iatom)%r
          cached_layout%coarse_0_atomic_coords(:, iatom) = atom_coords_pbc(:, iatom)
       END DO
@@ -947,6 +1041,9 @@ CONTAINS
       CALL timestop(phase_handle)
 
       cached_layout%natom = natom
+      cached_layout%physical_natom = physical_natom
+      cached_layout%periodic_context = use_context
+      cached_layout%context_radius = context_radius
       cached_layout%nflat = nflat
       cached_layout%nflat_local = nflat_local
       cached_layout%npoint = npoint
@@ -1099,6 +1196,8 @@ CONTAINS
       features%nflat_local = cached_layout%nflat_local
       features%chunk_feature_count = cached_layout%chunk_feature_count
       features%atom_partition = cached_layout%atom_partition
+      features%periodic_context = cached_layout%periodic_context
+      features%context_radius = cached_layout%context_radius
       ALLOCATE (features%atomic_grid_sizes(cached_layout%natom))
       features%atomic_grid_sizes(:) = cached_layout%atomic_grid_sizes
       IF (needs_grid_coordinate_array) THEN
@@ -1739,6 +1838,9 @@ CONTAINS
       cache%chunk_feature_count = 0
       cache%chunk_natom = 0
       cache%natom = 0
+      cache%physical_natom = 0
+      cache%periodic_context = .FALSE.
+      cache%context_radius = 20.0_dp
       cache%nflat = 0
       cache%nflat_local = 0
       cache%npoint = 0
@@ -1842,6 +1944,8 @@ CONTAINS
       features%nflat = 0
       features%nflat_local = 0
       features%atom_partition = skala_gpw_atom_partition_hard
+      features%periodic_context = .FALSE.
+      features%context_radius = 20.0_dp
       features%uses_atom_chunk_routing = .FALSE.
       features%uses_collapsed_rks_dynamic = .FALSE.
 
@@ -2821,5 +2925,135 @@ CONTAINS
       END IF
 
    END FUNCTION nearest_atom
+
+! **************************************************************************************************
+!> \brief Geometry transpose of periodic energy and internal integration fractions.
+!>        The existing weight virial supplies the volume response separately. Point motion,
+!>        physical atom motion and explicit lattice-image response are included here.
+!> \param features Original periodic feature layout and point-row incidence.
+!> \param particle_set Physical base atoms at the evaluated geometry.
+!> \param cell Physical cell used by the layout.
+!> \param pw_grid Owned regular grid.
+!> \param energy_grad Model derivative with respect to each energy weight.
+!> \param internal_grad Model derivative with respect to each internal weight.
+!> \param atom_gradient New local Cartesian derivative for each physical atom.
+!> \param strain_gradient New local affine-strain derivative of dimensionless fractions.
+! **************************************************************************************************
+   SUBROUTINE skala_gpw_periodic_partition_response(features, particle_set, cell, pw_grid, &
+                                                    energy_grad, internal_grad, atom_gradient, strain_gradient)
+      TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
+      TYPE(particle_type), POINTER                       :: particle_set(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(pw_grid_type), POINTER                        :: pw_grid
+      REAL(dp), INTENT(IN)                               :: energy_grad(:), internal_grad(:)
+      REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
+
+      INTEGER                                            :: atom, feature_pos, i, image, j, k, &
+                                                            local_row, row
+      REAL(dp)                                           :: base_weight, cell_bar(3, 3), point(3), &
+                                                            point_bar(3)
+      REAL(dp), ALLOCATABLE                              :: atom_bar(:, :), energy_bar(:), &
+                                                            internal_bar(:), positions(:, :)
+      TYPE(periodic_context_point_type)                  :: values
+      TYPE(periodic_context_type)                        :: context
+
+      CPASSERT(features%periodic_context)
+      CPASSERT(ALL(SHAPE(atom_gradient) == [3, SIZE(particle_set)]))
+      ALLOCATE (positions(3, SIZE(particle_set)), atom_bar(3, SIZE(particle_set)))
+      DO atom = 1, SIZE(particle_set)
+         positions(:, atom) = particle_set(atom)%r
+      END DO
+      CALL periodic_context_prepare(positions, cell, features%context_radius, context)
+      atom_gradient = 0.0_dp
+      strain_gradient = 0.0_dp
+      local_row = 0
+      DO k = pw_grid%bounds_local(1, 3), pw_grid%bounds_local(2, 3)
+         DO j = pw_grid%bounds_local(1, 2), pw_grid%bounds_local(2, 2)
+            DO i = pw_grid%bounds_local(1, 1), pw_grid%bounds_local(2, 1)
+               local_row = local_row + 1
+               point = grid_coordinate(pw_grid, [i, j, k])
+               CALL periodic_context_weights(context, point, values)
+               ALLOCATE (energy_bar(0:SIZE(values%energy) - 1), internal_bar(0:SIZE(values%energy) - 1))
+               energy_bar = 0.0_dp
+               internal_bar = 0.0_dp
+               base_weight = SUM(features%grid_weights(features%local_feature_rows( &
+                                                       features%local_feature_offsets(local_row): &
+                                                       features%local_feature_offsets(local_row + 1) - 1)))
+               feature_pos = features%local_feature_offsets(local_row)
+               DO image = 0, SIZE(values%energy) - 1
+                  IF (values%energy(image) == 0.0_dp .AND. values%internal(image) == 0.0_dp) CYCLE
+                  row = features%local_feature_rows(feature_pos)
+                  energy_bar(image) = base_weight*energy_grad(row)
+                  internal_bar(image) = pw_grid%dvol*internal_grad(row)
+                  feature_pos = feature_pos + 1
+               END DO
+               CPASSERT(feature_pos == features%local_feature_offsets(local_row + 1))
+               CALL periodic_context_adjoint(context, values, energy_bar, internal_bar, &
+                                             point_bar, atom_bar, cell_bar)
+               atom_gradient = atom_gradient + atom_bar
+               strain_gradient = strain_gradient + MATMUL(cell_bar, TRANSPOSE(cell%hmat)) + &
+                                 MATMUL(atom_bar, TRANSPOSE(positions)) + &
+                                 SPREAD(point_bar, 2, 3)*SPREAD(point, 1, 3)
+               DEALLOCATE (energy_bar, internal_bar)
+            END DO
+         END DO
+      END DO
+      CPASSERT(local_row == features%nflat_local)
+   END SUBROUTINE skala_gpw_periodic_partition_response
+
+! **************************************************************************************************
+!> \brief Derivative of the energy with respect to an external regular-grid weight multiplier.
+!>        Internal context measures are independent of this multiplier.
+!> \param features Original periodic feature layout and point-row incidence.
+!> \param particle_set Physical base atoms.
+!> \param cell Evaluated physical cell.
+!> \param pw_grid Owned regular grid.
+!> \param energy_grad Model derivative with respect to each energy weight.
+!> \param derivative Coalesced derivative density on the original owned grid.
+! **************************************************************************************************
+   SUBROUTINE skala_gpw_periodic_weight_derivative(features, particle_set, cell, pw_grid, energy_grad, derivative)
+      TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
+      TYPE(particle_type), POINTER                       :: particle_set(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(pw_grid_type), POINTER                        :: pw_grid
+      REAL(dp), INTENT(IN)                               :: energy_grad(:)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: derivative
+
+      INTEGER                                            :: atom, feature_pos, i, image, j, k, &
+                                                            local_row, row
+      REAL(dp)                                           :: point(3), value
+      REAL(dp), ALLOCATABLE                              :: positions(:, :)
+      TYPE(periodic_context_point_type)                  :: values
+      TYPE(periodic_context_type)                        :: context
+
+      CPASSERT(features%periodic_context)
+      ALLOCATE (positions(3, SIZE(particle_set)))
+      DO atom = 1, SIZE(particle_set)
+         positions(:, atom) = particle_set(atom)%r
+      END DO
+      CALL periodic_context_prepare(positions, cell, features%context_radius, context)
+      local_row = 0
+      DO k = pw_grid%bounds_local(1, 3), pw_grid%bounds_local(2, 3)
+         DO j = pw_grid%bounds_local(1, 2), pw_grid%bounds_local(2, 2)
+            DO i = pw_grid%bounds_local(1, 1), pw_grid%bounds_local(2, 1)
+               local_row = local_row + 1
+               point = grid_coordinate(pw_grid, [i, j, k])
+               CALL periodic_context_weights(context, point, values)
+               feature_pos = features%local_feature_offsets(local_row)
+               value = 0.0_dp
+               DO image = 0, SIZE(values%energy) - 1
+                  IF (values%energy(image) == 0.0_dp .AND. values%internal(image) == 0.0_dp) CYCLE
+                  row = features%local_feature_rows(feature_pos)
+                  value = value + values%energy(image)*energy_grad(row)
+                  feature_pos = feature_pos + 1
+               END DO
+               CPASSERT(feature_pos == features%local_feature_offsets(local_row + 1))
+               derivative%array(i, j, k) = value
+            END DO
+         END DO
+      END DO
+      CPASSERT(local_row == features%nflat_local)
+   END SUBROUTINE skala_gpw_periodic_weight_derivative
 
 END MODULE skala_gpw_features
