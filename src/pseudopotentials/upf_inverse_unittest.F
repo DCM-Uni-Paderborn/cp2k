@@ -431,6 +431,11 @@ CONTAINS
       IF (SIZE(coordinate) /= 4 .OR. SIZE(direction) /= 4 .OR. SIZE(multipliers) /= 1) THEN
          ERROR STOP 'Invalid curved Lagrangian response dimensions'
       END IF
+      IF (ABS(direction(4) - 2.0_dp*DOT_PRODUCT(coordinate(:3), direction(:3))) > &
+          128.0_dp*EPSILON(0.0_dp)*NORM2(direction)) ERROR STOP 'Lagrangian direction left the original tangent'
+      IF (ABS(1.e-8_dp*multipliers(1) - 0.25_dp) > 128.0_dp*EPSILON(0.0_dp)) THEN
+         ERROR STOP 'Lagrangian multiplier lost its original field units'
+      END IF
       SELECT TYPE (context)
       TYPE IS (REAL(dp))
          available = .TRUE.

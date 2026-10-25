@@ -1071,7 +1071,8 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Inexact Newton direction from central differences of the native derivatives.
 !>        Truncated conjugate gradients reuse the positive BFGS inverse as a fixed preconditioner
-!>        and retain linear storage. Indefinite curvature and an oversized CG iterate
+!>        and retain linear storage. The constraint Jacobian and normal derivative are
+!>        retained only for this accepted center. Indefinite curvature and an oversized CG iterate
 !>        terminate at the original maximum-step sphere. The outer line search
 !>        retains its original energy and derivative checks.
 !> \param center Accepted orbital coordinates.
@@ -1090,7 +1091,8 @@ CONTAINS
       REAL(dp)                                           :: alpha, beta, boundary, curvature, &
                                                             next_residual2, next_residual_dot, &
                                                             norm_direction, residual_dot, TARGET
-      REAL(dp), ALLOCATABLE                              :: preconditioned(:), PRODUCT(:), &
+      REAL(dp), ALLOCATABLE                              :: center_jacobian(:, :), center_normal(:), &
+                                                            preconditioned(:), PRODUCT(:), &
                                                             residual(:), search(:)
 
          valid_direction = .FALSE.
@@ -1118,7 +1120,8 @@ CONTAINS
             END IF
             norm_direction = NORM2(search)
             IF (norm_direction <= TINY(0.0_dp)) EXIT
-            CALL reduced_hessian_product(center, search, PRODUCT, valid_trial, stopped_direction)
+            CALL reduced_hessian_product(center, search, PRODUCT, valid_trial, stopped_direction, &
+                                         center_jacobian, center_normal)
             IF (.NOT. valid_trial .OR. stopped_direction) RETURN
             curvature = DOT_PRODUCT(search, product)
             boundary = boundary_length(newton_step, search, norm_direction)
@@ -1184,11 +1187,15 @@ CONTAINS
 !> \param PRODUCT Estimated reduced Hessian applied to direction.
 !> \param valid_product Whether finite native differences supplied an estimate.
 !> \param stopped_product Whether the caller requested a stop.
+!> \param center_jacobian Accepted independent constraint rows, scaled once per Newton solve.
+!> \param center_normal Complete normal energy derivative at the same center.
 ! **************************************************************************************************
-      SUBROUTINE reduced_hessian_product(center, direction, PRODUCT, valid_product, stopped_product)
+      SUBROUTINE reduced_hessian_product(center, direction, PRODUCT, valid_product, stopped_product, &
+                                         center_jacobian, center_normal)
       REAL(dp), INTENT(IN)                               :: center(:), direction(:)
       REAL(dp), INTENT(OUT)                              :: PRODUCT(:)
       LOGICAL, INTENT(OUT)                               :: valid_product, stopped_product
+      REAL(dp), ALLOCATABLE, INTENT(INOUT)               :: center_jacobian(:, :), center_normal(:)
 
       INTEGER                                            :: refinement
       LOGICAL                                            :: have_previous, have_product, smooth, &
@@ -1226,21 +1233,27 @@ CONTAINS
                stopped_product = .TRUE.
                RETURN
             END IF
-            CALL evaluate_constraints(center, values, jacobian, context)
-            IF (ALL(ABS(values) <= curve%tolerances)) THEN
+            IF (.NOT. ALLOCATED(center_jacobian)) THEN
+               CALL evaluate_constraints(center, values, jacobian, context)
+               IF (ALL(ABS(values) <= curve%tolerances)) THEN
+                  ALLOCATE (center_jacobian(r, d), center_normal(r))
+                  center_jacobian = jacobian(curve%rows(:r), :)/SPREAD(curve%scales(curve%rows(:r)), 2, d)
+                  ! Backtracking can leave a rejected full gradient cached. Refresh the
+                  ! accepted center once, before any of its conjugate-gradient products.
+                  CALL evaluate_gradient(center, energy_trial, g, context)
+                  center_normal = g(curve%dependent)
+               END IF
+            END IF
+            IF (ALLOCATED(center_jacobian)) THEN
                ALLOCATE (full_direction(d), full_product(d), matrix(r, r), rhs(r, 1), multipliers(m))
-               matrix = jacobian(curve%rows(:r), curve%dependent)/SPREAD(curve%scales(curve%rows(:r)), 2, r)
-               rhs(:, 1) = -MATMUL(jacobian(curve%rows(:r), curve%free)/ &
-                                   SPREAD(curve%scales(curve%rows(:r)), 2, nf), direction)
+               matrix = center_jacobian(:, curve%dependent)
+               rhs(:, 1) = -MATMUL(center_jacobian(:, curve%free), direction)
                CALL solve_constraint_system(matrix, rhs, valid_trial)
                IF (valid_trial) THEN
                   full_direction(curve%free) = direction
                   full_direction(curve%dependent) = rhs(:, 1)
-                  ! Backtracking callbacks can leave the last rejected full gradient cached.
-                  CALL evaluate_gradient(center, energy_trial, g, context)
-                  matrix = TRANSPOSE(jacobian(curve%rows(:r), curve%dependent)/ &
-                                     SPREAD(curve%scales(curve%rows(:r)), 2, r))
-                  rhs(:, 1) = g(curve%dependent)
+                  matrix = TRANSPOSE(center_jacobian(:, curve%dependent))
+                  rhs(:, 1) = center_normal
                   CALL solve_constraint_system(matrix, rhs, valid_trial)
                   IF (valid_trial) THEN
                      multipliers = 0.0_dp
@@ -1249,14 +1262,12 @@ CONTAINS
                                                    full_product, valid_product)
                      IF (valid_product) THEN
                         CPASSERT(ALL(ieee_is_finite(full_product)))
-                        matrix = TRANSPOSE(jacobian(curve%rows(:r), curve%dependent)/ &
-                                           SPREAD(curve%scales(curve%rows(:r)), 2, r))
+                        matrix = TRANSPOSE(center_jacobian(:, curve%dependent))
                         rhs(:, 1) = full_product(curve%dependent)
                         CALL solve_constraint_system(matrix, rhs, valid_product)
                         IF (valid_product) THEN
                            PRODUCT = full_product(curve%free) - &
-                                     MATMUL(TRANSPOSE(jacobian(curve%rows(:r), curve%free)/ &
-                                                      SPREAD(curve%scales(curve%rows(:r)), 2, nf)), rhs(:, 1))
+                                     MATMUL(TRANSPOSE(center_jacobian(:, curve%free)), rhs(:, 1))
                            RETURN
                         END IF
                      END IF
