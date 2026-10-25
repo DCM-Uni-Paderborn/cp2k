@@ -96,6 +96,8 @@ MODULE qs_upf_inverse_types
       TYPE(qs_upf_inverse_grid_type), ALLOCATABLE :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type) :: augmentation
       REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)
+      ! Original atom position = native folded position + cell times this integer vector.
+      INTEGER, ALLOCATABLE :: native_cell_shifts(:, :)
       INTEGER :: nao = 0, kp_range(2) = 0
    END TYPE qs_upf_inverse_kpoints_type
 

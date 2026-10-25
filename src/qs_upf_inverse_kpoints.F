@@ -12,6 +12,8 @@
 !>        It does not select a representation or replace the SCF operator provider.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_kpoints
+   USE cell_types,                      ONLY: cell_type,&
+                                              pbc
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
@@ -35,6 +37,7 @@ MODULE qs_upf_inverse_kpoints
                                               kpoint_type
    USE mathconstants,                   ONLY: twopi
    USE message_passing,                 ONLY: mp_comm_type
+   USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
@@ -82,14 +85,25 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
 
-      INTEGER                                            :: ik
+      INTEGER                                            :: atom, ik
       INTEGER, POINTER                                   :: sizes(:)
+      REAL(dp)                                           :: folding_error
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(particle_type), POINTER                       :: atoms(:)
 
       CALL get_ks_env(ks_env, kpoints=kpoints, matrix_s_kp=overlap, dft_control=control)
       CPASSERT(ASSOCIATED(kpoints))
+      CALL get_ks_env(ks_env, cell=cell, particle_set=atoms)
+      ALLOCATE (frame%native_cell_shifts(3, SIZE(atoms)))
+      DO atom = 1, SIZE(atoms)
+         frame%native_cell_shifts(:, atom) = NINT(MATMUL(cell%h_inv, atoms(atom)%r - pbc(atoms(atom)%r, cell)))
+         folding_error = NORM2(atoms(atom)%r - pbc(atoms(atom)%r, cell) - &
+                               MATMUL(cell%hmat, REAL(frame%native_cell_shifts(:, atom), dp)))
+         CPASSERT(folding_error < 1.e-9_dp)
+      END DO
       CPASSERT(kpoints%nkp > 0)
       DO ik = 1, kpoints%nkp
          IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry .AND. &
@@ -133,6 +147,7 @@ CONTAINS
       IF (ALLOCATED(frame%augmentation%kinds)) DEALLOCATE (frame%augmentation%kinds)
       IF (ALLOCATED(frame%reduced_k)) DEALLOCATE (frame%reduced_k)
       IF (ALLOCATED(frame%weights)) DEALLOCATE (frame%weights)
+      IF (ALLOCATED(frame%native_cell_shifts)) DEALLOCATE (frame%native_cell_shifts)
       frame%star = kpoint_star_type()
       NULLIFY (frame%kpoints)
       frame%nao = 0
@@ -246,11 +261,6 @@ CONTAINS
       ALLOCATE (matrix(frame%nao, frame%nao))
       DO image = 1, SIZE(matrices)
          matrix = 0.0_dp
-         DO k = 1, SIZE(frame%weights)
-            angle = twopi*DOT_PRODUCT(frame%reduced_k(:, k), REAL(images(:, image), dp))
-            phase = CMPLX(COS(angle), -SIN(angle), dp)
-            matrix = matrix + frame%weights(k)*REAL(phase*density(:, :, k), dp)
-         END DO
          CALL dbcsr_get_info(matrices(image)%matrix, group=comm)
          CALL dbcsr_clear(matrices(image)%matrix)
          DO b = 1, SIZE(frame%frames(1)%ao%ao_first)
@@ -261,6 +271,14 @@ CONTAINS
                IF (owner /= comm%mepos) CYCLE
                first_a = frame%frames(1)%ao%ao_first(a)
                last_a = frame%frames(1)%ao%ao_last(a)
+               DO k = 1, SIZE(frame%weights)
+                  angle = twopi*DOT_PRODUCT(frame%reduced_k(:, k), &
+                                            REAL(images(:, image) + frame%native_cell_shifts(:, a) - &
+                                                 frame%native_cell_shifts(:, b), dp))
+                  phase = CMPLX(COS(angle), -SIN(angle), dp)
+                  matrix(first_a:last_a, first_b:last_b) = matrix(first_a:last_a, first_b:last_b) + &
+                                                         frame%weights(k)*REAL(phase*density(first_a:last_a, first_b:last_b, k), dp)
+               END DO
                CALL dbcsr_put_block(matrices(image)%matrix, a, b, matrix(first_a:last_a, first_b:last_b))
             END DO
          END DO
@@ -282,15 +300,25 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: dense(:, :)
-      INTEGER                                            :: k
+      INTEGER                                            :: a, b, first_a, first_b, k, last_a, last_b
       REAL(dp)                                           :: angle
 
       CALL check_live(frame)
       CALL qs_upf_inverse_matrix_gather(frame%frames(1)%ao, matrix, dense)
       ALLOCATE (operators(frame%nao, frame%nao, SIZE(frame%weights)))
       DO k = 1, SIZE(frame%weights)
-         angle = twopi*DOT_PRODUCT(frame%reduced_k(:, k), REAL(image, dp))
-         operators(:, :, k) = CMPLX(COS(angle), SIN(angle), dp)*dense
+         DO b = 1, SIZE(frame%native_cell_shifts, 2)
+            first_b = frame%frames(1)%ao%ao_first(b)
+            last_b = frame%frames(1)%ao%ao_last(b)
+            DO a = 1, SIZE(frame%native_cell_shifts, 2)
+               first_a = frame%frames(1)%ao%ao_first(a)
+               last_a = frame%frames(1)%ao%ao_last(a)
+               angle = twopi*DOT_PRODUCT(frame%reduced_k(:, k), &
+                                         REAL(image + frame%native_cell_shifts(:, a) - frame%native_cell_shifts(:, b), dp))
+               operators(first_a:last_a, first_b:last_b, k) = &
+                  CMPLX(COS(angle), SIN(angle), dp)*dense(first_a:last_a, first_b:last_b)
+            END DO
+         END DO
       END DO
    END SUBROUTINE qs_upf_inverse_kpoints_image_operator
 
@@ -477,6 +505,8 @@ CONTAINS
 
       CPASSERT(ASSOCIATED(frame%kpoints))
       CPASSERT(ALLOCATED(frame%frames))
+      CPASSERT(ALLOCATED(frame%native_cell_shifts))
+      CPASSERT(SIZE(frame%native_cell_shifts, 1) == 3)
       CPASSERT(ASSOCIATED(frame%star%kpoints, frame%kpoints))
       CPASSERT(frame%kpoints%nkp == MAXVAL(frame%star%representative))
       CPASSERT(ALL(frame%kpoints%kp_range == frame%kp_range))

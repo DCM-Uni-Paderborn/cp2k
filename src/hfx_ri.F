@@ -921,7 +921,8 @@ CONTAINS
       CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, bases, &
                                              cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
                                              center_images, integrals, metric=ri_data%ri_metric, &
-                                             coefficient_images=coefficient_images, coupled_coefficients=coefficients)
+                                             coefficient_images=coefficient_images, coupled_coefficients=coefficients, &
+                                             native_cell_shifts=inverse%bloch%native_cell_shifts)
    END SUBROUTINE inverse_3c_lattice_integrals
 
 ! **************************************************************************************************

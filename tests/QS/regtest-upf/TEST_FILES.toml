@@ -57,6 +57,7 @@
   {matcher="M031", tol=1e-7, ref=2406666.13564},
 ]
 # General inverse RI fitting needs auxiliary images beyond the compact AO cell map.
+# The atoms have different folding vectors, so RI and inverse image conventions must agree.
 "H2_inverse_RI_images.inp" = [
-  {matcher="M011", tol=1e-10, ref=13.892550283574097},
+  {matcher="M011", tol=1e-10, ref=13.892551841738308},
 ]

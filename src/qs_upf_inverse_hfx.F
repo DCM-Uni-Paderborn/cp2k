@@ -142,6 +142,7 @@ MODULE qs_upf_inverse_hfx
       TYPE(lattice_moment_cache_type) :: moments
       TYPE(radial_difference_fields_type), ALLOCATABLE :: radial_fields(:)
       INTEGER, POINTER :: auxiliary_images(:, :) => NULL()
+      INTEGER, POINTER :: site_images(:, :) => NULL()
       INTEGER :: natom = 0
       ! Reserve the small Q tables independently of the larger point-potential arrays.
       INTEGER :: remaining_words = max_cached_potential_words/8
@@ -261,11 +262,12 @@ CONTAINS
 !> \param coefficient_images Coupled physical translations, required for general INVERSE.
 !> \param coupled_coefficients Full projector/AO W_Q in coefficient-image order.
 !> \param coupled_response Complete coupled dW_Q, required for a general inverse response.
+!> \param native_cell_shifts Native atom-folding vectors for the RI image indices.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                                 ao_images, center_images, tensors, responses, atom_response, &
                                                 cell_response, metric, &
-                                                coefficient_images, coupled_coefficients, coupled_response)
+                                                coefficient_images, coupled_coefficients, coupled_response, native_cell_shifts)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -279,6 +281,7 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
                                                             coupled_response(:, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: native_cell_shifts(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: factor_response(:), factors(:)
       INTEGER                                            :: atom, image, natom, nsite, site
@@ -288,6 +291,16 @@ CONTAINS
       TYPE(lattice_potential_cache_type), TARGET         :: lattice_potentials
 
       CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, coupled_response, PRESENT(responses))
+      IF (PRESENT(native_cell_shifts)) THEN
+         CPASSERT(ALL(SHAPE(native_cell_shifts) == SHAPE(frame%positions)))
+         CPASSERT(SIZE(native_cell_shifts, 2) > 0)
+         IF (ANY(native_cell_shifts /= SPREAD(native_cell_shifts(:, 1), 2, SIZE(native_cell_shifts, 2)))) THEN
+            CALL native_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, ao_images, &
+                                       center_images, tensors, responses, atom_response, cell_response, metric, &
+                                       coefficient_images, coupled_coefficients, coupled_response, native_cell_shifts)
+            RETURN
+         END IF
+      END IF
       natom = SIZE(frame%positions, 2)
       CPASSERT(SIZE(auxiliary_bases) == natom)
       CPASSERT(SIZE(auxiliary_images, 1) == 3 .AND. SIZE(auxiliary_images, 2) > 0)
@@ -358,6 +371,179 @@ CONTAINS
          DEALLOCATE (selected_centers)
       END DO
    END SUBROUTINE qs_upf_inverse_hfx_lattice_tensor
+
+! **************************************************************************************************
+!> \brief Partition AO columns by their integer native-to-original coordinate shift.
+!>        Masks can cut through native tensor blocks without changing their ownership.
+!> \param frame Original Gaussian column ranges.
+!> \param shifts Native folding vectors, indexed (axis,atom).
+!> \param groups Distinct folding vectors in first-atom order.
+!> \param masks AO columns in each group.
+! **************************************************************************************************
+   SUBROUTINE native_shift_groups(frame, shifts, groups, masks)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: shifts(:, :)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: groups(:, :)
+      LOGICAL, ALLOCATABLE, INTENT(OUT)                  :: masks(:, :)
+
+      INTEGER                                            :: atom, group, ngroup
+
+      CPASSERT(ALL(SHAPE(shifts) == SHAPE(frame%positions)))
+      CPASSERT(SIZE(shifts, 2) > 0)
+      CPASSERT(ALL(shifts*SPREAD(frame%periodicity, 2, SIZE(shifts, 2)) == shifts))
+      ALLOCATE (groups(3, SIZE(shifts, 2)))
+      ngroup = 0
+      DO atom = 1, SIZE(shifts, 2)
+         DO group = 1, ngroup
+            IF (ALL(groups(:, group) == shifts(:, atom))) EXIT
+         END DO
+         IF (group > ngroup) THEN
+            ngroup = group
+            groups(:, group) = shifts(:, atom)
+         END IF
+      END DO
+      groups = groups(:, :ngroup)
+      ALLOCATE (masks(SIZE(frame%coefficients, 2), ngroup), SOURCE=.FALSE.)
+      DO atom = 1, SIZE(shifts, 2)
+         DO group = 1, ngroup
+            IF (ALL(groups(:, group) == shifts(:, atom))) EXIT
+         END DO
+         masks(frame%ao_first(atom):frame%ao_last(atom), group) = .TRUE.
+      END DO
+   END SUBROUTINE native_shift_groups
+
+! **************************************************************************************************
+!> \brief Original reconstruction images for one converted physical AO translation.
+!> \param frame Original reconstruction.
+!> \param centers Retained atom-local reconstruction images.
+!> \param coefficient_images General inverse coefficient domain.
+!> \param image Original-coordinate right AO translation.
+!> \param selected Exact active reconstruction image sequence.
+! **************************************************************************************************
+   SUBROUTINE native_center_images(frame, centers, coefficient_images, image, selected)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: centers(:, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      INTEGER, INTENT(IN)                                :: image(3)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: selected(:, :)
+
+      INTEGER, ALLOCATABLE                               :: all_centers(:, :)
+
+      IF (frame%atom_local) THEN
+         ALLOCATE (selected, SOURCE=centers)
+      ELSE
+         CPASSERT(PRESENT(coefficient_images))
+         CALL qs_upf_inverse_hfx_lattice_centers(coefficient_images, RESHAPE(image, [3, 1]), all_centers)
+         CALL lattice_center_subset(all_centers, coefficient_images, image, selected)
+      END IF
+   END SUBROUTINE native_center_images
+
+! **************************************************************************************************
+!> \brief Native folded RI tensors evaluated with original-coordinate inverse fields.
+!>        For left AO A, right AO B and auxiliary C use R+nA-nB and S+nA-nC.
+!>        One fixed first-AO shift shares auxiliary fields across all compatible AO columns.
+!>        The masks retain arbitrary native blocking, including mixed-atom blocks.
+!> \param frame Original reconstruction and physical coefficients.
+!> \param kinds Original kinds.
+!> \param augmentation Original transition data.
+!> \param auxiliary_bases Native atom-ordered RI bases.
+!> \param auxiliary_images Native RI translations.
+!> \param ao_images Native AO translations.
+!> \param center_images Retained atom-local reconstruction images.
+!> \param tensors Native distributed tensors to increment.
+!> \param responses Matching optional geometry tensors.
+!> \param atom_response Original Cartesian atom motion.
+!> \param cell_response Physical lattice motion.
+!> \param metric Original fitting interaction.
+!> \param coefficient_images Original coupled coefficient domain.
+!> \param coupled_coefficients Original physical inverse coefficients.
+!> \param coupled_response Their matching geometry response.
+!> \param shifts Native atom folding vectors.
+! **************************************************************************************************
+   SUBROUTINE native_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, ao_images, &
+                                    center_images, tensors, responses, atom_response, cell_response, metric, &
+                                    coefficient_images, coupled_coefficients, coupled_response, shifts)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: auxiliary_bases(:)
+      INTEGER, INTENT(IN)                                :: auxiliary_images(:, :), ao_images(:, :), &
+                                                            center_images(:, :)
+      TYPE(dbt_type), INTENT(INOUT)                      :: tensors(:)
+      TYPE(dbt_type), INTENT(INOUT), OPTIONAL            :: responses(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
+                                                            coupled_response(:, :, :)
+      INTEGER, INTENT(IN)                                :: shifts(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: factor_response(:), factors(:)
+      INTEGER                                            :: atom, first, image, last, natom, nsite, &
+                                                            physical_image(3), ri_image, site
+      INTEGER, ALLOCATABLE                               :: groups(:, :), selected(:, :)
+      INTEGER, ALLOCATABLE, TARGET                       :: site_images(:, :)
+      LOGICAL, ALLOCATABLE                               :: masks(:, :), pair_mask(:, :)
+      REAL(dp), ALLOCATABLE                              :: position_response(:, :), positions(:, :)
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
+      TYPE(lattice_potential_cache_type), TARGET         :: cache
+
+      CALL native_shift_groups(frame, shifts, groups, masks)
+      natom = SIZE(shifts, 2)
+      nsite = natom*SIZE(auxiliary_images, 2)
+      CPASSERT(SIZE(auxiliary_bases) == natom)
+      CPASSERT(SIZE(ao_images, 2) == SIZE(tensors))
+      ALLOCATE (bases(nsite), positions(3, nsite), factors(nsite), site_images(3, nsite), pair_mask(SIZE(masks, 1), 2))
+      factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      IF (PRESENT(responses)) THEN
+         CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
+         CPASSERT(SIZE(responses) == SIZE(tensors))
+         ALLOCATE (position_response(3, nsite), factor_response(nsite))
+         factor_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      DO first = 1, SIZE(groups, 2)
+         cache = lattice_potential_cache_type()
+         cache%natom = natom
+         cache%site_images => site_images
+         IF (.NOT. frame%direct .AND. .NOT. PRESENT(responses)) THEN
+            cache%moments%remaining_words = max_cached_potential_words/2
+            cache%potential_words = max_cached_potential_words - cache%remaining_words - cache%moments%remaining_words
+         END IF
+         pair_mask(:, 1) = masks(:, first)
+         DO ri_image = 1, SIZE(auxiliary_images, 2)
+         DO atom = 1, natom
+            site = (ri_image - 1)*natom + atom
+            bases(site)%gto_basis_set => auxiliary_bases(atom)%gto_basis_set
+            site_images(:, site) = auxiliary_images(:, ri_image) + groups(:, first) - shifts(:, atom)
+            positions(:, site) = frame%positions(:, atom) + MATMUL(frame%cell, REAL(site_images(:, site), dp))
+            IF (PRESENT(responses)) THEN
+               position_response(:, site) = atom_response(:, atom) + MATMUL(cell_response, REAL(site_images(:, site), dp))
+            END IF
+         END DO
+         END DO
+         DO last = 1, SIZE(groups, 2)
+            pair_mask(:, 2) = masks(:, last)
+            DO image = 1, SIZE(tensors)
+               physical_image = ao_images(:, image) + groups(:, first) - groups(:, last)
+               CALL native_center_images(frame, center_images, coefficient_images, physical_image, selected)
+               IF (SIZE(selected, 2) == 0) CYCLE
+               IF (PRESENT(responses)) THEN
+                  CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, selected, &
+                         tensors(image), response_real=responses(image), atom_response=atom_response, cell_response=cell_response, &
+                                       auxiliary_positions_response=position_response, auxiliary_factors_response=factor_response, &
+                                                 ao_image=physical_image, metric=metric, coefficient_images=coefficient_images, &
+                                                 coupled_coefficients=coupled_coefficients, coupled_response=coupled_response, &
+                                                 shared_potentials=cache, ao_mask=pair_mask)
+               ELSE
+                  CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, selected, &
+                                    tensors(image), ao_image=physical_image, metric=metric, coefficient_images=coefficient_images, &
+                                                 coupled_coefficients=coupled_coefficients, coupled_response=coupled_response, &
+                                                 shared_potentials=cache, ao_mask=pair_mask)
+               END IF
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE native_lattice_tensor
 
 ! **************************************************************************************************
 !> \brief Retain centers with a left or right coefficient block for one physical AO translation.
@@ -446,11 +632,12 @@ CONTAINS
 !> \param atom_geometry New explicit positive native Cartesian energy gradient.
 !> \param cell_geometry New explicit cell-vector gradient at fixed Cartesian atoms.
 !> \param metric Optional native RI interaction, Coulomb by default.
+!> \param native_cell_shifts Native atom-folding vectors for the RI image indices.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_lattice_adjoint(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                                  ao_images, center_images, covectors, coefficient_images, &
                                                  coupled_coefficients, coefficients_covector, atom_geometry, cell_geometry, &
-                                                 metric)
+                                                 metric, native_cell_shifts)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -463,6 +650,7 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: coefficients_covector(:, :, :)
       REAL(dp), INTENT(OUT)                              :: atom_geometry(:, :), cell_geometry(3, 3)
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN), OPTIONAL                      :: native_cell_shifts(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: factors(:), shared(:, :, :)
       INTEGER                                            :: atom, axis, image, natom, nsite, &
@@ -475,6 +663,16 @@ CONTAINS
       TYPE(lattice_potential_cache_type), TARGET         :: lattice_potentials
 
       CALL check_coupled_lattice(frame, coefficient_images, coupled_coefficients, derivatives=.FALSE.)
+      IF (PRESENT(native_cell_shifts)) THEN
+         CPASSERT(ALL(SHAPE(native_cell_shifts) == SHAPE(frame%positions)))
+         CPASSERT(SIZE(native_cell_shifts, 2) > 0)
+         IF (ANY(native_cell_shifts /= SPREAD(native_cell_shifts(:, 1), 2, SIZE(native_cell_shifts, 2)))) THEN
+            CALL native_lattice_adjoint(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, ao_images, &
+                                        center_images, covectors, coefficient_images, coupled_coefficients, &
+                                        coefficients_covector, atom_geometry, cell_geometry, metric, native_cell_shifts)
+            RETURN
+         END IF
+      END IF
       natom = SIZE(frame%positions, 2)
       CPASSERT(SIZE(auxiliary_bases) == natom)
       CPASSERT(SIZE(auxiliary_images, 1) == 3 .AND. SIZE(auxiliary_images, 2) > 0)
@@ -535,6 +733,109 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_hfx_lattice_adjoint
 
 ! **************************************************************************************************
+!> \brief Transpose of the same folded RI image conversion, including physical geometry.
+!>        Auxiliary motion uses S+nA-nC. Coupled W covectors retain their original image order.
+!> \param frame Original physical reconstruction.
+!> \param kinds Original kinds.
+!> \param augmentation Original transition data.
+!> \param auxiliary_bases Native atom-ordered RI bases.
+!> \param auxiliary_images Native RI translations.
+!> \param ao_images Native AO translations.
+!> \param center_images Retained original center images.
+!> \param covectors Distributed native tensor derivatives.
+!> \param coefficient_images Original coupled inverse domain.
+!> \param coupled_coefficients Original physical inverse coefficients.
+!> \param coefficients_covector Their replicated derivative.
+!> \param atom_geometry Positive Cartesian energy derivatives.
+!> \param cell_geometry Lattice derivatives at fixed original Cartesian atoms.
+!> \param metric Original fitting interaction.
+!> \param shifts Native atom folding vectors.
+! **************************************************************************************************
+   SUBROUTINE native_lattice_adjoint(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, ao_images, &
+                                     center_images, covectors, coefficient_images, coupled_coefficients, &
+                                     coefficients_covector, atom_geometry, cell_geometry, metric, shifts)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
+      TYPE(gto_basis_set_p_type), INTENT(IN)             :: auxiliary_bases(:)
+      INTEGER, INTENT(IN)                                :: auxiliary_images(:, :), ao_images(:, :), &
+                                                            center_images(:, :)
+      TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
+      INTEGER, INTENT(IN)                                :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coupled_coefficients(:, :, :)
+      COMPLEX(dp), INTENT(OUT)                           :: coefficients_covector(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: atom_geometry(:, :), cell_geometry(3, 3)
+      TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN)                                :: shifts(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: factors(:), shared(:, :, :)
+      INTEGER                                            :: atom, axis, first, image, last, natom, &
+                                                            nsite, physical_image(3), ri_image, &
+                                                            site
+      INTEGER, ALLOCATABLE                               :: active(:), groups(:, :), selected(:, :)
+      INTEGER, ALLOCATABLE, TARGET                       :: site_images(:, :)
+      LOGICAL, ALLOCATABLE                               :: masks(:, :), pair_mask(:, :)
+      REAL(dp)                                           :: local_cell(3, 3)
+      REAL(dp), ALLOCATABLE                              :: local_atoms(:, :), &
+                                                            local_auxiliary(:, :), positions(:, :)
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
+      TYPE(lattice_potential_cache_type), TARGET         :: cache
+
+      CALL native_shift_groups(frame, shifts, groups, masks)
+      natom = SIZE(shifts, 2)
+      nsite = natom*SIZE(auxiliary_images, 2)
+      CPASSERT(SIZE(auxiliary_bases) == natom)
+      CPASSERT(SIZE(ao_images, 2) == SIZE(covectors))
+      ALLOCATE (bases(nsite), positions(3, nsite), factors(nsite), site_images(3, nsite), pair_mask(SIZE(masks, 1), 2), &
+                active(SIZE(covectors)), local_atoms(3, natom), local_auxiliary(3, nsite))
+      ALLOCATE (shared, MOLD=coupled_coefficients)
+      CALL active_lattice_covectors(covectors, active)
+      factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      atom_geometry = 0.0_dp
+      cell_geometry = 0.0_dp
+      DO first = 1, SIZE(groups, 2)
+         cache = lattice_potential_cache_type()
+         cache%natom = natom
+         cache%site_images => site_images
+         pair_mask(:, 1) = masks(:, first)
+         DO ri_image = 1, SIZE(auxiliary_images, 2)
+         DO atom = 1, natom
+            site = (ri_image - 1)*natom + atom
+            bases(site)%gto_basis_set => auxiliary_bases(atom)%gto_basis_set
+            site_images(:, site) = auxiliary_images(:, ri_image) + groups(:, first) - shifts(:, atom)
+            positions(:, site) = frame%positions(:, atom) + MATMUL(frame%cell, REAL(site_images(:, site), dp))
+         END DO
+         END DO
+         DO last = 1, SIZE(groups, 2)
+            pair_mask(:, 2) = masks(:, last)
+            DO image = 1, SIZE(covectors)
+               IF (active(image) == 0) CYCLE
+               physical_image = ao_images(:, image) + groups(:, first) - groups(:, last)
+               CALL native_center_images(frame, center_images, coefficient_images, physical_image, selected)
+               IF (SIZE(selected, 2) == 0) CYCLE
+               CALL qs_upf_inverse_hfx_tensor_adjoint(frame, frame, kinds, augmentation, bases, positions, factors, &
+                                   selected, covectors(image), metric=metric, atom_geometry=local_atoms, cell_geometry=local_cell, &
+                               auxiliary_geometry=local_auxiliary, ao_image=physical_image, coefficient_images=coefficient_images, &
+                                                  coupled_coefficients=coupled_coefficients, coupled_coefficients_covector=shared, &
+                                                      shared_potentials=cache, ao_mask=pair_mask)
+               coefficients_covector = coefficients_covector + shared
+               atom_geometry = atom_geometry + local_atoms
+               cell_geometry = cell_geometry + local_cell
+               DO site = 1, nsite
+                  atom = MODULO(site - 1, natom) + 1
+                  atom_geometry(:, atom) = atom_geometry(:, atom) + local_auxiliary(:, site)
+                  DO axis = 1, 3
+                     cell_geometry(axis, :) = cell_geometry(axis, :) + &
+                                              local_auxiliary(axis, site)*REAL(site_images(:, site), dp)
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE native_lattice_adjoint
+
+! **************************************************************************************************
 !> \brief Contract complete physical AO image covectors with original transition geometry responses.
 !>        The native owner supplies the derivative before restricting Gaussian derivative blocks,
 !>        including local RI inverse, bump, density, spin and exchange weights. The same cell/atom
@@ -553,9 +854,11 @@ CONTAINS
 !> \param atom_gradient Replicated positive Cartesian energy gradients.
 !> \param strain_gradient Optional replicated affine-strain gradient, with atoms moving with the cell.
 !> \param metric Optional native RI interaction, Coulomb by default.
+!> \param native_cell_shifts Native atom-folding vectors for the RI image indices.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_lattice_gradient(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                                  ao_images, center_images, covectors, atom_gradient, strain_gradient, metric)
+                                                  ao_images, center_images, covectors, atom_gradient, strain_gradient, metric, &
+                                                  native_cell_shifts)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -566,6 +869,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: strain_gradient(3, 3)
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN), OPTIONAL                      :: native_cell_shifts(:, :)
 
       INTEGER                                            :: atom, axis, column
       INTEGER, ALLOCATABLE                               :: active(:)
@@ -585,7 +889,7 @@ CONTAINS
             atom_response(axis, atom) = 1.0_dp
             CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                             ao_images, center_images, covectors, active, atom_response, cell_response, &
-                                            atom_gradient(axis, atom), metric)
+                                            atom_gradient(axis, atom), metric, native_cell_shifts)
          END DO
       END DO
       IF (PRESENT(strain_gradient)) THEN
@@ -597,7 +901,7 @@ CONTAINS
                atom_response(axis, :) = frame%positions(column, :)
                CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                                ao_images, center_images, covectors, active, atom_response, cell_response, &
-                                               strain_gradient(axis, column), metric)
+                                               strain_gradient(axis, column), metric, native_cell_shifts)
             END DO
          END DO
       END IF
@@ -656,10 +960,11 @@ CONTAINS
 !> \param cell_response ...
 !> \param derivative ...
 !> \param metric ...
+!> \param native_cell_shifts Native atom-folding vectors for the RI image indices.
 ! **************************************************************************************************
    SUBROUTINE lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                          ao_images, center_images, covectors, active, atom_response, cell_response, derivative, &
-                                         metric)
+                                         metric, native_cell_shifts)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -671,6 +976,7 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: derivative
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
+      INTEGER, INTENT(IN), OPTIONAL                      :: native_cell_shifts(:, :)
 
       INTEGER                                            :: image
       REAL(dp)                                           :: contribution
@@ -687,7 +993,7 @@ CONTAINS
          CALL dbt_clear(responses(1))
          CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                                 ao_images(:, image:image), center_images, integrals, responses, &
-                                                atom_response, cell_response, metric)
+                                                atom_response, cell_response, metric, native_cell_shifts=native_cell_shifts)
          CALL qs_upf_inverse_hfx_contract(covectors(image), responses(1), contribution)
          derivative = derivative + contribution
       END DO
@@ -799,6 +1105,7 @@ CONTAINS
 !> \param coupled_coefficients Full projector/AO W_Q in coefficient-image order.
 !> \param coupled_response Complete coupled dW_Q, required for a general inverse response.
 !> \param shared_potentials Optional wrapper-owned fields for the same geometry, auxiliary sites and interaction.
+!> \param ao_mask Optional left/right AO selection for a fixed native coordinate-gauge group.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                         auxiliary_positions, auxiliary_factors, center_images, tensor_real, &
@@ -806,7 +1113,7 @@ CONTAINS
                                         left_k_response, right_k_response, left_coefficients_response, &
                                         right_coefficients_response, auxiliary_positions_response, auxiliary_factors_response, &
                                         ao_image, metric, auxiliary_images, &
-                                        coefficient_images, coupled_coefficients, coupled_response, shared_potentials)
+                                        coefficient_images, coupled_coefficients, coupled_response, shared_potentials, ao_mask)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -832,6 +1139,7 @@ CONTAINS
                                                             coupled_response(:, :, :)
       TYPE(lattice_potential_cache_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: shared_potentials
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ao_mask(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: correction(:, :, :), dc(:, :, :), &
                                                             dn(:, :, :), native(:, :, :)
@@ -895,6 +1203,10 @@ CONTAINS
       CALL prepare_paw_transitions(kinds, left_frame, paw_augmentation)
       CALL tensor_partition(left_frame, right_frame, auxiliary_bases, tensor_real, nblks, sizes_i, sizes_j, sizes_k, &
                             start_i, start_j, start_k, auxiliary_start, maxl)
+      IF (PRESENT(ao_mask)) THEN
+         CPASSERT(PRESENT(ao_image))
+         CPASSERT(ALL(SHAPE(ao_mask) == [SIZE(left_frame%coefficients, 2), 2]))
+      END IF
       derivatives = PRESENT(response_real)
       IF (PRESENT(tensor_imaginary)) CALL matching_tensor(tensor_real, tensor_imaginary)
       IF (derivatives) THEN
@@ -956,6 +1268,10 @@ CONTAINS
                END IF
                CALL dbt_get_stored_coordinates(tensor_real, [block_i, block_j, block_k], owner)
                IF (owner /= tensor_real%pgrid%mp_comm_2d%mepos) CYCLE
+               IF (PRESENT(ao_mask)) THEN
+                  IF (.NOT. ANY(ao_mask(start_j(block_j):start_j(block_j + 1) - 1, 1))) CYCLE
+                  IF (.NOT. ANY(ao_mask(start_k(block_k):start_k(block_k + 1) - 1, 2))) CYCLE
+               END IF
                nl = sizes_j(block_j)
                nr = sizes_k(block_k)
                ALLOCATE (native(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
@@ -1002,7 +1318,12 @@ CONTAINS
                                  NULLIFY (linear_cache)
                                  moment_key = 0
                                  IF (.NOT. derivatives .AND. PRESENT(ao_image)) THEN
-                                    IF (ASSOCIATED(lattice_potentials%auxiliary_images)) THEN
+                                    IF (ASSOCIATED(lattice_potentials%site_images)) THEN
+                                       CPASSERT(lattice_potentials%natom > 0)
+                                       linear_cache => lattice_potentials%moments
+                                       moment_key = [MODULO(site - 1, lattice_potentials%natom) + 1, &
+                                                     lattice_potentials%site_images(:, site) - center_images(:, image), iset]
+                                    ELSE IF (ASSOCIATED(lattice_potentials%auxiliary_images)) THEN
                                        CPASSERT(lattice_potentials%natom > 0)
                                        auxiliary_image = (site - 1)/lattice_potentials%natom + 1
                                        linear_cache => lattice_potentials%moments
@@ -1088,6 +1409,18 @@ CONTAINS
                      first = last + 1
                   END DO
                END DO
+               IF (PRESENT(ao_mask)) THEN
+                  WHERE (.NOT. SPREAD(SPREAD(ao_mask(start_j(block_j):start_j(block_j + 1) - 1, 1), 2, nr) .AND. &
+                                      SPREAD(ao_mask(start_k(block_k):start_k(block_k + 1) - 1, 2), 1, nl), 1, sizes_i(block_i)))
+                     native = CMPLX(0.0_dp, 0.0_dp, dp)
+                  END WHERE
+                  IF (derivatives) THEN
+                     WHERE (.NOT. SPREAD(SPREAD(ao_mask(start_j(block_j):start_j(block_j + 1) - 1, 1), 2, nr) .AND. &
+                                         SPREAD(ao_mask(start_k(block_k):start_k(block_k + 1) - 1, 2), 1, nl), 1, sizes_i(block_i)))
+                        dn = CMPLX(0.0_dp, 0.0_dp, dp)
+                     END WHERE
+                  END IF
+               END IF
                CALL dbt_put_block(tensor_real, [block_i, block_j, block_k], SHAPE(native), REAL(native, dp), summation=.TRUE.)
                IF (PRESENT(tensor_imaginary)) THEN
                   CALL dbt_put_block(tensor_imaginary, [block_i, block_j, block_k], SHAPE(native), AIMAG(native), summation=.TRUE.)
@@ -1207,6 +1540,7 @@ CONTAINS
 !> \param coupled_coefficients Full projector/AO W_Q in coefficient-image order.
 !> \param coupled_coefficients_covector Optional full replicated derivative of the shared W_Q.
 !> \param shared_potentials Optional wrapper-owned fields for the same geometry, auxiliary sites and interaction.
+!> \param ao_mask Left and right AO columns in the fixed coordinate-gauge group.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor_adjoint(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                                 auxiliary_positions, auxiliary_factors, center_images, covector_real, &
@@ -1215,7 +1549,7 @@ CONTAINS
                                                 right_k_response, auxiliary_positions_response, auxiliary_factors_response, &
                                                 metric, auxiliary_images, atom_geometry, cell_geometry, auxiliary_geometry, &
                                                 ao_image, coefficient_images, coupled_coefficients, coupled_coefficients_covector, &
-                                                shared_potentials)
+                                                shared_potentials, ao_mask)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -1241,6 +1575,7 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT), OPTIONAL :: coupled_coefficients_covector(:, :, :)
       TYPE(lattice_potential_cache_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: shared_potentials
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ao_mask(:, :)
 
       COMPLEX(dp), ALLOCATABLE :: correction(:, :, :), dc(:, :, :), factor_covector(:, :, :), &
          g(:, :, :), gl(:, :), gl_lattice(:, :, :), gr(:, :), gr_lattice(:, :, :), local(:, :, :), &
@@ -1326,6 +1661,10 @@ CONTAINS
       END IF
       CALL tensor_partition(left_frame, right_frame, auxiliary_bases, covector_real, nblks, sizes_i, sizes_j, sizes_k, &
                             start_i, start_j, start_k, auxiliary_start, maxl)
+      IF (PRESENT(ao_mask)) THEN
+         CPASSERT(physical)
+         CPASSERT(ALL(SHAPE(ao_mask) == [SIZE(left_frame%coefficients, 2), 2]))
+      END IF
       IF (PRESENT(covector_imaginary)) CALL matching_tensor(covector_real, covector_imaginary)
       coefficients = PRESENT(left_coefficients_covector) .OR. PRESENT(right_coefficients_covector) .OR. &
                      PRESENT(coupled_coefficients_covector)
@@ -1390,6 +1729,16 @@ CONTAINS
             ALLOCATE (g(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
             IF (found_real) g(:, :, :) = CMPLX(real_block, 0.0_dp, dp)
             IF (found_imaginary) g(:, :, :) = g + CMPLX(0.0_dp, imaginary_block, dp)
+            IF (PRESENT(ao_mask)) THEN
+               WHERE (.NOT. SPREAD(SPREAD(ao_mask(start_j(block_j):start_j(block_j + 1) - 1, 1), 2, nr) .AND. &
+                                   SPREAD(ao_mask(start_k(block_k):start_k(block_k + 1) - 1, 2), 1, nl), 1, sizes_i(block_i)))
+                  g = CMPLX(0.0_dp, 0.0_dp, dp)
+               END WHERE
+               IF (ALL(g == CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+                  DEALLOCATE (g)
+                  CYCLE
+               END IF
+            END IF
             IF (physical .AND. (coefficients .OR. full_geometry)) THEN
                ALLOCATE (gl_lattice(SIZE(coupled_coefficients, 1), nl, SIZE(coefficient_images, 2)), &
                          gr_lattice(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))

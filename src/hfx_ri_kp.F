@@ -1790,7 +1790,8 @@ CONTAINS
                                                  cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
                                                  center_images, covectors, inverse%lattice%inverse%images, &
                                                  inverse%lattice%coefficients, coefficients_covector, atom_gradient, &
-                                                 explicit_cell, metric=ri_data%ri_metric)
+                                                 explicit_cell, metric=ri_data%ri_metric, &
+                                                 native_cell_shifts=inverse%bloch%native_cell_shifts)
          strain_gradient = MATMUL(atom_gradient, TRANSPOSE(frame%positions)) &
                            + MATMUL(explicit_cell, TRANSPOSE(frame%cell))
          ! Each subgroup has one replicated coefficient covector. The common defining
@@ -1830,12 +1831,12 @@ CONTAINS
             CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, augmentation, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
                                                      frame%images, covectors, atom_gradient, strain_gradient, &
-                                                     metric=ri_data%ri_metric)
+                                                     metric=ri_data%ri_metric, native_cell_shifts=inverse%bloch%native_cell_shifts)
          ELSE
             CALL qs_upf_inverse_hfx_lattice_gradient(frame, kinds, augmentation, bases, &
                                                      cells(:, ri_data%RI_cell_to_img), cells(:, 1:ri_data%nimg), &
                                                      frame%images, covectors, atom_gradient, &
-                                                     metric=ri_data%ri_metric)
+                                                     metric=ri_data%ri_metric, native_cell_shifts=inverse%bloch%native_cell_shifts)
          END IF
       END IF
       IF (subgroup%mepos == 0) THEN
