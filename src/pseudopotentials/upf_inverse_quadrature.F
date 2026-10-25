@@ -242,19 +242,25 @@ CONTAINS
 !> \param tau Smooth kinetic-energy density, with factor one half.
 !> \param coefficients Optional original orbital factors certified for ao_density by the caller.
 !> \param occupations Matching nonnegative orbital occupations, without k weights.
+!> \param coefficients_direction Optional original coefficient response for a signed ao_density direction.
+!> \param occupations_direction Matching signed occupation response.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_smooth_density(soft, soft_gradient, ao_density, density, gradient, tau, coefficients, occupations)
+   SUBROUTINE upf_inverse_smooth_density(soft, soft_gradient, ao_density, density, gradient, tau, coefficients, occupations, &
+                                         coefficients_direction, occupations_direction)
       COMPLEX(dp), INTENT(IN)                            :: soft(:, :), soft_gradient(:, :, :), &
                                                             ao_density(:, :)
       REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: occupations(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_direction(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: occupations_direction(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), weighted(:, :), &
-                                                            work(:, :)
+      COMPLEX(dp), ALLOCATABLE :: derivative(:, :), derivative_direction(:, :), weighted(:, :), &
+         weighted_direction(:, :), work(:, :), work_direction(:, :)
       INTEGER                                            :: axis, i, n, noccupied, npoint
       INTEGER, ALLOCATABLE                               :: occupied(:)
       LOGICAL                                            :: valid
+      LOGICAL, ALLOCATABLE                               :: selected(:)
 
       n = SIZE(soft, 2)
       npoint = SIZE(soft, 1)
@@ -264,6 +270,10 @@ CONTAINS
       CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
       CALL check_density(ao_density)
       CPASSERT(PRESENT(coefficients) .EQV. PRESENT(occupations))
+      valid = PRESENT(coefficients_direction) .EQV. PRESENT(occupations_direction)
+      CPASSERT(valid)
+      valid = .NOT. PRESENT(coefficients_direction) .OR. PRESENT(coefficients)
+      CPASSERT(valid)
       IF (PRESENT(coefficients)) THEN
          valid = SIZE(coefficients, 1) == n .AND. SIZE(coefficients, 2) == SIZE(occupations)
          CPASSERT(valid)
@@ -271,12 +281,24 @@ CONTAINS
          CPASSERT(valid)
          valid = ALL(ieee_is_finite(occupations)) .AND. ALL(occupations >= 0.0_dp)
          CPASSERT(valid)
-         noccupied = COUNT(occupations > 0.0_dp)
+         selected = occupations > 0.0_dp
+         IF (PRESENT(coefficients_direction)) THEN
+            valid = ALL(SHAPE(coefficients_direction) == SHAPE(coefficients))
+            CPASSERT(valid)
+            valid = ALL(ieee_is_finite(REAL(coefficients_direction, dp)))
+            CPASSERT(valid)
+            valid = ALL(ieee_is_finite(AIMAG(coefficients_direction)))
+            CPASSERT(valid)
+            CPASSERT(SIZE(occupations_direction) == SIZE(occupations))
+            CPASSERT(ALL(ieee_is_finite(occupations_direction)))
+            selected = selected .OR. occupations_direction /= 0.0_dp
+         END IF
+         noccupied = COUNT(selected)
          density = 0.0_dp
          gradient = 0.0_dp
          tau = 0.0_dp
          IF (noccupied == 0) RETURN
-         occupied = PACK([(i, i=1, SIZE(occupations))], occupations > 0.0_dp)
+         occupied = PACK([(i, i=1, SIZE(occupations))], selected)
          ALLOCATE (work(npoint, noccupied), derivative(npoint, noccupied), weighted(npoint, noccupied))
          ! Form all three descriptors from the same orbitals. Contracting a rounded C f C^dagger
          ! independently can lose their one-orbital identities near a node.
@@ -284,6 +306,26 @@ CONTAINS
          DO i = 1, noccupied
             weighted(:, i) = occupations(occupied(i))*work(:, i)
          END DO
+         IF (PRESENT(coefficients_direction)) THEN
+            work_direction = MATMUL(soft, coefficients_direction(:, occupied))
+            ALLOCATE (weighted_direction(npoint, noccupied), derivative_direction(npoint, noccupied))
+            DO i = 1, noccupied
+               weighted_direction(:, i) = occupations(occupied(i))*work_direction(:, i) + &
+                                          occupations_direction(occupied(i))*work(:, i)
+            END DO
+            density = REAL(SUM(CONJG(work_direction)*weighted + CONJG(work)*weighted_direction, DIM=2), dp)
+            DO axis = 1, 3
+               derivative = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
+               derivative_direction = MATMUL(soft_gradient(:, :, axis), coefficients_direction(:, occupied))
+               gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative_direction)*weighted + &
+                                                   CONJG(derivative)*weighted_direction, DIM=2), dp)
+               DO i = 1, noccupied
+                  tau = tau + occupations(occupied(i))*REAL(CONJG(derivative(:, i))*derivative_direction(:, i), dp) + &
+                        0.5_dp*occupations_direction(occupied(i))*REAL(CONJG(derivative(:, i))*derivative(:, i), dp)
+               END DO
+            END DO
+            RETURN
+         END IF
          density = REAL(SUM(CONJG(work)*weighted, DIM=2), dp)
          DO axis = 1, 3
             derivative = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))

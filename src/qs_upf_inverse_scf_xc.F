@@ -545,10 +545,12 @@ CONTAINS
 !> \param potential_direction Created native potentials receiving the negative background density response.
 !> \param kinetic_potential_direction Created native potentials receiving its kinetic-density response.
 !> \param density_tangent Native density-floor response used only between feasible tangent projections.
+!> \param orbital_direction Optional original coefficient and occupation responses of matrices_direction.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, density_direction, &
                                                    kinetic_direction, xc_section, operators_direction, &
-                                                   potential_direction, kinetic_potential_direction, density_tangent)
+                                                   potential_direction, kinetic_potential_direction, density_tangent, &
+                                                   orbital_direction)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density_direction(:), &
@@ -558,6 +560,8 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: potential_direction(:), &
                                                             kinetic_potential_direction(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: density_tangent
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_direction
 
       INTEGER                                            :: nao, nk, ns, selected, spin
       LOGICAL                                            :: tangent, valid
@@ -568,6 +572,7 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_frame_ref_type), ALLOCATABLE   :: frames(:)
+      TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(qs_upf_inverse_xc_type)                       :: response
       TYPE(skala_density_constraints_type), POINTER      :: constraints
@@ -607,6 +612,14 @@ CONTAINS
       END DO
       CALL comm%set_handle(para_env%get_handle())
       CALL frame_refs(state, frames, augmentation)
+      NULLIFY (orbital_factors)
+      IF (PRESENT(orbital_direction)) THEN
+         valid = state%orbital_factors%density_evaluation == state%density_evaluations
+         CPASSERT(valid)
+         valid = orbital_direction%density_evaluation == state%density_evaluations
+         CPASSERT(valid)
+         orbital_factors => state%orbital_factors
+      END IF
       IF (state%xc%kinetic) THEN
          CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction)
       ELSE
@@ -616,7 +629,7 @@ CONTAINS
                                                  state%atom_grid%points, state%atom_grid%weights, state%xc, &
                                                  state%xc_fields, fields_direction, state%xc_grid, cell, xc_section, &
                                                  comm, response, adjoint, state%kinetic_cache, state%atom_grid, &
-                                                 state%paw_reconstruction)
+                                                 state%paw_reconstruction, orbital_factors, orbital_direction)
       IF (state%xc%kinetic) THEN
          CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction)
       ELSE

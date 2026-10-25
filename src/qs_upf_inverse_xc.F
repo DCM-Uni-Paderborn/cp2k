@@ -309,12 +309,14 @@ CONTAINS
 !> \param kinetic ...
 !> \param atom_grid ...
 !> \param paw_reconstruction ...
+!> \param orbital_factors Optional certified original factors of the unperturbed density.
+!> \param orbital_direction Matching original coefficient and occupation responses.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
                                                state, background_density, background_gradient, background_tau, &
                                                background_density_direction, background_gradient_direction, &
                                                background_tau_direction, xc_section, comm, response, kinetic, &
-                                               atom_grid, paw_reconstruction)
+                                               atom_grid, paw_reconstruction, orbital_factors, orbital_direction)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
@@ -331,12 +333,14 @@ CONTAINS
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors, orbital_direction
 
       COMPLEX(dp), ALLOCATABLE                           :: cached_gradient(:, :, :, :), &
                                                             cached_soft(:, :, :)
       INTEGER                                            :: nao, nk, np, ns
       LOGICAL                                            :: geometry_fields, model, &
-                                                            semilocal_available
+                                                            semilocal_available, valid
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: integration_weights(:)
       TYPE(qs_upf_inverse_xc_type)                       :: fields
@@ -397,9 +401,12 @@ CONTAINS
       response%density = 0.0_dp
       response%density_gradient = 0.0_dp
       response%tau = 0.0_dp
+      valid = PRESENT(orbital_factors) .EQV. PRESENT(orbital_direction)
+      CPASSERT(valid)
       CALL collocate_xc_fields(frames, augmentation, matrices_direction, kweights, points, response%density, &
                                response%density_gradient, response%tau, kinetic, paw_reconstruction, atom_grid, &
-                               cached_soft, cached_gradient)
+                               cached_soft, cached_gradient, orbital_factors=orbital_factors, &
+                               orbital_direction=orbital_direction)
       fields%density = state%density
       fields%density_gradient = state%density_gradient
       ALLOCATE (fields%tau(np, ns), SOURCE=0.0_dp)
@@ -448,10 +455,11 @@ CONTAINS
 !> \param cached_gradient ...
 !> \param density_scale ...
 !> \param orbital_factors Optional original factors certified for this density evaluation.
+!> \param orbital_direction Matching original factor responses when matrices is a signed direction.
 ! **************************************************************************************************
    SUBROUTINE collocate_xc_fields(frames, augmentation, matrices, kweights, points, density, density_gradient, &
                                   kinetic_density, kinetic, paw_reconstruction, atom_grid, cached_soft, cached_gradient, &
-                                  density_scale, orbital_factors)
+                                  density_scale, orbital_factors, orbital_direction)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -467,7 +475,7 @@ CONTAINS
                                                             cached_gradient(:, :, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: density_scale(:, :)
       TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
-         OPTIONAL                                        :: orbital_factors
+         OPTIONAL                                        :: orbital_factors, orbital_direction
 
       COMPLEX(dp), ALLOCATABLE                           :: orbital_gradient(:, :, :), &
                                                             projected(:, :), soft(:, :)
@@ -509,10 +517,19 @@ CONTAINS
             END IF
             DO spin = 1, nspin
                IF (PRESENT(orbital_factors)) THEN
-                  CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
-                                                  matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi), &
-                                                  orbital_factors%coefficients(:, :, ik, spin), &
-                                                  orbital_factors%occupations(:, ik, spin))
+                  IF (PRESENT(orbital_direction)) THEN
+                     CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
+                                                     matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi), &
+                                                     orbital_factors%coefficients(:, :, ik, spin), &
+                                                     orbital_factors%occupations(:, ik, spin), &
+                                                     orbital_direction%coefficients(:, :, ik, spin), &
+                                                     orbital_direction%occupations(:, ik, spin))
+                  ELSE
+                     CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
+                                                     matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi), &
+                                                     orbital_factors%coefficients(:, :, ik, spin), &
+                                                     orbital_factors%occupations(:, ik, spin))
+                  END IF
                ELSE
                   CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
                                                   matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
@@ -1560,10 +1577,13 @@ CONTAINS
 !> \param kinetic ...
 !> \param atom_grid ...
 !> \param paw_reconstruction ...
+!> \param orbital_factors Optional certified original factors of the unperturbed density.
+!> \param orbital_direction Matching original coefficient and occupation responses.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_grid_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
                                                     state, fields, fields_direction, grid, cell, xc_section, comm, &
-                                                    response, grid_adjoint, kinetic, atom_grid, paw_reconstruction)
+                                                    response, grid_adjoint, kinetic, atom_grid, paw_reconstruction, &
+                                                    orbital_factors, orbital_direction)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
@@ -1582,6 +1602,8 @@ CONTAINS
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: atom_grid
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors, orbital_direction
 
       INTEGER                                            :: axis, np, ns, spin, stride
       REAL(dp), ALLOCATABLE :: background(:, :), background_direction(:, :), gradient(:, :, :), &
@@ -1617,7 +1639,8 @@ CONTAINS
       END DO
       CALL qs_upf_inverse_xc_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
                                             state, background, gradient, tau, background_direction, gradient_direction, &
-                                            tau_direction, xc_section, comm, response, kinetic, atom_grid, paw_reconstruction)
+                                            tau_direction, xc_section, comm, response, kinetic, atom_grid, paw_reconstruction, &
+                                            orbital_factors, orbital_direction)
       CALL xc_grid_adjoint(response, points, weights, fields, grid, cell, comm, grid_adjoint)
    END SUBROUTINE qs_upf_inverse_xc_grid_model_response
 

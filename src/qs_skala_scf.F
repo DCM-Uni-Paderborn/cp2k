@@ -67,6 +67,7 @@ MODULE qs_skala_scf
    USE qs_upf_inverse_scf_response,     ONLY: qs_upf_inverse_scf_density_tangent_available,&
                                               qs_upf_inverse_scf_electronic_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_scf_type,&
                                               qs_upf_inverse_type
    USE scf_control_types,               ONLY: scf_control_type
@@ -797,17 +798,23 @@ CONTAINS
 !> \param direction Complete real orbital and auxiliary-band coordinate direction.
 !> \param density_direction New Hermitian AO density directions indexed (AO,AO,k,spin).
 !>        Bloch outputs use the complete contribution map consumed by the functional.
+!> \param orbital_direction Optional original factor responses in the same physical contribution map.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_density_response(state, direction, density_direction)
+   SUBROUTINE qs_skala_scf_density_response(state, direction, density_direction, orbital_direction)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: direction(:)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density_direction(:, :, :, :)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(OUT), &
+         OPTIONAL                                        :: orbital_direction
 
-      COMPLEX(dp), ALLOCATABLE                           :: block(:, :, :), expanded(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: block(:, :, :), &
+                                                            coefficients_direction(:, :), &
+                                                            expanded(:, :, :, :)
       INTEGER                                            :: bfirst, blast, first, ik, last, local, &
-                                                            n, nk, ns, spin
+                                                            n, nk, nmo, ns, physical_nk, spin
       LOGICAL                                            :: owner, valid
       REAL(dp), ALLOCATABLE                              :: block_occupations(:), &
+                                                            expanded_occupations(:, :), &
                                                             occupations_direction(:)
 
       CPASSERT(state%evaluated)
@@ -821,6 +828,14 @@ CONTAINS
          n = SIZE(state%inverse%frame%ao%coefficients, 2)
       END IF
       ALLOCATE (density_direction(n, n, nk, ns), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      IF (PRESENT(orbital_direction)) THEN
+         physical_nk = nk
+         IF (state%bloch) physical_nk = SIZE(state%inverse%bloch%weights)
+         ALLOCATE (orbital_direction%coefficients(n, n, physical_nk, ns), &
+                   orbital_direction%occupations(n, physical_nk, ns), coefficients_direction(n, n))
+         orbital_direction%coefficients = CMPLX(0.0_dp, 0.0_dp, dp)
+         orbital_direction%occupations = 0.0_dp
+      END IF
       IF (state%thermal) CALL thermal_band_direction(state, direction(state%orbital_size + 1:), occupations_direction)
       owner = state%para_env%mepos == 0
       IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
@@ -840,21 +855,44 @@ CONTAINS
                ALLOCATE (block_occupations(SIZE(state%orbitals(local, spin)%occupations)), SOURCE=0.0_dp)
                block_occupations(:blast - bfirst + 1) = occupations_direction(bfirst:blast)
                CALL skala_orbital_chart_density_response(state%orbitals(local, spin)%chart, direction(first:last), &
-                                                         density_direction(:, :, ik, spin), block_occupations)
+                                                         density_direction(:, :, ik, spin), block_occupations, &
+                                                         coefficients_direction)
+               IF (PRESENT(orbital_direction)) THEN
+                  nmo = state%orbitals(local, spin)%native%nmo
+                  orbital_direction%occupations(:nmo, ik, spin) = block_occupations(:nmo)
+               END IF
                DEALLOCATE (block_occupations)
             ELSE
                CALL skala_orbital_chart_density_response(state%orbitals(local, spin)%chart, direction(first:last), &
-                                                         density_direction(:, :, ik, spin))
+                                                         density_direction(:, :, ik, spin), &
+                                                         orbital_direction=coefficients_direction)
+            END IF
+            IF (PRESENT(orbital_direction)) THEN
+               nmo = state%orbitals(local, spin)%native%nmo
+               orbital_direction%coefficients(:, :nmo, ik, spin) = coefficients_direction(:, :nmo)
             END IF
          END DO
       END DO
       CALL state%para_env%sum(density_direction)
+      IF (PRESENT(orbital_direction)) THEN
+         CALL state%para_env%sum(orbital_direction%coefficients)
+         CALL state%para_env%sum(orbital_direction%occupations)
+         orbital_direction%density_evaluation = state%inverse%density_evaluations
+      END IF
       IF (state%bloch) THEN
          IF (ANY(state%inverse%bloch%star%operation /= 0)) THEN
             ALLOCATE (expanded(n, n, SIZE(state%inverse%bloch%weights), ns))
             DO spin = 1, ns
                CALL kpoint_star_density(state%inverse%bloch%star, density_direction(:, :, :, spin), block)
                expanded(:, :, :, spin) = block
+               IF (PRESENT(orbital_direction)) THEN
+                  CALL kpoint_star_orbitals(state%inverse%bloch%star, &
+                                            orbital_direction%coefficients(:, :, :nk, spin), block)
+                  orbital_direction%coefficients(:, :, :, spin) = block
+                  expanded_occupations = orbital_direction%occupations(:, :nk, spin)
+                  orbital_direction%occupations(:, :, spin) = &
+                     expanded_occupations(:, state%inverse%bloch%star%representative)
+               END IF
             END DO
             CALL MOVE_ALLOC(expanded, density_direction)
          END IF
@@ -1008,6 +1046,7 @@ CONTAINS
          operators(:, :, :, :), operators_direction(:, :, :, :)
       INTEGER                                            :: blocked, spin
       TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :)
+      TYPE(qs_upf_inverse_orbitals_type)                 :: orbital_direction
 
       available = .FALSE.
       response = 0.0_dp
@@ -1018,9 +1057,10 @@ CONTAINS
       IF (ANY(state%orbitals%canonicalized)) blocked = 1
       CALL state%para_env%max(blocked)
       IF (blocked /= 0) RETURN
-      CALL qs_skala_scf_density_response(state, direction, density_direction)
+      CALL qs_skala_scf_density_response(state, direction, density_direction, orbital_direction)
       CALL qs_upf_inverse_scf_electronic_response(state%qs_env, density_direction, operators_direction, available, &
-                                                  density_tangent=PRESENT(constraint_operator))
+                                                  density_tangent=PRESENT(constraint_operator), &
+                                                  orbital_direction=orbital_direction)
       IF (.NOT. available) RETURN
       ALLOCATE (operators, MOLD=operators_direction)
       IF (state%bloch) THEN

@@ -58,7 +58,8 @@ MODULE qs_upf_inverse_scf_response
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_model_response,&
                                               qs_upf_inverse_scf_xc_source_adjoint,&
                                               qs_upf_inverse_scf_xc_source_direction
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_orbitals_type,&
+                                              qs_upf_inverse_scf_type
    USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_field_kernel,&
                                               qs_upf_inverse_xc_semilocal_kernel_available
    USE rs_pw_interface,                 ONLY: pw_real_transfer
@@ -171,13 +172,17 @@ CONTAINS
 !> \param available Whether every density-dependent contribution has a supplied kernel.
 !> \param density_tangent Use only between projections onto recognized native density-floor tangents.
 !>        This is not an unconstrained Hessian on a nonsmooth surface.
+!> \param orbital_direction Optional certified coefficient and occupation responses of this density direction.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_scf_electronic_response(qs_env, matrices_direction, operators_direction, available, density_tangent)
+   SUBROUTINE qs_upf_inverse_scf_electronic_response(qs_env, matrices_direction, operators_direction, available, density_tangent, &
+                                                     orbital_direction)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT) :: operators_direction(:, :, :, :)
       LOGICAL, INTENT(OUT)                               :: available
       LOGICAL, INTENT(IN), OPTIONAL                      :: density_tangent
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_direction
 
       COMPLEX(dp), ALLOCATABLE                           :: atomic(:, :, :, :), &
                                                             exchange(:, :, :, :), &
@@ -371,7 +376,8 @@ CONTAINS
       END IF
       IF (atomic_xc) THEN
          CALL qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, direction, kinetic_direction, xc, &
-                                                   atomic, combined_rho, combined_tau, density_tangent=tangent)
+                                                   atomic, combined_rho, combined_tau, density_tangent=tangent, &
+                                                   orbital_direction=orbital_direction)
       ELSE
          DO spin = 1, ns
             combined_rho(spin)%array = 0.0_dp

@@ -2672,7 +2672,7 @@ CONTAINS
    SUBROUTINE check_density_residual()
       INTEGER, PARAMETER                                 :: nb = 2, np = 3
 
-      COMPLEX(dp) :: c(nb, nb), center_difference(np, nb), center_gradient(np, nb, 3), &
+      COMPLEX(dp) :: c(nb, nb), center_difference(np, nb), center_gradient(np, nb, 3), dc(nb, nb), &
          dgr(np, nb, 3), dgs(np, nb, 3), dr(np, nb), ds(np, nb), gr(np, nb, 3), gs(np, nb, 3), &
          h(nb, nb), hr(nb, nb), hs(nb, nb), p(nb, nb), reference(np, nb), response(nb, nb), &
          soft(np, nb)
@@ -2775,6 +2775,16 @@ CONTAINS
       p = CMPLX(0.0_dp, 0.0_dp, dp)
       CALL upf_inverse_smooth_density(reference, gr, p, rho, gradient, tau, c, [0.0_dp, 0.0_dp])
       CALL check(MAXVAL(ABS(rho)) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(tau)), 'empty orbital spin fields', 0.0_dp)
+      c(:, 1) = [CMPLX(1.0_dp, 0.2_dp, dp), CMPLX(0.1_dp, -0.3_dp, dp)]
+      c(:, 2) = [CMPLX(-0.4_dp, 0.3_dp, dp), CMPLX(0.2_dp, 0.5_dp, dp)]
+      dc = 0.1_dp*CONJG(TRANSPOSE(c))
+      p = MATMUL(dc*SPREAD([0.75_dp, 0.25_dp], 1, nb), CONJG(TRANSPOSE(c)))
+      p = p + CONJG(TRANSPOSE(p)) + MATMUL(c*SPREAD([0.1_dp, -0.1_dp], 1, nb), CONJG(TRANSPOSE(c)))
+      CALL upf_inverse_smooth_density(soft, gs, p, rho_r, gradient_r, tau_r)
+      CALL upf_inverse_smooth_density(soft, gs, p, rho, gradient, tau, c, [0.75_dp, 0.25_dp], dc, [0.1_dp, -0.1_dp])
+      CALL check(MAXVAL(ABS(rho - rho_r)), 'factor density response with occupation changes')
+      CALL check(MAXVAL(ABS(gradient - gradient_r)), 'factor gradient response with occupation changes')
+      CALL check(MAXVAL(ABS(tau - tau_r)), 'factor kinetic response with occupation changes')
    END SUBROUTINE check_density_residual
 
 ! **************************************************************************************************
