@@ -240,14 +240,21 @@ CONTAINS
 !> \param density Smooth local point density.
 !> \param gradient Smooth Cartesian density gradient, axis last.
 !> \param tau Smooth kinetic-energy density, with factor one half.
+!> \param coefficients Optional original orbital factors certified for ao_density by the caller.
+!> \param occupations Matching nonnegative orbital occupations, without k weights.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_smooth_density(soft, soft_gradient, ao_density, density, gradient, tau)
+   SUBROUTINE upf_inverse_smooth_density(soft, soft_gradient, ao_density, density, gradient, tau, coefficients, occupations)
       COMPLEX(dp), INTENT(IN)                            :: soft(:, :), soft_gradient(:, :, :), &
                                                             ao_density(:, :)
       REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: occupations(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), work(:, :)
-      INTEGER                                            :: axis, n, npoint
+      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), weighted(:, :), &
+                                                            work(:, :)
+      INTEGER                                            :: axis, i, n, noccupied, npoint
+      INTEGER, ALLOCATABLE                               :: occupied(:)
+      LOGICAL                                            :: valid
 
       n = SIZE(soft, 2)
       npoint = SIZE(soft, 1)
@@ -256,6 +263,37 @@ CONTAINS
       CPASSERT(SIZE(density) == npoint .AND. SIZE(tau) == npoint)
       CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
       CALL check_density(ao_density)
+      CPASSERT(PRESENT(coefficients) .EQV. PRESENT(occupations))
+      IF (PRESENT(coefficients)) THEN
+         valid = SIZE(coefficients, 1) == n .AND. SIZE(coefficients, 2) == SIZE(occupations)
+         CPASSERT(valid)
+         valid = ALL(ieee_is_finite(REAL(coefficients, dp))) .AND. ALL(ieee_is_finite(AIMAG(coefficients)))
+         CPASSERT(valid)
+         valid = ALL(ieee_is_finite(occupations)) .AND. ALL(occupations >= 0.0_dp)
+         CPASSERT(valid)
+         noccupied = COUNT(occupations > 0.0_dp)
+         density = 0.0_dp
+         gradient = 0.0_dp
+         tau = 0.0_dp
+         IF (noccupied == 0) RETURN
+         occupied = PACK([(i, i=1, SIZE(occupations))], occupations > 0.0_dp)
+         ALLOCATE (work(npoint, noccupied), derivative(npoint, noccupied), weighted(npoint, noccupied))
+         ! Form all three descriptors from the same orbitals. Contracting a rounded C f C^dagger
+         ! independently can lose their one-orbital identities near a node.
+         work = MATMUL(soft, coefficients(:, occupied))
+         DO i = 1, noccupied
+            weighted(:, i) = occupations(occupied(i))*work(:, i)
+         END DO
+         density = REAL(SUM(CONJG(work)*weighted, DIM=2), dp)
+         DO axis = 1, 3
+            derivative = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
+            gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative)*weighted, DIM=2), dp)
+            DO i = 1, noccupied
+               tau = tau + 0.5_dp*occupations(occupied(i))*REAL(CONJG(derivative(:, i))*derivative(:, i), dp)
+            END DO
+         END DO
+         RETURN
+      END IF
       ALLOCATE (work(npoint, n), derivative(npoint, n))
       work(:, :) = MATMUL(soft, ao_density)
       density = REAL(SUM(CONJG(soft)*work, DIM=2), dp)

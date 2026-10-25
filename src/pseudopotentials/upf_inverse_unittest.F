@@ -2705,6 +2705,10 @@ CONTAINS
       vg = RESHAPE([0.1_dp, -0.2_dp, 0.3_dp, 0.4_dp, 0.5_dp, -0.6_dp, 0.7_dp, -0.8_dp, 0.9_dp], [np, 3])
       CALL upf_inverse_smooth_density(reference, gr, p, rho_r, gradient_r, tau_r)
       CALL upf_inverse_smooth_density(soft, gs, p, rho_s, gradient_s, tau_s)
+      CALL upf_inverse_smooth_density(reference, gr, p, rho, gradient, tau, c, [1.0_dp, 1.0_dp])
+      CALL check(MAXVAL(ABS(rho - rho_r)), 'orbital/matrix density agreement')
+      CALL check(MAXVAL(ABS(gradient - gradient_r)), 'orbital/matrix gradient agreement')
+      CALL check(MAXVAL(ABS(tau - tau_r)), 'orbital/matrix kinetic agreement')
       CALL upf_inverse_density_residual(reference, gr, soft, gs, p, rho, gradient, tau)
       CALL check(MAXVAL(ABS(rho_r + rho - rho_s)), 'Gaussian/residual density closure')
       CALL check(MAXVAL(ABS(gradient_r + gradient - gradient_s)), 'Gaussian/residual gradient closure')
@@ -2757,6 +2761,20 @@ CONTAINS
       CALL upf_inverse_semilocal_residual(reference(:0, :), gr(:0, :, :), soft(:0, :), gs(:0, :, :), &
                                           weights(:0), vn(:0), vg(:0, :), vt(:0), h)
       CALL check(MAXVAL(ABS(h)), 'empty-row residual adjoint', 0.0_dp)
+      ! A real occupied orbital near a node retains tau = |grad rho|^2/(8 rho).
+      c = CMPLX(0.0_dp, 0.0_dp, dp)
+      c(:, 1) = [CMPLX(1.0_dp, 0.0_dp, dp), CMPLX(-0.3_dp, 0.0_dp, dp)]
+      p = MATMUL(c, CONJG(TRANSPOSE(c)))
+      reference(:, 1) = CMPLX([0.3_dp + 2.0_dp**(-24), 0.3_dp - 1.e-5_dp, 0.3_dp + 1.e-6_dp], 0.0_dp, dp)
+      reference(:, 2) = CMPLX(1.0_dp, 0.0_dp, dp)
+      gr = CMPLX(0.0_dp, 0.0_dp, dp)
+      gr(:, 1, 1) = CMPLX(1.0_dp, 0.0_dp, dp)
+      CALL upf_inverse_smooth_density(reference, gr, p, rho, gradient, tau, c, [1.0_dp, 0.0_dp])
+      IF (ANY(rho <= 0.0_dp)) ERROR STOP 'Occupied orbital lost its positive node density'
+      CALL check(MAXVAL(ABS(SUM(gradient**2, DIM=2)/(8.0_dp*rho) - tau)), 'near-node one-orbital identity', 1.e-14_dp)
+      p = CMPLX(0.0_dp, 0.0_dp, dp)
+      CALL upf_inverse_smooth_density(reference, gr, p, rho, gradient, tau, c, [0.0_dp, 0.0_dp])
+      CALL check(MAXVAL(ABS(rho)) + MAXVAL(ABS(gradient)) + MAXVAL(ABS(tau)), 'empty orbital spin fields', 0.0_dp)
    END SUBROUTINE check_density_residual
 
 ! **************************************************************************************************

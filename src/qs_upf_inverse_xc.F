@@ -220,7 +220,7 @@ CONTAINS
       END IF
       CALL collocate_xc_fields(frames, augmentation, matrices, kweights, points, state%density, &
                                state%density_gradient, state%tau, kinetic, paw_reconstruction, atom_grid, &
-                               cached_soft, cached_gradient, density_scale)
+                               cached_soft, cached_gradient, density_scale, orbital_factors)
       IF (ALLOCATED(density_scale)) THEN
          CALL refine_cancelled_density(frames, augmentation, kweights, points, core_density, &
                                        orbital_factors, density_scale, state%density, atom_grid)
@@ -447,10 +447,11 @@ CONTAINS
 !> \param cached_soft Optional storage shared with the following operator transpose.
 !> \param cached_gradient ...
 !> \param density_scale ...
+!> \param orbital_factors Optional original factors certified for this density evaluation.
 ! **************************************************************************************************
    SUBROUTINE collocate_xc_fields(frames, augmentation, matrices, kweights, points, density, density_gradient, &
                                   kinetic_density, kinetic, paw_reconstruction, atom_grid, cached_soft, cached_gradient, &
-                                  density_scale)
+                                  density_scale, orbital_factors)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -465,6 +466,8 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cached_soft(:, :, :), &
                                                             cached_gradient(:, :, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: density_scale(:, :)
+      TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
+         OPTIONAL                                        :: orbital_factors
 
       COMPLEX(dp), ALLOCATABLE                           :: orbital_gradient(:, :, :), &
                                                             projected(:, :), soft(:, :)
@@ -505,8 +508,15 @@ CONTAINS
                cached_gradient(lo:hi, :, :, ik) = orbital_gradient(:m, :, :)
             END IF
             DO spin = 1, nspin
-               CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
-                                               matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
+               IF (PRESENT(orbital_factors)) THEN
+                  CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
+                                                  matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi), &
+                                                  orbital_factors%coefficients(:, :, ik, spin), &
+                                                  orbital_factors%occupations(:, ik, spin))
+               ELSE
+                  CALL upf_inverse_smooth_density(soft(:m, :), orbital_gradient(:m, :, :), &
+                                                  matrices(:, :, ik, spin), rho(lo:hi), gradient(lo:hi, :), tau(lo:hi))
+               END IF
                density(lo:hi, spin) = density(lo:hi, spin) + kweights(ik)*rho(lo:hi)
                IF (PRESENT(density_scale)) THEN
                   density_scale(lo:hi, spin) = density_scale(lo:hi, spin) + kweights(ik)*ABS(rho(lo:hi))
