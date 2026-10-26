@@ -236,6 +236,25 @@ CONTAINS
             END IF
          END IF
       END DO
+      ! A fixed-point operation is usable independently of Brillouin-zone reduction.
+      sym%apply_symmetry = .FALSE.
+      sym%nwght = 1
+      kpoint%xkp(:, 1) = 0.0_dp
+      kpoint%wkp = [0.37_dp, 0.63_dp]
+      sym%xkp = 0.0_dp
+      CALL kpoint_cell_gauge_action(kpoint, 1, 2, kpoint%xkp(:, 1), action, rotation, antiunitary, status)
+      IF (status /= 0 .OR. antiunitary) ERROR STOP 'Fixed-point AO action is unavailable'
+      IF (MAXVAL(ABS(action(1:3, 4:6) - kpoint%kind_rotmat(2, 1)%rmat)) > 1.e-13_dp .OR. &
+          MAXVAL(ABS(action(4:6, 1:3) - kpoint%kind_rotmat(2, 1)%rmat)) > 1.e-13_dp) THEN
+         ERROR STOP 'Fixed-point AO action changed the native rotation or atom map'
+      END IF
+      CALL kpoint_star_create(kpoint, [3, 3], map)
+      IF (SIZE(map%weights) /= 2) ERROR STOP 'Fixed-point operations added mesh contributions'
+      IF (ANY(map%weights /= kpoint%wkp)) ERROR STOP 'Fixed-point operations changed mesh weights'
+      CALL kpoint_star_density(map, density, expanded)
+      IF (MAXVAL(ABS(expanded - density)) > 1.e-12_dp) THEN
+         ERROR STOP 'Storing fixed-point operations changed the selected star density'
+      END IF
       map = kpoint_star_type()
       DEALLOCATE (sym%rot, sym%rotp, sym%f0, sym%fcell_gauge, sym%phase_mode, sym%xkp)
       DO i = 1, 2

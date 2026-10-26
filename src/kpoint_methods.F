@@ -533,7 +533,7 @@ CONTAINS
       CPASSERT(ALLOCATED(srot_cache) .AND. ALLOCATED(frot_cache) .AND. ALLOCATED(krot_cache))
       kpsym%nwght = NINT(crys_sym%wkpoint(ik))
       ns = kpsym%nwght
-      IF (ns <= 1) RETURN
+      IF (ns < 1) RETURN
 
       ! Count mappings not already recorded by kpoint_gen.
       DO ilink = link_start(ik), link_start(ik + 1) - 1
@@ -552,7 +552,8 @@ CONTAINS
          END DO
       END DO
 
-      kpsym%apply_symmetry = .TRUE.
+      ! Fixed-point operations remain available without adding a mesh contribution.
+      kpsym%apply_symmetry = kpsym%nwght > 1
       ALLOCATE (kpsym%rot(3, 3, ns), kpsym%xkp(3, ns), kpsym%rotp(ns))
       ALLOCATE (kpsym%f0(natom, ns), kpsym%fcell(3, natom, ns), kpsym%fcell_gauge(3, natom, ns))
       ALLOCATE (kpsym%phase_mode(ns))

@@ -86,7 +86,9 @@ CONTAINS
       IF (operation < 1 .OR. .NOT. ASSOCIATED(kpoints%kp_sym)) RETURN
       sym => kpoints%kp_sym(representative)%kpoint_sym
       IF (.NOT. ASSOCIATED(sym)) RETURN
-      IF (.NOT. sym%apply_symmetry .OR. operation > sym%nwred) RETURN
+      IF (operation > sym%nwred) RETURN
+      IF (.NOT. ASSOCIATED(sym%xkp) .OR. .NOT. ASSOCIATED(sym%rotp) .OR. &
+          .NOT. ASSOCIATED(sym%rot) .OR. .NOT. ASSOCIATED(sym%f0)) RETURN
       IF (.NOT. kpoint_same_periodic(TARGET, sym%xkp(:, operation))) RETURN
       IF (.NOT. ASSOCIATED(kpoints%atype) .OR. .NOT. ASSOCIATED(kpoints%kind_rotmat)) RETURN
       IF (.NOT. ASSOCIATED(sym%fcell_gauge)) RETURN

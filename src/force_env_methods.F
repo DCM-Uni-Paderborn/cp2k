@@ -683,7 +683,6 @@ CONTAINS
       DO ik = 1, kpoints%nkp
          kpsym => kpoints%kp_sym(ik)%kpoint_sym
          IF (.NOT. ASSOCIATED(kpsym)) CYCLE
-         IF (.NOT. kpsym%apply_symmetry) CYCLE
          IF (.NOT. ASSOCIATED(kpsym%rot)) CYCLE
          IF (.NOT. ASSOCIATED(kpsym%f0)) CYCLE
          IF (.NOT. ASSOCIATED(kpsym%fcell)) CYCLE

@@ -92,7 +92,7 @@ CONTAINS
          CALL get_qs_env(qs_env, dft_control=dft_control)
          DO ik = 1, kpoints%nkp
             kpsym => kpoints%kp_sym(ik)%kpoint_sym
-            IF (kpsym%apply_symmetry) THEN
+            IF (ASSOCIATED(kpsym%rotp)) THEN
                DO irot = 1, SIZE(kpsym%rotp)
                   ir = ABS(kpsym%rotp(irot))
                   ira = 0
