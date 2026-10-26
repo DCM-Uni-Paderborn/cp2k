@@ -80,6 +80,7 @@ MODULE qs_upf_inverse_coulomb
                                               qs_upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_center_type,&
                                               upf_inverse_coulomb_density,&
+                                              upf_inverse_coulomb_pair_geometry,&
                                               upf_inverse_coulomb_periodic,&
                                               upf_inverse_coulomb_potential_type,&
                                               upf_inverse_coulomb_prepare
@@ -94,6 +95,7 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_attach, qs_upf_inverse_coulomb_update
    PUBLIC :: qs_upf_inverse_coulomb_xc_integrate
    PUBLIC :: qs_upf_inverse_coulomb_ionic_geometry
+   PUBLIC :: qs_upf_inverse_coulomb_pair_geometry
    PUBLIC :: qs_upf_inverse_coulomb_response, qs_upf_inverse_coulomb_metric_response
    PUBLIC :: qs_upf_inverse_coulomb_operator_response
    PUBLIC :: qs_upf_inverse_coulomb_density
@@ -868,9 +870,10 @@ CONTAINS
 !> \param response Coulomb energy derivative, excluding separate native ionic self/overlap corrections.
 !> \param charge_response Optional derivative of the same complete electronic charge metric contraction.
 !> \param coefficients_response Optional defining-frame responses at fixed reduced k for this geometry variation.
+!> \param pair_geometry_response Optional residual-kernel contraction captured at this accepted density.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_coulomb_response(qs_env, state, map, matrix, atom_response, cell_response, &
-                                              response, charge_response, coefficients_response)
+                                              response, charge_response, coefficients_response, pair_geometry_response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
@@ -879,6 +882,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: response
       REAL(dp), INTENT(OUT), OPTIONAL                    :: charge_response
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
 
       COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), background(:), &
                                                             background_response(:), &
@@ -948,7 +952,8 @@ CONTAINS
                                            cell_response=cell_response, &
                                            gvecs_response=gvecs_response, volume_response=trace_strain*map%grid%vol, &
                                            background_response=background_response, &
-                                           poisson_weights_response=poisson_weights_response, map=map%maps)
+                                           poisson_weights_response=poisson_weights_response, map=map%maps, &
+                                           pair_geometry_response=pair_geometry_response)
       ELSE
          CALL upf_inverse_coulomb_periodic(map%centers, map%cell, map%grid%g, map%grid%vol, &
                                            background, map%poisson_weights, energy, potentials, adjoint, &
@@ -956,10 +961,46 @@ CONTAINS
                                            center_response=centers_response, cell_response=cell_response, &
                                            gvecs_response=gvecs_response, volume_response=trace_strain*map%grid%vol, &
                                            background_response=background_response, &
-                                           poisson_weights_response=poisson_weights_response, map=map%maps)
+                                           poisson_weights_response=poisson_weights_response, map=map%maps, &
+                                           pair_geometry_response=pair_geometry_response)
       END IF
       response = response + kernel_response
    END SUBROUTINE qs_upf_inverse_coulomb_response
+
+! **************************************************************************************************
+!> \brief Capture residual-kernel covectors for all motions of the same accepted density.
+!>        Native center responses keep their radial shells fixed. Other density and source
+!>        responses continue to use the complete original directional derivative.
+!> \param qs_env Native source owners.
+!> \param state Original defining inverse frames.
+!> \param map Complete Coulomb source, refreshed from matrix before contraction.
+!> \param matrix Accepted spin-summed Hermitian matrices in global k order.
+!> \param atom_gradient Covector for physical Cartesian atom positions.
+!> \param cell_gradient Covector for lattice vectors at fixed atom positions.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_coulomb_pair_geometry(qs_env, state, map, matrix, atom_gradient, cell_gradient)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
+      TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :), cell_gradient(3, 3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :)
+      INTEGER                                            :: a
+      REAL(dp)                                           :: energy
+      REAL(dp), ALLOCATABLE                              :: center_gradient(:, :)
+
+      CPASSERT(map%ready)
+      CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(map%positions)))
+      ALLOCATE (operators, MOLD=map%metric)
+      CALL qs_upf_inverse_coulomb_evaluate(qs_env, state, map, matrix, energy, operators)
+      ALLOCATE (center_gradient(3, SIZE(map%centers)))
+      CALL upf_inverse_coulomb_pair_geometry(map%centers, map%maps, center_gradient, cell_gradient)
+      atom_gradient = 0.0_dp
+      DO a = 1, SIZE(map%centers)
+         atom_gradient(:, map%center_atoms(a)) = atom_gradient(:, map%center_atoms(a)) + center_gradient(:, a)
+      END DO
+   END SUBROUTINE qs_upf_inverse_coulomb_pair_geometry
 
 ! **************************************************************************************************
 !> \brief Geometry derivative of the complete electronic charge metric at fixed Hermitian matrix.

@@ -78,6 +78,7 @@ MODULE upf_inverse_coulomb
    PUBLIC :: upf_inverse_coulomb_compensate, upf_inverse_coulomb_compensation_adjoint
    PUBLIC :: upf_inverse_coulomb_fourier_kernel
    PUBLIC :: upf_inverse_coulomb_pair_kernel
+   PUBLIC :: upf_inverse_coulomb_pair_geometry
 
 CONTAINS
 
@@ -153,6 +154,91 @@ CONTAINS
    END SUBROUTINE upf_inverse_coulomb_prepare
 
 ! **************************************************************************************************
+!> \brief Contract residual-pair geometry derivatives once at fixed radial shells and density.
+!>        Keep every overlapping image and both orientations through pair reciprocity. Only
+!>        center and cell covectors are retained, rather than a kernel for every motion.
+!>        Density, measure and shape responses remain in the full Coulomb response.
+!> \param centers Current replicated signed densities on the map's unchanged radial shells.
+!> \param map Immutable geometry and periodic image convention.
+!> \param center_gradient Derivative with respect to each Cartesian center position.
+!> \param cell_gradient Derivative with respect to lattice vectors at fixed center positions.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient)
+      TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
+      TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
+      REAL(dp), INTENT(OUT)                              :: center_gradient(:, :), &
+                                                            cell_gradient(3, 3)
+
+      INTEGER                                            :: a, axis, b, channel, i, image(3), info, &
+                                                            j, k, limits(2, 3), nr
+      REAL(dp)                                           :: delta(3), displacement(3), &
+                                                            inverse_cell(3, 3), radius, value
+      REAL(dp), ALLOCATABLE                              :: dkernel(:, :, :, :), kernel(:, :, :, :), &
+                                                            moments(:)
+      TYPE(center_work_type), ALLOCATABLE                :: work(:)
+
+      CALL check_map(map, centers, map%cell, map%gvecs, map%volume, map%periodicity)
+      CPASSERT(ALL(SHAPE(center_gradient) == [3, SIZE(centers)]))
+      center_gradient = 0.0_dp
+      cell_gradient = 0.0_dp
+      inverse_cell = map%cell
+      CALL invmat(inverse_cell, info)
+      CPASSERT(info == 0)
+      ALLOCATE (work(SIZE(centers)))
+      DO a = 1, SIZE(centers)
+         ALLOCATE (work(a)%compensation(SIZE(centers(a)%radii), SIZE(centers(a)%l)), &
+                   work(a)%residual(SIZE(centers(a)%radii), SIZE(centers(a)%l)), &
+                   work(a)%q(SIZE(centers(a)%radii), SIZE(centers(a)%l)), moments(SIZE(centers(a)%l)))
+         CALL upf_inverse_coulomb_compensate(centers(a)%radii, centers(a)%weights, centers(a)%l, &
+                                             centers(a)%density, centers(a)%shapes, work(a)%compensation, &
+                                             work(a)%residual, moments)
+         work(a)%q(:, :) = SPREAD(centers(a)%weights, 2, SIZE(centers(a)%l))*work(a)%residual
+         DEALLOCATE (moments)
+      END DO
+      DO a = 1, SIZE(centers)
+         DO b = a, SIZE(centers)
+            radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
+            CALL residual_image_limits(inverse_cell, centers(a)%position - centers(b)%position, &
+                                       radius, map%periodicity, limits)
+            ALLOCATE (kernel(SIZE(centers(a)%radii), SIZE(centers(a)%l), &
+                             SIZE(centers(b)%radii), SIZE(centers(b)%l)))
+            ALLOCATE (dkernel, MOLD=kernel)
+            DO k = limits(1, 3), limits(2, 3)
+               DO j = limits(1, 2), limits(2, 2)
+                  DO i = limits(1, 1), limits(2, 1)
+                     image = [i, j, k]
+                     IF (a == b .AND. ALL(image == 0)) CYCLE
+                     displacement = centers(a)%position - centers(b)%position - MATMUL(map%cell, REAL(image, dp))
+                     IF (SUM(displacement**2) >= radius**2) CYCLE
+                     DO axis = 1, 3
+                        delta = 0.0_dp
+                        delta(axis) = 1.0_dp
+                        CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                             centers(b)%radii, centers(b)%l, centers(b)%indices, &
+                                                             displacement, kernel, dkernel, 0.0_dp*centers(a)%radii, &
+                                                             0.0_dp*centers(b)%radii, delta)
+                        value = 0.0_dp
+                        DO channel = 1, SIZE(centers(a)%l)
+                           DO nr = 1, SIZE(centers(a)%radii)
+                              value = value + MERGE(0.5_dp, 1.0_dp, a == b)*work(a)%q(nr, channel)* &
+                                      SUM(dkernel(nr, channel, :, :)*work(b)%q)
+                           END DO
+                        END DO
+                        IF (a /= b) THEN
+                           center_gradient(axis, a) = center_gradient(axis, a) + value
+                           center_gradient(axis, b) = center_gradient(axis, b) - value
+                        END IF
+                        cell_gradient(axis, :) = cell_gradient(axis, :) - value*REAL(image, dp)
+                     END DO
+                  END DO
+               END DO
+            END DO
+            DEALLOCATE (kernel, dkernel)
+         END DO
+      END DO
+   END SUBROUTINE upf_inverse_coulomb_pair_geometry
+
+! **************************************************************************************************
 !> \brief Fourier coefficients of the complete signed center density, before compensation.
 !>        This is the finite-grid projection for density observables. It includes every supplied
 !>        harmonic and the zero mode, without ions, frozen cores, or a Coulomb kernel.
@@ -214,11 +300,14 @@ CONTAINS
 !> \param periodicity Optional lattice directions to repeat. Defaults to the map's periodicity
 !>        when a map is supplied, otherwise to three periodic directions. The Fourier weights
 !>        and their response must use the same electrostatic boundary conditions.
+!> \param pair_geometry_response Optional previously contracted explicit residual-kernel response
+!>        at this density and geometry. Used only with map and fixed radial shells. Radial motion
+!>        retains the full original derivative. Density, measure and shape derivatives are unchanged.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_coulomb_periodic(centers, cell, gvecs, volume, background, poisson_weights, &
                                            energy, potentials, background_adjoint, comm, response, center_response, &
                                            cell_response, gvecs_response, volume_response, background_response, &
-                                           poisson_weights_response, map, periodicity)
+                                           poisson_weights_response, map, periodicity, pair_geometry_response)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
       COMPLEX(dp), INTENT(IN)                            :: background(:)
@@ -238,13 +327,14 @@ CONTAINS
       TYPE(upf_inverse_coulomb_map_type), INTENT(IN), &
          OPTIONAL                                        :: map
       INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
 
       COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
                                                             h(:)
       INTEGER                                            :: a, b, channel, i, image(3), info, j, &
                                                             limits(2, 3), na, nb, ng, nh, nr, &
                                                             REPEAT(3)
-      LOGICAL                                            :: derive
+      LOGICAL                                            :: derive, reuse_pair_geometry
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
                                                             dmoment, dnorm, dpair, dpw, epair, &
                                                             inverse_cell(3, 3), moment, norm, &
@@ -278,6 +368,13 @@ CONTAINS
          CPASSERT(SIZE(poisson_weights_response) == ng)
       END IF
       IF (PRESENT(map)) CALL check_map(map, centers, cell, gvecs, volume, repeat)
+      reuse_pair_geometry = .FALSE.
+      IF (derive .AND. PRESENT(map) .AND. PRESENT(pair_geometry_response)) THEN
+         reuse_pair_geometry = .TRUE.
+         DO a = 1, SIZE(centers)
+            IF (ANY(center_response(a)%radii /= 0.0_dp)) reuse_pair_geometry = .FALSE.
+         END DO
+      END IF
       ALLOCATE (work(SIZE(centers)), potentials(SIZE(centers)), h(ng), e(ng), dh(ng), dg(ng))
       h(:) = background
       e(:) = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -373,7 +470,7 @@ CONTAINS
                                              SUM(map%pairs(a, b)%values(nr, channel, :, :)*work(b)%dq))
                   END DO
                END DO
-               IF (.NOT. derive) CYCLE
+               IF (.NOT. derive .OR. reuse_pair_geometry) CYCLE
                ! The map already supplies both density covectors. Transposed pairs have
                ! the same joint geometry contraction, so integrate that derivative once.
                IF (b < a) CYCLE
@@ -429,6 +526,7 @@ CONTAINS
             IF (derive) DEALLOCATE (dkernel)
          END DO
       END DO
+      IF (reuse_pair_geometry) dpair = dpair + pair_geometry_response
       energy = energy + epair
       IF (derive) response = dpw + dpair
       DO a = 1, SIZE(centers)

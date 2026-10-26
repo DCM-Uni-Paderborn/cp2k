@@ -96,9 +96,10 @@ PROGRAM upf_inverse_unittest
         upf_inverse_coulomb_center_type, upf_inverse_coulomb_compensate, &
         upf_inverse_coulomb_compensation_adjoint, upf_inverse_coulomb_density, &
         upf_inverse_coulomb_fourier_kernel, upf_inverse_coulomb_map_type, &
-        upf_inverse_coulomb_pair_kernel, upf_inverse_coulomb_periodic, &
-        upf_inverse_coulomb_potential_type, upf_inverse_coulomb_prepare, &
-        upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
+        upf_inverse_coulomb_pair_geometry, upf_inverse_coulomb_pair_kernel, &
+        upf_inverse_coulomb_periodic, upf_inverse_coulomb_potential_type, &
+        upf_inverse_coulomb_prepare, upf_inverse_coulomb_radial, &
+        upf_inverse_coulomb_radial_response
    USE upf_inverse_lattice,             ONLY: &
         upf_inverse_lattice_adjoint, upf_inverse_lattice_bloch, upf_inverse_lattice_bound, &
         upf_inverse_lattice_error_bounds, upf_inverse_lattice_init, upf_inverse_lattice_project, &
@@ -2246,9 +2247,10 @@ CONTAINS
                                                             density_g(3), exact_density(3)
       INTEGER                                            :: a, b, boundary, i, ix, iy, iz, j, &
                                                             periodicity(3), side
-      REAL(dp) :: cached_energy, cached_response, cell(3, 3), dcell(3, 3), dg(3, 3), &
-         displacement(3), distance, dkw(3), dvolume, energy, exact, g(3, 3), kernel, kw(3), norm, &
-         qa(2), qb(2), response, samples(2), shift, trace, volume
+      REAL(dp) :: cached_energy, cached_response, cell(3, 3), cell_gradient(3, 3), &
+         center_gradient(3, 2), dcell(3, 3), dg(3, 3), displacement(3), distance, dkw(3), dvolume, &
+         energy, exact, g(3, 3), kernel, kw(3), norm, pair_response, qa(2), qb(2), response, &
+         samples(2), shift, trace, volume
       TYPE(upf_inverse_coulomb_center_type)              :: centers(2), changed(2), derivative(2)
       TYPE(upf_inverse_coulomb_map_type), ALLOCATABLE    :: map
       TYPE(upf_inverse_coulomb_potential_type), &
@@ -2335,6 +2337,9 @@ CONTAINS
                                            gvecs_response=dg, volume_response=dvolume, background_response=db, &
                                            poisson_weights_response=dkw, periodicity=periodicity)
          CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map, periodicity)
+         CALL upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient)
+         CALL check(MAXVAL(ABS(SUM(center_gradient, DIM=2))), "Residual-pair translation covector", 3.e-12_dp)
+         IF (boundary == 1) CALL check(MAXVAL(ABS(cell_gradient)), "Isolated residual-pair cell covector", 3.e-12_dp)
          CALL upf_inverse_coulomb_density(centers, cell, g, volume, density_g, map)
          exact_density = CMPLX(0.0_dp, 0.0_dp, dp)
          DO a = 1, SIZE(centers)
@@ -2361,7 +2366,8 @@ CONTAINS
          CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
                                            cached_potential, cached_adjoint, response=cached_response, &
                                            center_response=derivative, cell_response=dcell, gvecs_response=dg, &
-                                           volume_response=dvolume, background_response=db, poisson_weights_response=dkw, map=map)
+                                           volume_response=dvolume, background_response=db, poisson_weights_response=dkw, &
+                                           map=map, pair_geometry_response=99.0_dp)
          CALL check(ABS(cached_response - response), "Cached periodic Coulomb joint response", 3.e-12_dp)
          trace = REAL(SUM(CONJG(background)*adjoint), dp)
          DO a = 1, 2
@@ -2403,6 +2409,17 @@ CONTAINS
                                               poisson_weights_response=dkw, map=map)
             CALL check(ABS(cached_energy - exact), "Cached moving-center Coulomb energy", 3.e-12_dp)
             CALL check(ABS(cached_response - trace), "Cached moving-center Coulomb response", 3.e-12_dp)
+            pair_response = REAL(side - 1, dp)*SUM(cell_gradient*dcell)
+            DO a = 1, SIZE(centers)
+               pair_response = pair_response + DOT_PRODUCT(center_gradient(:, a), changed(a)%position)
+            END DO
+            CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
+                                              cached_potential, cached_adjoint, response=cached_response, &
+                                              center_response=changed, cell_response=REAL(side - 1, dp)*dcell, &
+                                              gvecs_response=dg, volume_response=dvolume, background_response=db, &
+                                              poisson_weights_response=dkw, map=map, pair_geometry_response=pair_response)
+            CALL check(ABS(cached_energy - exact), "Contracted residual-pair geometry preserves energy", 3.e-12_dp)
+            CALL check(ABS(cached_response - trace), "Contracted residual-pair geometry response", 3.e-12_dp)
             DO a = 1, SIZE(centers)
                CALL check(MAXVAL(ABS(cached_potential(a)%values - potential(a)%values)), &
                           "Cached moving-center Coulomb adjoint", 3.e-12_dp)
