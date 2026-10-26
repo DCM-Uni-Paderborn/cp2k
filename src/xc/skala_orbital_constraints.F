@@ -770,7 +770,8 @@ CONTAINS
 !> \param check_segment Optional trial-segment check before step acceptance.
 !> \param interrupted Whether that check requests event handling at the last accepted state.
 !> \param retain_progress Return the last accepted feasible coordinates on failure, default false.
-!> \param check_stalled_segment Optional first-feasible-trial check after unsuccessful backtracking
+!> \param check_stalled_segment Optional first-feasible-trial check after unsuccessful backtracking.
+!>        Equal endpoints request an active-normal admissibility check before tangent minimization.
 !>        or an unresolved energy change above the gradient tolerance.
 !> \param coordinate_scales Optional constant diagonal map to original coordinates for stopping tests.
 !>        Search directions use optimizer coordinates. The original unscaled gradient bound is retained.
@@ -876,6 +877,19 @@ CONTAINS
             RETURN
          END IF
          IF (PRESENT(iterations)) iterations = iteration
+         IF (r > 0 .AND. PRESENT(check_stalled_segment)) THEN
+            ! An active surface can stop being a normal minimum while its tangent
+            ! still descends. Release it before spending steps on that tangent.
+            event = .FALSE.
+            CALL check_stalled_segment(x, x, curve, context, event)
+            IF (event) THEN
+               coordinate(:) = x
+               IF (PRESENT(interrupted)) interrupted = .TRUE.
+               RETURN
+            END IF
+            CALL reduced_evaluation(x, energy, reduced, valid)
+            IF (.NOT. valid) RETURN
+         END IF
          curvature_stalled = .FALSE.
          IF (iteration - last_progress_check >= MAX(8, capacity)) THEN
             curvature_stalled = NORM2(reduced) > 0.5_dp*progress_norm

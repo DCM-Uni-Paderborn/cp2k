@@ -589,7 +589,7 @@ CONTAINS
       INTEGER                                            :: iterations
       LOGICAL                                            :: converged, interrupted, stopped
       REAL(dp)                                           :: coordinate(1), cusp_coordinate(2), &
-                                                            empty(0), pair(2), scale
+                                                            empty(0), pair(2), ridge(4), scale
       TYPE(roundoff_cusp_context)                        :: cusp
 
       scale = 20.0_dp
@@ -735,7 +735,69 @@ CONTAINS
       IF (.NOT. converged .OR. NORM2(pair) > stationarity_tolerance) THEN
          ERROR STOP 'An unresolved inverse response prevented a known coupled minimum'
       END IF
+      scale = 0.5_dp
+      ridge = [1.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
+      segment_queries = 0
+      CALL skala_constrained_stationarity(curved_constraints, normal_ridge_gradient, scale, ridge, &
+                                          [1.e-12_dp], stationarity_tolerance, converged, max_iterations=1, &
+                                          iterations=iterations, interrupted=interrupted, curvature_steps=.TRUE., &
+                                          check_stalled_segment=normal_ridge_segment)
+      IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. segment_queries /= 1 .OR. &
+          ANY(ridge /= [1.0_dp, 0.0_dp, 0.0_dp, 1.0_dp])) THEN
+         ERROR STOP 'An inadmissible active normal was retained during tangent minimization'
+      END IF
    END SUBROUTINE check_physical_stationarity
+
+! **************************************************************************************************
+!> \brief A curved cusp has downhill normal directions even before its tangent is stationary.
+!> \param coordinate Coordinates (u,v) with the cusp at v=|u|^2.
+!> \param energy Quadratic tangent energy plus a sign-changing absolute normal term.
+!> \param gradient Positive-side limiting derivative at the cusp.
+!> \param context Value of u(1) where the absolute normal coefficient changes sign.
+! **************************************************************************************************
+   SUBROUTINE normal_ridge_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      REAL(dp)                                           :: normal, slope, tangent(3)
+
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         normal = coordinate(4) - SUM(coordinate(:3)**2)
+         tangent = coordinate(:3) - [2.0_dp, 0.0_dp, 0.0_dp]
+         energy = 0.5_dp*SUM(tangent**2) + (context - coordinate(1))*ABS(normal) + normal**2
+         slope = (context - coordinate(1))*SIGN(1.0_dp, normal) + 2.0_dp*normal
+         gradient(:3) = tangent - 2.0_dp*coordinate(:3)*slope
+         gradient(1) = gradient(1) - ABS(normal)
+         gradient(4) = slope
+      CLASS DEFAULT
+         ERROR STOP 'Invalid normal-ridge context'
+      END SELECT
+   END SUBROUTINE normal_ridge_gradient
+
+! **************************************************************************************************
+!> \brief Request release when the absolute normal coefficient is negative at the accepted state.
+!> \param first Accepted feasible coordinates.
+!> \param last Segment endpoint, equal to first for active-normal admission.
+!> \param curve Feasible tangent chart.
+!> \param context Sign-change coordinate for the analytical normal coefficient.
+!> \param interrupted Whether a downhill normal direction requires release.
+! **************************************************************************************************
+   SUBROUTINE normal_ridge_segment(first, last, curve, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+      CLASS(*), INTENT(INOUT)                            :: context
+      LOGICAL, INTENT(OUT)                               :: interrupted
+
+      segment_queries = segment_queries + 1
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         interrupted = ALL(first == last) .AND. context < first(1)
+      CLASS DEFAULT
+         ERROR STOP 'Invalid normal-ridge context'
+      END SELECT
+   END SUBROUTINE normal_ridge_segment
 
 ! **************************************************************************************************
 !> \brief Supply the exact diagonal inverse response of the scaled quadratic control.
