@@ -114,6 +114,11 @@ MODULE qs_upf_inverse_hfx
       TYPE(transition_augmentation_type) :: integrals
    END TYPE lattice_potential_entry_type
 
+   TYPE lattice_projection_entry_type
+      INTEGER :: key(5) = 0
+      COMPLEX(dp), ALLOCATABLE :: values(:, :, :)
+   END TYPE lattice_projection_entry_type
+
    TYPE linear_moment_type
       COMPLEX(dp), ALLOCATABLE :: values(:, :, :)
    END TYPE linear_moment_type
@@ -139,6 +144,7 @@ MODULE qs_upf_inverse_hfx
    ! Reuse exact fields and Q integrals across AO pairs and images within one payload budget.
    TYPE lattice_potential_cache_type
       TYPE(lattice_potential_entry_type), ALLOCATABLE :: entries(:)
+      TYPE(lattice_projection_entry_type), ALLOCATABLE :: projections(:)
       TYPE(lattice_moment_cache_type) :: moments
       TYPE(radial_difference_fields_type), ALLOCATABLE :: radial_fields(:)
       INTEGER, POINTER :: auxiliary_images(:, :) => NULL()
@@ -148,6 +154,7 @@ MODULE qs_upf_inverse_hfx
       INTEGER :: remaining_words = max_cached_potential_words/8
       INTEGER :: potential_words = max_cached_potential_words - max_cached_potential_words/8
       INTEGER :: entry_count = 0
+      INTEGER :: projection_count = 0
    END TYPE lattice_potential_cache_type
 
 CONTAINS
@@ -843,6 +850,7 @@ CONTAINS
 !>        The analytic DIRECT or INVERSE_1C projection response is included. Fitting-metric and
 !>        ordinary Gaussian derivatives remain native. Outputs are summed once and replicated
 !>        on the supplied tensor communicator, which may be a native RI subgroup.
+!>        Fixed-geometry Q integrals and auxiliary fields share one bounded cache across directions.
 !> \param frame Original atom-local reconstruction and physical geometry.
 !> \param kinds ...
 !> \param augmentation ...
@@ -875,6 +883,7 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: active(:)
       REAL(dp)                                           :: cell_response(3, 3)
       REAL(dp), ALLOCATABLE                              :: atom_response(:, :)
+      TYPE(lattice_potential_cache_type), TARGET         :: cache
 
       CPASSERT(frame%atom_local)
       CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(frame%positions)))
@@ -889,7 +898,7 @@ CONTAINS
             atom_response(axis, atom) = 1.0_dp
             CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                             ao_images, center_images, covectors, active, atom_response, cell_response, &
-                                            atom_gradient(axis, atom), metric, native_cell_shifts)
+                                            atom_gradient(axis, atom), metric, native_cell_shifts, cache)
          END DO
       END DO
       IF (PRESENT(strain_gradient)) THEN
@@ -901,7 +910,7 @@ CONTAINS
                atom_response(axis, :) = frame%positions(column, :)
                CALL lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                                ao_images, center_images, covectors, active, atom_response, cell_response, &
-                                               strain_gradient(axis, column), metric, native_cell_shifts)
+                                               strain_gradient(axis, column), metric, native_cell_shifts, cache)
             END DO
          END DO
       END IF
@@ -946,7 +955,9 @@ CONTAINS
    END SUBROUTINE active_lattice_covectors
 
 ! **************************************************************************************************
-!> \brief Pair one complete analytic lattice response with the native physical integral covectors.
+!> \brief Pair complete analytic lattice responses while sharing rigid moments across AO images.
+!>        Keep one scratch tensor and the assembly's bounded fixed-geometry field cache.
+!>        Contract each group on its native owners and reduce the complete scalar once.
 !> \param frame ...
 !> \param kinds ...
 !> \param augmentation ...
@@ -961,10 +972,11 @@ CONTAINS
 !> \param derivative ...
 !> \param metric ...
 !> \param native_cell_shifts Native atom-folding vectors for the RI image indices.
+!> \param cache Fixed-geometry Q integrals and auxiliary fields shared across derivative directions.
 ! **************************************************************************************************
    SUBROUTINE lattice_gradient_direction(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
                                          ao_images, center_images, covectors, active, atom_response, cell_response, derivative, &
-                                         metric, native_cell_shifts)
+                                         metric, native_cell_shifts, cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -977,28 +989,72 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: derivative
       TYPE(coulomb_operator_type), INTENT(IN), OPTIONAL  :: metric
       INTEGER, INTENT(IN), OPTIONAL                      :: native_cell_shifts(:, :)
+      TYPE(lattice_potential_cache_type), &
+         INTENT(INOUT), TARGET                           :: cache
 
-      INTEGER                                            :: image
+      COMPLEX(dp), ALLOCATABLE                           :: factor_response(:), factors(:)
+      INTEGER                                            :: atom, first, image, last, natom, nsite, &
+                                                            physical_image(3), ri_image, site
+      INTEGER, ALLOCATABLE                               :: groups(:, :), shifts(:, :)
+      INTEGER, ALLOCATABLE, TARGET                       :: site_images(:, :)
+      LOGICAL, ALLOCATABLE                               :: masks(:, :), pair_mask(:, :)
       REAL(dp)                                           :: contribution
+      REAL(dp), ALLOCATABLE                              :: position_response(:, :), positions(:, :)
       TYPE(dbt_type)                                     :: integrals(1), responses(1)
+      TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
 
+      CPASSERT(frame%atom_local)
+      natom = SIZE(frame%positions, 2)
+      CPASSERT(SIZE(auxiliary_bases) == natom)
+      ALLOCATE (shifts(3, natom), SOURCE=0)
+      IF (PRESENT(native_cell_shifts)) shifts = native_cell_shifts
+      CALL native_shift_groups(frame, shifts, groups, masks)
+      nsite = natom*SIZE(auxiliary_images, 2)
+      ALLOCATE (bases(nsite), positions(3, nsite), position_response(3, nsite), factors(nsite), &
+                factor_response(nsite), site_images(3, nsite), pair_mask(SIZE(masks, 1), 2))
+      factors = CMPLX(1.0_dp, 0.0_dp, dp)
+      factor_response = CMPLX(0.0_dp, 0.0_dp, dp)
       CALL dbt_create(covectors(1), integrals(1))
       CALL dbt_create(covectors(1), responses(1))
       derivative = 0.0_dp
       CPASSERT(SIZE(active) == SIZE(covectors))
-      DO image = 1, SIZE(covectors)
-         IF (active(image) == 0) CYCLE
-         CALL matching_tensor(covectors(1), covectors(image))
-         CALL dbt_clear(integrals(1))
-         CALL dbt_clear(responses(1))
-         CALL qs_upf_inverse_hfx_lattice_tensor(frame, kinds, augmentation, auxiliary_bases, auxiliary_images, &
-                                                ao_images(:, image:image), center_images, integrals, responses, &
-                                                atom_response, cell_response, metric, native_cell_shifts=native_cell_shifts)
-         CALL qs_upf_inverse_hfx_contract(covectors(image), responses(1), contribution)
-         derivative = derivative + contribution
+      ! Cache keys retain relative center/site images. Only physical motion factors change
+      ! between directions; the original Q and Cartesian field gradients remain fixed.
+      cache%natom = natom
+      cache%site_images => site_images
+      DO first = 1, SIZE(groups, 2)
+         pair_mask(:, 1) = masks(:, first)
+         DO ri_image = 1, SIZE(auxiliary_images, 2)
+         DO atom = 1, natom
+            site = (ri_image - 1)*natom + atom
+            bases(site)%gto_basis_set => auxiliary_bases(atom)%gto_basis_set
+            site_images(:, site) = auxiliary_images(:, ri_image) + groups(:, first) - shifts(:, atom)
+            positions(:, site) = frame%positions(:, atom) + MATMUL(frame%cell, REAL(site_images(:, site), dp))
+            position_response(:, site) = atom_response(:, atom) + MATMUL(cell_response, REAL(site_images(:, site), dp))
+         END DO
+         END DO
+         DO last = 1, SIZE(groups, 2)
+            pair_mask(:, 2) = masks(:, last)
+            DO image = 1, SIZE(covectors)
+               IF (active(image) == 0) CYCLE
+               CALL matching_tensor(covectors(1), covectors(image))
+               physical_image = ao_images(:, image) + groups(:, first) - groups(:, last)
+               CALL dbt_clear(integrals(1))
+               CALL dbt_clear(responses(1))
+               CALL qs_upf_inverse_hfx_tensor(frame, frame, kinds, augmentation, bases, positions, factors, &
+                                             center_images, integrals(1), response_real=responses(1), atom_response=atom_response, &
+                                              cell_response=cell_response, auxiliary_positions_response=position_response, &
+                                              auxiliary_factors_response=factor_response, ao_image=physical_image, &
+                                              metric=metric, shared_potentials=cache, ao_mask=pair_mask)
+               CALL contract_real_tensors(covectors(image), responses(1), contribution)
+               derivative = derivative + contribution
+            END DO
+         END DO
       END DO
+      CALL covectors(1)%pgrid%mp_comm_2d%sum(derivative)
       CALL dbt_destroy(integrals(1))
       CALL dbt_destroy(responses(1))
+      NULLIFY (cache%site_images)
    END SUBROUTINE lattice_gradient_direction
 
 ! **************************************************************************************************
@@ -2001,6 +2057,53 @@ CONTAINS
          slot = MODULO(slot, SIZE(cache%entries)) + 1
       END DO
    END SUBROUTINE lattice_potential_entry
+
+! **************************************************************************************************
+!> \brief Reuse fixed-geometry projector overlaps and their three Cartesian derivatives.
+!>        The center, Gaussian basis and actual relative image fix the complete entry.
+!> \param cache Assembly-local fields with the existing shared payload budget.
+!> \param key Reconstruction center, Gaussian basis and three relative image components.
+!> \param nprojector Number of atomic projectors.
+!> \param ngaussian Complete Gaussian basis size at the selected atom.
+!> \param entry Cached values or a null pointer when the table or payload budget is exhausted.
+! **************************************************************************************************
+   SUBROUTINE lattice_projection_entry(cache, key, nprojector, ngaussian, ENTRY)
+      TYPE(lattice_potential_cache_type), &
+         INTENT(INOUT), TARGET                           :: cache
+      INTEGER, INTENT(IN)                                :: key(5), nprojector, ngaussian
+      TYPE(lattice_projection_entry_type), INTENT(OUT), &
+         POINTER                                         :: entry
+
+      INTEGER                                            :: attempt, i, slot
+      INTEGER(int_8)                                     :: hash
+      REAL(dp)                                           :: words
+
+      NULLIFY (ENTRY)
+      IF (.NOT. ALLOCATED(cache%projections)) ALLOCATE (cache%projections(max_cached_lattice_potentials))
+      hash = 0_int_8
+      DO i = 1, SIZE(key)
+         hash = MODULO(31_int_8*hash + INT(key(i), int_8), INT(SIZE(cache%projections), int_8))
+      END DO
+      slot = INT(hash) + 1
+      DO attempt = 1, SIZE(cache%projections)
+         IF (ALL(cache%projections(slot)%key == key)) THEN
+            ENTRY => cache%projections(slot)
+            RETURN
+         END IF
+         IF (ALL(cache%projections(slot)%key == 0)) THEN
+            IF (cache%projection_count >= SIZE(cache%projections)/2) RETURN
+            ! Four complex matrices share the existing field payload, in DP words.
+            words = 8.0_dp*REAL(nprojector, dp)*REAL(ngaussian, dp)
+            IF (words > REAL(cache%potential_words, dp)) RETURN
+            cache%potential_words = cache%potential_words - INT(words)
+            cache%projection_count = cache%projection_count + 1
+            cache%projections(slot)%key = key
+            ENTRY => cache%projections(slot)
+            RETURN
+         END IF
+         slot = MODULO(slot, SIZE(cache%projections)) + 1
+      END DO
+   END SUBROUTINE lattice_projection_entry
 
 ! **************************************************************************************************
 !> \brief Find a fixed-geometry linear moment using relative Gaussian and auxiliary images.
@@ -3129,10 +3232,10 @@ CONTAINS
             ALLOCATE (overlaps%dleft(np, nl), overlaps%dright(np, nr))
             CALL lattice_coefficients(frame, center, left_range, -center_image, &
                                       overlaps%left, overlaps%dleft, atom_response, cell_response, &
-                                      coefficient_images, coupled_coefficients, coupled_response)
+                                      coefficient_images, coupled_coefficients, coupled_response, difference_cache)
             CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, &
                                       overlaps%right, overlaps%dright, atom_response, cell_response, &
-                                      coefficient_images, coupled_coefficients, coupled_response)
+                                      coefficient_images, coupled_coefficients, coupled_response, difference_cache)
          ELSE
             CALL lattice_coefficients(frame, center, left_range, -center_image, overlaps%left, &
                                       coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
@@ -3854,9 +3957,10 @@ CONTAINS
 !> \param coefficient_images ...
 !> \param coupled_coefficients ...
 !> \param coupled_response ...
+!> \param projection_cache Optional fixed-geometry projector values and Cartesian derivatives.
 ! **************************************************************************************************
    SUBROUTINE lattice_coefficients(frame, center, ao_range, image, coefficients, response, atom_response, cell_response, &
-                                   coefficient_images, coupled_coefficients, coupled_response)
+                                   coefficient_images, coupled_coefficients, coupled_response, projection_cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, ao_range(2), image(3)
       COMPLEX(dp), INTENT(OUT)                           :: coefficients(:, :)
@@ -3865,10 +3969,14 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
                                                             coupled_response(:, :, :)
+      TYPE(lattice_potential_cache_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: projection_cache
 
       COMPLEX(dp), ALLOCATABLE                           :: dfull(:, :), full(:, :)
-      INTEGER                                            :: atom, b, first, hi, images(3, 1), kind, &
-                                                            last, lo, nproj, q
+      INTEGER                                            :: atom, axis, b, first, hi, images(3, 1), &
+                                                            kind, last, lo, nproj, q
+      REAL(dp)                                           :: direction(3)
+      TYPE(lattice_projection_entry_type), POINTER       :: entry
 
       IF (.NOT. frame%atom_local) THEN
          CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coupled_coefficients))
@@ -3903,11 +4011,38 @@ CONTAINS
          IF (hi < lo) CYCLE
          ALLOCATE (full(nproj, last - first + 1))
          IF (PRESENT(response)) THEN
+            CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
             ALLOCATE (dfull(nproj, last - first + 1))
-            CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
-                                               frame%positions(:, atom), frame%positions(:, b), frame%cell, images, &
-                                               [0.0_dp, 0.0_dp, 0.0_dp], full, dfull, &
-                                               atom_response(:, atom), atom_response(:, b), cell_response)
+            NULLIFY (ENTRY)
+            IF (PRESENT(projection_cache)) THEN
+               CALL lattice_projection_entry(projection_cache, [center, b, image], nproj, last - first + 1, ENTRY)
+            END IF
+            IF (ASSOCIATED(ENTRY)) THEN
+               IF (.NOT. ALLOCATED(entry%values)) THEN
+                  ALLOCATE (entry%values(nproj, last - first + 1, 4))
+                  DO axis = 1, 3
+                     direction = 0.0_dp
+                     direction(axis) = 1.0_dp
+                     CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
+                                                        frame%positions(:, atom), frame%positions(:, b), frame%cell, images, &
+                                                        [0.0_dp, 0.0_dp, 0.0_dp], full, dfull, ao_response=direction)
+                     entry%values(:, :, axis + 1) = dfull
+                  END DO
+                  entry%values(:, :, 1) = full
+               END IF
+               CPASSERT(ALL(SHAPE(entry%values) == [nproj, last - first + 1, 4]))
+               full = entry%values(:, :, 1)
+               direction = atom_response(:, b) - atom_response(:, atom) + MATMUL(cell_response, REAL(image, dp))
+               dfull = CMPLX(0.0_dp, 0.0_dp, dp)
+               DO axis = 1, 3
+                  dfull = dfull + direction(axis)*entry%values(:, :, axis + 1)
+               END DO
+            ELSE
+               CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
+                                                  frame%positions(:, atom), frame%positions(:, b), frame%cell, images, &
+                                                  [0.0_dp, 0.0_dp, 0.0_dp], full, dfull, &
+                                                  atom_response(:, atom), atom_response(:, b), cell_response)
+            END IF
             response(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = dfull(:, lo - first + 1:hi - first + 1)
             DEALLOCATE (dfull)
          ELSE
