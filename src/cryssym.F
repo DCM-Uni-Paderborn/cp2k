@@ -340,7 +340,7 @@ CONTAINS
       csym%kplink = 0
       kpop = 0
 
-      CALL full_grid_gen(nk, xkp, wkp, shift, gamma_centered=gamma_mesh)
+      CALL full_grid_gen(nk, xkp, wkp, csym%wvk0, gamma_centered=gamma_mesh)
       IF (fullmesh) THEN
          ! FULL_GRID retains every point, including time-reversed partners.
          DO i = 1, nkpts

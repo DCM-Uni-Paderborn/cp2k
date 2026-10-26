@@ -267,7 +267,11 @@ CONTAINS
       TYPE(csym_type)                                    :: csym
 
       CALL crys_sym_gen(csym, x, types, h, delta=delta, use_spglib=.FALSE.)
-      CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp], full_grid=full_grid)
+      IF (PRESENT(full_grid)) THEN
+         CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., full_grid=full_grid)
+      ELSE
+         CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp])
+      END IF
       IF (csym%nkpoint /= expected) ERROR STOP "Incorrect irreducible mesh size"
       IF (csym%inversion_only .NEQV. fallback) ERROR STOP "Incorrect orbit-guard decision"
       IF (ABS(SUM(csym%wkpoint) - 27.0_dp) > 1.0e-12_dp) ERROR STOP "Incorrect weight sum"
