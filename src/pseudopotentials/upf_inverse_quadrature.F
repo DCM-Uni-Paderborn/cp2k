@@ -21,7 +21,7 @@ MODULE upf_inverse_quadrature
 
    PUBLIC :: upf_inverse_pair, upf_inverse_pair_response
    PUBLIC :: upf_inverse_semilocal_pair, upf_inverse_semilocal_response, upf_inverse_smooth_density
-   PUBLIC :: upf_inverse_projector_density
+   PUBLIC :: upf_inverse_projector_density, upf_inverse_projector_pair
    PUBLIC :: upf_inverse_density_residual, upf_inverse_semilocal_residual, upf_inverse_cross_density
 
 CONTAINS
@@ -33,13 +33,15 @@ CONTAINS
 !> \param coefficients Original projector bras applied to the inverse Gaussian fields.
 !> \param ao_density Hermitian AO density, including the caller's occupation convention.
 !> \param projector_density Hermitian projector density W P W^dagger.
+!> \param comm Optional ownership of projector rows; the result is replicated after reduction.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_projector_density(coefficients, ao_density, projector_density)
+   SUBROUTINE upf_inverse_projector_density(coefficients, ao_density, projector_density, comm)
       COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :), ao_density(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: projector_density(:, :)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
 
       COMPLEX(dp), ALLOCATABLE                           :: density(:, :)
-      INTEGER                                            :: n, nproj
+      INTEGER                                            :: first, n, nproj, stride
 
       n = SIZE(coefficients, 2)
       nproj = SIZE(coefficients, 1)
@@ -48,9 +50,53 @@ CONTAINS
       CALL check_density(ao_density)
       ALLOCATE (density(n, n))
       density(:, :) = 0.5_dp*(ao_density + CONJG(TRANSPOSE(ao_density)))
-      projector_density = MATMUL(MATMUL(coefficients, density), CONJG(TRANSPOSE(coefficients)))
+      first = 1
+      stride = 1
+      IF (PRESENT(comm)) THEN
+         first = comm%mepos + 1
+         stride = comm%num_pe
+      END IF
+      projector_density = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (first <= nproj) THEN
+         projector_density(first:nproj:stride, :) = &
+            MATMUL(MATMUL(coefficients(first:nproj:stride, :), density), CONJG(TRANSPOSE(coefficients)))
+      END IF
+      IF (PRESENT(comm)) CALL comm%sum(projector_density)
       projector_density = 0.5_dp*(projector_density + CONJG(TRANSPOSE(projector_density)))
    END SUBROUTINE upf_inverse_projector_density
+
+! **************************************************************************************************
+!> \brief Contract left^dagger V right without dropping intercenter projector couplings.
+!>        Optional column ownership partitions both matrix products. Empty ranks still reduce.
+!> \param left Projector coefficients for the left Gaussian variables.
+!> \param potential Original projector operator, which may be rectangular or non-Hermitian.
+!> \param right Projector coefficients for the right Gaussian variables.
+!> \param integral Replicated Gaussian operator, without occupation or mesh weights.
+!> \param comm Optional communicator owning disjoint Gaussian columns.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_projector_pair(left, potential, right, integral, comm)
+      COMPLEX(dp), INTENT(IN)                            :: left(:, :), potential(:, :), right(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: integral(:, :)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      INTEGER                                            :: first, nright, stride
+
+      CPASSERT(ALL(SHAPE(potential) == [SIZE(left, 1), SIZE(right, 1)]))
+      CPASSERT(ALL(SHAPE(integral) == [SIZE(left, 2), SIZE(right, 2)]))
+      first = 1
+      stride = 1
+      IF (PRESENT(comm)) THEN
+         first = comm%mepos + 1
+         stride = comm%num_pe
+      END IF
+      nright = SIZE(right, 2)
+      integral = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (first <= nright) THEN
+         integral(:, first:nright:stride) = &
+            MATMUL(CONJG(TRANSPOSE(left)), MATMUL(potential, right(:, first:nright:stride)))
+      END IF
+      IF (PRESENT(comm)) CALL comm%sum(integral)
+   END SUBROUTINE upf_inverse_projector_pair
 
 ! **************************************************************************************************
 !> \brief Integrate left^dagger * weights * right, without discarding intercenter terms.

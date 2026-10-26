@@ -108,14 +108,10 @@ PROGRAM upf_inverse_unittest
    USE upf_inverse_precision,           ONLY: upf_inverse_orbital_expectation,&
                                               upf_inverse_orbital_projector_density,&
                                               upf_inverse_projector_operator
-   USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
-                                              upf_inverse_density_residual,&
-                                              upf_inverse_pair,&
-                                              upf_inverse_projector_density,&
-                                              upf_inverse_semilocal_pair,&
-                                              upf_inverse_semilocal_residual,&
-                                              upf_inverse_semilocal_response,&
-                                              upf_inverse_smooth_density
+   USE upf_inverse_quadrature,          ONLY: &
+        upf_inverse_cross_density, upf_inverse_density_residual, upf_inverse_pair, &
+        upf_inverse_projector_density, upf_inverse_projector_pair, upf_inverse_semilocal_pair, &
+        upf_inverse_semilocal_residual, upf_inverse_semilocal_response, upf_inverse_smooth_density
    USE upf_projector_integrals,         ONLY: upf_projector_init,&
                                               upf_projector_overlap,&
                                               upf_projector_type
@@ -758,6 +754,7 @@ CONTAINS
    SUBROUTINE normal_ridge_gradient(coordinate, energy, gradient, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+
       CLASS(*), INTENT(INOUT)                            :: context
 
       REAL(dp)                                           :: normal, slope, tangent(3)
@@ -787,6 +784,7 @@ CONTAINS
    SUBROUTINE normal_ridge_segment(first, last, curve, context, interrupted)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
 
@@ -2897,9 +2895,10 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE check_projector_density()
       COMPLEX(dp) :: c(2, 2), complex_operator(2, 2), density(2, 2), expected_operator(2, 2), &
-         fields(2, 2, 2), fields_direction(2, 2, 2), orbital_direction(2, 1, 2), &
-         orbitals(2, 1, 2), projected(3, 3), projector_rows(2, 1), q(3, 3), reference(3, 3), &
-         stable_operator(1, 1), w(3, 2), wc(3, 2)
+         fields(2, 2, 2), fields_direction(2, 2, 2), nonsymmetric(3, 3), &
+         orbital_direction(2, 1, 2), orbitals(2, 1, 2), pair(2, 1), parallel_density(3, 3), &
+         projected(3, 3), projector_rows(2, 1), q(3, 3), reference(3, 3), stable_operator(1, 1), &
+         w(3, 2), wc(3, 2)
       INTEGER                                            :: i, j
       REAL(dp)                                           :: displacement(2), expected, kernel(2, 2), &
                                                             occupation_direction(1, 2), &
@@ -2921,10 +2920,22 @@ CONTAINS
       reference = MATMUL(wc, CONJG(TRANSPOSE(wc)))
       CALL check(MAXVAL(ABS(projected - reference))/MAXVAL(ABS(reference)), 'projected occupied orbitals')
       CALL check(MAXVAL(ABS(projected - CONJG(TRANSPOSE(projected)))), 'Hermitian projector density', 0.0_dp)
+      CALL upf_inverse_projector_density(w, density, parallel_density, comm)
+      CALL check(MAXVAL(ABS(parallel_density - projected))/MAXVAL(ABS(reference)), &
+                 'Distributed projector rows including empty ranks')
       q = reference/MAXVAL(ABS(reference))
       CALL check(ABS(SUM(projected*CONJG(q)) - &
                      SUM(density*CONJG(MATMUL(CONJG(TRANSPOSE(w)), MATMUL(q, w)))))/MAXVAL(ABS(reference)), &
                  'projector density operator adjoint')
+      CALL upf_inverse_projector_pair(w, q, w, complex_operator, comm)
+      expected_operator = MATMUL(CONJG(TRANSPOSE(w)), MATMUL(q, w))
+      CALL check(MAXVAL(ABS(complex_operator - expected_operator))/MAXVAL(ABS(expected_operator)), &
+                 'Distributed Gaussian columns retain the projector adjoint')
+      nonsymmetric = q
+      nonsymmetric(1, 2) = nonsymmetric(1, 2) + CMPLX(0.3_dp, -0.2_dp, dp)
+      CALL upf_inverse_projector_pair(w, nonsymmetric, w(:, 1:1), pair, comm)
+      CALL check(MAXVAL(ABS(pair - MATMUL(CONJG(TRANSPOSE(w)), MATMUL(nonsymmetric, w(:, 1:1)))))/ &
+                 MAXVAL(ABS(expected_operator)), 'Rectangular nonsymmetric distributed projector pair')
       complex_kernel%hi = REAL(q, dp)
       complex_kernel%lo = 0.0_dp
       CALL upf_inverse_projector_operator(w, complex_kernel, complex_operator)

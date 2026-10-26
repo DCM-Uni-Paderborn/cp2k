@@ -7,8 +7,8 @@
 
 ! **************************************************************************************************
 !> \brief Inverse USPP fields on native PW rows and real/imaginary Quickstep AO matrices.
-!>        This development adapter replicates AO columns and dense AO contractions.
-!>        It does not change the reference SCF representation or supply missing augmentation.
+!>        Point rows and projector contractions use the native PW communicator.
+!>        AO columns and the returned dense operators remain replicated.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_grid
    USE cp_dbcsr_api,                    ONLY: &
@@ -43,14 +43,10 @@ MODULE qs_upf_inverse_grid
                                               qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
-   USE upf_inverse_quadrature,          ONLY: upf_inverse_density_residual,&
-                                              upf_inverse_pair,&
-                                              upf_inverse_pair_response,&
-                                              upf_inverse_projector_density,&
-                                              upf_inverse_semilocal_pair,&
-                                              upf_inverse_semilocal_residual,&
-                                              upf_inverse_semilocal_response,&
-                                              upf_inverse_smooth_density
+   USE upf_inverse_quadrature,          ONLY: &
+        upf_inverse_density_residual, upf_inverse_pair, upf_inverse_pair_response, &
+        upf_inverse_projector_density, upf_inverse_projector_pair, upf_inverse_semilocal_pair, &
+        upf_inverse_semilocal_residual, upf_inverse_semilocal_response, upf_inverse_smooth_density
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -232,7 +228,7 @@ CONTAINS
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
          nproj = SIZE(frame%ao%coefficients, 1)
          ALLOCATE (projected(nproj, nproj))
-         CALL upf_inverse_projector_density(frame%ao%coefficients, p, projected)
+         CALL upf_inverse_projector_density(frame%ao%coefficients, p, projected, frame%ao%point_comm)
          IF (PRESENT(augmentation) .AND. .NOT. use_fourier) THEN
             CALL qs_upf_inverse_augmentation_collocate(frame%ao, augmentation, projected, rho, dn)
          END IF
@@ -375,12 +371,16 @@ CONTAINS
          ELSE
             CALL qs_upf_inverse_augmentation_integrate(frame%ao, augmentation, dn, dg, projected)
          END IF
-         h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, frame%ao%coefficients))
+         CALL upf_inverse_projector_pair(frame%ao%coefficients, projected, frame%ao%coefficients, &
+                                         residual, frame%ao%point_comm)
+         h(:, :) = h + residual
       END IF
       IF (PRESENT(projector_operator)) THEN
          nproj = SIZE(frame%ao%coefficients, 1)
          CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
-         h(:, :) = h + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_operator, frame%ao%coefficients))
+         CALL upf_inverse_projector_pair(frame%ao%coefficients, projector_operator, frame%ao%coefficients, &
+                                         residual, frame%ao%point_comm)
+         h(:, :) = h + residual
       END IF
    END SUBROUTINE qs_upf_inverse_grid_integrate_dense
 
@@ -539,10 +539,10 @@ CONTAINS
       nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       block = qs_upf_inverse_block_size(frame%ao)
-      ALLOCATE (metric(nao, nao))
+      ALLOCATE (metric(nao, nao), partial(nao, nao))
       metric = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (use_orbitals) THEN
-         ALLOCATE (partial(nao, nao), soft(block, nao), gradient(block, nao, 3))
+         ALLOCATE (soft(block, nao), gradient(block, nao, 3))
          DO lo = 1, SIZE(frame%ao%weights), block
             hi = MIN(SIZE(frame%ao%weights), lo + block - 1)
             m = hi - lo + 1
@@ -552,8 +552,9 @@ CONTAINS
          END DO
       END IF
       CALL frame%ao%point_comm%sum(metric)
-      metric(:, :) = metric + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
-                                     MATMUL(projector_metric, frame%ao%coefficients))
+      CALL upf_inverse_projector_pair(frame%ao%coefficients, projector_metric, frame%ao%coefficients, &
+                                      partial, frame%ao%point_comm)
+      metric(:, :) = metric + partial
    END SUBROUTINE qs_upf_inverse_grid_metric_dense
 
 ! **************************************************************************************************
@@ -601,15 +602,14 @@ CONTAINS
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET :: known_coefficients_response(:, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL :: saved_coefficients_response(:, :)
 
-      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: known_coefficients_response(:, :)
-      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: saved_coefficients_response(:, :)
-
-      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_dw(:, :)
-      COMPLEX(dp), POINTER                              :: dw(:, :)
-      COMPLEX(dp), ALLOCATABLE :: gradient(:, :, :), &
-                                  gradient_response(:, :, :), kinetic_operator(:, :), kinetic_response(:, :), &
-                                  partial(:, :), projected(:, :), projected_response(:, :), soft(:, :), soft_response(:, :)
+      COMPLEX(dp), ALLOCATABLE :: gradient(:, :, :), gradient_response(:, :, :), &
+         kinetic_operator(:, :), kinetic_response(:, :), partial(:, :), projected(:, :), &
+         projected_response(:, :), soft(:, :), soft_response(:, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
+      COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
                                                             nproj
       LOGICAL                                            :: use_orbitals
