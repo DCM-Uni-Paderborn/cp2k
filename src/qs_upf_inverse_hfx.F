@@ -3313,7 +3313,12 @@ CONTAINS
             END IF
             CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
                                                radius, frame%cell, gradients=derivatives)
-            IF (.NOT. derivatives .AND. .NOT. frame%atom_local .AND. PRESENT(moment_cache)) THEN
+            ! A value-only zero auxiliary field contributes no linear moment. The original
+            ! Q or PAW transition term below is integrated separately and remains required.
+            IF (.NOT. derivatives .AND. ALLOCATED(qi%potential_fields)) THEN
+               factored = qi%potential_fields%zero_values
+            END IF
+            IF (.NOT. factored .AND. .NOT. derivatives .AND. .NOT. frame%atom_local .AND. PRESENT(moment_cache)) THEN
                factored = .TRUE.
                IF (left_compute) THEN
                   CALL lattice_factored_moment(frame, center, center_image, left_range, [0, 0, 0], fields, &
