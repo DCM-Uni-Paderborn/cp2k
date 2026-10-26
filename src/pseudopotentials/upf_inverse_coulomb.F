@@ -162,15 +162,19 @@ CONTAINS
 !> \param map Immutable geometry and periodic image convention.
 !> \param center_gradient Derivative with respect to each Cartesian center position.
 !> \param cell_gradient Derivative with respect to lattice vectors at fixed center positions.
+!> \param comm Optional process group sharing the same replicated centers and map.
+!>        Distributes Cartesian pair/image derivatives and reduces only the resulting covectors.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient)
+   SUBROUTINE upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient, comm)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
       REAL(dp), INTENT(OUT)                              :: center_gradient(:, :), &
                                                             cell_gradient(3, 3)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
 
       INTEGER                                            :: a, axis, b, channel, i, image(3), info, &
-                                                            j, k, limits(2, 3), nr
+                                                            j, k, limits(2, 3), nr, nrank, owner, &
+                                                            rank
       REAL(dp)                                           :: delta(3), displacement(3), &
                                                             inverse_cell(3, 3), radius, value
       REAL(dp), ALLOCATABLE                              :: dkernel(:, :, :, :), kernel(:, :, :, :), &
@@ -181,6 +185,13 @@ CONTAINS
       CPASSERT(ALL(SHAPE(center_gradient) == [3, SIZE(centers)]))
       center_gradient = 0.0_dp
       cell_gradient = 0.0_dp
+      rank = 0
+      nrank = 1
+      IF (PRESENT(comm)) THEN
+         rank = comm%mepos
+         nrank = comm%num_pe
+      END IF
+      owner = -1
       inverse_cell = map%cell
       CALL invmat(inverse_cell, info)
       CPASSERT(info == 0)
@@ -200,9 +211,6 @@ CONTAINS
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
             CALL residual_image_limits(inverse_cell, centers(a)%position - centers(b)%position, &
                                        radius, map%periodicity, limits)
-            ALLOCATE (kernel(SIZE(centers(a)%radii), SIZE(centers(a)%l), &
-                             SIZE(centers(b)%radii), SIZE(centers(b)%l)))
-            ALLOCATE (dkernel, MOLD=kernel)
             DO k = limits(1, 3), limits(2, 3)
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
@@ -211,6 +219,13 @@ CONTAINS
                      displacement = centers(a)%position - centers(b)%position - MATMUL(map%cell, REAL(image, dp))
                      IF (SUM(displacement**2) >= radius**2) CYCLE
                      DO axis = 1, 3
+                        owner = MOD(owner + 1, nrank)
+                        IF (owner /= rank) CYCLE
+                        IF (.NOT. ALLOCATED(kernel)) THEN
+                           ALLOCATE (kernel(SIZE(centers(a)%radii), SIZE(centers(a)%l), &
+                                            SIZE(centers(b)%radii), SIZE(centers(b)%l)))
+                           ALLOCATE (dkernel, MOLD=kernel)
+                        END IF
                         delta = 0.0_dp
                         delta(axis) = 1.0_dp
                         CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
@@ -233,9 +248,13 @@ CONTAINS
                   END DO
                END DO
             END DO
-            DEALLOCATE (kernel, dkernel)
+            IF (ALLOCATED(kernel)) DEALLOCATE (kernel, dkernel)
          END DO
       END DO
+      IF (PRESENT(comm)) THEN
+         CALL comm%sum(center_gradient)
+         CALL comm%sum(cell_gradient)
+      END IF
    END SUBROUTINE upf_inverse_coulomb_pair_geometry
 
 ! **************************************************************************************************

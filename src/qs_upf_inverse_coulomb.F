@@ -971,6 +971,7 @@ CONTAINS
 !> \brief Capture residual-kernel covectors for all motions of the same accepted density.
 !>        Native center responses keep their radial shells fixed. Other density and source
 !>        responses continue to use the complete original directional derivative.
+!>        Replicated center fields share pair/image derivatives across the native process group.
 !> \param qs_env Native source owners.
 !> \param state Original defining inverse frames.
 !> \param map Complete Coulomb source, refreshed from matrix before contraction.
@@ -989,13 +990,16 @@ CONTAINS
       INTEGER                                            :: a
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: center_gradient(:, :)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CPASSERT(map%ready)
       CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(map%positions)))
       ALLOCATE (operators, MOLD=map%metric)
       CALL qs_upf_inverse_coulomb_evaluate(qs_env, state, map, matrix, energy, operators)
+      CALL get_qs_env(qs_env, para_env=para_env)
       ALLOCATE (center_gradient(3, SIZE(map%centers)))
-      CALL upf_inverse_coulomb_pair_geometry(map%centers, map%maps, center_gradient, cell_gradient)
+      CALL upf_inverse_coulomb_pair_geometry(map%centers, map%maps, center_gradient, cell_gradient, &
+                                             comm=para_env%mp_comm_type)
       atom_gradient = 0.0_dp
       DO a = 1, SIZE(map%centers)
          atom_gradient(:, map%center_atoms(a)) = atom_gradient(:, map%center_atoms(a)) + center_gradient(:, a)

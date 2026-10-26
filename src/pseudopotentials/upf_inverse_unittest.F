@@ -138,7 +138,9 @@ PROGRAM upf_inverse_unittest
    INTEGER :: stop_polls = 0
    INTEGER :: analytical_hessian_calls = 0
    INTEGER :: segment_queries = 0
+   TYPE(mp_comm_type) :: comm
 
+   CALL mp_world_init(comm)
    CALL check_inverse()
    CALL check_physical_stationarity()
    CALL check_constrained_curvature()
@@ -158,6 +160,7 @@ PROGRAM upf_inverse_unittest
    CALL check_nc_fields()
    CALL check_kinetic_fields()
    CALL check_gaussian_fields()
+   CALL mp_world_finalize()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
 ! **************************************************************************************************
@@ -2249,8 +2252,8 @@ CONTAINS
                                                             periodicity(3), side
       REAL(dp) :: cached_energy, cached_response, cell(3, 3), cell_gradient(3, 3), &
          center_gradient(3, 2), dcell(3, 3), dg(3, 3), displacement(3), distance, dkw(3), dvolume, &
-         energy, exact, g(3, 3), kernel, kw(3), norm, pair_response, qa(2), qb(2), response, &
-         samples(2), shift, trace, volume
+         energy, exact, g(3, 3), kernel, kw(3), norm, pair_response, parallel_cell_gradient(3, 3), &
+         parallel_center_gradient(3, 2), qa(2), qb(2), response, samples(2), shift, trace, volume
       TYPE(upf_inverse_coulomb_center_type)              :: centers(2), changed(2), derivative(2)
       TYPE(upf_inverse_coulomb_map_type), ALLOCATABLE    :: map
       TYPE(upf_inverse_coulomb_potential_type), &
@@ -2338,6 +2341,9 @@ CONTAINS
                                            poisson_weights_response=dkw, periodicity=periodicity)
          CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map, periodicity)
          CALL upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient)
+         CALL upf_inverse_coulomb_pair_geometry(centers, map, parallel_center_gradient, parallel_cell_gradient, comm)
+         CALL check(MAXVAL(ABS(parallel_center_gradient - center_gradient)), "Distributed pair position covector", 3.e-12_dp)
+         CALL check(MAXVAL(ABS(parallel_cell_gradient - cell_gradient)), "Distributed pair cell covector", 3.e-12_dp)
          CALL check(MAXVAL(ABS(SUM(center_gradient, DIM=2))), "Residual-pair translation covector", 3.e-12_dp)
          IF (boundary == 1) CALL check(MAXVAL(ABS(cell_gradient)), "Isolated residual-pair cell covector", 3.e-12_dp)
          CALL upf_inverse_coulomb_density(centers, cell, g, volume, density_g, map)
@@ -3080,7 +3086,6 @@ CONTAINS
       TYPE(gaussian_coulomb_fields_type)                 :: coulomb, identity, long_range, &
                                                             periodic_fields, short_range, truncated
       TYPE(gto_basis_set_type), POINTER                  :: basis
-      TYPE(mp_comm_type)                                 :: comm
 
       NULLIFY (basis)
       CALL init_orbital_pointers(3)
@@ -3308,7 +3313,6 @@ CONTAINS
             CALL check(MAXVAL(ABS((cp - cm)/(2*step) - sg(axis, :))), 'Gaussian erfc gradient', 2.e-8_dp)
          END DO
       END DO
-      CALL mp_world_init(comm)
       CALL check_atomic_projectors(comm)
       unit = -1
       IF (comm%mepos == 0) CALL open_file(file_name='t_c_g.dat', unit_number=unit)
@@ -3394,7 +3398,6 @@ CONTAINS
       CALL check(MAXVAL(ABS(lv)) + MAXVAL(ABS(lg)), 'Zero-screening erf field')
       CALL check(MAXVAL(ABS(sv - cv)) + MAXVAL(ABS(sg - cg)), 'Zero-screening erfc field')
       CALL free_C0()
-      CALL mp_world_finalize()
    END SUBROUTINE check_gaussian_fields
 
 ! **************************************************************************************************
