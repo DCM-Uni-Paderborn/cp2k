@@ -70,6 +70,7 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_gth_local,        ONLY: qs_upf_inverse_gth_local_paw
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
+                                              qs_upf_inverse_paw_density_adjoint,&
                                               qs_upf_inverse_paw_density_fourier,&
                                               qs_upf_inverse_paw_local_operator,&
                                               qs_upf_inverse_paw_operator
@@ -1499,13 +1500,14 @@ CONTAINS
 !> \brief PAW charge correction, frozen-core counting and phases on a finite spherical shell rule.
 ! **************************************************************************************************
    SUBROUTINE check_paw_density_fourier()
-      COMPLEX(dp)                                        :: density(3, 2), expected, phase, &
-                                                            projected(1, 1, 2), restricted(3, 1)
-      INTEGER                                            :: ig, spin
-      REAL(dp)                                           :: core_energy, g(3, 3), &
-                                                            local_operator(1, 1), norm_g, &
-                                                            position(3), potential(6, 4), radial(4)
-      TYPE(paw_kind_type)                                :: kind
+      COMPLEX(dp) :: density(3, 2), dpaw(1, 1, 2), expected, field(3), local_field(3), &
+         matrix_projected(2, 2, 2), phase, projected(1, 1, 2), response(3, 2), restricted(3, 1), &
+         samples(3, 2, 2)
+      INTEGER                                            :: ig, pair, processes, rank, side, spin
+      REAL(dp) :: core_energy, dg(3, 3), dposition(3), dvolume, g(3, 3), local_operator(1, 1), &
+         matrix_operator(2, 2), norm_g, parallel_core, parallel_operator(1, 1), position(3), &
+         potential(6, 4), radial(4), shift, trace
+      TYPE(paw_kind_type)                                :: kind, matrix_kind
 
       kind%active = .TRUE.
       kind%onecenter%nproj = 1
@@ -1555,6 +1557,34 @@ CONTAINS
                CALL check(ABS(density(ig, spin) - expected), 'PAW Fourier density and core', 3.e-13_dp)
             END DO
          END DO
+         field = [CMPLX(0.19_dp, 0.0_dp, dp), CMPLX(0.07_dp, 0.11_dp, dp), CMPLX(0.07_dp, -0.11_dp, dp)]
+         CALL qs_upf_inverse_paw_density_adjoint(kind, g, position, 11.0_dp, field, local_operator, core_energy)
+         trace = SUM(REAL(projected, dp))*local_operator(1, 1) + core_energy
+         CALL check(ABS(trace - REAL(SUM(CONJG(SUM(density, DIM=2))*field), dp)), &
+                    'PAW Fourier potential transpose and one frozen core', 3.e-13_dp)
+         CALL comm%get_rank(rank)
+         CALL comm%get_size(processes)
+         local_field = field
+         DO ig = 1, SIZE(field)
+            IF (MOD(ig - 1, processes) /= rank) local_field(ig) = CMPLX(0.0_dp, 0.0_dp, dp)
+         END DO
+         CALL qs_upf_inverse_paw_density_adjoint(kind, g, position, 11.0_dp, local_field, &
+                                                 parallel_operator, parallel_core, comm)
+         CALL check(MAXVAL(ABS(parallel_operator - local_operator)) + ABS(parallel_core - core_energy), &
+                    'PAW distributed Fourier potential transpose', 3.e-13_dp)
+         dpaw = 0.03_dp*projected
+         dg = -0.017_dp*g
+         dvolume = 0.051_dp*11.0_dp
+         dposition = [0.01_dp, -0.02_dp, 0.03_dp]
+         CALL qs_upf_inverse_paw_density_fourier(kind, projected, g, position, 11.0_dp, density, response, &
+                                                 dpaw, dg, dposition, dvolume)
+         DO side = 1, 2
+            shift = REAL(2*side - 3, dp)*step
+            CALL qs_upf_inverse_paw_density_fourier(kind, projected + shift*dpaw, g + shift*dg, &
+                                                    position + shift*dposition, 11.0_dp + shift*dvolume, samples(:, :, side))
+         END DO
+         CALL check(MAXVAL(ABS((samples(:, :, 2) - samples(:, :, 1))/(2.0_dp*step) - response)), &
+                    'PAW projected-density and geometry response including frozen core', 3.e-10_dp)
          projected(:, :, 1) = SUM(projected, DIM=3)
          CALL qs_upf_inverse_paw_density_fourier(kind, projected(:, :, :1), g, position, 11.0_dp, restricted)
          CALL check(MAXVAL(ABS(restricted(:, 1) - SUM(density, DIM=2))), 'PAW Fourier spin sum', 3.e-13_dp)
@@ -1565,8 +1595,31 @@ CONTAINS
          CALL check(ABS(REAL(projected(1, 1, 1), dp)*local_operator(1, 1) + core_energy - &
                         11.0_dp*REAL(restricted(1, 1), dp)), 'PAW scalar-field charge transpose', 3.e-13_dp)
          CALL qs_upf_inverse_paw_density_fourier(kind, projected, g(:, :0), position, 11.0_dp, density(:0, :))
+         CALL qs_upf_inverse_paw_density_adjoint(kind, g(:, :0), position, 11.0_dp, field(:0), local_operator, core_energy)
+         CALL check(MAXVAL(ABS(local_operator)) + ABS(core_energy), 'Empty PAW Fourier potential transpose', 3.e-15_dp)
       END ASSOCIATE
       CALL check_gth_paw_local(kind)
+      ! Distinct radial pairs expose off-diagonal projector multiplicities.
+      matrix_kind = kind
+      matrix_kind%onecenter%nproj = 2
+      matrix_kind%onecenter%npair = 3
+      matrix_kind%xcgrid%npair = 3
+      DEALLOCATE (matrix_kind%onecenter%pair_index, matrix_kind%onecenter%gaunt, matrix_kind%xcgrid%radial)
+      ALLOCATE (matrix_kind%onecenter%pair_index(2, 2), matrix_kind%onecenter%gaunt(2, 2, 1))
+      ALLOCATE (matrix_kind%xcgrid%radial(4, 3, 0:0, 2))
+      matrix_kind%onecenter%pair_index = RESHAPE([1, 2, 2, 3], [2, 2])
+      matrix_kind%onecenter%gaunt = 1.0_dp/SQRT(fourpi)
+      DO pair = 1, 3
+         matrix_kind%xcgrid%radial(:, pair, 0, :) = REAL(pair, dp)*kind%xcgrid%radial(:, 1, 0, :)
+      END DO
+      matrix_projected(:, :, 1) = RESHAPE([CMPLX(0.7_dp, 0.0_dp, dp), CMPLX(0.1_dp, -0.03_dp, dp), &
+                                           CMPLX(0.1_dp, 0.03_dp, dp), CMPLX(0.2_dp, 0.0_dp, dp)], [2, 2])
+      matrix_projected(:, :, 2) = 0.4_dp*matrix_projected(:, :, 1)
+      CALL qs_upf_inverse_paw_density_fourier(matrix_kind, matrix_projected, g, position, 11.0_dp, density)
+      CALL qs_upf_inverse_paw_density_adjoint(matrix_kind, g, position, 11.0_dp, field, matrix_operator, core_energy)
+      trace = SUM(REAL(SUM(matrix_projected, DIM=3), dp)*matrix_operator) + core_energy
+      CALL check(ABS(trace - REAL(SUM(CONJG(SUM(density, DIM=2))*field), dp)), &
+                 'PAW off-diagonal Fourier projector transpose', 3.e-13_dp)
    END SUBROUTINE check_paw_density_fourier
 
 ! **************************************************************************************************

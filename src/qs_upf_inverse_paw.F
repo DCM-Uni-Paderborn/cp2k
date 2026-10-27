@@ -62,6 +62,7 @@ MODULE qs_upf_inverse_paw
    PUBLIC :: qs_upf_inverse_paw_core_prepare, qs_upf_inverse_paw_xc_kernel
    PUBLIC :: qs_upf_inverse_paw_collocate, qs_upf_inverse_paw_operator
    PUBLIC :: qs_upf_inverse_paw_density_fourier, qs_upf_inverse_paw_local_operator
+   PUBLIC :: qs_upf_inverse_paw_density_adjoint
 
 CONTAINS
 
@@ -75,17 +76,28 @@ CONTAINS
 !> \param position Home atomic center. The Fourier phase represents its periodic image sum.
 !> \param volume Physical cell volume defining the Fourier normalization.
 !> \param density Overwritten spin corrections, including the frozen core and zero mode.
+!> \param response Optional density derivative for fixed original radial data.
+!> \param projected_response Projector-occupation derivative, required with response.
+!> \param gvecs_response Reciprocal-vector derivative, required with response.
+!> \param position_response Atomic-center derivative, required with response.
+!> \param volume_response Cell-volume derivative, required with response.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_paw_density_fourier(kind, projected, gvecs, position, volume, density)
+   SUBROUTINE qs_upf_inverse_paw_density_fourier(kind, projected, gvecs, position, volume, density, response, &
+                                                 projected_response, gvecs_response, position_response, volume_response)
       TYPE(paw_kind_type), INTENT(IN)                    :: kind
       COMPLEX(dp), INTENT(IN)                            :: projected(:, :, :)
       REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
       COMPLEX(dp), INTENT(OUT)                           :: density(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projected_response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: gvecs_response(:, :), &
+                                                            position_response(3), volume_response
 
-      COMPLEX(dp), ALLOCATABLE                           :: kernel(:, :, :)
-      INTEGER                                            :: first, gh, gl, l, lm, nh, nr, ns, p, &
-                                                            pair, q, rh, rl, spin
-      REAL(dp), ALLOCATABLE                              :: coefficient(:, :), radial(:, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: kernel(:, :, :), kernel_response(:, :, :)
+      INTEGER                                            :: first, gh, gl, l, lm, nh, nr, ns, rh, &
+                                                            rl, spin
+      LOGICAL                                            :: valid_shape
+      REAL(dp), ALLOCATABLE                              :: radial(:, :, :), radial_response(:, :, :)
 
       CPASSERT(kind%active)
       ns = SIZE(projected, 3)
@@ -94,15 +106,83 @@ CONTAINS
       CPASSERT(SIZE(gvecs, 1) == 3)
       CPASSERT(ALL(SHAPE(density) == [SIZE(gvecs, 2), ns]))
       CPASSERT(ALL(ieee_is_finite(ABS(projected))))
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(projected_response))
+         CPASSERT(PRESENT(gvecs_response))
+         CPASSERT(PRESENT(position_response))
+         CPASSERT(PRESENT(volume_response))
+         valid_shape = ALL(SHAPE(response) == SHAPE(density)) .AND. &
+                       ALL(SHAPE(projected_response) == SHAPE(projected)) .AND. &
+                       ALL(SHAPE(gvecs_response) == SHAPE(gvecs)) .AND. &
+                       ALL(ieee_is_finite(ABS(projected_response)))
+         CPASSERT(valid_shape)
+         response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       ASSOCIATE (grid => kind%xcgrid, onecenter => kind%onecenter)
          CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
          nr = grid%nr
          nh = SIZE(onecenter%gaunt, 3)
          first = 1
          IF (grid%r(1) == 0.0_dp) first = 2
-         ALLOCATE (radial(nr, nh, ns), SOURCE=0.0_dp)
+         CALL paw_fourier_radial(kind, projected, radial, .TRUE.)
+         IF (PRESENT(response)) CALL paw_fourier_radial(kind, projected_response, radial_response, .FALSE.)
+         density = CMPLX(0.0_dp, 0.0_dp, dp)
+         ! Bound the temporary kernel independently of grid size and radial mesh length.
+         DO gl = 1, SIZE(gvecs, 2), 128
+            gh = MIN(SIZE(gvecs, 2), gl + 127)
+            DO rl = first, nr, 64
+               rh = MIN(nr, rl + 63)
+               ALLOCATE (kernel(gh - gl + 1, rh - rl + 1, 1))
+               IF (PRESENT(response)) ALLOCATE (kernel_response, MOLD=kernel)
+               DO lm = 1, nh
+                  l = INT(SQRT(REAL(lm - 1, dp)))
+                  IF (PRESENT(response)) THEN
+                     CALL upf_inverse_coulomb_fourier_kernel(grid%r(rl:rh), [l], [lm], gvecs(:, gl:gh), &
+                                                             position, volume, kernel, kernel_response, &
+                                                             0.0_dp*grid%r(rl:rh), gvecs_response(:, gl:gh), &
+                                                             position_response, volume_response)
+                  ELSE
+                     CALL upf_inverse_coulomb_fourier_kernel(grid%r(rl:rh), [l], [lm], gvecs(:, gl:gh), &
+                                                             position, volume, kernel)
+                  END IF
+                  DO spin = 1, ns
+                     density(gl:gh, spin) = density(gl:gh, spin) + &
+                                            MATMUL(kernel(:, :, 1), grid%wr(rl:rh)*radial(rl:rh, lm, spin))
+                     IF (PRESENT(response)) THEN
+                        response(gl:gh, spin) = response(gl:gh, spin) + &
+                                                MATMUL(kernel(:, :, 1), grid%wr(rl:rh)*radial_response(rl:rh, lm, spin)) + &
+                                                MATMUL(kernel_response(:, :, 1), grid%wr(rl:rh)*radial(rl:rh, lm, spin))
+                     END IF
+                  END DO
+               END DO
+               DEALLOCATE (kernel)
+               IF (PRESENT(response)) DEALLOCATE (kernel_response)
+            END DO
+         END DO
+      END ASSOCIATE
+   END SUBROUTINE qs_upf_inverse_paw_density_fourier
+
+! **************************************************************************************************
+!> \brief Original PAW valence multipoles, with an optional frozen core shared equally over spins.
+!> \param kind Original radial products and magnetic-projector Gaunt tensor.
+!> \param projected Spin projector occupations, or their derivative when core is false.
+!> \param radial Overwritten real density multipoles on the original atomic mesh.
+!> \param core Include the fixed original AE core once in the spin sum.
+! **************************************************************************************************
+   SUBROUTINE paw_fourier_radial(kind, projected, radial, core)
+      TYPE(paw_kind_type), INTENT(IN)                    :: kind
+      COMPLEX(dp), INTENT(IN)                            :: projected(:, :, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: radial(:, :, :)
+      LOGICAL, INTENT(IN)                                :: core
+
+      INTEGER                                            :: l, lm, ns, p, pair, q, spin
+      REAL(dp), ALLOCATABLE                              :: coefficient(:, :)
+
+      ASSOCIATE (grid => kind%xcgrid, onecenter => kind%onecenter)
+         ns = SIZE(projected, 3)
+         ALLOCATE (radial(grid%nr, SIZE(onecenter%gaunt, 3), ns), SOURCE=0.0_dp)
          ALLOCATE (coefficient(grid%npair, ns))
-         DO lm = 1, nh
+         DO lm = 1, SIZE(onecenter%gaunt, 3)
             l = INT(SQRT(REAL(lm - 1, dp)))
             coefficient = 0.0_dp
             DO q = 1, onecenter%nproj
@@ -116,30 +196,91 @@ CONTAINS
             END DO
             radial(:grid%nval, lm, :) = MATMUL(grid%radial(:, :, l, 1) - grid%radial(:, :, l, 2), coefficient)
          END DO
-         DO spin = 1, ns
-            radial(:, 1, spin) = radial(:, 1, spin) + SQRT(fourpi)*grid%core(:, 1)/REAL(ns, dp)
-         END DO
-         density = CMPLX(0.0_dp, 0.0_dp, dp)
-         ! Bound the temporary kernel independently of grid size and radial mesh length.
+         IF (core) THEN
+            DO spin = 1, ns
+               radial(:, 1, spin) = radial(:, 1, spin) + SQRT(fourpi)*grid%core(:, 1)/REAL(ns, dp)
+            END DO
+         END IF
+      END ASSOCIATE
+   END SUBROUTINE paw_fourier_radial
+
+! **************************************************************************************************
+!> \brief Transpose of the original PAW Fourier valence correction and frozen AE core.
+!>        The scalar field is spin independent. The projector operator has no spin or k weight.
+!>        Pair its valence contraction with the frozen-core energy once, not once per spin.
+!> \param kind Original PAW radial products and magnetic-projector Gaunt tensor.
+!> \param gvecs Local physical reciprocal vectors.
+!> \param position Home atomic center for the periodic Fourier phase.
+!> \param volume Cell volume used in the density Fourier coefficients.
+!> \param potential Fourier covector, with volume and multiplicity already included once.
+!> \param OPERATOR Overwritten real symmetric valence projector operator.
+!> \param core_energy Coupling to the full frozen AE core, without an ionic counterterm.
+!> \param comm Optional communicator distributing Fourier rows. Results are replicated.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_paw_density_adjoint(kind, gvecs, position, volume, potential, OPERATOR, core_energy, comm)
+      TYPE(paw_kind_type), INTENT(IN)                    :: kind
+      REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
+      COMPLEX(dp), INTENT(IN)                            :: potential(:)
+      REAL(dp), INTENT(OUT)                              :: OPERATOR(:, :), core_energy
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      COMPLEX(dp), ALLOCATABLE                           :: kernel(:, :, :)
+      INTEGER                                            :: first, gh, gl, ir, l, lm, nr, p, pair, &
+                                                            q, rh, rl
+      LOGICAL                                            :: valid_shape
+      REAL(dp), ALLOCATABLE                              :: harmonics(:, :), radial(:, :)
+
+      CPASSERT(kind%active)
+      CPASSERT(SIZE(gvecs, 1) == 3)
+      CPASSERT(SIZE(gvecs, 2) == SIZE(potential))
+      CPASSERT(ALL(ieee_is_finite(ABS(potential))))
+      valid_shape = ALL(SHAPE(OPERATOR) == kind%onecenter%nproj)
+      CPASSERT(valid_shape)
+      ASSOCIATE (grid => kind%xcgrid, onecenter => kind%onecenter)
+         CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+         nr = grid%nr
+         first = 1
+         IF (grid%r(1) == 0.0_dp) first = 2
+         ALLOCATE (harmonics(nr, SIZE(onecenter%gaunt, 3)), SOURCE=0.0_dp)
+         ALLOCATE (radial(grid%npair, SIZE(onecenter%gaunt, 3)), SOURCE=0.0_dp)
          DO gl = 1, SIZE(gvecs, 2), 128
             gh = MIN(SIZE(gvecs, 2), gl + 127)
             DO rl = first, nr, 64
                rh = MIN(nr, rl + 63)
                ALLOCATE (kernel(gh - gl + 1, rh - rl + 1, 1))
-               DO lm = 1, nh
+               DO lm = 1, SIZE(harmonics, 2)
                   l = INT(SQRT(REAL(lm - 1, dp)))
                   CALL upf_inverse_coulomb_fourier_kernel(grid%r(rl:rh), [l], [lm], gvecs(:, gl:gh), &
                                                           position, volume, kernel)
-                  DO spin = 1, ns
-                     density(gl:gh, spin) = density(gl:gh, spin) + &
-                                            MATMUL(kernel(:, :, 1), grid%wr(rl:rh)*radial(rl:rh, lm, spin))
+                  DO ir = rl, rh
+                     harmonics(ir, lm) = harmonics(ir, lm) + &
+                                         REAL(SUM(CONJG(kernel(:, ir - rl + 1, 1))*potential(gl:gh)), dp)
                   END DO
                END DO
                DEALLOCATE (kernel)
             END DO
          END DO
+         core_energy = SQRT(fourpi)*SUM(grid%wr*grid%core(:, 1)*harmonics(:, 1))
+         DO lm = 1, SIZE(harmonics, 2)
+            l = INT(SQRT(REAL(lm - 1, dp)))
+            DO pair = 1, grid%npair
+               radial(pair, lm) = SUM(grid%wr(:grid%nval)*harmonics(:grid%nval, lm)* &
+                                      (grid%radial(:, pair, l, 1) - grid%radial(:, pair, l, 2)))
+            END DO
+         END DO
+         OPERATOR = 0.0_dp
+         DO q = 1, onecenter%nproj
+            DO p = 1, onecenter%nproj
+               pair = onecenter%pair_index(p, q)
+               OPERATOR(p, q) = SUM(onecenter%gaunt(p, q, :)*radial(pair, :))
+            END DO
+         END DO
       END ASSOCIATE
-   END SUBROUTINE qs_upf_inverse_paw_density_fourier
+      IF (PRESENT(comm)) THEN
+         CALL comm%sum(OPERATOR)
+         CALL comm%sum(core_energy)
+      END IF
+   END SUBROUTINE qs_upf_inverse_paw_density_adjoint
 
 ! **************************************************************************************************
 !> \brief Couple a scalar field to the PAW AE-minus-compensated-PS valence correction and AE core.
