@@ -994,7 +994,7 @@ CONTAINS
          resolved_descent = .FALSE.
          IF (coupled_curvature .OR. curvature_stalled .OR. (history > 0 .AND. &
                                                             -DOT_PRODUCT(reduced, direction) <= 32.0_dp*roundoff)) THEN
-            IF (PRESENT(check_stalled_segment) .AND. .NOT. coupled_curvature) THEN
+            IF (PRESENT(check_stalled_segment)) THEN
                ! Resolve a physical boundary on the feasible BFGS segment before
                ! estimating smooth curvature. The callback retains its admission tests.
                fraction = 1.0_dp

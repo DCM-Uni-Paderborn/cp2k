@@ -740,7 +740,7 @@ CONTAINS
       CALL skala_constrained_stationarity(empty_constraints, absolute_energy_gradient, scale, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=4, &
                                           iterations=iterations, interrupted=interrupted, &
-                                          check_stalled_segment=stalled_cusp_segment)
+                                          curvature_steps=.TRUE., check_stalled_segment=stalled_cusp_segment)
       IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. coordinate(1) /= 0.0_dp) THEN
          ERROR STOP 'A nonsmooth minimum lost the original rejected trial or was declared differentiably stationary'
       END IF
