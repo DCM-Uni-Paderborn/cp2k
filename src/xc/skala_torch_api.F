@@ -21,6 +21,7 @@ MODULE skala_torch_api
       torch_dict_clone_detached, torch_dict_get, torch_dict_insert, torch_dict_release, torch_dict_type, &
       torch_model_disable_parameter_gradients, torch_model_feature_clamps, torch_model_forward_mol_tensor, &
       torch_model_freeze_preserving_method, torch_model_load_with_metadata, torch_model_release, &
+      torch_model_normalize_gradient_squares, &
       torch_model_remap_device_constants, torch_model_promote_float32, torch_model_type, &
       torch_tensor_backward_scalar, torch_tensor_data_ptr, torch_tensor_from_array, torch_tensor_grad, &
       torch_tensor_item_double, torch_tensor_release, torch_tensor_to_device_leaf, torch_tensor_type, &
@@ -82,6 +83,8 @@ CONTAINS
       IF (use_fp64) CALL torch_model_promote_float32(model%torch_model)
       ! Preserve the exported SKALA entry point while folding constant model state.
       CALL torch_model_freeze_preserving_method(model%torch_model, "get_exc_density")
+      ! abs(|grad n|^2) is smooth in grad n. Its unreduced graph gives a false Hessian at zero.
+      CALL torch_model_normalize_gradient_squares(model%torch_model, "get_exc_density")
       CALL torch_model_feature_clamps(model%torch_model, "get_exc_density", "density", model%density_floors)
 
    END SUBROUTINE skala_torch_model_load

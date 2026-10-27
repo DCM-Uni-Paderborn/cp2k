@@ -90,6 +90,7 @@ MODULE torch_api
    PUBLIC :: torch_model_disable_parameter_gradients, torch_model_forward_mol_tensor, &
              torch_model_remap_device_constants
    PUBLIC :: torch_model_promote_float32
+   PUBLIC :: torch_model_normalize_gradient_squares
    PUBLIC :: torch_model_get_attr, torch_model_read_metadata
    PUBLIC :: torch_cuda_device_count, torch_cuda_is_available
    PUBLIC :: torch_model_feature_clamps
@@ -1284,6 +1285,39 @@ CONTAINS
       MARK_USED(model)
 #endif
    END SUBROUTINE torch_model_freeze_preserving_method
+
+! **************************************************************************************************
+!> \brief Remove absolute values only from proven nonnegative real gradient-square features.
+!>        Preserve signed density and kinetic features, model parameters, and energy values.
+!> \param model Frozen physical-feature model with real Cartesian gradient inputs.
+!> \param method_name Exported dictionary method, before its first evaluation.
+! **************************************************************************************************
+   SUBROUTINE torch_model_normalize_gradient_squares(model, method_name)
+      TYPE(torch_model_type), INTENT(INOUT)              :: model
+      CHARACTER(len=*), INTENT(IN)                       :: method_name
+
+#if defined(__LIBTORCH)
+      INTEGER(kind=C_INT)                               :: count
+
+      INTERFACE
+         FUNCTION torch_c_model_normalize_gradient_squares(model, method_name) RESULT(count) &
+            BIND(C, name="torch_c_model_normalize_gradient_squares")
+            IMPORT :: C_CHAR, C_INT, C_PTR
+            TYPE(C_PTR), VALUE                        :: model
+            CHARACTER(kind=C_CHAR), DIMENSION(*)      :: method_name
+            INTEGER(kind=C_INT)                       :: count
+         END FUNCTION torch_c_model_normalize_gradient_squares
+      END INTERFACE
+
+      CPASSERT(C_ASSOCIATED(model%c_ptr))
+      count = torch_c_model_normalize_gradient_squares(model%c_ptr, TRIM(method_name)//C_NULL_CHAR)
+      CPASSERT(count >= 0)
+#else
+      CPABORT("CP2K was compiled without Torch library.")
+      MARK_USED(method_name)
+      MARK_USED(model)
+#endif
+   END SUBROUTINE torch_model_normalize_gradient_squares
 
 ! **************************************************************************************************
 !> \brief Read constant clamp bounds of unscaled dictionary-feature samples from a copied method graph.

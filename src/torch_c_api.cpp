@@ -16,6 +16,7 @@
 #include <c10/core/DeviceGuard.h>
 #include <torch/csrc/api/include/torch/cuda.h>
 #include <torch/csrc/autograd/autograd.h>
+#include <torch/csrc/jit/passes/dead_code_elimination.h>
 #include <torch/csrc/jit/passes/freeze_module.h>
 #include <torch/csrc/jit/passes/inliner.h>
 #include <torch/csrc/jit/runtime/graph_executor.h>
@@ -487,6 +488,141 @@ private:
   torch::jit::Value *dictionary_;
   std::string feature_;
   std::unordered_map<torch::jit::Value *, bool> raw_, shape_;
+};
+
+class PhysicalGradientSquares {
+public:
+  PhysicalGradientSquares(std::shared_ptr<torch::jit::Graph> graph,
+                          torch::jit::Value *dictionary)
+      : graph_(std::move(graph)), gradient_(dictionary, "grad") {}
+
+  int normalize() {
+    std::vector<torch::jit::Node *> nodes;
+    collect(graph_->block(), nodes);
+    for (auto *node : nodes) {
+      auto replacement = absolute(node->input(0), node);
+      if (replacement.second) {
+        node->output()->replaceAllUsesWith(replacement.first);
+        node->destroy();
+      }
+    }
+    torch::jit::EliminateDeadCode(graph_);
+    graph_->lint();
+    return removed_;
+  }
+
+private:
+  static void collect(torch::jit::Block *block,
+                      std::vector<torch::jit::Node *> &nodes) {
+    for (auto *node : block->nodes()) {
+      if (node->kind() == torch::jit::aten::abs) {
+        nodes.push_back(node);
+      }
+      for (auto *nested : node->blocks()) {
+        collect(nested, nodes);
+      }
+    }
+  }
+
+  static bool real_dtype(torch::jit::Node *node) {
+    const auto *schema = node->maybeSchema();
+    if (schema == nullptr) {
+      return false;
+    }
+    const auto &arguments = schema->arguments();
+    for (size_t i = 0; i < arguments.size() && i < node->inputs().size(); ++i) {
+      if (arguments[i].name() != "dtype") {
+        continue;
+      }
+      const auto dtype = torch::jit::toIValue(node->input(i));
+      if (!dtype ||
+          (!dtype->isNone() &&
+           (!dtype->isInt() ||
+            dtype->toInt() != static_cast<int64_t>(torch::kFloat64)))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  static bool layout(torch::jit::Node *node) {
+    static const std::unordered_set<std::string> kinds = {
+        "aten::transpose", "aten::permute", "aten::contiguous",
+        "aten::unsqueeze", "aten::squeeze", "aten::view",
+        "aten::reshape",   "aten::clone",   "aten::to"};
+    return kinds.count(node->kind().toQualString()) && real_dtype(node);
+  }
+
+  bool real_gradient(torch::jit::Value *value) {
+    if (gradient_.raw(value)) {
+      return true;
+    }
+    auto *node = value->node();
+    return (layout(node) || node->kind() == torch::jit::aten::sum) &&
+           real_dtype(node) && real_gradient(node->input(0));
+  }
+
+  bool nonnegative(torch::jit::Value *value) {
+    auto *node = value->node();
+    if (layout(node) || node->kind() == torch::jit::aten::sum) {
+      return real_dtype(node) && nonnegative(node->input(0));
+    }
+    if (node->kind() == torch::jit::aten::pow && node->inputs().size() == 2) {
+      const auto exponent = torch::jit::toIValue(node->input(1));
+      return exponent &&
+             ((exponent->isInt() && exponent->toInt() == 2) ||
+              (exponent->isDouble() && exponent->toDouble() == 2.0)) &&
+             real_gradient(node->input(0));
+    }
+    return false;
+  }
+
+  std::pair<torch::jit::Value *, bool> absolute(torch::jit::Value *value,
+                                                torch::jit::Node *before) {
+    if (nonnegative(value)) {
+      ++removed_;
+      return {value, true};
+    }
+    auto *node = value->node();
+    if (layout(node)) {
+      const auto child = absolute(node->input(0), before);
+      if (child.second) {
+        auto *clone = graph_->createClone(node, [&](torch::jit::Value *input) {
+          return input == node->input(0) ? child.first : input;
+        });
+        clone->insertBefore(before);
+        return {clone->output(), true};
+      }
+    } else if (node->kind() == torch::jit::aten::cat &&
+               node->input(0)->node()->kind() ==
+                   torch::jit::prim::ListConstruct) {
+      bool changed = false;
+      std::vector<torch::jit::Value *> values;
+      for (auto *input : node->input(0)->node()->inputs()) {
+        const auto child = absolute(input, before);
+        values.push_back(child.first);
+        changed |= child.second;
+      }
+      if (changed) {
+        auto *list = graph_->create(torch::jit::prim::ListConstruct, values);
+        list->output()->setType(node->input(0)->type());
+        list->insertBefore(before);
+        auto *clone = graph_->createClone(node, [&](torch::jit::Value *input) {
+          return input == node->input(0) ? list->output() : input;
+        });
+        clone->insertBefore(before);
+        return {clone->output(), true};
+      }
+    }
+    auto *node_abs = graph_->create(torch::jit::aten::abs, {value});
+    node_abs->output()->setType(value->type());
+    node_abs->insertBefore(before);
+    return {node_abs->output(), false};
+  }
+
+  std::shared_ptr<torch::jit::Graph> graph_;
+  TorchFeatureLayout gradient_;
+  int removed_ = 0;
 };
 
 static void feature_clamps(torch::jit::Block *block, TorchFeatureLayout &layout,
@@ -1183,6 +1319,24 @@ void torch_c_model_freeze_preserving_method(torch_c_model_t *model,
 
   const std::vector<std::string> preserved_methods = {method_name};
   torch::jit::freeze_module_inplace(model, preserved_methods);
+}
+
+// Caller contract: the dictionary's physical Cartesian gradient is real FP64.
+// This does not change model parameters, signed rho/tau features or its values.
+int torch_c_model_normalize_gradient_squares(torch_c_model_t *model,
+                                             const char *method_name) {
+  const auto method = model->find_method(method_name);
+  if (!method) {
+    return 0;
+  }
+  const auto graph = method->graph();
+  torch::jit::Inline(*graph);
+  if (graph->inputs().size() != 2 ||
+      graph->inputs()[1]->type()->kind() != c10::TypeKind::DictType) {
+    return 0;
+  }
+  PhysicalGradientSquares normalization(graph, graph->inputs()[1]);
+  return normalization.normalize();
 }
 
 /*******************************************************************************
