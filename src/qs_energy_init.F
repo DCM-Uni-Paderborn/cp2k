@@ -127,6 +127,10 @@ CONTAINS
       IF (dft_control%qs_control%gapw .AND. qs_upf_inverse_scf_active(ks_env)) THEN
          CALL qs_upf_inverse_coulomb_attach(qs_env)
       END IF
+      IF (qs_upf_inverse_scf_active(ks_env)) THEN
+         ! The prepared PAW state now supplies the matching frozen-core countercharge.
+         CALL external_c_potential(qs_env, calculate_forces=.FALSE.)
+      END IF
       CALL get_ks_env(ks_env, complex_ks=ks_is_complex)
       CALL qs_ks_allocate_basics(qs_env, is_complex=ks_is_complex)
 

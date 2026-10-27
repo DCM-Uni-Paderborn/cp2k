@@ -980,7 +980,7 @@ CONTAINS
 !> \param dense Gaussian background transpose of the folded XC potential.
 !> \param hamiltonian Native Gamma spin matrix, incremented; Bloch values use the direct provider.
 !> \param spin Native spin index.
-!> \param additive Add a background kinetic operator to the assembled Hamiltonian without repeating atomic XC.
+!> \param additive Add a common AO correction to any assembled inverse Hamiltonian without repeating atomic XC.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_integrate_background(ks_env, dense, hamiltonian, spin, additive)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
@@ -997,10 +997,12 @@ CONTAINS
 
       CALL get_ks_env(ks_env, upf_inverse=state)
       CPASSERT(ASSOCIATED(state))
-      CPASSERT(state%gaussian_background .AND. ASSOCIATED(state%coulomb))
       CALL check_geometry(ks_env, state)
       add_to_current = .FALSE.
       IF (PRESENT(additive)) add_to_current = additive
+      IF (.NOT. add_to_current) THEN
+         CPASSERT(state%gaussian_background .AND. ASSOCIATED(state%coulomb))
+      END IF
       ALLOCATE (OPERATOR, SOURCE=dense)
       IF (.NOT. add_to_current .AND. ALLOCATED(state%xc%operators)) THEN
          OPERATOR(:, :, :) = OPERATOR + state%xc%operators(:, :, :, spin)

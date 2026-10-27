@@ -110,6 +110,7 @@ MODULE qs_ks_methods
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_external_potential,           ONLY: external_upf_potential
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_gapw_densities,               ONLY: prepare_gapw_den
    USE qs_harris_types,                 ONLY: harris_type
@@ -427,8 +428,7 @@ CONTAINS
       inverse_coulomb = .FALSE.
       IF (ASSOCIATED(inverse)) inverse_coulomb = ASSOCIATED(inverse%coulomb)
       IF (inverse_coulomb) THEN
-         IF (do_ddapc .OR. dft_control%do_pcc .OR. dft_control%correct_surf_dip .OR. &
-             dft_control%apply_external_potential .OR. qs_env%qmmm) THEN
+         IF (do_ddapc .OR. dft_control%do_pcc .OR. dft_control%correct_surf_dip .OR. qs_env%qmmm) THEN
             CPABORT("Complete inverse GAPW external density operators are not implemented yet")
          END IF
          ! The owned source and common AO adjoint replace the earlier one-center Hartree terms.
@@ -611,6 +611,10 @@ CONTAINS
          END IF
          ! the sign accounts for the charge of the electrons
          energy%ee = -ee_ener
+         IF (qs_upf_inverse_scf_active(ks_env)) THEN
+            CALL external_upf_potential(qs_env, ee_ener)
+            energy%ee = energy%ee + ee_ener
+         END IF
       END IF
 
       ! Adds the QM/MM potential

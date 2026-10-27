@@ -105,6 +105,7 @@ MODULE qs_ks_utils
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_external_potential,           ONLY: external_upf_potential
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_integrate_potential,          ONLY: integrate_v_rspace,&
                                               integrate_v_rspace_diagonal,&
@@ -1608,7 +1609,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL :: do_ppl, gapw, gapw_composite_direct_ao, gapw_composite_reference, gapw_xc, &
          inverse_coulomb, inverse_scf, lrigpw, rigpw, use_work_v_rspace
-      REAL(KIND=dp)                                      :: csign, dvol, fadm
+      REAL(KIND=dp)                                      :: csign, dvol, external_energy, fadm
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ksmat, rho_ao, rho_ao_nokp, smat
@@ -1964,6 +1965,11 @@ CONTAINS
       END IF ! ASSOCIATED(v_rspace_new)
 
       IF (inverse_coulomb) CALL qs_upf_inverse_scf_add_coulomb(ks_env)
+      IF (inverse_scf .AND. dft_control%apply_external_potential) THEN
+         DO ispin = 1, nspins
+            CALL external_upf_potential(qs_env, external_energy, ks_matrix(ispin, 1)%matrix, ispin)
+         END DO
+      END IF
 
       IF (ALLOCATED(inverse_potential)) THEN
          IF (ASSOCIATED(v_tau_rspace)) THEN

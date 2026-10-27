@@ -69,7 +69,8 @@ MODULE qs_upf_inverse_coulomb
                                               qs_upf_inverse_gaussian_pairs_prepare
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
-   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_density_fourier
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_density_adjoint,&
+                                              qs_upf_inverse_paw_density_fourier
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_install_metric,&
                                               qs_upf_inverse_scf_integrate_background
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
@@ -80,6 +81,7 @@ MODULE qs_upf_inverse_coulomb
                                               qs_upf_inverse_type
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_center_type,&
                                               upf_inverse_coulomb_density,&
+                                              upf_inverse_coulomb_density_adjoint,&
                                               upf_inverse_coulomb_pair_geometry,&
                                               upf_inverse_coulomb_periodic,&
                                               upf_inverse_coulomb_potential_type,&
@@ -101,8 +103,227 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_density
    PUBLIC :: qs_upf_inverse_coulomb_charges
    PUBLIC :: qs_upf_inverse_paw_density
+   PUBLIC :: qs_upf_inverse_local_potential
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Couple a scalar grid potential to density corrections missing from the native grid source.
+!>        Full GAPW adds every signed center. PAW additionally adds AE-minus-PS-minus-Q and the
+!>        frozen AE core once. The ordinary grid contribution and ionic counterterms remain with
+!>        the caller. The same Fourier map supplies energy, its AO transpose and joint geometry
+!>        response. All ranks participate; Bloch weights enter occupations once, never operators.
+!> \param qs_env Current native density, inverse frames and original atomic data.
+!> \param potential Unweighted scalar field on the native auxiliary grid.
+!> \param energy Correction energy, replicated over the grid communicator.
+!> \param operators Optional spin-independent AO operators, indexed by global k without weights.
+!> \param response Optional joint atom/cell energy derivative at fixed AO occupations.
+!> \param atom_response Physical Cartesian atomic motion, required with response.
+!> \param cell_response Lattice derivative with vectors in columns, required with response.
+!> \param coefficients_response Defining inverse coefficient responses, required with response.
+!> \param potential_response Optional derivative of the sampled potential on the moving grid.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_local_potential(qs_env, potential, energy, operators, response, atom_response, &
+                                             cell_response, coefficients_response, potential_response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: operators(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: potential_response
+
+      COMPLEX(dp), ALLOCATABLE :: ao_operator(:, :), component(:, :, :), correction(:), &
+         covector(:), derivative(:), gamma(:, :), matrix(:, :, :), paw_density(:, :), &
+         paw_response(:, :), projected(:, :, :), projected_response(:, :, :)
+      INTEGER                                            :: a, center, first, info, k, kind, last, &
+                                                            nao, nk, spin
+      LOGICAL                                            :: valid_shape
+      REAL(dp)                                           :: core_energy, inverse_cell(3, 3), &
+                                                            strain(3, 3), trace_strain
+      REAL(dp), ALLOCATABLE                              :: g_response(:, :), multiplicity(:), &
+                                                            paw_operator(:, :), radial(:, :), &
+                                                            weights(:)
+      TYPE(dbcsr_p_type), POINTER                        :: ao_density(:, :)
+      TYPE(pw_c1d_gs_type)                               :: field, field_response
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: center_response(:), centers(:)
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE                                     :: radial_potential(:)
+
+      energy = 0.0_dp
+      IF (PRESENT(response)) response = 0.0_dp
+      CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho, qs_kind_set=kinds)
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      IF (.NOT. ASSOCIATED(state)) RETURN
+      IF (.NOT. state%enabled) RETURN
+      CALL select_frame(state, 1, frame, augmentation)
+      nao = SIZE(frame%coefficients, 2)
+      nk = 1
+      IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
+      ALLOCATE (matrix(nao, nao, nk), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      ALLOCATE (weights(nk), SOURCE=1.0_dp)
+      IF (ASSOCIATED(state%bloch%kpoints)) weights = state%bloch%weights
+      CALL qs_rho_get(rho, rho_ao_kp=ao_density)
+      DO spin = 1, SIZE(ao_density, 1)
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_kpoints_density(state%bloch, spin, component)
+            matrix = matrix + component
+         ELSE
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, ao_density(spin, 1)%matrix, gamma)
+            matrix(:, :, 1) = matrix(:, :, 1) + gamma
+         END IF
+      END DO
+      CALL field%create(potential%pw_grid)
+      CALL pw_transfer(potential, field)
+      ALLOCATE (multiplicity(SIZE(field%array)), SOURCE=1.0_dp)
+      IF (field%pw_grid%grid_span == HALFSPACE) THEN
+         multiplicity = 2.0_dp
+         IF (field%pw_grid%have_g0) multiplicity(1) = 1.0_dp
+      END IF
+      ALLOCATE (covector, SOURCE=field%pw_grid%vol*multiplicity*field%array)
+      ALLOCATE (correction(SIZE(covector)), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      IF (PRESENT(operators)) THEN
+         ALLOCATE (operators(nao, nao, nk), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+         ALLOCATE (ao_operator(nao, nao))
+      END IF
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(PRESENT(coefficients_response))
+         valid_shape = ALL(SHAPE(coefficients_response) == [SIZE(frame%coefficients, 1), nao, nk])
+         CPASSERT(valid_shape)
+         inverse_cell = frame%cell
+         CALL invmat(inverse_cell, info)
+         CPASSERT(info == 0)
+         strain = MATMUL(cell_response, inverse_cell)
+         trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
+         ALLOCATE (g_response, SOURCE=-MATMUL(TRANSPOSE(strain), field%pw_grid%g))
+         ALLOCATE (derivative, MOLD=correction)
+         derivative = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (ASSOCIATED(state%coulomb)) THEN
+         ASSOCIATE (map => state%coulomb)
+            CPASSERT(ASSOCIATED(field%pw_grid, map%grid))
+            ALLOCATE (centers, SOURCE=map%centers)
+            DO a = 1, SIZE(centers)
+               centers(a)%density = 0.0_dp
+               ALLOCATE (radial, MOLD=centers(a)%density)
+               kind = map%center_kinds(a)
+               DO k = 1, nk
+                  CALL select_frame(state, k, frame, augmentation)
+                  CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), &
+                                                   map%pairs(a), matrix(:, :, k), radial, &
+                                                   atom_index=map%center_atoms(a), cache=map%fields(a, k))
+                  centers(a)%density = centers(a)%density + weights(k)*radial
+               END DO
+               DEALLOCATE (radial)
+            END DO
+            IF (PRESENT(response)) THEN
+               CALL prepare_pair_responses(qs_env, state, map)
+               CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, &
+                                            center_response, coefficients_response)
+               CALL upf_inverse_coulomb_density(centers, map%cell, map%grid%g, map%grid%vol, correction, map%maps, &
+                                                derivative, center_response, g_response, trace_strain*map%grid%vol)
+            ELSE
+               CALL upf_inverse_coulomb_density(centers, map%cell, map%grid%g, map%grid%vol, correction, map%maps)
+            END IF
+            IF (PRESENT(operators)) THEN
+               IF (map%grid%para%mode == PW_MODE_LOCAL) THEN
+                  CALL upf_inverse_coulomb_density_adjoint(centers, map%cell, map%grid%g, map%grid%vol, &
+                                                           covector, radial_potential, map%maps)
+               ELSE
+                  CALL upf_inverse_coulomb_density_adjoint(centers, map%cell, map%grid%g, map%grid%vol, &
+                                                           covector, radial_potential, map%maps, map%grid%para%group%mp_comm_type)
+               END IF
+               DO k = 1, nk
+                  CALL select_frame(state, k, frame, augmentation)
+                  DO a = 1, SIZE(centers)
+                     kind = map%center_kinds(a)
+                     CALL qs_upf_inverse_density_gapw_integrate(frame, augmentation, map%inverse_centers(a), kinds(kind), &
+                                                                map%pairs(a), radial_potential(a)%values, ao_operator, &
+                                                                map%center_atoms(a), map%fields(a, k))
+                     operators(:, :, k) = operators(:, :, k) + ao_operator
+                  END DO
+               END DO
+            END IF
+         END ASSOCIATE
+      END IF
+      CALL select_frame(state, 1, frame, augmentation)
+      ALLOCATE (paw_density(SIZE(covector), 1))
+      IF (PRESENT(response)) ALLOCATE (paw_response, MOLD=paw_density)
+      DO center = 1, SIZE(frame%center_kinds)
+         kind = frame%center_kinds(center)
+         IF (.NOT. state%paw(kind)%active) CYCLE
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         ALLOCATE (projected(last - first + 1, last - first + 1, 1), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+         IF (PRESENT(response)) ALLOCATE (projected_response, MOLD=projected)
+         IF (PRESENT(response)) projected_response = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO k = 1, nk
+            CALL select_frame(state, k, frame, augmentation)
+            projected(:, :, 1) = projected(:, :, 1) + weights(k)*MATMUL(frame%coefficients(first:last, :), &
+                                                       MATMUL(matrix(:, :, k), CONJG(TRANSPOSE(frame%coefficients(first:last, :)))))
+            IF (PRESENT(response)) THEN
+               projected_response(:, :, 1) = projected_response(:, :, 1) + weights(k)* &
+                                             (MATMUL(coefficients_response(first:last, :, k), &
+                                                   MATMUL(matrix(:, :, k), CONJG(TRANSPOSE(frame%coefficients(first:last, :))))) + &
+                                              MATMUL(frame%coefficients(first:last, :), &
+                                                MATMUL(matrix(:, :, k), CONJG(TRANSPOSE(coefficients_response(first:last, :, k))))))
+            END IF
+         END DO
+         IF (PRESENT(response)) THEN
+            CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, field%pw_grid%g, &
+                                     frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, paw_density, paw_response, &
+                       projected_response, g_response, atom_response(:, frame%center_atoms(center)), trace_strain*field%pw_grid%vol)
+            derivative = derivative + paw_response(:, 1)
+            DEALLOCATE (projected_response)
+         ELSE
+            CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, field%pw_grid%g, &
+                                                    frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, paw_density)
+         END IF
+         correction = correction + paw_density(:, 1)
+         IF (PRESENT(operators)) THEN
+            ALLOCATE (paw_operator(last - first + 1, last - first + 1))
+            IF (field%pw_grid%para%mode == PW_MODE_LOCAL) THEN
+               CALL qs_upf_inverse_paw_density_adjoint(state%paw(kind), field%pw_grid%g, &
+                             frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_energy)
+            ELSE
+               CALL qs_upf_inverse_paw_density_adjoint(state%paw(kind), field%pw_grid%g, &
+                           frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_energy, &
+                                                       field%pw_grid%para%group%mp_comm_type)
+            END IF
+            DO k = 1, nk
+               CALL select_frame(state, k, frame, augmentation)
+               operators(:, :, k) = operators(:, :, k) + MATMUL(CONJG(TRANSPOSE(frame%coefficients(first:last, :))), &
+                                                                MATMUL(paw_operator, frame%coefficients(first:last, :)))
+            END DO
+            DEALLOCATE (paw_operator)
+         END IF
+         DEALLOCATE (projected)
+      END DO
+      energy = REAL(SUM(CONJG(correction)*covector), dp)
+      IF (PRESENT(response)) THEN
+         response = REAL(SUM(CONJG(derivative)*covector), dp) + trace_strain*energy
+         IF (PRESENT(potential_response)) THEN
+            CALL field_response%create(field%pw_grid)
+            CALL pw_transfer(potential_response, field_response)
+            response = response + field%pw_grid%vol*REAL(SUM(CONJG(correction)*multiplicity*field_response%array), dp)
+            CALL field_response%release()
+         END IF
+      END IF
+      IF (field%pw_grid%para%mode /= PW_MODE_LOCAL) THEN
+         CALL field%pw_grid%para%group%mp_comm_type%sum(energy)
+         IF (PRESENT(response)) CALL field%pw_grid%para%group%mp_comm_type%sum(response)
+      END IF
+      CALL field%release()
+   END SUBROUTINE qs_upf_inverse_local_potential
 
 ! **************************************************************************************************
 !> \brief Complete spin valence densities projected onto the existing auxiliary grid.

@@ -15,6 +15,7 @@ MODULE qs_external_potential
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_control_types,                ONLY: dft_control_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_type
    USE cp_log_handling,                 ONLY: cp_to_string
    USE cp_realspace_grid_cube,          ONLY: cp_cube_to_pw
    USE fparser,                         ONLY: evalf,&
@@ -29,11 +30,14 @@ MODULE qs_external_potential
                                               default_string_length,&
                                               dp,&
                                               int_8
+   USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE maxwell_solver_interface,        ONLY: maxwell_solver
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL
-   USE pw_methods,                      ONLY: pw_zero
+   USE pw_methods,                      ONLY: pw_integral_ab,&
+                                              pw_zero
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -41,7 +45,15 @@ MODULE qs_external_potential
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
+   USE qs_rho_types,                    ONLY: qs_rho_get,&
+                                              qs_rho_type
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_local_potential
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_integrate_background
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE string_utilities,                ONLY: compress
+   USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -53,9 +65,110 @@ MODULE qs_external_potential
 ! *** Public subroutines ***
    PUBLIC :: external_e_potential, &
              external_c_potential, &
+             external_upf_potential, &
              interpolate_external_potential
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Electronic external-field corrections for the native USPP/PAW orbital representations.
+!>        Ordinary grid density, operator and orbital response remain native. This adds signed
+!>        GAPW centers and original PAW corrections through the same scalar-potential transpose.
+!>        Geometry also restores the external grid measure and differentiates a prescribed
+!>        Cartesian function on the moving grid. Cube/Maxwell samples remain fixed fractionally.
+!> \param qs_env Current native field and density owners.
+!> \param energy Correction energy, excluding effective point-ion/core counterterms.
+!> \param hamiltonian Optional native spin matrix receiving the additive AO correction.
+!> \param spin Spin index required with hamiltonian.
+!> \param response Optional complete correction to the native folded-potential geometry derivative.
+!> \param atom_response ...
+!> \param cell_response ...
+!> \param coefficients_response ...
+! **************************************************************************************************
+   SUBROUTINE external_upf_potential(qs_env, energy, hamiltonian, spin, response, atom_response, &
+                                     cell_response, coefficients_response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      REAL(dp), INTENT(OUT)                              :: energy
+      TYPE(dbcsr_type), INTENT(INOUT), OPTIONAL          :: hamiltonian
+      INTEGER, INTENT(IN), OPTIONAL                      :: spin
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :)
+      INTEGER                                            :: bounds(2, 3), i, info, ispin, j, k, n
+      REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
+                                                            trace_strain
+      REAL(dp), ALLOCATABLE                              :: gradient(:, :), points(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(pw_r3d_rs_type)                               :: field_response, potential
+      TYPE(pw_r3d_rs_type), POINTER                      :: density(:), vee
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(section_vals_type), POINTER                   :: input, section
+
+      energy = 0.0_dp
+      IF (PRESENT(response)) response = 0.0_dp
+      CALL get_qs_env(qs_env, dft_control=control, ks_env=ks_env, vee=vee, cell=cell, rho=rho)
+      IF (.NOT. control%apply_external_potential) RETURN
+      CALL potential%create(vee%pw_grid)
+      potential%array = -vee%array
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(PRESENT(coefficients_response))
+         inverse_cell = cell%hmat
+         CALL invmat(inverse_cell, info)
+         CPASSERT(info == 0)
+         strain = MATMUL(cell_response, inverse_cell)
+         trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
+         CALL field_response%create(vee%pw_grid)
+         field_response%array = 0.0_dp
+         IF (ANY(strain /= 0.0_dp) .AND. .NOT. control%expot_control%read_from_cube .AND. &
+             .NOT. control%expot_control%maxwell_solver) THEN
+            bounds = vee%pw_grid%bounds_local
+            n = PRODUCT(bounds(2, :) - bounds(1, :) + 1)
+            ALLOCATE (points(3, n), gradient(3, n))
+            n = 0
+            DO k = bounds(1, 3), bounds(2, 3)
+               DO j = bounds(1, 2), bounds(2, 2)
+                  DO i = bounds(1, 1), bounds(2, 1)
+                     n = n + 1
+                     points(:, n) = MATMUL(vee%pw_grid%dh, REAL([i, j, k] - vee%pw_grid%bounds(1, :), dp))
+                  END DO
+               END DO
+            END DO
+            CALL get_qs_env(qs_env, input=input)
+            section => section_vals_get_subs_vals(input, "DFT%EXTERNAL_POTENTIAL")
+            CALL get_external_potential(points, section, dfunc=gradient, calc_derivatives=.TRUE.)
+            n = 0
+            DO k = bounds(1, 3), bounds(2, 3)
+               DO j = bounds(1, 2), bounds(2, 2)
+                  DO i = bounds(1, 1), bounds(2, 1)
+                     n = n + 1
+                     field_response%array(i, j, k) = -SUM(gradient(:, n)*MATMUL(strain, points(:, n)))
+                  END DO
+               END DO
+            END DO
+         END IF
+         CALL qs_upf_inverse_local_potential(qs_env, potential, energy, response=response, atom_response=atom_response, &
+                        cell_response=cell_response, coefficients_response=coefficients_response, potential_response=field_response)
+         CALL qs_rho_get(rho, rho_r=density)
+         DO ispin = 1, SIZE(density)
+            response = response + trace_strain*pw_integral_ab(density(ispin), potential) + &
+                       pw_integral_ab(density(ispin), field_response)
+         END DO
+         CALL field_response%release()
+      ELSE IF (PRESENT(hamiltonian)) THEN
+         CPASSERT(PRESENT(spin))
+         CALL qs_upf_inverse_local_potential(qs_env, potential, energy, operators)
+         CALL qs_upf_inverse_scf_integrate_background(ks_env, operators, hamiltonian, spin, additive=.TRUE.)
+      ELSE
+         CALL qs_upf_inverse_local_potential(qs_env, potential, energy)
+      END IF
+      CALL potential%release()
+   END SUBROUTINE external_upf_potential
 
 ! **************************************************************************************************
 !> \brief  Computes the external potential on the grid
@@ -156,19 +269,23 @@ CONTAINS
       INTEGER                                            :: atom_a, handle, iatom, ikind, natom, &
                                                             nkind, nparticles
       INTEGER, DIMENSION(:), POINTER                     :: list
-      LOGICAL                                            :: my_force, pot_on_grid
+      LOGICAL                                            :: inverse_active, my_force, pot_on_grid
       REAL(KIND=dp)                                      :: ee_core_ener, zeff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: efunc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dfunc, r
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_r3d_rs_type), POINTER                      :: v_ee
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: ext_pot_section, input
+      TYPE(virial_type), POINTER                         :: virial
 
       CALL timeset(routineN, handle)
       NULLIFY (dft_control)
@@ -181,6 +298,10 @@ CONTAINS
                       input=input, &
                       cell=cell, &
                       dft_control=dft_control)
+      CALL get_qs_env(qs_env, ks_env=ks_env, para_env=para_env, virial=virial)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      inverse_active = .FALSE.
+      IF (ASSOCIATED(inverse)) inverse_active = inverse%enabled
 
       IF (dft_control%apply_external_potential .AND. .NOT. qs_env%mimic) THEN
          !ensure that external potential is loaded to grid
@@ -246,6 +367,12 @@ CONTAINS
          DO ikind = 1, SIZE(atomic_kind_set)
             CALL get_atomic_kind(atomic_kind_set(ikind), natom=natom)
             CALL get_qs_kind(qs_kind_set(ikind), zeff=zeff)
+            IF (inverse_active) THEN
+               IF (inverse%paw(ikind)%active) THEN
+                  ! Neutral frozen core: its tabulated grid charge and point countercharge must agree.
+                  zeff = zeff + fourpi*SUM(inverse%paw(ikind)%xcgrid%wr*inverse%paw(ikind)%xcgrid%core(:, 1))
+               END IF
+            END IF
 
             DO iatom = 1, natom
                nparticles = nparticles + 1
@@ -253,6 +380,13 @@ CONTAINS
                ee_core_ener = ee_core_ener + zeff*efunc(nparticles)
                IF (my_force) THEN
                   force(ikind)%eev(1:3, iatom) = dfunc(1:3, nparticles)*zeff
+                  IF (inverse_active .AND. .NOT. pot_on_grid .AND. virial%pv_availability .AND. &
+                      .NOT. virial%pv_numer .AND. para_env%is_source()) THEN
+                     DO atom_a = 1, 3
+                        virial%pv_virial(:, atom_a) = virial%pv_virial(:, atom_a) - &
+                                                      zeff*dfunc(:, nparticles)*r(atom_a, nparticles)
+                     END DO
+                  END IF
                END IF
             END DO
          END DO

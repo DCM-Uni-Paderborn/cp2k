@@ -73,6 +73,7 @@ MODULE qs_force
    USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
    USE qs_subsys_types,                 ONLY: qs_subsys_set,&
                                               qs_subsys_type
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE ri_environment_methods,          ONLY: build_ri_matrices
    USE rt_propagation_forces,           ONLY: calc_c_mat_force,&
@@ -334,7 +335,8 @@ CONTAINS
          !swap external_e_potential before external_c_potential, to ensure
          !that external potential on grid is loaded before calculating energy of cores
          CALL external_e_potential(qs_env)
-         IF (.NOT. dft_control%qs_control%gapw) THEN
+         CALL get_qs_env(qs_env, ks_env=ks_env)
+         IF (.NOT. dft_control%qs_control%gapw .OR. qs_upf_inverse_scf_active(ks_env)) THEN
             CALL external_c_potential(qs_env, calculate_forces=.TRUE.)
          END IF
          ! RIGPW  matrices
