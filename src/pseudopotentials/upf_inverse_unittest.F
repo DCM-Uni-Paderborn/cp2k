@@ -83,7 +83,7 @@ PROGRAM upf_inverse_unittest
         skala_orbital_chart_derivative, skala_orbital_chart_evaluate, &
         skala_orbital_chart_operator_response, skala_orbital_chart_release, &
         skala_orbital_chart_restrict, skala_orbital_chart_set_occupations, &
-        skala_orbital_chart_size, skala_orbital_chart_type
+        skala_orbital_chart_set_reference, skala_orbital_chart_size, skala_orbital_chart_type
    USE t_c_g0,                          ONLY: free_C0,&
                                               init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
@@ -199,6 +199,14 @@ CONTAINS
       END DO
       CALL skala_orbital_chart_create(reference, metric, occupations, .TRUE., chart, valid, variable_occupations=.TRUE.)
       IF (.NOT. valid) ERROR STOP 'Symmetry reference metric is not positive'
+      CALL skala_orbital_chart_evaluate(chart, [(0.0_dp, i=1, skala_orbital_chart_size(chart))], coefficients)
+      reference(:, 1) = -reference(:, 1)
+      CALL skala_orbital_chart_set_reference(chart, reference, metric, valid)
+      IF (.NOT. valid) ERROR STOP 'Changed symmetry reference metric is not positive'
+      CALL skala_orbital_chart_evaluate(chart, [(0.0_dp, i=1, skala_orbital_chart_size(chart))], coefficients)
+      CALL check(MAXVAL(ABS(coefficients - reference)), 'Changed orbital reference invalidates the zero cache')
+      CALL skala_orbital_chart_set_reference(chart, reference, metric, valid)
+      IF (.NOT. valid) ERROR STOP 'Repeated symmetry reference metric is not positive'
       CALL skala_orbital_chart_restrict(chart, [1, 1, 2, 2], .TRUE.)
       IF (skala_orbital_chart_size(chart) /= 2) ERROR STOP 'Wrong symmetry-restricted orbital dimension'
       CALL skala_orbital_chart_evaluate(chart, coordinate, coefficients)

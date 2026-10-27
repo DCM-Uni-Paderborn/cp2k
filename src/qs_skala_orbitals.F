@@ -16,23 +16,25 @@ MODULE qs_skala_orbitals
    USE cp_fm_types,                     ONLY: cp_fm_get_submatrix,&
                                               cp_fm_set_submatrix
    USE kinds,                           ONLY: dp
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_cell_gauge_action,&
+                                              kpoint_same_periodic
    USE kpoint_types,                    ONLY: kpoint_env_type,&
+                                              kpoint_sym_type,&
                                               kpoint_type
    USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_scatter
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
-   USE skala_orbital_constraints,       ONLY: skala_orbital_chart_create,&
-                                              skala_orbital_chart_derivative,&
-                                              skala_orbital_chart_evaluate,&
-                                              skala_orbital_chart_release,&
-                                              skala_orbital_chart_set_occupations,&
-                                              skala_orbital_chart_size,&
-                                              skala_orbital_chart_type
+   USE skala_orbital_constraints,       ONLY: &
+        skala_orbital_chart_create, skala_orbital_chart_derivative, skala_orbital_chart_evaluate, &
+        skala_orbital_chart_release, skala_orbital_chart_restrict, &
+        skala_orbital_chart_set_occupations, skala_orbital_chart_set_reference, &
+        skala_orbital_chart_size, skala_orbital_chart_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_skala_orbitals_type, qs_skala_orbitals_create, qs_skala_orbitals_release
+   PUBLIC :: qs_skala_orbitals_adapt_symmetry
    PUBLIC :: qs_skala_orbitals_evaluate, qs_skala_orbitals_canonicalize
    PUBLIC :: qs_skala_orbitals_install_gamma, qs_skala_orbitals_install_kpoint
 
@@ -46,6 +48,194 @@ MODULE qs_skala_orbitals
    END TYPE qs_skala_orbitals_type
 
 CONTAINS
+! **************************************************************************************************
+!> \brief Adapt an initial complete reference inside equal-occupation spaces.
+!>        Supports real one-dimensional unitary characters and a compatible scalar real structure.
+!>        A failed adaptation leaves the state and all native MO/density storage unchanged.
+!> \param state Initial normalized orbital state, before canonical acceptance.
+!> \param metric Original complete charge metric.
+!> \param kpoints Native cell-gauge symmetry metadata.
+!> \param representative Original irreducible point.
+!> \param info Zero success, minus one incompatible reference, minus two unsupported representation.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_adapt_symmetry(state, metric, kpoints, representative, info)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      INTEGER, INTENT(IN)                                :: representative
+      INTEGER, INTENT(OUT)                               :: info
+
+      REAL(dp), PARAMETER                                :: tolerance = 3.e-11_dp
+
+      COMPLEX(dp), ALLOCATABLE :: a(:, :), adapted(:, :), b(:, :), block(:, :), c(:, :), &
+         final(:, :), gram(:, :), label(:, :), original(:, :), q(:, :), source(:, :), work(:)
+      INTEGER                                            :: anti_operation, i, j, m, n, nop, op, &
+                                                            row, status, unitary_count
+      INTEGER, ALLOCATABLE                               :: groups(:), indices(:), operations(:)
+      LOGICAL                                            :: anti, has_anti, valid
+      LOGICAL, ALLOCATABLE                               :: done(:), sector(:)
+      REAL(dp)                                           :: rotation(3, 3)
+      REAL(dp), ALLOCATABLE                              :: real_basis(:, :), real_work(:), &
+                                                            values(:), zero(:)
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+      TYPE(skala_orbital_chart_type)                     :: chart
+
+      info = -2
+      CPASSERT(.NOT. state%canonicalized)
+      CPASSERT(ALLOCATED(state%coefficients))
+      n = SIZE(state%coefficients, 2)
+      CPASSERT(ALL(SHAPE(state%coefficients) == [n, n]))
+      CPASSERT(ALL(SHAPE(metric) == [n, n]))
+      IF (.NOT. ASSOCIATED(kpoints)) RETURN
+      IF (.NOT. ASSOCIATED(kpoints%kp_sym)) RETURN
+      sym => kpoints%kp_sym(representative)%kpoint_sym
+      IF (.NOT. ASSOCIATED(sym)) RETURN
+      IF (.NOT. ASSOCIATED(sym%rotp)) THEN
+         info = 0
+         RETURN
+      END IF
+      operations = PACK([(op, op=1, sym%nwred)], &
+                        [(kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative)), op=1, sym%nwred)])
+      nop = SIZE(operations)
+      IF (nop == 0) THEN
+         info = 0
+         RETURN
+      END IF
+      IF (nop > 16) RETURN
+      has_anti = .FALSE.
+      anti_operation = 0
+      DO i = 1, nop
+         op = operations(i)
+         IF (sym%rotp(op) >= 0) CYCLE
+         has_anti = .TRUE.
+         anti_operation = op
+         EXIT
+      END DO
+      IF (has_anti .AND. kpoint_same_periodic(kpoints%xkp(:, representative), -kpoints%xkp(:, representative))) THEN
+         anti_operation = -1
+      END IF
+      ALLOCATE (a(n, n), done(n), sector(n), groups(n))
+      adapted = state%coefficients
+      CALL orbital_density(state, original)
+      done = .FALSE.
+      DO i = 1, n
+         IF (done(i)) CYCLE
+         sector = state%occupations == state%occupations(i)
+         IF (state%variable_occupations) THEN
+            ! Keep retained thermal bands distinct from the permanently empty completion.
+            DO j = 1, n
+               IF ((i <= state%native%nmo) .NEQV. (j <= state%native%nmo)) sector(j) = .FALSE.
+               IF (i <= state%native%nmo .AND. j <= state%native%nmo) THEN
+                  sector(j) = sector(j) .AND. state%native%eigenvalues(j) == state%native%eigenvalues(i)
+               END IF
+            END DO
+         END IF
+         indices = PACK([(j, j=1, n)], sector)
+         done(indices) = .TRUE.
+         m = SIZE(indices)
+         c = state%coefficients(:, indices)
+         IF (has_anti) THEN
+            CALL kpoint_cell_gauge_action(kpoints, representative, anti_operation, &
+                                          kpoints%xkp(:, representative), a, rotation, anti, status)
+            IF (status /= 0 .OR. .NOT. anti) RETURN
+            source = MATMUL(a, CONJG(c))
+            b = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, source))
+            info = -1
+            DO j = 1, n
+               IF (sector(j)) CYCLE
+               IF (MAXVAL(ABS(b(j, :))) > tolerance) RETURN
+            END DO
+            block = b(indices, :)
+            info = -2
+            IF (MAXVAL(ABS(block - TRANSPOSE(block))) > tolerance) RETURN
+            ALLOCATE (real_basis(2*m, 2*m), values(2*m), real_work(6*m))
+            real_basis(:m, :m) = REAL(block, dp)
+            real_basis(:m, m + 1:) = AIMAG(block)
+            real_basis(m + 1:, :m) = AIMAG(block)
+            real_basis(m + 1:, m + 1:) = -REAL(block, dp)
+            CALL dsyev('V', 'U', 2*m, real_basis, 2*m, values, real_work, SIZE(real_work), status)
+            IF (status /= 0 .OR. COUNT(values > 0.5_dp) /= m) RETURN
+            q = CMPLX(real_basis(:m, m + 1:), real_basis(m + 1:, m + 1:), dp)
+            gram = MATMUL(CONJG(TRANSPOSE(q)), q)
+            CALL zpotrf('L', m, gram, m, status)
+            IF (status /= 0) RETURN
+            CALL ztrsm('R', 'L', 'C', 'N', m, m, CMPLX(1.0_dp, 0.0_dp, dp), gram, m, q, m)
+            c = MATMUL(c, q)
+            IF (MAXVAL(ABS(MATMUL(a, CONJG(c)) - c)) > tolerance) RETURN
+            DEALLOCATE (real_basis, values, real_work)
+         END IF
+         ALLOCATE (label(m, m)); label = 0.0_dp
+         unitary_count = 0
+         DO j = 1, nop
+            op = operations(j)
+            IF (sym%rotp(op) < 0) CYCLE
+            unitary_count = unitary_count + 1
+            IF (unitary_count > 8) RETURN
+            CALL kpoint_cell_gauge_action(kpoints, representative, op, kpoints%xkp(:, representative), &
+                                          a, rotation, anti, status)
+            IF (status /= 0 .OR. anti) RETURN
+            source = MATMUL(a, c)
+            b = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, source))
+            info = -1
+            DO row = 1, n
+               IF (sector(row)) CYCLE
+               IF (MAXVAL(ABS(b(row, :))) > tolerance) RETURN
+            END DO
+            block = MATMUL(CONJG(TRANSPOSE(c)), MATMUL(metric, source))
+            info = -2
+            IF (MAXVAL(ABS(block - CONJG(TRANSPOSE(block)))) > tolerance) RETURN
+            IF (has_anti) THEN
+               IF (MAXVAL(ABS(AIMAG(block))) > tolerance) RETURN
+            END IF
+            label = label + REAL(2**(unitary_count - 1), dp)*block
+         END DO
+         ALLOCATE (values(m), work(2*m), real_work(3*m))
+         IF (has_anti) THEN
+            real_basis = REAL(label, dp)
+            CALL dsyev('V', 'U', m, real_basis, m, values, real_work, SIZE(real_work), status)
+            label = CMPLX(real_basis, 0.0_dp, dp)
+            DEALLOCATE (real_basis)
+         ELSE
+            CALL zheev('V', 'U', m, label, m, values, work, SIZE(work), real_work, status)
+         END IF
+         IF (status /= 0) RETURN
+         adapted(:, indices) = MATMUL(c, label)
+         DEALLOCATE (label, values, work, real_work, indices)
+      END DO
+      groups = 1
+      DO j = 1, nop
+         op = operations(j)
+         CALL kpoint_cell_gauge_action(kpoints, representative, op, kpoints%xkp(:, representative), &
+                                       a, rotation, anti, status)
+         IF (status /= 0) RETURN
+         source = adapted
+         IF (anti) source = CONJG(source)
+         b = MATMUL(CONJG(TRANSPOSE(adapted)), MATMUL(metric, MATMUL(a, source)))
+         DO i = 1, n
+            IF (ABS(AIMAG(b(i, i))) > tolerance .OR. ABS(ABS(REAL(b(i, i), dp)) - 1.0_dp) > tolerance) RETURN
+            IF (REAL(b(i, i), dp) < 0.0_dp) groups(i) = groups(i) + 2**(j - 1)
+            b(i, i) = 0.0_dp
+         END DO
+         IF (MAXVAL(ABS(b)) > tolerance) RETURN
+      END DO
+      chart = state%chart
+      CALL skala_orbital_chart_set_reference(chart, adapted, metric, valid)
+      IF (.NOT. valid) RETURN
+      CALL skala_orbital_chart_restrict(chart, groups, has_anti)
+      ALLOCATE (zero(skala_orbital_chart_size(chart)), final(n, n)); zero = 0.0_dp
+      CALL skala_orbital_chart_evaluate(chart, zero, final)
+      source = final
+      DO i = 1, n
+         source(:, i) = source(:, i)*state%occupations(i)
+      END DO
+      b = MATMUL(source, CONJG(TRANSPOSE(final)))
+      info = -1
+      IF (MAXVAL(ABS(b - original)) > tolerance) RETURN
+      CALL skala_orbital_chart_release(state%chart)
+      state%chart = chart
+      state%coefficients = final
+      info = 0
+   END SUBROUTINE qs_skala_orbitals_adapt_symmetry
 
 ! **************************************************************************************************
 !> \brief Borrow native MOs and complete their missing virtual space in the original charge metric.

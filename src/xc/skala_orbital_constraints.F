@@ -25,6 +25,7 @@ MODULE skala_orbital_constraints
              skala_orbital_chart_response_inverse, skala_orbital_chart_density_response, &
              skala_orbital_chart_operator_response
 
+   PUBLIC :: skala_orbital_chart_set_reference
    PUBLIC :: skala_orbital_chart_restrict
 
    TYPE skala_orbital_chart_type
@@ -293,6 +294,41 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE skala_orbital_chart_create
+
+! **************************************************************************************************
+!> \brief Change an initial orbital reference while retaining its occupation and rotation layout.
+!>        The supplied reference spans the same complete space. The caller checks density and
+!>        symmetry preservation. Apply only at zero coordinates before starting a new search.
+!> \param chart Initial orbital chart, possibly already evaluated at zero coordinates.
+!> \param coefficients New complete reference in the same AO order.
+!> \param metric Original Hermitian charge metric.
+!> \param valid Whether the new reference has a positive metric Gram matrix.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_set_reference(chart, coefficients, metric, valid)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :), metric(:, :)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      COMPLEX(dp), ALLOCATABLE                           :: gram(:, :)
+      INTEGER                                            :: info, n, rows
+
+      CPASSERT(ALLOCATED(chart%base))
+      IF (chart%evaluated) THEN
+         CPASSERT(ALL(chart%coordinate == 0.0_dp))
+      END IF
+      CPASSERT(ALL(SHAPE(coefficients) == SHAPE(chart%base)))
+      rows = SIZE(coefficients, 1)
+      n = SIZE(coefficients, 2)
+      CPASSERT(ALL(SHAPE(metric) == [rows, rows]))
+      gram = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, coefficients))
+      CALL zpotrf('L', n, gram, n, info)
+      valid = info == 0
+      IF (.NOT. valid) RETURN
+      chart%base = coefficients
+      CALL ztrsm('R', 'L', 'C', 'N', rows, n, CMPLX(1.0_dp, 0.0_dp, dp), gram, n, chart%base, rows)
+      chart%coordinate = 0.0_dp
+      chart%evaluated = .FALSE.
+   END SUBROUTINE skala_orbital_chart_set_reference
 
 ! **************************************************************************************************
 !> \brief Restrict orbital rotations to supplied symmetry subspaces without changing occupations.

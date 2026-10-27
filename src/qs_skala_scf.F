@@ -50,7 +50,8 @@ MODULE qs_skala_scf
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
-   USE qs_skala_orbitals,               ONLY: qs_skala_orbitals_canonicalize,&
+   USE qs_skala_orbitals,               ONLY: qs_skala_orbitals_adapt_symmetry,&
+                                              qs_skala_orbitals_canonicalize,&
                                               qs_skala_orbitals_create,&
                                               qs_skala_orbitals_evaluate,&
                                               qs_skala_orbitals_install_gamma,&
@@ -104,6 +105,7 @@ MODULE qs_skala_scf
 
    ! Atomic energy unit for temperature-independent frozen-Hamiltonian occupation curvature.
    REAL(dp), PARAMETER :: thermal_energy_unit = 1.0_dp
+   PUBLIC :: qs_skala_scf_create_symmetric
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
    PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_inspect, qs_skala_scf_value, qs_skala_scf_values, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
@@ -246,9 +248,44 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: valid
       LOGICAL, INTENT(IN), OPTIONAL                      :: thermal
 
+      CALL create_orbital_state(state, qs_env, valid, thermal, .FALSE.)
+   END SUBROUTINE qs_skala_scf_create
+
+! **************************************************************************************************
+!> \brief Create a symmetry-adapted state while preserving the initial native density and occupations.
+!>        The caller must already have selected an admissible native symmetry group.
+!> \param state ...
+!> \param qs_env ...
+!> \param valid Every requested initial block admits the supplied symmetry.
+!> \param thermal ...
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_create_symmetric(state, qs_env, valid, thermal)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(OUT)                               :: valid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: thermal
+
+      CALL create_orbital_state(state, qs_env, valid, thermal, .TRUE.)
+   END SUBROUTINE qs_skala_scf_create_symmetric
+
+! **************************************************************************************************
+!> \brief Shared initialization with an explicit request for compatible orbital symmetry.
+!> \param state ...
+!> \param qs_env ...
+!> \param valid ...
+!> \param thermal ...
+!> \param enforce_symmetry ...
+! **************************************************************************************************
+   SUBROUTINE create_orbital_state(state, qs_env, valid, thermal, enforce_symmetry)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(OUT)                               :: valid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: thermal
+      LOGICAL, INTENT(IN)                                :: enforce_symmetry
+
       COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :), metric(:, :)
       INTEGER                                            :: failed, i, ik, local, nk, nl, ns, &
-                                                            offset, spin
+                                                            offset, spin, status
       LOGICAL                                            :: block_valid, complex_orbitals, owner
       REAL(dp)                                           :: weight
       REAL(dp), ALLOCATABLE                              :: diagonal(:), zero(:)
@@ -321,6 +358,10 @@ CONTAINS
             END IF
             CALL qs_skala_orbitals_create(state%orbitals(local, spin), native, metric, &
                                           complex_orbitals, weight, block_valid, variable_occupations=state%thermal)
+            IF (block_valid .AND. enforce_symmetry .AND. state%bloch) THEN
+               CALL qs_skala_orbitals_adapt_symmetry(state%orbitals(local, spin), metric, state%kpoints, ik, status)
+               block_valid = status == 0
+            END IF
             IF (.NOT. block_valid) failed = 1
             IF (block_valid .AND. state%thermal) THEN
                IF (state%bloch) THEN
@@ -363,7 +404,7 @@ CONTAINS
          CALL update_thermal_state(state, state%coordinate(state%orbital_size + 1:))
          CALL initialize_thermal_scales(state)
       END IF
-   END SUBROUTINE qs_skala_scf_create
+   END SUBROUTINE create_orbital_state
 
 ! **************************************************************************************************
 !> \brief Release owned charts and buffers without releasing or resetting the borrowed native QS state.
@@ -3379,6 +3420,9 @@ CONTAINS
       END IF
       IF (valid) THEN
          ALLOCATE (canonical_coordinate(qs_skala_scf_size(canonical)), SOURCE=0.0_dp)
+         ! Canonical acceptance checks every physical direction, including those omitted by symmetry.
+         DEALLOCATE (gradient)
+         ALLOCATE (gradient(qs_skala_scf_size(canonical)))
          CALL qs_skala_scf_inspect(canonical, energy, gradient)
          CALL qs_skala_scf_selected(canonical, selected_points, selected_domains, selected_spins, &
                                     selected_descriptors, selected_targets, selected_tolerances, valid)
