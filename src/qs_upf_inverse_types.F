@@ -198,6 +198,10 @@ MODULE qs_upf_inverse_types
       REAL(dp), ALLOCATABLE :: xc_core(:, :, :)
       REAL(dp), ALLOCATABLE :: xc_fields(:, :, :, :), xc_kweights(:)
       COMPLEX(dp), ALLOCATABLE :: xc_matrices(:, :, :, :)
+      ! A scalar external field is linear in P. Release its spin-free operator with this geometry.
+      REAL(dp), ALLOCATABLE :: external_samples(:, :, :)
+      COMPLEX(dp), ALLOCATABLE :: external_operator(:, :, :)
+      REAL(dp) :: external_core_energy = 0.0_dp
    END TYPE qs_upf_inverse_scf_type
 
    PUBLIC :: qs_upf_inverse_type, qs_upf_inverse_grid_type, qs_upf_inverse_augmentation_type

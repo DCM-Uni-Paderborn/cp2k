@@ -122,9 +122,10 @@ CONTAINS
 !> \param cell_response Lattice derivative with vectors in columns, required with response.
 !> \param coefficients_response Defining inverse coefficient responses, required with response.
 !> \param potential_response Optional derivative of the sampled potential on the moving grid.
+!> \param core_energy Optional full frozen-core energy, supplied with operators and counted once.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_local_potential(qs_env, potential, energy, operators, response, atom_response, &
-                                             cell_response, coefficients_response, potential_response)
+                                             cell_response, coefficients_response, potential_response, core_energy)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       REAL(dp), INTENT(OUT)                              :: energy
@@ -133,6 +134,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: potential_response
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: core_energy
 
       COMPLEX(dp), ALLOCATABLE :: ao_operator(:, :), component(:, :, :), correction(:), &
          covector(:), derivative(:), gamma(:, :), matrix(:, :, :), paw_density(:, :), &
@@ -140,7 +142,7 @@ CONTAINS
       INTEGER                                            :: a, center, first, info, k, kind, last, &
                                                             nao, nk, spin
       LOGICAL                                            :: valid_shape
-      REAL(dp)                                           :: core_energy, inverse_cell(3, 3), &
+      REAL(dp)                                           :: core_part, inverse_cell(3, 3), &
                                                             strain(3, 3), trace_strain
       REAL(dp), ALLOCATABLE                              :: g_response(:, :), multiplicity(:), &
                                                             paw_operator(:, :), radial(:, :), &
@@ -159,6 +161,10 @@ CONTAINS
 
       energy = 0.0_dp
       IF (PRESENT(response)) response = 0.0_dp
+      IF (PRESENT(core_energy)) THEN
+         CPASSERT(PRESENT(operators))
+         core_energy = 0.0_dp
+      END IF
       CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho, qs_kind_set=kinds)
       CALL get_ks_env(ks_env, upf_inverse=state)
       IF (.NOT. ASSOCIATED(state)) RETURN
@@ -293,12 +299,13 @@ CONTAINS
             ALLOCATE (paw_operator(last - first + 1, last - first + 1))
             IF (field%pw_grid%para%mode == PW_MODE_LOCAL) THEN
                CALL qs_upf_inverse_paw_density_adjoint(state%paw(kind), field%pw_grid%g, &
-                             frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_energy)
+                               frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_part)
             ELSE
                CALL qs_upf_inverse_paw_density_adjoint(state%paw(kind), field%pw_grid%g, &
-                           frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_energy, &
+                             frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_part, &
                                                        field%pw_grid%para%group%mp_comm_type)
             END IF
+            IF (PRESENT(core_energy)) core_energy = core_energy + core_part
             DO k = 1, nk
                CALL select_frame(state, k, frame, augmentation)
                operators(:, :, k) = operators(:, :, k) + MATMUL(CONJG(TRANSPOSE(frame%coefficients(first:last, :))), &

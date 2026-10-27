@@ -15,7 +15,8 @@ MODULE qs_external_potential
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_control_types,                ONLY: dft_control_type
-   USE cp_dbcsr_api,                    ONLY: dbcsr_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
+                                              dbcsr_type
    USE cp_log_handling,                 ONLY: cp_to_string
    USE cp_realspace_grid_cube,          ONLY: cp_cube_to_pw
    USE fparser,                         ONLY: evalf,&
@@ -50,6 +51,8 @@ MODULE qs_external_potential
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_local_potential
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_integrate_background
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE string_utilities,                ONLY: compress
@@ -96,22 +99,28 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :)
-      INTEGER                                            :: bounds(2, 3), i, info, ispin, j, k, n
+      INTEGER                                            :: bounds(2, 3), changed, i, info, ispin, &
+                                                            j, k, n
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
                                                             trace_strain
       REAL(dp), ALLOCATABLE                              :: gradient(:, :), points(:, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(pw_r3d_rs_type)                               :: field_response, potential
       TYPE(pw_r3d_rs_type), POINTER                      :: density(:), vee
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: input, section
 
       energy = 0.0_dp
       IF (PRESENT(response)) response = 0.0_dp
-      CALL get_qs_env(qs_env, dft_control=control, ks_env=ks_env, vee=vee, cell=cell, rho=rho)
+      CALL get_qs_env(qs_env, dft_control=control, ks_env=ks_env, vee=vee, cell=cell, rho=rho, para_env=para_env)
       IF (.NOT. control%apply_external_potential) RETURN
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      IF (.NOT. ASSOCIATED(inverse)) RETURN
+      IF (.NOT. inverse%enabled) RETURN
       CALL potential%create(vee%pw_grid)
       potential%array = -vee%array
       IF (PRESENT(response)) THEN
@@ -160,15 +169,65 @@ CONTAINS
                        pw_integral_ab(density(ispin), field_response)
          END DO
          CALL field_response%release()
-      ELSE IF (PRESENT(hamiltonian)) THEN
-         CPASSERT(PRESENT(spin))
-         CALL qs_upf_inverse_local_potential(qs_env, potential, energy, operators)
-         CALL qs_upf_inverse_scf_integrate_background(ks_env, operators, hamiltonian, spin, additive=.TRUE.)
       ELSE
-         CALL qs_upf_inverse_local_potential(qs_env, potential, energy)
+         changed = 1
+         IF (ALLOCATED(inverse%external_operator) .AND. ALLOCATED(inverse%external_samples)) THEN
+            IF (ALL(SHAPE(inverse%external_samples) == SHAPE(potential%array))) THEN
+               IF (ALL(inverse%external_samples == potential%array)) changed = 0
+            END IF
+         END IF
+         ! A change on any slab invalidates every rank before the collective atomic transpose.
+         CALL para_env%max(changed)
+         IF (changed /= 0) THEN
+            CALL qs_upf_inverse_local_potential(qs_env, potential, energy, operators, &
+                                                core_energy=inverse%external_core_energy)
+            CALL MOVE_ALLOC(operators, inverse%external_operator)
+            IF (ALLOCATED(inverse%external_samples)) DEALLOCATE (inverse%external_samples)
+            ALLOCATE (inverse%external_samples, SOURCE=potential%array)
+         END IF
+         CALL external_upf_trace(ks_env, inverse%external_operator, energy)
+         energy = energy + inverse%external_core_energy
+         IF (PRESENT(hamiltonian)) THEN
+            CPASSERT(PRESENT(spin))
+            CALL qs_upf_inverse_scf_integrate_background(ks_env, inverse%external_operator, hamiltonian, spin, additive=.TRUE.)
+         END IF
       END IF
       CALL potential%release()
    END SUBROUTINE external_upf_potential
+
+! **************************************************************************************************
+!> \brief Trace of a fixed scalar-field operator with the current native spin densities.
+!>        Occupations are unweighted in each physical Bloch slice. Mesh weights enter once here.
+!> \param ks_env Current native density and inverse frame owners.
+!> \param operators Spin-free unweighted operator, indexed by physical k contribution.
+!> \param energy Replicated electronic coupling, excluding the frozen-core constant.
+! **************************************************************************************************
+   SUBROUTINE external_upf_trace(ks_env, operators, energy)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: energy
+
+      COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
+      INTEGER                                            :: k, spin
+      TYPE(dbcsr_p_type), POINTER                        :: density(:, :)
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+
+      CALL get_ks_env(ks_env, rho=rho, upf_inverse=inverse)
+      CALL qs_rho_get(rho, rho_ao_kp=density)
+      energy = 0.0_dp
+      DO spin = 1, SIZE(density, 1)
+         IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_kpoints_density(inverse%bloch, spin, matrix)
+            DO k = 1, SIZE(matrix, 3)
+               energy = energy + inverse%bloch%weights(k)*REAL(SUM(CONJG(operators(:, :, k))*matrix(:, :, k)), dp)
+            END DO
+         ELSE
+            CALL qs_upf_inverse_matrix_gather(inverse%frame%ao, density(spin, 1)%matrix, gamma)
+            energy = energy + REAL(SUM(CONJG(operators(:, :, 1))*gamma), dp)
+         END IF
+      END DO
+   END SUBROUTINE external_upf_trace
 
 ! **************************************************************************************************
 !> \brief  Computes the external potential on the grid
