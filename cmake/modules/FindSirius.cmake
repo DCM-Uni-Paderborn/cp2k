@@ -5,7 +5,7 @@
 #!   SPDX-License-Identifier: GPL-2.0-or-later                                                     !
 #!-------------------------------------------------------------------------------------------------!
 
-find_package(sirius 7.7.0 CONFIG REQUIRED)
+find_package(sirius 7.12 CONFIG REQUIRED)
 
 # Only the Skala bridge needs the external-XC API before its numbered release.
 if(CP2K_USE_LIBTORCH)
