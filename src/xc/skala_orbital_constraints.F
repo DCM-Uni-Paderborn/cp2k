@@ -25,6 +25,8 @@ MODULE skala_orbital_constraints
              skala_orbital_chart_response_inverse, skala_orbital_chart_density_response, &
              skala_orbital_chart_operator_response
 
+   PUBLIC :: skala_orbital_chart_restrict
+
    TYPE skala_orbital_chart_type
       PRIVATE
       COMPLEX(dp), ALLOCATABLE :: base(:, :), coefficients(:, :), inverse(:, :), rotation(:, :), &
@@ -291,6 +293,41 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE skala_orbital_chart_create
+
+! **************************************************************************************************
+!> \brief Restrict orbital rotations to supplied symmetry subspaces without changing occupations.
+!>        The caller supplies a complete reference already adapted to these subspaces and checks
+!>        its covariance in the original charge metric. Apply only before the first trial evaluation.
+!>        Real generators additionally preserve conjugation in a compatible antiunitary frame.
+!>        Density averaging, occupation rounding and a change of the reference are not performed.
+!> \param chart Unevaluated metric-normalized orbital chart.
+!> \param rotation_groups Positive subspace label for every reference column.
+!> \param real_generators Keep only real rotations in the supplied reference frame.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_restrict(chart, rotation_groups, real_generators)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      INTEGER, INTENT(IN)                                :: rotation_groups(:)
+      LOGICAL, INTENT(IN)                                :: real_generators
+
+      INTEGER                                            :: i, nkeep
+      LOGICAL, ALLOCATABLE                               :: keep(:)
+
+      CPASSERT(ALLOCATED(chart%base) .AND. ALLOCATED(chart%coordinate))
+      CPASSERT(.NOT. chart%evaluated)
+      CPASSERT(SIZE(rotation_groups) == SIZE(chart%base, 2))
+      CPASSERT(ALL(rotation_groups > 0))
+      ALLOCATE (keep(SIZE(chart%coordinate)))
+      DO i = 1, SIZE(keep)
+         keep(i) = rotation_groups(chart%pairs(1, i)) == rotation_groups(chart%pairs(2, i))
+         IF (real_generators) keep(i) = keep(i) .AND. chart%component(i) == 1
+      END DO
+      nkeep = COUNT(keep)
+      chart%pairs = RESHAPE(PACK(chart%pairs, SPREAD(keep, 1, 2)), [2, nkeep])
+      chart%component = PACK(chart%component, keep)
+      DEALLOCATE (chart%coordinate)
+      ALLOCATE (chart%coordinate(nkeep), SOURCE=0.0_dp)
+      chart%coordinate_scale = PACK(chart%coordinate_scale, keep)
+   END SUBROUTINE skala_orbital_chart_restrict
 
 ! **************************************************************************************************
 !> \brief Update physical occupations without changing the retained orbital coordinates.

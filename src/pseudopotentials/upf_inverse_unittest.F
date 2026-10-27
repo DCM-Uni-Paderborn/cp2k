@@ -76,11 +76,14 @@ PROGRAM upf_inverse_unittest
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
-   USE skala_orbital_constraints,       ONLY: skala_constrained_stationarity,&
-                                              skala_constraint_chart_create,&
-                                              skala_constraint_chart_restore,&
-                                              skala_constraint_chart_type,&
-                                              skala_cusp_admissibility
+   USE skala_orbital_constraints,       ONLY: &
+        skala_constrained_stationarity, skala_constraint_chart_create, &
+        skala_constraint_chart_restore, skala_constraint_chart_type, skala_cusp_admissibility, &
+        skala_orbital_chart_create, skala_orbital_chart_density_response, &
+        skala_orbital_chart_derivative, skala_orbital_chart_evaluate, &
+        skala_orbital_chart_operator_response, skala_orbital_chart_release, &
+        skala_orbital_chart_restrict, skala_orbital_chart_set_occupations, &
+        skala_orbital_chart_size, skala_orbital_chart_type
    USE t_c_g0,                          ONLY: free_C0,&
                                               init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
@@ -142,6 +145,7 @@ PROGRAM upf_inverse_unittest
    CALL check_constrained_curvature()
    CALL check_dependent_constraints()
    CALL check_cusp_normals()
+   CALL check_orbital_symmetry()
    CALL check_lattice_inverse()
    CALL check_projector_density()
    CALL check_density_residual()
@@ -159,6 +163,86 @@ PROGRAM upf_inverse_unittest
    CALL mp_world_finalize()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Preserve symmetry and occupations while retaining the orbital differential and curvature.
+! **************************************************************************************************
+   SUBROUTINE check_orbital_symmetry()
+      REAL(dp), PARAMETER :: coordinate(2) = [0.13_dp, -0.17_dp], &
+         direction(2) = [0.31_dp, -0.47_dp], &
+         occupation_direction(4) = [0.07_dp, -0.07_dp, -0.03_dp, 0.03_dp], &
+         occupations(4) = [1.7_dp, 0.3_dp, 1.2_dp, 0.8_dp], step = 1.e-5_dp
+
+      COMPLEX(dp) :: anti(4, 4), coefficients(4, 4), density(4, 4), h(4, 4), metric(4, 4), &
+         minus(4, 4), plus(4, 4), reference(4, 4), response(4, 4), rotation(4, 4), weighted(4, 4), &
+         zero(4, 4)
+      INTEGER                                            :: i, j
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: analytic, derivative(2), &
+                                                            gradient_minus(2), gradient_plus(2), &
+                                                            hessian(2), phase
+      TYPE(skala_orbital_chart_type)                     :: chart
+
+      reference = 0.0_dp
+      metric = 0.0_dp
+      rotation = 0.0_dp
+      anti = 0.0_dp
+      zero = 0.0_dp
+      DO i = 1, 4
+         phase = 0.2_dp*i
+         metric(i, i) = REAL(i, dp)
+         reference(i, i) = EXP(CMPLX(0.0_dp, phase, dp))/SQRT(REAL(i, dp))
+         rotation(i, i) = MERGE(1.0_dp, -1.0_dp, i <= 2)
+         anti(i, i) = EXP(CMPLX(0.0_dp, 2.0_dp*phase, dp))
+         DO j = 1, 4
+            h(i, j) = CMPLX(0.11_dp*(i + j) + 0.03_dp*i*j, 0.07_dp*(i - j), dp)
+         END DO
+      END DO
+      CALL skala_orbital_chart_create(reference, metric, occupations, .TRUE., chart, valid, variable_occupations=.TRUE.)
+      IF (.NOT. valid) ERROR STOP 'Symmetry reference metric is not positive'
+      CALL skala_orbital_chart_restrict(chart, [1, 1, 2, 2], .TRUE.)
+      IF (skala_orbital_chart_size(chart) /= 2) ERROR STOP 'Wrong symmetry-restricted orbital dimension'
+      CALL skala_orbital_chart_evaluate(chart, coordinate, coefficients)
+      weighted = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, coefficients))
+      DO i = 1, 4
+         weighted(i, i) = weighted(i, i) - 1.0_dp
+      END DO
+      CALL check(MAXVAL(ABS(weighted)), 'Restricted orbital metric normalization')
+      weighted = coefficients
+      DO i = 1, 4
+         weighted(:, i) = weighted(:, i)*occupations(i)
+      END DO
+      density = MATMUL(weighted, CONJG(TRANSPOSE(coefficients)))
+      CALL check(MAXVAL(ABS(MATMUL(rotation, MATMUL(density, rotation)) - density)), 'Unitary orbital restriction')
+      CALL check(MAXVAL(ABS(MATMUL(anti, MATMUL(CONJG(density), CONJG(TRANSPOSE(anti)))) - density)), &
+                 'Conjugating orbital restriction')
+      CALL skala_orbital_chart_derivative(chart, h, derivative)
+      CALL skala_orbital_chart_density_response(chart, direction, response, occupation_direction)
+      analytic = SUM(derivative*direction)
+      DO i = 1, 4
+         analytic = analytic + occupation_direction(i)*REAL(DOT_PRODUCT(coefficients(:, i), &
+                                                                        MATMUL(h, coefficients(:, i))), dp)
+      END DO
+      weighted = MATMUL(h, response)
+      CALL check(ABS(SUM([(REAL(weighted(i, i), dp), i=1, 4)]) - analytic), 'Restricted density adjoint')
+      CALL skala_orbital_chart_operator_response(chart, direction, h, zero, hessian, occupation_direction)
+      CALL skala_orbital_chart_set_occupations(chart, occupations + step*occupation_direction)
+      CALL skala_orbital_chart_evaluate(chart, coordinate + step*direction, plus)
+      CALL skala_orbital_chart_derivative(chart, h, gradient_plus)
+      CALL skala_orbital_chart_set_occupations(chart, occupations - step*occupation_direction)
+      CALL skala_orbital_chart_evaluate(chart, coordinate - step*direction, minus)
+      CALL skala_orbital_chart_derivative(chart, h, gradient_minus)
+      CALL check(MAXVAL(ABS((gradient_plus - gradient_minus)/(2.0_dp*step) - hessian)), &
+                 'Restricted orbital Hessian', 1.e-8_dp)
+      CALL skala_orbital_chart_release(chart)
+      CALL skala_orbital_chart_create(reference, metric, occupations, .TRUE., chart, valid)
+      IF (.NOT. valid) ERROR STOP 'Empty symmetry reference is not positive'
+      CALL skala_orbital_chart_restrict(chart, [1, 2, 3, 4], .TRUE.)
+      IF (skala_orbital_chart_size(chart) /= 0) ERROR STOP 'Forbidden orbital rotations retained'
+      CALL skala_orbital_chart_evaluate(chart, [REAL(dp) ::], coefficients)
+      CALL check(MAXVAL(ABS(coefficients - reference)), 'Empty orbital restriction preserves reference')
+      CALL skala_orbital_chart_release(chart)
+   END SUBROUTINE check_orbital_symmetry
+
 ! **************************************************************************************************
 !> \brief Resolve an anisotropic quadratic on a curved constraint below the energy resolution.
 ! **************************************************************************************************
