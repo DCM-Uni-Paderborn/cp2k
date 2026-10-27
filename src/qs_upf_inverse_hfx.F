@@ -3238,9 +3238,11 @@ CONTAINS
                                       coefficient_images, coupled_coefficients, coupled_response, difference_cache)
          ELSE
             CALL lattice_coefficients(frame, center, left_range, -center_image, overlaps%left, &
-                                      coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
+                                      coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                      projection_cache=difference_cache)
             CALL lattice_coefficients(frame, center, right_range, ao_image - center_image, overlaps%right, &
-                                      coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
+                                      coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                      projection_cache=difference_cache)
          END IF
       END IF
       CPASSERT(ALL(SHAPE(overlaps%left) == [np, nl]))
@@ -4015,14 +4017,17 @@ CONTAINS
          hi = MIN(last, ao_range(2))
          IF (hi < lo) CYCLE
          ALLOCATE (full(nproj, last - first + 1))
+         NULLIFY (ENTRY)
+         IF (PRESENT(projection_cache)) THEN
+            CALL lattice_projection_entry(projection_cache, [center, b, image], nproj, last - first + 1, ENTRY)
+         END IF
          IF (PRESENT(response)) THEN
             CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
             ALLOCATE (dfull(nproj, last - first + 1))
-            NULLIFY (ENTRY)
-            IF (PRESENT(projection_cache)) THEN
-               CALL lattice_projection_entry(projection_cache, [center, b, image], nproj, last - first + 1, ENTRY)
-            END IF
             IF (ASSOCIATED(ENTRY)) THEN
+               IF (ALLOCATED(entry%values)) THEN
+                  IF (SIZE(entry%values, 3) == 1) DEALLOCATE (entry%values)
+               END IF
                IF (.NOT. ALLOCATED(entry%values)) THEN
                   ALLOCATE (entry%values(nproj, last - first + 1, 4))
                   DO axis = 1, 3
@@ -4051,9 +4056,20 @@ CONTAINS
             response(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = dfull(:, lo - first + 1:hi - first + 1)
             DEALLOCATE (dfull)
          ELSE
-            CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
-                                               frame%positions(:, atom), frame%positions(:, b), frame%cell, images, &
-                                               [0.0_dp, 0.0_dp, 0.0_dp], full)
+            IF (ASSOCIATED(ENTRY)) THEN
+               IF (.NOT. ALLOCATED(entry%values)) THEN
+                  ALLOCATE (entry%values(nproj, last - first + 1, 1))
+                  CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
+                                                     frame%positions(:, atom), frame%positions(:, b), frame%cell, images, &
+                                                     [0.0_dp, 0.0_dp, 0.0_dp], full)
+                  entry%values(:, :, 1) = full
+               END IF
+               full = entry%values(:, :, 1)
+            ELSE
+               CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
+                                                  frame%positions(:, atom), frame%positions(:, b), frame%cell, images, &
+                                                  [0.0_dp, 0.0_dp, 0.0_dp], full)
+            END IF
          END IF
          coefficients(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = full(:, lo - first + 1:hi - first + 1)
          DEALLOCATE (full)
