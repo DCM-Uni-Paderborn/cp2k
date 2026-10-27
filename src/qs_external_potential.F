@@ -29,8 +29,8 @@ MODULE qs_external_potential
                                               default_string_length,&
                                               dp,&
                                               int_8
+   USE mathlib,                         ONLY: invmat
    USE maxwell_solver_interface,        ONLY: maxwell_solver
-   USE message_passing,                 ONLY: mp_comm_type
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL
    USE pw_methods,                      ONLY: pw_zero
@@ -72,10 +72,9 @@ CONTAINS
       INTEGER                                            :: handle, i, j, k
       INTEGER(kind=int_8)                                :: npoints
       INTEGER, DIMENSION(2, 3)                           :: bo_global, bo_local
-      REAL(kind=dp)                                      :: dvol, scaling_factor
-      REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: efunc, grid_p_i, grid_p_j, grid_p_k
+      REAL(kind=dp)                                      :: scaling_factor
+      REAL(kind=dp), ALLOCATABLE, DIMENSION(:)           :: efunc
       REAL(kind=dp), ALLOCATABLE, DIMENSION(:, :)        :: grid_p
-      REAL(kind=dp), DIMENSION(3)                        :: dr
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(pw_r3d_rs_type), POINTER                      :: v_ee
       TYPE(section_vals_type), POINTER                   :: ext_pot_section, input
@@ -99,8 +98,6 @@ CONTAINS
                CALL get_qs_env(qs_env, input=input)
                ext_pot_section => section_vals_get_subs_vals(input, "DFT%EXTERNAL_POTENTIAL")
 
-               dr = v_ee%pw_grid%dr
-               dvol = v_ee%pw_grid%dvol
                CALL pw_zero(v_ee)
 
                bo_local = v_ee%pw_grid%bounds_local
@@ -111,33 +108,15 @@ CONTAINS
                          INT(bo_local(2, 3) - bo_local(1, 3) + 1, kind=int_8)
                ALLOCATE (efunc(npoints))
                ALLOCATE (grid_p(3, npoints))
-               ALLOCATE (grid_p_i(bo_local(1, 1):bo_local(2, 1)))
-               ALLOCATE (grid_p_j(bo_local(1, 2):bo_local(2, 2)))
-               ALLOCATE (grid_p_k(bo_local(1, 3):bo_local(2, 3)))
-
-               DO i = bo_local(1, 1), bo_local(2, 1)
-                  grid_p_i(i) = (i - bo_global(1, 1))*dr(1)
-               END DO
-               DO j = bo_local(1, 2), bo_local(2, 2)
-                  grid_p_j(j) = (j - bo_global(1, 2))*dr(2)
-               END DO
-               DO k = bo_local(1, 3), bo_local(2, 3)
-                  grid_p_k(k) = (k - bo_global(1, 3))*dr(3)
-               END DO
-
                npoints = 0
                DO k = bo_local(1, 3), bo_local(2, 3)
                   DO j = bo_local(1, 2), bo_local(2, 2)
                      DO i = bo_local(1, 1), bo_local(2, 1)
                         npoints = npoints + 1
-                        grid_p(1, npoints) = grid_p_i(i)
-                        grid_p(2, npoints) = grid_p_j(j)
-                        grid_p(3, npoints) = grid_p_k(k)
+                        grid_p(:, npoints) = MATMUL(v_ee%pw_grid%dh, REAL([i, j, k] - bo_global(1, :), dp))
                      END DO
                   END DO
                END DO
-
-               DEALLOCATE (grid_p_i, grid_p_j, grid_p_k)
 
                CALL get_external_potential(grid_p, ext_pot_section, func=efunc)
 
@@ -361,8 +340,8 @@ CONTAINS
    END SUBROUTINE get_external_potential
 
 ! **************************************************************************************************
-!> \brief                  subroutine that interpolates the value of the external
-!>                         potential at position r based on the values on the realspace grid
+!> \brief Trilinear external potential and the Cartesian derivative of the same interpolant.
+!>        Periodic image wrapping and local/distributed grids use the full cell matrix.
 !> \param r                 ...
 !> \param grid             external potential pw grid, vee
 !> \param func             value of vee at r
@@ -370,175 +349,70 @@ CONTAINS
 !> \param calc_derivatives calc dfunc
 ! **************************************************************************************************
    SUBROUTINE interpolate_external_potential(r, grid, func, dfunc, calc_derivatives)
-      REAL(KIND=dp), DIMENSION(3), INTENT(IN)            :: r
+      REAL(KIND=dp), INTENT(IN)                          :: r(3)
       TYPE(pw_r3d_rs_type), POINTER                      :: grid
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: func, dfunc(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: calc_derivatives
 
       CHARACTER(len=*), PARAMETER :: routineN = 'interpolate_external_potential'
 
-      INTEGER                                            :: buffer_i, buffer_j, buffer_k, &
-                                                            data_source, fd_extra_point, handle, &
-                                                            i, i_pbc, ip, j, j_pbc, k, k_pbc, &
-                                                            my_rank, num_pe, tag
-      INTEGER, DIMENSION(3)                              :: lbounds, lbounds_local, lower_inds, &
-                                                            ubounds, ubounds_local, upper_inds
+      INTEGER                                            :: axis, corner(3), grid_index(3), handle, &
+                                                            i, info, j, k, lower(3), node(3), &
+                                                            upper(3)
       LOGICAL                                            :: check, my_force
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: bcast_buffer
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: grid_buffer
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :)  :: dgrid
-      REAL(KIND=dp), DIMENSION(3)                        :: dr, subgrid_origin
-      TYPE(mp_comm_type)                                 :: gid
+      REAL(dp)                                           :: buffer(0:1, 0:1, 0:1), derivative(3), &
+                                                            grid_fraction(3), inverse(3, 3), &
+                                                            point(3), value, weight(3)
 
       CALL timeset(routineN, handle)
       my_force = .FALSE.
       IF (PRESENT(calc_derivatives)) my_force = calc_derivatives
       check = PRESENT(dfunc) .EQV. PRESENT(calc_derivatives)
       CPASSERT(check)
-
-      IF (my_force) THEN
-         ALLOCATE (grid_buffer(0:3, 0:3, 0:3))
-         ALLOCATE (bcast_buffer(0:3))
-         ALLOCATE (dgrid(1:2, 1:2, 1:2, 3))
-         fd_extra_point = 1
-      ELSE
-         ALLOCATE (grid_buffer(1:2, 1:2, 1:2))
-         ALLOCATE (bcast_buffer(1:2))
-         fd_extra_point = 0
-      END IF
-
-      ! The values of external potential on grid are distributed among the
-      ! processes, so first we have to gather them up
-      gid = grid%pw_grid%para%group
-      my_rank = grid%pw_grid%para%group%mepos
-      num_pe = grid%pw_grid%para%group%num_pe
-      tag = 1
-
-      dr = grid%pw_grid%dr
-      lbounds = grid%pw_grid%bounds(1, :)
-      ubounds = grid%pw_grid%bounds(2, :)
-      lbounds_local = grid%pw_grid%bounds_local(1, :)
-      ubounds_local = grid%pw_grid%bounds_local(2, :)
-
-      ! Determine the indices of grid points that are needed
-      lower_inds = lbounds + FLOOR(r/dr) - fd_extra_point
-      upper_inds = lower_inds + 1 + 2*fd_extra_point
-
-      DO i = lower_inds(1), upper_inds(1)
-         ! If index is out of global bounds, assume periodic boundary conditions
-         i_pbc = pbc_index(i, lbounds(1), ubounds(1))
-         buffer_i = i - lower_inds(1) + 1 - fd_extra_point
-         DO j = lower_inds(2), upper_inds(2)
-            j_pbc = pbc_index(j, lbounds(2), ubounds(2))
-            buffer_j = j - lower_inds(2) + 1 - fd_extra_point
-
-            ! Find the process that has the data for indices i_pbc and j_pbc
-            ! and store the data to bcast_buffer. Assuming that each process has full z data
-            IF (grid%pw_grid%para%mode /= PW_MODE_LOCAL) THEN
-               DO ip = 0, num_pe - 1
-                  IF (grid%pw_grid%para%bo(1, 1, ip, 1) <= i_pbc - lbounds(1) + 1 .AND. &
-                      grid%pw_grid%para%bo(2, 1, ip, 1) >= i_pbc - lbounds(1) + 1 .AND. &
-                      grid%pw_grid%para%bo(1, 2, ip, 1) <= j_pbc - lbounds(2) + 1 .AND. &
-                      grid%pw_grid%para%bo(2, 2, ip, 1) >= j_pbc - lbounds(2) + 1) THEN
-                     data_source = ip
-                     EXIT
-                  END IF
-               END DO
-               IF (my_rank == data_source) THEN
-                  IF (lower_inds(3) >= lbounds(3) .AND. upper_inds(3) <= ubounds(3)) THEN
-                     bcast_buffer(:) = &
-                        grid%array(i_pbc, j_pbc, lower_inds(3):upper_inds(3))
-                  ELSE
-                     DO k = lower_inds(3), upper_inds(3)
-                        k_pbc = pbc_index(k, lbounds(3), ubounds(3))
-                        buffer_k = k - lower_inds(3) + 1 - fd_extra_point
-                        bcast_buffer(buffer_k) = &
-                           grid%array(i_pbc, j_pbc, k_pbc)
-                     END DO
-                  END IF
+      inverse = grid%pw_grid%dh
+      CALL invmat(inverse, info)
+      CPASSERT(info == 0)
+      point = MATMUL(inverse, r)
+      node = FLOOR(point)
+      grid_fraction = point - REAL(node, dp)
+      lower = grid%pw_grid%bounds(1, :)
+      upper = grid%pw_grid%bounds(2, :)
+      buffer = 0.0_dp
+      ! Collect just the eight interpolation nodes, including wrapped local-grid boundaries.
+      DO k = 0, 1
+         DO j = 0, 1
+            DO i = 0, 1
+               grid_index = pbc_index(lower + node + [i, j, k], lower, upper)
+               IF (ALL(grid_index >= grid%pw_grid%bounds_local(1, :)) .AND. &
+                   ALL(grid_index <= grid%pw_grid%bounds_local(2, :))) THEN
+                  buffer(i, j, k) = grid%array(grid_index(1), grid_index(2), grid_index(3))
                END IF
-               ! data_source sends data to everyone
-               CALL gid%bcast(bcast_buffer, data_source)
-               grid_buffer(buffer_i, buffer_j, :) = bcast_buffer
-            ELSE
-               grid_buffer(buffer_i, buffer_j, :) = grid%array(i_pbc, j_pbc, lower_inds(3):upper_inds(3))
-            END IF
-         END DO
-      END DO
-
-      ! Now that all the processes have local external potential data around r,
-      ! interpolate the value at r
-      subgrid_origin = (lower_inds - lbounds + fd_extra_point)*dr
-      func = trilinear_interpolation(r, grid_buffer(1:2, 1:2, 1:2), subgrid_origin, dr)
-
-      ! If the derivative of the potential is needed, approximate the derivative at grid
-      ! points using finite differences, and then interpolate the value at r
-      IF (my_force) THEN
-         CALL d_finite_difference(grid_buffer, dr, dgrid)
-         DO i = 1, 3
-            dfunc(i) = trilinear_interpolation(r, dgrid(:, :, :, i), subgrid_origin, dr)
-         END DO
-         DEALLOCATE (dgrid)
-      END IF
-
-      DEALLOCATE (grid_buffer)
-      CALL timestop(handle)
-   END SUBROUTINE interpolate_external_potential
-
-! **************************************************************************************************
-!> \brief       subroutine that uses finite differences to approximate the partial
-!>              derivatives of the potential based on the given values on grid
-!> \param grid  tiny bit of external potential vee
-!> \param dr    step size for finite difference
-!> \param dgrid derivatives of grid
-! **************************************************************************************************
-   PURE SUBROUTINE d_finite_difference(grid, dr, dgrid)
-      REAL(KIND=dp), DIMENSION(0:, 0:, 0:), INTENT(IN)   :: grid
-      REAL(KIND=dp), DIMENSION(3), INTENT(IN)            :: dr
-      REAL(KIND=dp), DIMENSION(1:, 1:, 1:, :), &
-         INTENT(OUT)                                     :: dgrid
-
-      INTEGER                                            :: i, j, k
-
-      DO i = 1, SIZE(dgrid, 1)
-         DO j = 1, SIZE(dgrid, 2)
-            DO k = 1, SIZE(dgrid, 3)
-               dgrid(i, j, k, 1) = 0.5_dp*(grid(i + 1, j, k) - grid(i - 1, j, k))/dr(1)
-               dgrid(i, j, k, 2) = 0.5_dp*(grid(i, j + 1, k) - grid(i, j - 1, k))/dr(2)
-               dgrid(i, j, k, 3) = 0.5_dp*(grid(i, j, k + 1) - grid(i, j, k - 1))/dr(3)
             END DO
          END DO
       END DO
-   END SUBROUTINE d_finite_difference
-
-! **************************************************************************************************
-!> \brief             trilinear interpolation function that interpolates value at r based
-!>                    on 2x2x2 grid points around r in subgrid
-!> \param r           where to interpolate to
-!> \param subgrid     part of external potential on a grid
-!> \param origin      center of grid
-!> \param dr          step size
-!> \return interpolated value of external potential
-! **************************************************************************************************
-   PURE FUNCTION trilinear_interpolation(r, subgrid, origin, dr) RESULT(value_at_r)
-      REAL(KIND=dp), DIMENSION(3), INTENT(IN)            :: r
-      REAL(KIND=dp), DIMENSION(:, :, :), INTENT(IN)      :: subgrid
-      REAL(KIND=dp), DIMENSION(3), INTENT(IN)            :: origin, dr
-      REAL(KIND=dp)                                      :: value_at_r
-
-      REAL(KIND=dp), DIMENSION(3)                        :: norm_r, norm_r_rev
-
-      norm_r = (r - origin)/dr
-      norm_r_rev = 1 - norm_r
-      value_at_r = subgrid(1, 1, 1)*PRODUCT(norm_r_rev) + &
-                   subgrid(2, 1, 1)*norm_r(1)*norm_r_rev(2)*norm_r_rev(3) + &
-                   subgrid(1, 2, 1)*norm_r_rev(1)*norm_r(2)*norm_r_rev(3) + &
-                   subgrid(1, 1, 2)*norm_r_rev(1)*norm_r_rev(2)*norm_r(3) + &
-                   subgrid(1, 2, 2)*norm_r_rev(1)*norm_r(2)*norm_r(3) + &
-                   subgrid(2, 1, 2)*norm_r(1)*norm_r_rev(2)*norm_r(3) + &
-                   subgrid(2, 2, 1)*norm_r(1)*norm_r(2)*norm_r_rev(3) + &
-                   subgrid(2, 2, 2)*PRODUCT(norm_r)
-   END FUNCTION trilinear_interpolation
+      IF (grid%pw_grid%para%mode /= PW_MODE_LOCAL) CALL grid%pw_grid%para%group%sum(buffer)
+      value = 0.0_dp
+      derivative = 0.0_dp
+      DO k = 0, 1
+         DO j = 0, 1
+            DO i = 0, 1
+               corner = [i, j, k]
+               weight = MERGE(grid_fraction, 1.0_dp - grid_fraction, corner == 1)
+               value = value + buffer(i, j, k)*PRODUCT(weight)
+               IF (.NOT. my_force) CYCLE
+               DO axis = 1, 3
+                  weight = MERGE(grid_fraction, 1.0_dp - grid_fraction, corner == 1)
+                  weight(axis) = REAL(2*corner(axis) - 1, dp)
+                  derivative(axis) = derivative(axis) + buffer(i, j, k)*PRODUCT(weight)
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (PRESENT(func)) func = value
+      ! Differentiate the same trilinear energy and transform its grid derivative to Cartesian space.
+      IF (my_force) dfunc = MATMUL(TRANSPOSE(inverse), derivative)
+      CALL timestop(handle)
+   END SUBROUTINE interpolate_external_potential
 
 ! **************************************************************************************************
 !> \brief          get a correct value for possible out of bounds index using periodic
@@ -552,13 +426,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: i, lowbound, upbound
       INTEGER                                            :: pbc_index
 
-      IF (i < lowbound) THEN
-         pbc_index = upbound + i - lowbound + 1
-      ELSE IF (i > upbound) THEN
-         pbc_index = lowbound + i - upbound - 1
-      ELSE
-         pbc_index = i
-      END IF
+      pbc_index = lowbound + MODULO(i - lowbound, upbound - lowbound + 1)
    END FUNCTION pbc_index
 
 END MODULE qs_external_potential

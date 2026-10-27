@@ -16,7 +16,9 @@ PROGRAM pw_unittest
                                               cp2k_init
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
-   USE message_passing,                 ONLY: mp_comm_type,&
+   USE mathlib,                         ONLY: invmat
+   USE message_passing,                 ONLY: mp_comm_self,&
+                                              mp_comm_type,&
                                               mp_comm_world,&
                                               mp_para_env_type
    USE mt_util,                         ONLY: mt2d_kernel_strain
@@ -44,7 +46,9 @@ PROGRAM pw_unittest
                                               pw_pool_release,&
                                               pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
-                                              pw_r1d_gs_type
+                                              pw_r1d_gs_type,&
+                                              pw_r3d_rs_type
+   USE qs_external_potential,           ONLY: interpolate_external_potential
    USE realspace_grid_cube,             ONLY: cube_read_values,&
                                               cube_value_format,&
                                               cube_values_format
@@ -167,8 +171,15 @@ CONTAINS
       CHARACTER(LEN=13)                                  :: value
       CHARACTER(LEN=79)                                  :: values
       CHARACTER(LEN=92)                                  :: slice_values
+      INTEGER                                            :: axis, i, info, j, k, layout, sample, &
+                                                            window
+      REAL(dp) :: cell(3, 3), derivative(3), expected, FRACTION(3), gradient(3), inverse(3, 3), &
+         minus, plus, point(3), position(3), sampled_value, shifted(3), step
       REAL(KIND=dp), DIMENSION(6)                        :: buffer, reference
       REAL(KIND=dp), DIMENSION(7)                        :: slice_buffer, slice_reference
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type), POINTER                      :: potential
 
       WRITE (value, cube_value_format) 3.33004E-101_dp
       IF (INDEX(value, "E-101") <= 0) THEN
@@ -199,6 +210,67 @@ CONTAINS
       IF (MAXVAL(ABS(slice_buffer - slice_reference)) > 1.0E-12_dp) THEN
          ERROR STOP "Cube reader must parse multi-line z-slices."
       END IF
+      ! Cube potentials use the same interpolated energy and Cartesian derivative.
+      cell = RESHAPE([7.0_dp, 0.0_dp, 0.0_dp, 0.6_dp, 6.0_dp, 0.0_dp, 0.2_dp, 0.4_dp, 5.0_dp], [3, 3])
+      DO layout = 1, 2
+         IF (layout == 1) THEN
+            CALL comm%set_handle(mp_comm_world%get_handle())
+         ELSE
+            CALL comm%set_handle(mp_comm_self%get_handle())
+         END IF
+         NULLIFY (grid)
+         CALL pw_grid_create(grid, comm, cell, grid_span=FULLSPACE, npts=[6, 5, 4], odd=.FALSE., fft_usage=.FALSE.)
+         ALLOCATE (potential)
+         CALL potential%create(grid)
+         DO k = grid%bounds_local(1, 3), grid%bounds_local(2, 3)
+            DO j = grid%bounds_local(1, 2), grid%bounds_local(2, 2)
+               DO i = grid%bounds_local(1, 1), grid%bounds_local(2, 1)
+                  point = REAL([i, j, k] - grid%bounds(1, :), dp)
+                  potential%array(i, j, k) = 0.7_dp + DOT_PRODUCT([0.2_dp, 0.3_dp, -0.1_dp], point**2) + &
+                                             0.07_dp*point(1)*point(2) - 0.04_dp*point(2)*point(3) + 0.01_dp*PRODUCT(point)
+               END DO
+            END DO
+         END DO
+         inverse = grid%dh
+         CALL invmat(inverse, info)
+         IF (info /= 0) ERROR STOP "Invalid external-potential test cell."
+         DO sample = 1, 2
+            point = [1.23_dp, 1.34_dp, 1.45_dp]
+            IF (sample == 2) point = [2.0_dp*grid%npts(1) + 0.61_dp, &
+                                      -REAL(grid%npts(2), dp) + 1.32_dp, REAL(grid%npts(3), dp) - 0.45_dp]
+            position = MATMUL(grid%dh, point)
+            CALL interpolate_external_potential(position, potential, sampled_value, derivative, .TRUE.)
+            IF (sample == 1) THEN
+               fraction = point - REAL(FLOOR(point), dp)
+               expected = 0.7_dp + DOT_PRODUCT([0.2_dp, 0.3_dp, -0.1_dp], point**2 + fraction*(1.0_dp - fraction)) + &
+                          0.07_dp*point(1)*point(2) - 0.04_dp*point(2)*point(3) + 0.01_dp*PRODUCT(point)
+               gradient = [0.2_dp*REAL(2*FLOOR(point(1)) + 1, dp) + 0.07_dp*point(2) + 0.01_dp*point(2)*point(3), &
+                           0.3_dp*REAL(2*FLOOR(point(2)) + 1, dp) + 0.07_dp*point(1) - 0.04_dp*point(3) + &
+                           0.01_dp*point(1)*point(3), &
+                           -0.1_dp*REAL(2*FLOOR(point(3)) + 1, dp) - 0.04_dp*point(2) + 0.01_dp*point(1)*point(2)]
+               gradient = MATMUL(TRANSPOSE(inverse), gradient)
+               IF (ABS(sampled_value - expected) > 3.e-13_dp .OR. MAXVAL(ABS(derivative - gradient)) > 3.e-13_dp) THEN
+                  ERROR STOP "External-potential interpolation lost the sheared-cell energy or gradient."
+               END IF
+            END IF
+            DO window = 1, 2
+               step = 1.e-4_dp/REAL(window, dp)
+               DO axis = 1, 3
+                  shifted = position
+                  shifted(axis) = shifted(axis) + step
+                  CALL interpolate_external_potential(shifted, potential, plus)
+                  shifted(axis) = position(axis) - step
+                  CALL interpolate_external_potential(shifted, potential, minus)
+                  IF (ABS((plus - minus)/(2.0_dp*step) - derivative(axis)) > 2.e-8_dp) THEN
+                     ERROR STOP "External-potential derivative differs from its interpolated energy."
+                  END IF
+               END DO
+            END DO
+         END DO
+         CALL potential%release()
+         DEALLOCATE (potential)
+         CALL pw_grid_release(grid)
+      END DO
    END SUBROUTINE check_cube_values
 
 ! **************************************************************************************************
