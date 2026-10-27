@@ -25,17 +25,12 @@ MODULE bse_main
                                               bse_resolve_memory_per_proc
    USE bse_print,                       ONLY: print_BSE_start_flag
    USE bse_types,                       ONLY: bse_env_type
-   USE bse_util,                        ONLY: adapt_BSE_input_params,&
-                                              bse_window_from_dft,&
-                                              bse_window_from_mos,&
-                                              estimate_BSE_resources,&
-                                              fulldiag_memory_estimate_GB,&
-                                              get_bse_spin_block_layout,&
-                                              screen_slabs,&
-                                              truncate_BSE_matrices
+   USE bse_util,                        ONLY: &
+        adapt_BSE_input_params, adapt_BSE_screening, bse_window_from_dft, bse_window_from_mos, &
+        estimate_BSE_resources, fulldiag_memory_estimate_GB, get_bse_spin_block_layout, &
+        screen_slabs, truncate_BSE_matrices
    USE cp_control_types,                ONLY: tddfpt2_control_type
-   USE cp_fm_basic_linalg,              ONLY: cp_fm_add_on_diag,&
-                                              cp_fm_scale
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_add_on_diag
    USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_decompose,&
                                               cp_fm_cholesky_invert
    USE cp_fm_types,                     ONLY: cp_fm_create,&
@@ -79,7 +74,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Entry for the BSE of RI_RPA%GW, which hands over the slabs of all its GW levels and the
 !>        static polarizability Q(0): re-reads the settings, cuts the window on the DFT axis out of
-!>        the slabs and both energy sets, and inverts 1+Q(0). Starts no solver.
+!>        the slabs and both energy sets, and inverts 1+Q(0) for W0 screening. Starts no solver.
 !> \param bse_env settings re-read from its section; state filled here
 !> \param fm_S_ia_full B^P_ia of the GW levels per spin, the RPA copy without the energy factor
 !> \param fm_S_ij_full B^P_ij per spin
@@ -120,11 +115,14 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      ! the settings afresh from the input, since adapt_BSE_input_params normalises them in place and a
-      ! later energy evaluation on the same environment runs the BSE again; the local pointer keeps the
-      ! section apart from bse_env, whose section pointer the reader sets
+      ! Re-read the settings afresh from the input, since adapt_BSE_screening here and
+      ! adapt_BSE_input_params in bse_solve normalise them in place, and a later energy evaluation
+      ! on the same environment runs the BSE again; the local pointer keeps the section apart from
+      ! bse_env, whose section pointer the reader sets
+
       bse_section => bse_env%bse_section
       CALL read_bse_section(bse_section, bse_env)
+      CALL adapt_BSE_screening(bse_env, unit_nr)
       CALL bse_resolve_memory_per_proc(bse_env%memory_per_proc_gb, fm_S_ia_full(1)%matrix_struct%para_env, unit_nr)
 
       nspins = SIZE(homo)
@@ -157,17 +155,8 @@ CONTAINS
          DEALLOCATE (eigenval_dft_spin, eigenval_qp_spin)
       END DO
 
-      CALL invert_static_screening(fm_Q, dimen_RI_red, bse_env%fm_eps_inv)
-
-      IF (bse_env%wc_scaling /= 1.0_dp) THEN
-         IF (bse_env%screening_method /= bse_screening_w0 .OR. bse_env%screening_factor > 0.0_dp) THEN
-            CPABORT("SCREENING_IN_W other than W_0 cannot be combined with a scaled W^c (static COHSEX).")
-         END IF
-         CALL scale_static_screening(bse_env%fm_eps_inv, dimen_RI_red, bse_env%wc_scaling)
-         IF (unit_nr > 0) THEN
-            WRITE (unit_nr, '(T2,A10,T13,A,T71,F10.4)') 'BSE|', &
-               'Direct term W = v + alpha W^c(0), alpha =', bse_env%wc_scaling
-         END IF
+      IF (bse_env%screening_method == bse_screening_w0) THEN
+         CALL invert_static_screening(fm_Q, dimen_RI_red, bse_env%fm_eps_inv)
       END IF
 
       CALL finish_bse_env(bse_env, qs_env, fm_S_ia_full(1)%matrix_struct%para_env)
@@ -181,12 +170,13 @@ CONTAINS
 !>        window-sized slabs and a ready inverse dielectric matrix: nothing is cut or inverted, the
 !>        slabs are taken over as they are. Shares start_bse_env and finish_bse_env with
 !>        prepare_bse_env_from_ri_rpa_gw. Starts no solver.
-!> \param bse_env settings read from its section by the caller; state filled here
+!> \param bse_env settings read and screening normalised by the caller; state filled here
 !> \param fm_S_ia B^P_ia of the window per spin; moved into bse_env, deallocated on return
 !> \param fm_S_ij B^P_ij of the window per spin; moved into bse_env, deallocated on return
 !> \param fm_S_ab B^P_ab of the window per spin; moved into bse_env, deallocated on return
 !> \param fm_eps_inv the inverse dielectric matrix ε^-1_PQ the core screens the slabs with,
-!>        \bar{B}^P_ij = sum_Q ε^-1_PQ B^Q_ij; RI x RI, copied; stays the caller's
+!>        \bar{B}^P_ij = sum_Q ε^-1_PQ B^Q_ij; RI x RI, copied for W0 only; stays the caller's
+!>        May be uncreated for other screening methods.
 !> \param eigenval_qp quasiparticle energies of the window (level, spin)
 !> \param eigenval_dft DFT energies of the window (level, spin)
 !> \param homo_full occupied MOs per spin of the full reference
@@ -245,8 +235,10 @@ CONTAINS
       CALL MOVE_ALLOC(fm_S_ia, bse_env%fm_S_ia)
       CALL MOVE_ALLOC(fm_S_ij, bse_env%fm_S_ij)
       CALL MOVE_ALLOC(fm_S_ab, bse_env%fm_S_ab)
-      CALL cp_fm_create(bse_env%fm_eps_inv, fm_eps_inv%matrix_struct)
-      CALL cp_fm_to_fm(fm_eps_inv, bse_env%fm_eps_inv)
+      IF (bse_env%screening_method == bse_screening_w0) THEN
+         CALL cp_fm_create(bse_env%fm_eps_inv, fm_eps_inv%matrix_struct)
+         CALL cp_fm_to_fm(fm_eps_inv, bse_env%fm_eps_inv)
+      END IF
 
       CALL finish_bse_env(bse_env, qs_env, bse_env%fm_S_ia(1)%matrix_struct%para_env)
 
@@ -361,40 +353,6 @@ CONTAINS
    END SUBROUTINE finish_bse_env
 
 ! **************************************************************************************************
-!> \brief Scale the correlation part of the static screened Coulomb interaction in the RI kernel
-!>
-!>        The direct terms of the BSE use (pq|W|rs) = Σ_PQ B^P_pq K_PQ B^Q_rs with the RI kernel
-!>        K = ε^(-1)(0). With W = v + α W^c(0), W^c(0) = (ε^(-1)(0) - 1) v, the kernel becomes
-!>          K_PQ = δ_PQ + α (ε^(-1)_PQ(0) - δ_PQ) = α ε^(-1)_PQ(0) + (1 - α) δ_PQ
-!>        such that
-!>          A_ia,jb = (ϵ_a - ϵ_i) δ_ij δ_ab + 2 (ia|jb) - (ij|ab) - α (ij|W^c|ab)
-!>          B_ia,jb = 2 (ia|jb) - (ib|ja) - α (ib|W^c|ja)
-!>        α = 1: standard BSE@W0, α = 0: unscreened (TDHF-like) kernel.
-!> \param fm_eps_inv ...
-!> \param dimen_RI_red ...
-!> \param alpha ...
-! **************************************************************************************************
-   SUBROUTINE scale_static_screening(fm_eps_inv, dimen_RI_red, alpha)
-
-      TYPE(cp_fm_type), INTENT(INOUT)                    :: fm_eps_inv
-      INTEGER, INTENT(IN)                                :: dimen_RI_red
-      REAL(KIND=dp), INTENT(IN)                          :: alpha
-
-      CHARACTER(LEN=*), PARAMETER :: routineN = 'scale_static_screening'
-
-      INTEGER                                            :: handle
-
-      CALL timeset(routineN, handle)
-
-      ! K_PQ = α ε^(-1)_PQ + (1 - α) δ_PQ on the leading dimen_RI_red block
-      CALL cp_fm_scale(alpha, fm_eps_inv)
-      CALL cp_fm_add_on_diag(fm_eps_inv, 1.0_dp - alpha, dimen_RI_red)
-
-      CALL timestop(handle)
-
-   END SUBROUTINE scale_static_screening
-
-! **************************************************************************************************
 !> \brief The inverse dielectric matrix in the RI basis, [1+Q(0)]^-1_PQ on the leading dimen_RI_red
 !>        block, P, Q ≤ dimen_RI_red, by Cholesky decomposition and inversion of a copy of Q(0)
 !> \param fm_Q the static polarizability Q_PQ(0), untouched
@@ -476,13 +434,16 @@ CONTAINS
          END IF
       END DO
 
-      ! \bar{B}^P_ij and \bar{B}^P_ia per spin from the one [1+Q(0)]^-1
+      ! Keep default-initialised containers for the common solver interfaces. Only W0 needs
+      ! screened matrix storage; TDA needs barB_ij, and ABBA additionally needs barB_ia.
       ALLOCATE (bse_env%fm_S_bar_ia(nspins), bse_env%fm_S_bar_ij(nspins))
-      DO ispin = 1, nspins
-         CALL screen_slabs(bse_env%fm_eps_inv, bse_env%fm_S_ij(ispin), bse_env%fm_S_ia(ispin), &
-                           bse_env%dimen_RI_red, bse_env%homo_red(ispin), bse_env%virt_red(ispin), &
-                           bse_env%fm_S_bar_ij(ispin), bse_env%fm_S_bar_ia(ispin))
-      END DO
+      IF (bse_env%screening_method == bse_screening_w0) THEN
+         DO ispin = 1, nspins
+            CALL screen_slabs(bse_env%fm_eps_inv, bse_env%fm_S_ij(ispin), bse_env%fm_S_ia(ispin), &
+                              bse_env%dimen_RI_red, bse_env%homo_red(ispin), bse_env%virt_red(ispin), &
+                              bse_env%fm_S_bar_ij(ispin), bse_env%fm_S_bar_ia(ispin), bse_env%do_abba)
+         END DO
+      END IF
       CALL cp_fm_release(bse_env%fm_eps_inv)
 
       IF (bse_env%do_iterdiag) THEN

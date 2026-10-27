@@ -39,6 +39,7 @@ MODULE cell_opt_types
                                               section_vals_val_set
    USE kinds,                           ONLY: default_string_length,&
                                               dp
+   USE string_utilities,                ONLY: uppercase
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -89,13 +90,15 @@ CONTAINS
       TYPE(force_env_type), POINTER                      :: force_env
       TYPE(section_vals_type), POINTER                   :: geo_section
 
-      CHARACTER(LEN=default_string_length)               :: constraint_string, label
+      CHARACTER(LEN=default_string_length)               :: label
+      CHARACTER(LEN=default_string_length), &
+         DIMENSION(:), POINTER                           :: canonical_tokens, constraint_tokens
       INTEGER                                            :: output_unit
       LOGICAL                                            :: constraint_explicit
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
 
-      NULLIFY (cell_env%opt_cell, cell)
+      NULLIFY (cell_env%opt_cell, cell, canonical_tokens, constraint_tokens)
       CALL force_env_get(force_env, cell=cell)
       CALL cell_create(cell_env%opt_cell)
       CALL cell_clone(cell, cell_env%opt_cell, tag="CELL_OPT_CANONICAL")
@@ -109,17 +112,16 @@ CONTAINS
       CALL section_vals_val_get(geo_section, "KEEP_SYMMETRY", l_val=cell_env%keep_symmetry)
       CALL section_vals_val_get(geo_section, "PRESSURE_TOLERANCE", r_val=cell_env%pres_tol)
       CALL section_vals_val_get(geo_section, "CONSTRAINT", &
-                                c_val=constraint_string, explicit=constraint_explicit)
-      CALL parse_cell_constraint(constraint_string, cell, constraint_explicit, &
+                                c_vals=constraint_tokens, explicit=constraint_explicit)
+      CALL parse_cell_constraint(constraint_tokens, cell, constraint_explicit, &
                                  cell_env%constraint_id)
-      ! Canonicalize the echoed value so restart files record the effective
-      ! constraint instead of the user's spelling (case and token order).
       ! Only for explicitly set values: an unset keyword must stay unparsed so
       ! the restart echo keeps omitting the line, as it always has.
       IF (constraint_explicit) THEN
-         CALL section_vals_val_set(geo_section, "CONSTRAINT", &
-                                   c_val=TRIM(ADJUSTL( &
-                                              cell_opt_constraint_label(cell_env%constraint_id))))
+         ALLOCATE (canonical_tokens(SIZE(constraint_tokens)))
+         canonical_tokens = constraint_tokens
+         CALL uppercase(canonical_tokens)
+         CALL section_vals_val_set(geo_section, "CONSTRAINT", c_vals_ptr=canonical_tokens)
       END IF
 
       CALL cell_opt_validate_constraint(cell_env)
@@ -127,9 +129,7 @@ CONTAINS
       ! The masked pressure criterion is structurally off target for this
       ! combination on a non-orthorhombic cell. The run stays legal: the
       ! geometry criteria still work, and the pressure criterion may still
-      ! be met when the pinned shear stresses vanish by symmetry. The
-      ! decision lives in pres_crit_shear_pinned, which the unit test
-      ! checks over all 64 masks.
+      ! be met when the pinned shear stresses vanish by symmetry.
       IF (pres_crit_shear_pinned(cell_env%constraint_id, &
                                  cell_env%opt_cell%orthorhombic, &
                                  cell_env%keep_angles)) THEN
@@ -226,8 +226,6 @@ CONTAINS
       !    yz = {BX..CZ}            B complete, C complete  -> safe
       ! A partial group breaks the parallelism. A complete or untouched group keeps it.
       IF (cell_env%keep_angles) THEN
-         ! The decision lives in keep_angles_conflict, which the unit test
-         ! checks over all 64 masks.
          IF (keep_angles_conflict(cell_env%constraint_id, &
                                   cell_env%opt_cell%orthorhombic)) THEN
             CALL cp_abort(__LOCATION__, &
@@ -239,8 +237,6 @@ CONTAINS
       END IF
 
       IF (cell_env%keep_symmetry .AND. cell_env%constraint_id /= fix_none) THEN
-         ! The decision lives in keep_symmetry_conflict, which the unit test
-         ! checks over all 64 masks for every crystal system.
          bad_constraint = keep_symmetry_conflict(cell_env%constraint_id, &
                                                  cell_env%opt_cell%symmetry_id)
          IF (bad_constraint) THEN

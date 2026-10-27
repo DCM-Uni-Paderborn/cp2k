@@ -36,7 +36,8 @@ MODULE bse_types
 
 ! **************************************************************************************************
 !> \brief Settings of the &BSE section (read_bse_section, re-read before every BSE run, normalised in
-!>        place by adapt_BSE_input_params) and the state that the entry of the GW fills for bse_solve:
+!>        place by adapt_BSE_screening and adapt_BSE_input_params) and the state that the entry of the
+!>        GW fills for bse_solve:
 !>        prepare_bse_env_from_ri_rpa_gw for RI_RPA%GW, prepare_bse_env_from_bandstructure_gw for
 !>        PROPERTIES%BANDSTRUCTURE%GW
 ! **************************************************************************************************
@@ -65,7 +66,6 @@ MODULE bse_types
                                                             screening_factor = 0.0_dp, &
                                                             bse_cutoff_occ = 0.0_dp, &
                                                             bse_cutoff_empty = 0.0_dp
-      REAL(KIND=dp)                                      :: wc_scaling = 1.0_dp
       LOGICAL                                            :: do_bse = .FALSE., &
                                                             bse_debug_print = .FALSE., &
                                                             print_directional_exc_descr = .FALSE., &

@@ -22,13 +22,13 @@ MODULE input_cp2k_md
                                               low_print_level,&
                                               medium_print_level
    USE cp_units,                        ONLY: cp_unit_to_cp2k
+   USE generic_function_input,          ONLY: create_function_section
    USE input_constants,                 ONLY: &
         do_constr_atomic, do_constr_molec, do_constr_none, isokin_ensemble, langevin_ensemble, &
         md_init_default, md_init_vib, npe_f_ensemble, npe_i_ensemble, nph_ensemble, &
         nph_uniaxial_damped_ensemble, nph_uniaxial_ensemble, npt_f_ensemble, npt_i_ensemble, &
         npt_ia_ensemble, nve_ensemble, nvt_adiabatic_ensemble, nvt_ensemble, reftraj_ensemble
    USE input_cp2k_barostats,            ONLY: create_barostat_section
-   USE input_cp2k_function,             ONLY: create_function_section
    USE input_cp2k_thermostats,          ONLY: create_region_section,&
                                               create_thermo_fast_section,&
                                               create_thermo_slow_section,&
@@ -1511,13 +1511,13 @@ CONTAINS
       NULLIFY (keyword)
       CALL keyword_create(keyword, __LOCATION__, name="PHASE", &
                           description="Controls the initial ratio of potential and kinetic "// &
-                          "contribution to the total energy. The contribution is determined by "// &
-                          "COS**2(2*pi*PHASE) for potential energy, and SIN**2(2*pi*PHASE) "// &
-                          "for kinetic energy. If PHASE is negative, then for each vibration "// &
-                          "mode the phase is determined randomly. Otherwise, PHASE must be "// &
-                          "between 0.0 and 1.0 and will be the same for all vibration modes. "// &
-                          "If value > 1.0 it will just be treated as 1.0. "// &
-                          "For example, setting PHASE = 0.25 would set all modes to "// &
+                          "contribution to the total energy. Denote the input value as $p$; "// &
+                          "the contribution is determined by $\cos^2(2\pi p)$ for potential "// &
+                          "energy and $\sin^2(2\pi p)$ for kinetic energy. A negative $p$ "// &
+                          "means that for each vibration mode the phase is determined randomly. "// &
+                          "A value of $0.0 \lt p \lt 1.0$ will be the same for all vibration "// &
+                          "modes; a value of $p \gt 1.0$ will just be treated as 1.0. "// &
+                          "For example, setting $p = 0.25$ would set all modes to "// &
                           "begin with entirely kinetic energy --- in other words, the initial "// &
                           "atomic positions will remain at their optimised location", &
                           default_r_val=-1.0_dp, &

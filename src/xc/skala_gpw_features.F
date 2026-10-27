@@ -376,6 +376,7 @@ CONTAINS
          my_requires_stress_grad, my_route_atom_chunks, my_use_atom_chunks, &
          use_atom_chunk_protocol, use_atom_chunk_routing
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: global_dynamic, local_dynamic
+      REAL(KIND=dp), DIMENSION(3)                        :: integrals
 
       CALL timeset("skala_gpw_feature_build", handle)
 
@@ -535,9 +536,11 @@ CONTAINS
                                           cached_layout%chunk_grid_weights)
             END IF
          END IF
-         CALL pw_grid%group%sum(features%electron_count)
-         CALL pw_grid%group%sum(features%kinetic_integral)
-         CALL pw_grid%group%sum(features%spin_moment)
+         integrals = [features%electron_count, features%kinetic_integral, features%spin_moment]
+         CALL pw_grid%group%sum(integrals)
+         features%electron_count = integrals(1)
+         features%kinetic_integral = integrals(2)
+         features%spin_moment = integrals(3)
       ELSE
          features%electron_count = SUM((features%density(:, 1) + features%density(:, 2))* &
                                        features%grid_weights)
@@ -2088,7 +2091,8 @@ CONTAINS
          row_begin_tmp = row_begin(subchunk)
          row_count_tmp = row_count(subchunk)
          insert_at = subchunk
-         DO WHILE (insert_at > 1 .AND. padded_rows(insert_at - 1) < padded_rows_tmp)
+         DO WHILE (insert_at > 1)
+            IF (padded_rows(insert_at - 1) >= padded_rows_tmp) EXIT
             padded_rows(insert_at) = padded_rows(insert_at - 1)
             atom_begin(insert_at) = atom_begin(insert_at - 1)
             atom_count(insert_at) = atom_count(insert_at - 1)

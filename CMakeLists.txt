@@ -5,7 +5,7 @@
 #!   SPDX-License-Identifier: GPL-2.0-or-later                                                     !
 #!-------------------------------------------------------------------------------------------------!
 
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.25)
 
 # include our cmake snippets
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -179,17 +179,6 @@ cmake_dependent_option(CP2K_USE_LIBXSMM "Enable LIBXSMM JIT-kernel for LIBXS"
 
 cmake_dependent_option(CP2K_USE_LIBVDWXC "Enable libvdwxc support with SIRIUS"
                        ${CP2K_USE_EVERYTHING} "CP2K_USE_SIRIUS" OFF)
-
-# do not turn it on if sirius is built with the toolchain
-cmake_dependent_option(CP2K_USE_SIRIUS_DFTD3 "Enable dftd3 sirius support" OFF
-                       "CP2K_USE_SIRIUS" OFF)
-cmake_dependent_option(CP2K_USE_SIRIUS_DFTD4 "Enable dftd4 sirius support" OFF
-                       "CP2K_USE_SIRIUS" OFF)
-cmake_dependent_option(
-  CP2K_USE_SIRIUS_VCSQNM "Enable variable cell shape relaxation in SIRIUS" OFF
-  "CP2K_USE_SIRIUS" OFF)
-cmake_dependent_option(CP2K_USE_SIRIUS_NLCG "Enable nlcg method in SIRIUS" OFF
-                       "CP2K_USE_SIRIUS" OFF)
 
 cmake_dependent_option(
   CP2K_DBCSR_USE_CPU_ONLY "Disable the DBCSR accelerated backend" OFF
@@ -577,21 +566,15 @@ if(CP2K_USE_ACCEL MATCHES "CUDA")
   enable_language(CUDA)
   if(CP2K_USE_NVHPC)
     find_package(NVHPC REQUIRED COMPONENTS CUDA MATH HOSTUTILS NCCL)
+    if(CP2K_WITH_GPU_PROFILING)
+      find_package(CUDAToolkit REQUIRED)
+    endif()
   else()
     find_package(CUDAToolkit REQUIRED)
   endif()
 
   message(STATUS "GPU architecture number: ${CMAKE_CUDA_ARCHITECTURES}")
   message(STATUS "GPU profiling enabled: ${CP2K_WITH_GPU_PROFILING}")
-
-  if(CP2K_WITH_GPU_PROFILING)
-    find_library(
-      CUDA_NVTOOLSEXT nvToolsExt
-      PATHS ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}
-      DOC "Building with CUDA profiling requires the nvToolsExt CUDA library"
-          REQUIRED)
-    message(STATUS "Found nvToolsExt: ${CUDA_NVTOOLSEXT}")
-  endif()
 
   set(CP2K_USE_CUDA ON)
 
@@ -929,7 +912,11 @@ endif()
 
 # SIRIUS
 if(CP2K_USE_SIRIUS)
-  find_package(Sirius REQUIRED)
+  find_package(sirius 7.12 REQUIRED CONFIG)
+  set(CP2K_USE_SIRIUS_DFTD3 ${SIRIUS_USE_DFTD3})
+  set(CP2K_USE_SIRIUS_DFTD4 ${SIRIUS_USE_DFTD4})
+  set(CP2K_USE_SIRIUS_VCSQNM ${SIRIUS_USE_VCSQNM})
+  set(CP2K_USE_SIRIUS_NLCG ${SIRIUS_USE_NLCGLIB})
 endif()
 
 if(CP2K_USE_PLUMED)
@@ -1090,6 +1077,16 @@ if(CP2K_USE_ACCEL MATCHES "CUDA" OR CP2K_USE_ACCEL MATCHES "HIP")
     "      - LIBXC: ${CP2K_ENABLE_LIBXC_GPU}\n")
 endif()
 
+if(CP2K_USE_ACCEL MATCHES "OPENCL")
+  message(
+    "  - Hardware acceleration\n"
+    "    - Backend: OpenCL\n"
+    "    - OpenCL library: ${OpenCL_LIBRARIES}\n"
+    "    - LIBXSTREAM package directory: ${libxstream_DIR}\n"
+    "    - GPU-accelerated modules\n"
+    "      - DBM: ${CP2K_ENABLE_DBM_GPU}\n")
+endif()
+
 if(CP2K_USE_CUSOLVER_MP)
   message("  - cuSOLVERMp\n"
           "    - Include directories: ${CP2K_CUSOLVER_MP_INCLUDE_DIRS}\n"
@@ -1149,9 +1146,11 @@ if(CP2K_USE_PLUMED)
 endif()
 
 if(CP2K_USE_LIBXS)
-  message("  - LIBXS\n"
-          "    - Include directories: ${CP2K_LIBXS_INCLUDE_DIRS}\n"
-          "    - Libraries: ${CP2K_LIBXS_LINK_LIBRARIES}\n")
+  message("  - LIBXS\n" "    - Package directory: ${libxs_DIR}\n")
+endif()
+
+if(CP2K_USE_LIBXSMM)
+  message("  - LIBXSMM\n" "    - Package directory: ${libxsmm_DIR}\n")
 endif()
 
 if(CP2K_USE_SPLA)
