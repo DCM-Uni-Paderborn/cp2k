@@ -73,7 +73,7 @@ MODULE upf_inverse_coulomb
    PUBLIC :: upf_inverse_coulomb_center_type, upf_inverse_coulomb_potential_type
    PUBLIC :: upf_inverse_coulomb_periodic
    PUBLIC :: upf_inverse_coulomb_map_type, upf_inverse_coulomb_prepare
-   PUBLIC :: upf_inverse_coulomb_density
+   PUBLIC :: upf_inverse_coulomb_density, upf_inverse_coulomb_density_adjoint
    PUBLIC :: upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
    PUBLIC :: upf_inverse_coulomb_compensate, upf_inverse_coulomb_compensation_adjoint
    PUBLIC :: upf_inverse_coulomb_fourier_kernel
@@ -267,28 +267,124 @@ CONTAINS
 !> \param volume Cell volume defining the Fourier normalization.
 !> \param density Overwritten local Fourier coefficients, without mesh multiplicity.
 !> \param map Immutable geometry map shared with the Coulomb functional.
+!> \param response Optional joint density derivative. The original map is not differentiated in place.
+!> \param center_response Radial-node, measure, density and center motion, required with response.
+!> \param gvecs_response Reciprocal-vector motion, required with response.
+!> \param volume_response Cell-volume derivative, required with response.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_coulomb_density(centers, cell, gvecs, volume, density, map)
+   SUBROUTINE upf_inverse_coulomb_density(centers, cell, gvecs, volume, density, map, response, &
+                                          center_response, gvecs_response, volume_response)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
       COMPLEX(dp), INTENT(OUT)                           :: density(:)
       TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:)
+      TYPE(upf_inverse_coulomb_center_type), &
+         INTENT(IN), OPTIONAL                            :: center_response(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: gvecs_response(:, :), volume_response
 
+      COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), fourier(:, :, :)
       INTEGER                                            :: a, channel, ir
+      LOGICAL                                            :: valid_shape
+      REAL(dp)                                           :: weight, weight_response
 
       CALL check_map(map, centers, cell, gvecs, volume, map%periodicity)
       CPASSERT(SIZE(density) == SIZE(gvecs, 2))
       density = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(center_response))
+         CPASSERT(PRESENT(gvecs_response))
+         CPASSERT(PRESENT(volume_response))
+         CPASSERT(SIZE(response) == SIZE(density))
+         CPASSERT(SIZE(center_response) == SIZE(centers))
+         CPASSERT(ALL(SHAPE(gvecs_response) == SHAPE(gvecs)))
+         response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       DO a = 1, SIZE(centers)
          CALL check_radial(centers(a)%radii, centers(a)%weights, centers(a)%l, centers(a)%density)
+         IF (PRESENT(response)) THEN
+            CALL check_radial(centers(a)%radii, centers(a)%weights, centers(a)%l, center_response(a)%density)
+            valid_shape = SIZE(center_response(a)%weights) == SIZE(centers(a)%weights)
+            CPASSERT(valid_shape)
+            ALLOCATE (fourier, MOLD=map%fourier(a)%values)
+            ALLOCATE (dfourier, MOLD=fourier)
+            CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                    gvecs, centers(a)%position, volume, fourier, dfourier, &
+                                                    center_response(a)%radii, gvecs_response, &
+                                                    center_response(a)%position, volume_response)
+         END IF
          DO channel = 1, SIZE(centers(a)%l)
             DO ir = 1, SIZE(centers(a)%radii)
                density(:) = density + map%fourier(a)%values(:, ir, channel)* &
                             centers(a)%weights(ir)*centers(a)%density(ir, channel)
+               IF (.NOT. PRESENT(response)) CYCLE
+               weight = centers(a)%weights(ir)*centers(a)%density(ir, channel)
+               weight_response = center_response(a)%weights(ir)*centers(a)%density(ir, channel) + &
+                                 centers(a)%weights(ir)*center_response(a)%density(ir, channel)
+               response(:) = response + map%fourier(a)%values(:, ir, channel)*weight_response + &
+                             dfourier(:, ir, channel)*weight
             END DO
          END DO
+         IF (PRESENT(response)) DEALLOCATE (fourier, dfourier)
       END DO
    END SUBROUTINE upf_inverse_coulomb_density
+
+! **************************************************************************************************
+!> \brief Transpose of the complete signed center-density Fourier projection for a local potential.
+!>        The caller supplies the Fourier covector, including volume and multiplicity exactly once.
+!>        No Coulomb kernel, compensation approximation, ionic or frozen-core term is inserted.
+!> \param centers Same radial/harmonic geometry as map. The density values do not enter the transpose.
+!> \param cell Physical lattice vectors in columns.
+!> \param gvecs Local reciprocal vectors, in the same order as potential.
+!> \param volume Cell volume defining the density Fourier coefficients.
+!> \param potential Local Fourier covector for Re(sum(conjg(density)*potential)).
+!> \param potentials Radial-measure adjoints, so dE=sum(weights*dn*potentials%values).
+!> \param map Immutable geometry map shared with the density projection.
+!> \param comm Optional communicator distributing Fourier rows. Radial potentials are replicated.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_coulomb_density_adjoint(centers, cell, gvecs, volume, potential, potentials, map, comm)
+      TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
+      REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
+      COMPLEX(dp), INTENT(IN)                            :: potential(:)
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE, INTENT(OUT)                        :: potentials(:)
+      TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      INTEGER                                            :: a
+
+      CALL check_map(map, centers, cell, gvecs, volume, map%periodicity)
+      CPASSERT(SIZE(potential) == SIZE(gvecs, 2))
+      ALLOCATE (potentials(SIZE(centers)))
+      DO a = 1, SIZE(centers)
+         ALLOCATE (potentials(a)%values(SIZE(centers(a)%radii), SIZE(centers(a)%l)))
+         CALL fourier_density_adjoint(map%fourier(a)%values, potential, potentials(a)%values)
+         IF (PRESENT(comm)) CALL comm%sum(potentials(a)%values)
+      END DO
+   END SUBROUTINE upf_inverse_coulomb_density_adjoint
+
+! **************************************************************************************************
+!> \brief Local Fourier contraction, shared by arbitrary potentials and the complete Coulomb adjoint.
+!> \param fourier Density map without radial weights.
+!> \param potential Fourier covector, with the caller's volume and multiplicity convention.
+!> \param values Overwritten radial-measure adjoint.
+! **************************************************************************************************
+   SUBROUTINE fourier_density_adjoint(fourier, potential, values)
+      COMPLEX(dp), INTENT(IN)                            :: fourier(:, :, :), potential(:)
+      REAL(dp), INTENT(OUT)                              :: values(:, :)
+
+      INTEGER                                            :: channel, ir
+      LOGICAL                                            :: valid_shape
+
+      CPASSERT(SIZE(fourier, 1) == SIZE(potential))
+      valid_shape = SIZE(values, 1) == SIZE(fourier, 2) .AND. SIZE(values, 2) == SIZE(fourier, 3)
+      CPASSERT(valid_shape)
+      DO channel = 1, SIZE(values, 2)
+         DO ir = 1, SIZE(values, 1)
+            values(ir, channel) = REAL(SUM(CONJG(fourier(:, ir, channel))*potential), dp)
+         END DO
+      END DO
+   END SUBROUTINE fourier_density_adjoint
 
 ! **************************************************************************************************
 !> \brief Complete periodic Coulomb functional for a Fourier background and signed centered fields.
@@ -552,12 +648,8 @@ CONTAINS
          nr = SIZE(centers(a)%radii)
          nh = SIZE(centers(a)%l)
          ALLOCATE (potentials(a)%values(nr, nh), vh(nr, nh), ve(nr, nh), adjoint(nr, nh))
-         DO channel = 1, nh
-            DO i = 1, nr
-               vh(i, channel) = REAL(SUM(CONJG(work(a)%fourier(:, i, channel))*poisson_weights*h), dp)
-               ve(i, channel) = REAL(SUM(CONJG(work(a)%fourier(:, i, channel))*background_adjoint), dp)
-            END DO
-         END DO
+         CALL fourier_density_adjoint(work(a)%fourier, poisson_weights*h, vh)
+         CALL fourier_density_adjoint(work(a)%fourier, background_adjoint, ve)
          IF (PRESENT(comm)) THEN
             CALL comm%sum(vh)
             CALL comm%sum(ve)

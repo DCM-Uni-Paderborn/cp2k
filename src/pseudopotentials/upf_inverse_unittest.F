@@ -98,11 +98,11 @@ PROGRAM upf_inverse_unittest
    USE upf_inverse_coulomb,             ONLY: &
         upf_inverse_coulomb_center_type, upf_inverse_coulomb_compensate, &
         upf_inverse_coulomb_compensation_adjoint, upf_inverse_coulomb_density, &
-        upf_inverse_coulomb_fourier_kernel, upf_inverse_coulomb_map_type, &
-        upf_inverse_coulomb_pair_geometry, upf_inverse_coulomb_pair_kernel, &
-        upf_inverse_coulomb_periodic, upf_inverse_coulomb_potential_type, &
-        upf_inverse_coulomb_prepare, upf_inverse_coulomb_radial, &
-        upf_inverse_coulomb_radial_response
+        upf_inverse_coulomb_density_adjoint, upf_inverse_coulomb_fourier_kernel, &
+        upf_inverse_coulomb_map_type, upf_inverse_coulomb_pair_geometry, &
+        upf_inverse_coulomb_pair_kernel, upf_inverse_coulomb_periodic, &
+        upf_inverse_coulomb_potential_type, upf_inverse_coulomb_prepare, &
+        upf_inverse_coulomb_radial, upf_inverse_coulomb_radial_response
    USE upf_inverse_lattice,             ONLY: &
         upf_inverse_lattice_adjoint, upf_inverse_lattice_bloch, upf_inverse_lattice_bound, &
         upf_inverse_lattice_error_bounds, upf_inverse_lattice_init, upf_inverse_lattice_project, &
@@ -2397,11 +2397,11 @@ CONTAINS
 !> \brief Residual image sums against the shell theorem, density adjoints and cell response.
 ! **************************************************************************************************
    SUBROUTINE check_periodic_coulomb()
-      COMPLEX(dp)                                        :: adjoint(3), background(3), &
-                                                            cached_adjoint(3), db(3), &
-                                                            density_g(3), exact_density(3)
+      COMPLEX(dp) :: adjoint(3), background(3), cached_adjoint(3), db(3), density_g(3), &
+         density_response(3), density_samples(3, 2), exact_density(3), potential_g(3)
       INTEGER                                            :: a, b, boundary, i, ix, iy, iz, j, &
-                                                            periodicity(3), side
+                                                            mpi_rank, mpi_size, periodicity(3), &
+                                                            side
       REAL(dp) :: cached_energy, cached_response, cell(3, 3), cell_gradient(3, 3), &
          center_gradient(3, 2), dcell(3, 3), dg(3, 3), displacement(3), distance, dkw(3), dvolume, &
          energy, exact, g(3, 3), kernel, kw(3), norm, pair_response, parallel_cell_gradient(3, 3), &
@@ -2409,7 +2409,8 @@ CONTAINS
       TYPE(upf_inverse_coulomb_center_type)              :: centers(2), changed(2), derivative(2)
       TYPE(upf_inverse_coulomb_map_type), ALLOCATABLE    :: map
       TYPE(upf_inverse_coulomb_potential_type), &
-         ALLOCATABLE                                     :: cached_potential(:), potential(:)
+         ALLOCATABLE                                     :: cached_potential(:), &
+                                                            density_potential(:), potential(:)
 
       cell(:, 1) = [2.0_dp, 0.0_dp, 0.0_dp]
       cell(:, 2) = [0.25_dp, 1.9_dp, 0.0_dp]
@@ -2442,6 +2443,8 @@ CONTAINS
          derivative(a)%position = REAL(a, dp)*[0.009_dp, -0.011_dp, 0.013_dp]
       END DO
       ALLOCATE (map)
+      CALL comm%get_rank(mpi_rank)
+      CALL comm%get_size(mpi_size)
       DO boundary = 1, 4
          periodicity = 0
          IF (boundary > 1) periodicity(:boundary - 1) = 1
@@ -2498,7 +2501,8 @@ CONTAINS
          CALL check(MAXVAL(ABS(parallel_cell_gradient - cell_gradient)), "Distributed pair cell covector", 3.e-12_dp)
          CALL check(MAXVAL(ABS(SUM(center_gradient, DIM=2))), "Residual-pair translation covector", 3.e-12_dp)
          IF (boundary == 1) CALL check(MAXVAL(ABS(cell_gradient)), "Isolated residual-pair cell covector", 3.e-12_dp)
-         CALL upf_inverse_coulomb_density(centers, cell, g, volume, density_g, map)
+         CALL upf_inverse_coulomb_density(centers, cell, g, volume, density_g, map, density_response, &
+                                          derivative, dg, dvolume)
          exact_density = CMPLX(0.0_dp, 0.0_dp, dp)
          DO a = 1, SIZE(centers)
             exact_density(1) = exact_density(1) + SQRT(fourpi)/volume* &
@@ -2513,6 +2517,23 @@ CONTAINS
          END DO
          CALL check(MAXVAL(ABS(density_g - exact_density)), "Complete signed density shell form factors", 3.e-15_dp)
          CALL check(ABS(density_g(2) - CONJG(density_g(3))), "Complete signed density Fourier conjugacy", 3.e-15_dp)
+         potential_g = [CMPLX(0.017_dp, 0.0_dp, dp), CMPLX(0.023_dp, 0.031_dp, dp), CMPLX(0.023_dp, -0.031_dp, dp)]
+         CALL upf_inverse_coulomb_density_adjoint(centers, cell, g, volume, potential_g, density_potential, map)
+         trace = 0.0_dp
+         DO a = 1, SIZE(centers)
+            trace = trace + SUM(SPREAD(centers(a)%weights, 2, SIZE(centers(a)%l))* &
+                                centers(a)%density*density_potential(a)%values)
+         END DO
+         CALL check(ABS(trace - REAL(SUM(CONJG(density_g)*potential_g), dp)), &
+                    "Complete signed density local-potential transpose", 3.e-15_dp)
+         DO i = 1, SIZE(potential_g)
+            IF (MOD(i - 1, mpi_size) /= mpi_rank) potential_g(i) = CMPLX(0.0_dp, 0.0_dp, dp)
+         END DO
+         CALL upf_inverse_coulomb_density_adjoint(centers, cell, g, volume, potential_g, cached_potential, map, comm)
+         DO a = 1, SIZE(centers)
+            CALL check(MAXVAL(ABS(cached_potential(a)%values - density_potential(a)%values)), &
+                       "Distributed signed density local-potential transpose", 3.e-15_dp)
+         END DO
          CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
                                            cached_potential, cached_adjoint, map=map)
          CALL check(ABS(cached_energy - energy), "Cached periodic Coulomb energy", 3.e-12_dp)
@@ -2613,8 +2634,14 @@ CONTAINS
             CALL upf_inverse_coulomb_periodic(changed, cell + shift*dcell, g + shift*dg, volume + shift*dvolume, &
                                               background + shift*db, kw + shift*dkw, samples(side), potential, adjoint, &
                                               periodicity=periodicity)
+            CALL upf_inverse_coulomb_prepare(changed, cell + shift*dcell, g + shift*dg, volume + shift*dvolume, &
+                                             map, periodicity)
+            CALL upf_inverse_coulomb_density(changed, cell + shift*dcell, g + shift*dg, volume + shift*dvolume, &
+                                             density_samples(:, side), map)
          END DO
          CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - response), "Complete periodic Coulomb joint response", 3.e-9_dp)
+         CALL check(MAXVAL(ABS((density_samples(:, 2) - density_samples(:, 1))/(2.0_dp*step) - density_response)), &
+                    "Complete signed density joint geometry response", 3.e-10_dp)
       END DO
    END SUBROUTINE check_periodic_coulomb
 ! **************************************************************************************************
