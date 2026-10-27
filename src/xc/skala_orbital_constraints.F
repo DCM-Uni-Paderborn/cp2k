@@ -891,8 +891,9 @@ CONTAINS
       INTEGER :: capacity, d, history, i, iteration, last_progress_check, limit, m, nf, r, shortening
       TYPE(skala_constraint_chart_type) :: curve
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked, &
-          coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, curvature_stalled
-      REAL(dp) :: curvature, energy, fraction, progress_norm, radius, roundoff, slope, trial_energy, trial_slope
+                 coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, &
+                 curvature_stalled, newton_used
+      REAL(dp) :: curvature, energy, fraction, progress_norm, radius, maximum_radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
                                values(:), x(:), changes(:, :), stalled_trial(:), &
@@ -923,6 +924,7 @@ CONTAINS
       IF (PRESENT(max_step)) radius = max_step
       CPASSERT(limit > 0)
       CPASSERT(ieee_is_finite(radius) .AND. radius > 0.0_dp)
+      maximum_radius = radius
       ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), stalled_trial(d))
       x(:) = coordinate
       converged = .FALSE.
@@ -992,6 +994,7 @@ CONTAINS
          END IF
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), TINY(0.0_dp))
          resolved_descent = .FALSE.
+         newton_used = .FALSE.
          IF (coupled_curvature .OR. curvature_stalled .OR. (history > 0 .AND. &
                                                             -DOT_PRODUCT(reduced, direction) <= 32.0_dp*roundoff)) THEN
             IF (PRESENT(check_stalled_segment)) THEN
@@ -1036,7 +1039,10 @@ CONTAINS
                   RETURN
                END IF
                IF (newton_stopped) RETURN
-               IF (newton_valid) direction(:) = newton
+               IF (newton_valid) THEN
+                  direction(:) = newton
+                  newton_used = .TRUE.
+               END IF
             END IF
          END IF
          IF (NORM2(direction) > radius) direction(:) = direction*(radius/NORM2(direction))
@@ -1126,6 +1132,15 @@ CONTAINS
             CYCLE
          END IF
          motion(:) = trial(curve%free) - x(curve%free)
+         IF (coupled_curvature .AND. newton_used) THEN
+            ! A shortened step resolves a smaller neighborhood than the original CG sphere.
+            ! Use that neighborhood in the next solve while retaining the user maximum.
+            IF (fraction < 0.25_dp) THEN
+               radius = MIN(radius, 2.0_dp*NORM2(motion))
+            ELSE IF (fraction == 1.0_dp .AND. NORM2(motion) >= 0.9_dp*radius) THEN
+               radius = MIN(maximum_radius, 2.0_dp*radius)
+            END IF
+         END IF
          old_gradient(:) = trial_reduced - reduced
          curvature = DOT_PRODUCT(motion, old_gradient)
          IF (curvature > 128.0_dp*EPSILON(0.0_dp)*NORM2(motion)*NORM2(old_gradient)) THEN
@@ -1160,7 +1175,7 @@ CONTAINS
 !>        Truncated conjugate gradients reuse the positive BFGS inverse as a fixed preconditioner
 !>        and retain linear storage. The constraint Jacobian and normal derivative are
 !>        retained only for this accepted center. Indefinite curvature and an oversized CG iterate
-!>        terminate at the original maximum-step sphere. The outer line search
+!>        terminate at the current CG sphere, bounded by the user maximum. The outer line search
 !>        retains its original energy and derivative checks.
 !> \param center Accepted orbital coordinates.
 !> \param derivative Derivative at the accepted state.
@@ -1240,7 +1255,7 @@ CONTAINS
          valid_direction = ALL(ieee_is_finite(newton_step)) .AND. DOT_PRODUCT(derivative, newton_step) < 0.0_dp
       END SUBROUTINE newton_direction
 ! **************************************************************************************************
-!> \brief Distance along a normalized CG direction to the original maximum-step sphere.
+!> \brief Distance along a normalized CG direction to the current CG sphere.
 !>        Normalize by the radius and avoid cancellation at an outward-facing boundary.
 !> \param step Current interior Newton step.
 !> \param direction Current CG search direction.
