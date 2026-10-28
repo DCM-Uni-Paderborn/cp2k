@@ -1320,6 +1320,9 @@ CONTAINS
                ! Grow only after physical stationarity exposes omitted thermal charge.
                CALL qs_skala_scf_release(state)
                CALL qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit)
+               ! Growth releases the old OT environment along with its dimensioned buffers.
+               scf_section => section_vals_get_subs_vals(qs_env%input, "DFT%SCF")
+               CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_resized)
                iterations = iterations + 1
                remaining = remaining - 1
                space_grown = .TRUE.
