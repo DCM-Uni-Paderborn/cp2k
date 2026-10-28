@@ -656,6 +656,7 @@ CONTAINS
 !> \brief Freeze a positive diagonal approximation to the one-electron rotation Hessian.
 !>        Energies are Rayleigh values in the normalized reference. The occupation metric and
 !>        temperature regularize equal-occupation rotations. The map stays fixed during a search.
+!>        A mean-response floor bounds scale ratios without freezing nearly empty rotations.
 !> \param chart Variable-occupation chart at its reference coordinate.
 !> \param energies Complete reference Rayleigh energies, in hartree.
 !> \param temperature Positive kBT, in hartree.
@@ -685,7 +686,8 @@ CONTAINS
                      MAX(ABS(energies(a) - energies(b)), temperature)
          chart%coordinate_scale(i) = MAX(curvature, temperature*metric)
       END DO
-      floor = 64.0_dp*EPSILON(1.0_dp)*MAX(MAXVAL(chart%coordinate_scale), temperature*chart%metric_weight)
+      floor = MAX(SUM(chart%coordinate_scale)/REAL(MAX(1, SIZE(chart%coordinate_scale)), dp), &
+                  64.0_dp*EPSILON(1.0_dp)*MAX(MAXVAL(chart%coordinate_scale), temperature*chart%metric_weight))
       WHERE (chart%coordinate_scale > 0.0_dp)
          chart%coordinate_scale = 1.0_dp/SQRT(MAX(chart%coordinate_scale, floor))
       ELSE WHERE

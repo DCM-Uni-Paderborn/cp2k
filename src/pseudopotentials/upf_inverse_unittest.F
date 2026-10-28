@@ -85,10 +85,11 @@ PROGRAM upf_inverse_unittest
         skala_constraint_chart_restore, skala_constraint_chart_type, skala_cusp_admissibility, &
         skala_orbital_chart_create, skala_orbital_chart_density_response, &
         skala_orbital_chart_derivative, skala_orbital_chart_evaluate, &
-        skala_orbital_chart_operator_response, skala_orbital_chart_release, &
-        skala_orbital_chart_restrict, skala_orbital_chart_set_occupations, &
-        skala_orbital_chart_set_reference, skala_orbital_chart_size, skala_orbital_chart_symmetry, &
-        skala_orbital_chart_type, skala_orbital_multiplets
+        skala_orbital_chart_operator_response, skala_orbital_chart_precondition, &
+        skala_orbital_chart_release, skala_orbital_chart_restrict, skala_orbital_chart_scales, &
+        skala_orbital_chart_set_occupations, skala_orbital_chart_set_reference, &
+        skala_orbital_chart_size, skala_orbital_chart_symmetry, skala_orbital_chart_type, &
+        skala_orbital_multiplets
    USE t_c_g0,                          ONLY: free_C0,&
                                               init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
@@ -190,7 +191,7 @@ CONTAINS
       LOGICAL                                            :: conjugating(12), valid
       REAL(dp) :: analytic, angle, derivative(2), df(4), dq(8), dqt(12), em, ep, expected(8), &
          f(4), g(8), gm(8), gp(8), gradient_minus(2), gradient_plus(2), gt(12), gtm(12), gtp(12), &
-         hessian(2), hg(8), ht(12), phase, phases(4), physical(8), q(8), qt(12), value
+         hessian(2), hg(8), ht(12), phase, phases(4), physical(8), q(8), qt(12), scales(2), value
       REAL(dp), ALLOCATABLE                              :: auxiliary(:)
       TYPE(skala_orbital_chart_type)                     :: chart
 
@@ -221,6 +222,12 @@ CONTAINS
       IF (.NOT. valid) ERROR STOP 'Repeated symmetry reference metric is not positive'
       CALL skala_orbital_chart_restrict(chart, [1, 1, 2, 2], .TRUE.)
       IF (skala_orbital_chart_size(chart) /= 2) ERROR STOP 'Wrong symmetry-restricted orbital dimension'
+      ! Separated pair energies must not give an unbounded coordinate scale ratio.
+      CALL skala_orbital_chart_precondition(chart, [-3.0_dp, -2.0_dp, 2.0_dp, 200.0_dp], 1.e-3_dp)
+      CALL skala_orbital_chart_scales(chart, scales)
+      IF (MAXVAL(scales)/MINVAL(scales) > SQRT(REAL(SIZE(scales), dp))*(1.0_dp + 1.e-12_dp)) THEN
+         ERROR STOP 'Thermal orbital coordinate scaling is ill-conditioned'
+      END IF
       CALL skala_orbital_chart_evaluate(chart, coordinate, coefficients)
       weighted = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, coefficients))
       DO i = 1, 4
