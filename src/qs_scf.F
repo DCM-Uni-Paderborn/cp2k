@@ -45,337 +45,210 @@
 !> \author Matthias Krack (30.04.2001)
 ! **************************************************************************************************
 MODULE qs_scf
-   USE atomic_kind_types, ONLY: &
-      atomic_kind_type
-   USE cell_types, ONLY: &
-      cell_type
-   USE cp_blacs_env, ONLY: &
-      cp_blacs_env_type
-   USE cp_cfm_types, ONLY: &
-      cp_cfm_create, &
-      cp_cfm_release, &
-      cp_cfm_to_fm, &
-      cp_cfm_type, &
-      cp_fm_to_cfm
-   USE cp_control_types, ONLY: &
-      dft_control_type
-   USE cp_dbcsr_api, ONLY: &
-      dbcsr_add, &
-      dbcsr_copy, &
-      dbcsr_create, &
-      dbcsr_deallocate_matrix, &
-      dbcsr_get_info, &
-      dbcsr_init_p, &
-      dbcsr_multiply, &
-      dbcsr_p_type, &
-      dbcsr_release_p, &
-      dbcsr_set, &
-      dbcsr_type, &
-      dbcsr_type_no_symmetry
-   USE cp_dbcsr_operations, ONLY: &
-      copy_dbcsr_to_fm, &
-      copy_fm_to_dbcsr, &
-      copy_fm_to_dbcsr_bc, &
-      cp_dbcsr_m_by_n_from_row_template, &
-      dbcsr_deallocate_matrix_set
-   USE cp_files, ONLY: &
-      close_file
-   USE cp_fm_pool_types, ONLY: &
-      cp_fm_pool_p_type
-   USE cp_fm_struct, ONLY: &
-      cp_fm_struct_create, &
-      cp_fm_struct_release, &
-      cp_fm_struct_type
-   USE cp_fm_types, ONLY: &
-      cp_fm_create, &
-      cp_fm_init_random, &
-      cp_fm_release, &
-      cp_fm_to_fm, &
-      cp_fm_type
-   USE cp_log_handling, ONLY: &
-      cp_add_default_logger, &
-      cp_get_default_logger, &
-      cp_logger_release, &
-      cp_logger_type, &
-      cp_rm_default_logger, &
-      cp_to_string
-   USE cp_output_handling, ONLY: &
-      cp_add_iter_level, &
-      cp_iterate, &
-      cp_p_file, &
-      cp_print_key_should_output, &
-      cp_print_key_unit_nr, &
-      cp_rm_iter_level
-   USE cp_result_methods, ONLY: &
-      get_results, &
-      test_for_result
-   USE cp_result_types, ONLY: &
-      cp_result_type
-   USE dft_plus_u, ONLY: &
-      lowdin_kp_apply
-   USE ec_env_types, ONLY: &
-      energy_correction_type
-   USE input_constants, ONLY: &
-      broyden_type_1, &
-      broyden_type_1_explicit, &
-      broyden_type_1_explicit_ls, &
-      broyden_type_1_ls, &
-      broyden_type_2, &
-      broyden_type_2_explicit, &
-      broyden_type_2_explicit_ls, &
-      broyden_type_2_ls, &
-      cdft2ot, &
-      cholesky_dbcsr, &
-      diag_update_method_adiis, &
-      gxtb, &
-      history_guess, &
-      ot2cdft, &
-      ot_precond_fermi_low_rank, &
-      ot_precond_full_all, &
-      ot_precond_full_all_covariant, &
-      ot_precond_full_kinetic, &
-      ot_precond_full_single, &
-      ot_precond_full_single_inverse, &
-      ot_precond_none, &
-      ot_precond_s_inverse, &
-      outer_scf_becke_constraint, &
-      outer_scf_hirshfeld_constraint, &
-      outer_scf_optimizer_broyden, &
-      outer_scf_optimizer_newton_ls, &
-      plus_u_lowdin, &
-      sic_eo, &
-      smear_fermi_dirac, &
-      smear_gaussian, &
-      smear_mp, &
-      smear_mv, &
-      tblite_scc_mixer_tblite
-   USE input_section_types, ONLY: &
-      section_vals_get_subs_vals, &
-      section_vals_type
-   USE kinds, ONLY: &
-      default_path_length, &
-      default_string_length, &
-      dp
-   USE kpoint_io, ONLY: &
-      write_kpoints_restart
-   USE kpoint_methods, ONLY: &
-      kpoint_initialize_mo_set, &
-      kpoint_initialize_mos
-   USE kpoint_types, ONLY: &
-      get_kpoint_info, &
-      kpoint_env_type, &
-      kpoint_type
-   USE machine, ONLY: &
-      m_flush, &
-      m_walltime
-   USE mathlib, ONLY: &
-      invert_matrix
-   USE message_passing, ONLY: &
-      mp_comm_type, &
-      mp_para_env_type
-   USE particle_types, ONLY: &
-      particle_type
-   USE physcon, ONLY: &
-      evolt
-   USE preconditioner, ONLY: &
-      make_preconditioner_complex_fermi_low_rank, &
-      make_preconditioner_complex_full_all, &
-      make_preconditioner_complex_full_all_covariant, &
-      make_preconditioner_complex_full_kinetic, &
-      make_preconditioner_complex_full_s_inverse, &
-      make_preconditioner_complex_full_single, &
-      make_preconditioner_complex_full_single_inverse, &
-      prepare_preconditioner, &
-      restart_preconditioner
-   USE preconditioner_types, ONLY: &
-      destroy_preconditioner, &
-      init_preconditioner
-   USE pw_env_types, ONLY: &
-      pw_env_get, &
-      pw_env_type
-   USE pw_pool_types, ONLY: &
-      pw_pool_type
-   USE qs_block_davidson_types, ONLY: &
-      block_davidson_deallocate
-   USE qs_cdft_scf_utils, ONLY: &
-      build_diagonal_jacobian, &
-      create_tmp_logger, &
-      initialize_inverse_jacobian, &
-      prepare_jacobian_stencil, &
-      print_inverse_jacobian, &
-      restart_inverse_jacobian
-   USE qs_cdft_types, ONLY: &
-      cdft_control_type
-   USE qs_charge_mixing, ONLY: &
-      charge_mixing_scc_error
-   USE qs_charges_types, ONLY: &
-      qs_charges_type
-   USE qs_density_matrices, ONLY: &
-      calculate_density_matrix
-   USE qs_density_mixing_types, ONLY: &
-      gspace_mixing_nr
-   USE qs_diis, ONLY: &
-      qs_diis_b_clear, &
-      qs_diis_b_clear_kp, &
-      qs_diis_b_create, &
-      qs_diis_b_create_kp
-   USE qs_energy_types, ONLY: &
-      qs_energy_type
-   USE qs_environment_types, ONLY: &
-      get_qs_env, &
-      qs_environment_type, &
-      set_qs_env
-   USE qs_fod, ONLY: &
-      qs_fod_validate
-   USE qs_integrate_potential, ONLY: &
-      integrate_v_rspace
-   USE qs_kind_types, ONLY: &
-      get_qs_kind, &
-      qs_kind_type
-   USE qs_kpoint_operators, ONLY: &
-      kpoint_operator_get_local, &
-      kpoint_operator_store
-   USE qs_kpoint_state, ONLY: &
-      qs_kpoint_copy_spin_mos, &
-      qs_kpoint_mos_initialized, &
-      qs_kpoint_set_fixed_occupations, &
-      qs_kpoint_state_canonicalize_fixed, &
-      qs_kpoint_state_commit, &
-      qs_kpoint_state_prepare_fixed_density
-   USE qs_ks_atom, ONLY: &
-      update_ks_atom
-   USE qs_ks_methods, ONLY: &
-      evaluate_core_matrix_traces, &
-      qs_ks_update_qs_env
-   USE qs_ks_types, ONLY: &
-      get_ks_env, &
-      qs_ks_did_change, &
-      qs_ks_env_type
-   USE qs_local_rho_types, ONLY: &
-      local_rho_set_create, &
-      local_rho_set_release, &
-      local_rho_type
-   USE qs_matrix_pools, ONLY: &
-      mpools_get, &
-      mpools_rebuild_fm_pools, &
-      mpools_release
-   USE qs_mixing_utils, ONLY: &
-      mixing_init
-   USE qs_mo_io, ONLY: &
-      write_mo_set_to_restart
-   USE qs_mo_methods, ONLY: &
-      make_basis_simple, &
-      make_basis_sm
-   USE qs_mo_occupation, ONLY: &
-      set_mo_occupation
-   USE qs_mo_types, ONLY: &
-      allocate_mo_set, &
-      deallocate_mo_set, &
-      duplicate_mo_set, &
-      get_mo_set, &
-      init_mo_set, &
-      mo_set_restrict, &
-      mo_set_type, &
-      reassign_allocated_mos
-   USE qs_ot, ONLY: &
-      qs_ot_get_orbitals_ref_complex, &
-      qs_ot_get_p, &
-      qs_ot_get_p_complex, &
-      qs_ot_new_preconditioner
-   USE qs_ot_scf, ONLY: &
-      ot_scf_destroy, &
-      ot_scf_init, &
-      ot_scf_read_input
-   USE qs_ot_types, ONLY: &
-      qs_ot_allocate, &
-      qs_ot_allocate_complex_state, &
-      qs_ot_channel_index, &
-      qs_ot_check_channel_context, &
-      qs_ot_init, &
-      qs_ot_kpoint_preconditioner_solver_supported, &
-      qs_ot_kpoint_preconditioner_supported, &
-      qs_ot_number_of_channels, &
-      qs_ot_set_context
-   USE qs_outer_scf, ONLY: &
-      outer_loop_gradient, &
-      outer_loop_optimize, &
-      outer_loop_purge_history, &
-      outer_loop_switch, &
-      outer_loop_update_qs_env
-   USE qs_rho_atom_methods, ONLY: &
-      allocate_rho_atom_internals
-   USE qs_rho_atom_types, ONLY: &
-      rho_atom_type, &
-      zero_rho_atom_integrals
-   USE qs_rho_methods, ONLY: &
-      qs_rho_update_rho
-   USE qs_rho_types, ONLY: &
-      qs_rho_get, &
-      qs_rho_type
-   USE qs_scf_diagonalization, ONLY: &
-      do_general_diag_kp
-   USE qs_scf_initialization, ONLY: &
-      qs_scf_env_initialize
-   USE qs_scf_loop_utils, ONLY: &
-      qs_scf_candidate_density_delta, &
-      qs_scf_check_inner_exit, &
-      qs_scf_check_outer_exit, &
-      qs_scf_commit_density_candidate, &
-      qs_scf_density_mixing, &
-      qs_scf_inner_finalize, &
-      qs_scf_kp_search_endpoint, &
-      qs_scf_new_mos, &
-      qs_scf_new_mos_kp, &
-      qs_scf_rho_update, &
-      qs_scf_set_loop_flags
-   USE qs_scf_output, ONLY: &
-      qs_scf_cdft_info, &
-      qs_scf_cdft_initial_info, &
-      qs_scf_gce_info, &
-      qs_scf_loop_info, &
-      qs_scf_loop_print, &
-      qs_scf_outer_loop_info, &
-      qs_scf_write_mos
-   USE qs_scf_post_scf, ONLY: &
-      qs_scf_compute_properties
-   USE qs_scf_subspace, ONLY: &
-      qs_scf_subspace_build, &
-      qs_scf_subspace_push, &
-      qs_scf_subspace_restart, &
-      qs_scf_subspace_update_shift
-   USE qs_scf_subspace_types, ONLY: &
-      qs_scf_subspace_buffer_clear, &
-      qs_scf_subspace_buffer_create, &
-      qs_scf_subspace_buffer_release
-   USE qs_scf_types, ONLY: &
-      block_davidson_diag_method_nr, &
-      block_krylov_diag_method_nr, &
-      filter_matrix_diag_method_nr, &
-      general_diag_method_nr, &
-      ot_diag_method_nr, &
-      ot_method_nr, &
-      qs_scf_env_type, &
-      smeagol_method_nr, &
-      special_diag_method_nr
-   USE qs_vxc_atom, ONLY: &
-      gapw_cdft_one_center
-   USE qs_wf_history_methods, ONLY: &
-      wfi_purge_history, &
-      wfi_update
-   USE scf_control_types, ONLY: &
-      scf_control_type
-   USE smeagol_interface, ONLY: &
-      run_smeagol_bulktrans, &
-      run_smeagol_emtrans
-   USE tblite_interface, ONLY: &
-      tb_get_energy, &
-      tb_native_scc_mixer_active, &
-      tb_scf_mixer_error, &
-      tb_update_charges
-#if defined(__TBLITE_GXTB)
-   USE tblite_interface, ONLY: &
-      tb_sync_gxtb_kpoint_density
-#endif
+   USE atomic_kind_types,               ONLY: atomic_kind_type
+   USE cell_types,                      ONLY: cell_type
+   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_p_type,&
+                                              cp_cfm_release,&
+                                              cp_cfm_to_fm,&
+                                              cp_cfm_type,&
+                                              cp_fm_to_cfm
+   USE cp_control_types,                ONLY: dft_control_type
+   USE cp_dbcsr_api,                    ONLY: &
+        dbcsr_add, dbcsr_copy, dbcsr_create, dbcsr_deallocate_matrix, dbcsr_get_info, &
+        dbcsr_init_p, dbcsr_p_type, dbcsr_release_p, dbcsr_set, dbcsr_type, dbcsr_type_no_symmetry
+   USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              copy_fm_to_dbcsr,&
+                                              copy_fm_to_dbcsr_bc,&
+                                              cp_dbcsr_m_by_n_from_row_template,&
+                                              dbcsr_deallocate_matrix_set
+   USE cp_files,                        ONLY: close_file
+   USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type
+   USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
+                                              cp_fm_struct_release,&
+                                              cp_fm_struct_type
+   USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_init_random,&
+                                              cp_fm_p_type,&
+                                              cp_fm_release,&
+                                              cp_fm_to_fm,&
+                                              cp_fm_type
+   USE cp_log_handling,                 ONLY: cp_add_default_logger,&
+                                              cp_get_default_logger,&
+                                              cp_logger_release,&
+                                              cp_logger_type,&
+                                              cp_rm_default_logger,&
+                                              cp_to_string
+   USE cp_output_handling,              ONLY: cp_add_iter_level,&
+                                              cp_iterate,&
+                                              cp_p_file,&
+                                              cp_print_key_should_output,&
+                                              cp_print_key_unit_nr,&
+                                              cp_rm_iter_level
+   USE cp_result_methods,               ONLY: get_results,&
+                                              test_for_result
+   USE cp_result_types,                 ONLY: cp_result_type
+   USE dft_plus_u,                      ONLY: lowdin_kp_apply
+   USE ec_env_types,                    ONLY: energy_correction_type
+   USE input_constants,                 ONLY: &
+        broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
+        broyden_type_2, broyden_type_2_explicit, broyden_type_2_explicit_ls, broyden_type_2_ls, &
+        cdft2ot, cholesky_dbcsr, diag_update_method_adiis, gxtb, history_guess, ot2cdft, &
+        ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_all_covariant, &
+        ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
+        ot_precond_none, ot_precond_s_inverse, outer_scf_becke_constraint, &
+        outer_scf_hirshfeld_constraint, outer_scf_optimizer_broyden, &
+        outer_scf_optimizer_newton_ls, plus_u_lowdin, sic_eo, smear_fermi_dirac, smear_gaussian, &
+        smear_mp, smear_mv, tblite_scc_mixer_tblite
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type
+   USE kinds,                           ONLY: default_path_length,&
+                                              default_string_length,&
+                                              dp
+   USE kpoint_io,                       ONLY: write_kpoints_restart
+   USE kpoint_methods,                  ONLY: kpoint_initialize_mo_set,&
+                                              kpoint_initialize_mos
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_env_type,&
+                                              kpoint_type
+   USE machine,                         ONLY: m_flush,&
+                                              m_walltime
+   USE mathlib,                         ONLY: invert_matrix
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
+   USE particle_types,                  ONLY: particle_type
+   USE physcon,                         ONLY: evolt
+   USE preconditioner,                  ONLY: &
+        make_preconditioner_complex_fermi_low_rank, make_preconditioner_complex_full_all, &
+        make_preconditioner_complex_full_all_batch, &
+        make_preconditioner_complex_full_all_covariant, make_preconditioner_complex_full_kinetic, &
+        make_preconditioner_complex_full_s_inverse, make_preconditioner_complex_full_single, &
+        make_preconditioner_complex_full_single_inverse, prepare_preconditioner, &
+        restart_preconditioner
+   USE preconditioner_types,            ONLY: destroy_preconditioner,&
+                                              init_preconditioner
+   USE pw_env_types,                    ONLY: pw_env_get,&
+                                              pw_env_type
+   USE pw_pool_types,                   ONLY: pw_pool_type
+   USE qs_block_davidson_types,         ONLY: block_davidson_deallocate
+   USE qs_cdft_scf_utils,               ONLY: build_diagonal_jacobian,&
+                                              create_tmp_logger,&
+                                              initialize_inverse_jacobian,&
+                                              prepare_jacobian_stencil,&
+                                              print_inverse_jacobian,&
+                                              restart_inverse_jacobian
+   USE qs_cdft_types,                   ONLY: cdft_control_type
+   USE qs_charge_mixing,                ONLY: charge_mixing_scc_error
+   USE qs_charges_types,                ONLY: qs_charges_type
+   USE qs_density_matrices,             ONLY: calculate_density_matrix
+   USE qs_density_mixing_types,         ONLY: gspace_mixing_nr
+   USE qs_diis,                         ONLY: qs_diis_b_clear,&
+                                              qs_diis_b_clear_kp,&
+                                              qs_diis_b_create,&
+                                              qs_diis_b_create_kp
+   USE qs_energy_types,                 ONLY: qs_energy_type
+   USE qs_environment_types,            ONLY: get_qs_env,&
+                                              qs_environment_type,&
+                                              set_qs_env
+   USE qs_fod,                          ONLY: qs_fod_validate
+   USE qs_integrate_potential,          ONLY: integrate_v_rspace
+   USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              qs_kind_type
+   USE qs_kpoint_operators,             ONLY: kpoint_operator_context_create,&
+                                              kpoint_operator_get_local,&
+                                              kpoint_operator_store
+   USE qs_kpoint_state,                 ONLY: qs_kpoint_copy_spin_mos,&
+                                              qs_kpoint_mos_initialized,&
+                                              qs_kpoint_set_fixed_occupations,&
+                                              qs_kpoint_state_canonicalize_fixed,&
+                                              qs_kpoint_state_commit,&
+                                              qs_kpoint_state_prepare_fixed_density
+   USE qs_ks_atom,                      ONLY: update_ks_atom
+   USE qs_ks_methods,                   ONLY: evaluate_core_matrix_traces,&
+                                              qs_ks_update_qs_env
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_did_change,&
+                                              qs_ks_env_type
+   USE qs_local_rho_types,              ONLY: local_rho_set_create,&
+                                              local_rho_set_release,&
+                                              local_rho_type
+   USE qs_matrix_pools,                 ONLY: mpools_get,&
+                                              mpools_rebuild_fm_pools,&
+                                              mpools_release
+   USE qs_mixing_utils,                 ONLY: mixing_init
+   USE qs_mo_io,                        ONLY: write_mo_set_to_restart
+   USE qs_mo_methods,                   ONLY: make_basis_simple,&
+                                              make_basis_sm
+   USE qs_mo_occupation,                ONLY: set_mo_occupation
+   USE qs_mo_types,                     ONLY: allocate_mo_set,&
+                                              deallocate_mo_set,&
+                                              duplicate_mo_set,&
+                                              get_mo_set,&
+                                              init_mo_set,&
+                                              mo_set_restrict,&
+                                              mo_set_type,&
+                                              reassign_allocated_mos
+   USE qs_ot,                           ONLY: qs_ot_complex_multiply,&
+                                              qs_ot_new_preconditioner
+   USE qs_ot_kp,                        ONLY: qs_ot_get_orbitals_local_batch,&
+                                              qs_ot_get_orbitals_ref_complex,&
+                                              qs_ot_get_p_complex
+   USE qs_ot_scf,                       ONLY: ot_scf_destroy,&
+                                              ot_scf_init,&
+                                              ot_scf_read_input
+   USE qs_ot_types,                     ONLY: &
+        qs_ot_allocate, qs_ot_allocate_complex_state, qs_ot_channel_index, &
+        qs_ot_check_channel_context, qs_ot_init, qs_ot_kpoint_preconditioner_solver_supported, &
+        qs_ot_kpoint_preconditioner_supported, qs_ot_number_of_channels, qs_ot_set_context
+   USE qs_outer_scf,                    ONLY: outer_loop_gradient,&
+                                              outer_loop_optimize,&
+                                              outer_loop_purge_history,&
+                                              outer_loop_switch,&
+                                              outer_loop_update_qs_env
+   USE qs_rho_atom_methods,             ONLY: allocate_rho_atom_internals
+   USE qs_rho_atom_types,               ONLY: rho_atom_type,&
+                                              zero_rho_atom_integrals
+   USE qs_rho_methods,                  ONLY: qs_rho_update_rho
+   USE qs_rho_types,                    ONLY: qs_rho_get,&
+                                              qs_rho_type
+   USE qs_scf_diagonalization,          ONLY: do_general_diag_kp
+   USE qs_scf_initialization,           ONLY: qs_scf_env_initialize
+   USE qs_scf_loop_utils,               ONLY: &
+        qs_scf_candidate_density_delta, qs_scf_check_inner_exit, qs_scf_check_outer_exit, &
+        qs_scf_commit_density_candidate, qs_scf_density_mixing, qs_scf_inner_finalize, &
+        qs_scf_kp_search_endpoint, qs_scf_new_mos, qs_scf_new_mos_kp, qs_scf_rho_update, &
+        qs_scf_set_loop_flags
+   USE qs_scf_output,                   ONLY: qs_scf_cdft_info,&
+                                              qs_scf_cdft_initial_info,&
+                                              qs_scf_gce_info,&
+                                              qs_scf_loop_info,&
+                                              qs_scf_loop_print,&
+                                              qs_scf_outer_loop_info,&
+                                              qs_scf_write_mos
+   USE qs_scf_post_scf,                 ONLY: qs_scf_compute_properties
+   USE qs_scf_subspace,                 ONLY: qs_scf_subspace_build,&
+                                              qs_scf_subspace_push,&
+                                              qs_scf_subspace_restart,&
+                                              qs_scf_subspace_update_shift
+   USE qs_scf_subspace_types,           ONLY: qs_scf_subspace_buffer_clear,&
+                                              qs_scf_subspace_buffer_create,&
+                                              qs_scf_subspace_buffer_release
+   USE qs_scf_types,                    ONLY: &
+        block_davidson_diag_method_nr, block_krylov_diag_method_nr, filter_matrix_diag_method_nr, &
+        general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
+        scf_env_release_ot_operators, smeagol_method_nr, special_diag_method_nr
+   USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
+   USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
+                                              wfi_update
+   USE scf_control_types,               ONLY: scf_control_type
+   USE smeagol_interface,               ONLY: run_smeagol_bulktrans,&
+                                              run_smeagol_emtrans
+   USE tblite_interface,                ONLY: tb_get_energy,&
+                                              tb_native_scc_mixer_active,&
+                                              tb_scf_mixer_error,&
+                                              tb_sync_gxtb_kpoint_density,&
+                                              tb_update_charges
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -1305,6 +1178,7 @@ CONTAINS
          END IF
       END IF
 
+      CALL scf_env_release_ot_operators(scf_env)
       ALLOCATE (old_mos(nspins))
       DO ispin = 1, nspins
          CALL duplicate_mo_set(old_mos(ispin), mos(ispin))
@@ -1695,6 +1569,11 @@ CONTAINS
                                         kp_range=kp_range, &
                                         wkp=wkp)
 
+               CALL scf_env_release_ot_operators(scf_env)
+               ALLOCATE (scf_env%ot_operator_ctx)
+               CALL kpoint_operator_context_create(scf_env%ot_operator_ctx, kpoints, &
+                                                   scf_env%scf_work1(1), dft_control%nspins)
+
                ! A previous zero-width filling may have changed the occupied rank at each k point.
                ! Restore the fixed OT ranks before validating or reconstructing the active space.
                IF (.NOT. scf_env%qs_ot_env(1)%settings%do_ener) THEN
@@ -1727,7 +1606,7 @@ CONTAINS
                   CPASSERT(ASSOCIATED(rho))
                   CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
                   CPASSERT(ASSOCIATED(rho_ao_kp))
-                  CALL kpoint_operator_store(kpoints, scf_env%scf_work1(1), rho_ao_kp, matrix_s_kp)
+                  CALL kpoint_operator_store(scf_env%ot_operator_ctx, rho_ao_kp, matrix_s_kp)
                   CALL qs_kpoint_state_prepare_fixed_density(kpoints)
                   IF (SIZE(rho_ao_kp, 1) < nspin_ot) THEN
                      CPASSERT(SIZE(rho_ao_kp, 1) == 1)
@@ -1783,7 +1662,12 @@ CONTAINS
 
                ! Redistribute the physical operators to their owning k-point groups.  OT must not
                ! call the collective real-space transform independently with group-local k values.
-               CALL kpoint_operator_store(kpoints, scf_env%scf_work1(1), matrix_ks_kp, matrix_s_kp, matrix_t_kp)
+               IF (scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_kinetic) THEN
+                  CALL kpoint_operator_store(scf_env%ot_operator_ctx, matrix_ks_kp, matrix_s_kp, matrix_t_kp)
+               ELSE
+                  CALL kpoint_operator_store(scf_env%ot_operator_ctx, matrix_ks_kp, matrix_s_kp)
+               END IF
+               scf_env%ot_ks_valid = .TRUE.
 
                ! Natural orbitals define the fixed occupied projector but not its internal gauge.
                ! Canonicalize that subspace with the matching physical Hamiltonian and populate
@@ -2140,12 +2024,12 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'allocate_qs_ot_kpoint_state'
 
-      INTEGER                                            :: energy_dimension, energy_spin, &
-                                                            energy_start, handle, ikpoint, &
-                                                            ikpoint_local, ispin, nao, nmo, nocc, &
-                                                            ot_channel
-      LOGICAL                                            :: use_real_wfn
+      INTEGER :: energy_dimension, energy_spin, energy_start, first_channel, handle, ikpoint, &
+         ikpoint_local, ispin, local_channel, nao, nmo, nocc, ot_channel
+      LOGICAL                                            :: handled, local_init, use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
+      TYPE(cp_cfm_p_type), ALLOCATABLE                   :: local_c(:)
+      TYPE(cp_fm_p_type), ALLOCATABLE                    :: local_s(:, :)
       TYPE(cp_fm_struct_type), POINTER                   :: active_mo_struct
       TYPE(cp_fm_type)                                   :: active_mo_coeff, active_mo_coeff_im, &
                                                             mo_coeff, mo_coeff_im
@@ -2168,6 +2052,12 @@ CONTAINS
 
       CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn)
       CPASSERT(.NOT. use_real_wfn)
+
+      local_init = kpoints%para_env_kp%num_pe == 1 .AND. .NOT. scf_env%qs_ot_env(1)%settings%do_rotation
+      IF (scf_env%qs_ot_env(1)%settings%ot_algorithm == 'TOD' .AND. &
+          scf_env%qs_ot_env(1)%settings%do_ener) local_init = .FALSE.
+      first_channel = qs_ot_channel_index(1, kpoints%kp_range(1), nspin_ot)
+      IF (local_init) ALLOCATE (local_s(2, SIZE(kpoints%kp_env)*nspin_ot), local_c(SIZE(kpoints%kp_env)*nspin_ot))
 
       DO ikpoint_local = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(ikpoint_local)%kpoint_env
@@ -2198,14 +2088,8 @@ CONTAINS
                              "K-point OT requires at least one occupied orbital in every spin channel.")
             END IF
 
-            CALL cp_fm_create(mo_coeff, mo_set%cmo_coeff%matrix_struct)
-            CALL cp_fm_create(mo_coeff_im, mo_set%cmo_coeff%matrix_struct)
-            CALL cp_cfm_to_fm(mo_set%cmo_coeff, mo_coeff, mo_coeff_im)
             CALL cp_fm_struct_create(active_mo_struct, template_fmstruct=mo_set%cmo_coeff%matrix_struct, &
                                      ncol_global=nocc)
-            CALL cp_fm_create(active_mo_coeff, active_mo_struct)
-            CALL cp_fm_to_fm(mo_coeff, active_mo_coeff, nocc)
-
             energy_dimension = nocc
             IF (dft_control%restricted .AND. &
                 scf_env%qs_ot_env(ot_channel)%settings%do_ener) THEN
@@ -2215,34 +2099,38 @@ CONTAINS
                                 matrix_sk_re, &
                                 active_mo_struct, energy_dimension=energy_dimension)
 
-            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp)
-            CALL copy_fm_to_dbcsr(active_mo_coeff, scf_env%qs_ot_env(ot_channel)%matrix_c0)
-
-            CALL cp_fm_create(active_mo_coeff_im, active_mo_struct)
-            CALL cp_fm_to_fm(mo_coeff_im, active_mo_coeff_im, nocc)
             CALL qs_ot_allocate_complex_state(scf_env%qs_ot_env(ot_channel), matrix_sk_re)
-            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp)
-            CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, 0.0_dp)
-            CALL copy_fm_to_dbcsr(active_mo_coeff_im, scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
-            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_re, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_sc0)
-            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_im, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_x)
-            CALL dbcsr_add(scf_env%qs_ot_env(ot_channel)%matrix_sc0, &
-                           scf_env%qs_ot_env(ot_channel)%matrix_x, &
-                           alpha_scalar=1.0_dp, beta_scalar=-1.0_dp)
+            IF (local_init) THEN
+               local_channel = ot_channel - first_channel + 1
+               local_s(1, local_channel)%matrix => kp%ot_smat(1)
+               local_s(2, local_channel)%matrix => kp%ot_smat(2)
+               local_c(local_channel)%matrix => mo_set%cmo_coeff
+            ELSE
+               CALL cp_fm_create(mo_coeff, mo_set%cmo_coeff%matrix_struct)
+               CALL cp_fm_create(mo_coeff_im, mo_set%cmo_coeff%matrix_struct)
+               CALL cp_cfm_to_fm(mo_set%cmo_coeff, mo_coeff, mo_coeff_im)
+               CALL cp_fm_create(active_mo_coeff, active_mo_struct)
+               CALL cp_fm_to_fm(mo_coeff, active_mo_coeff, nocc)
+               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp)
+               CALL copy_fm_to_dbcsr(active_mo_coeff, scf_env%qs_ot_env(ot_channel)%matrix_c0)
 
-            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_re, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
-            CALL dbcsr_multiply('N', 'N', 1.0_dp, matrix_sk_im, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_c0, 0.0_dp, &
-                                scf_env%qs_ot_env(ot_channel)%matrix_x)
-            CALL dbcsr_add(scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, &
-                           scf_env%qs_ot_env(ot_channel)%matrix_x, &
-                           alpha_scalar=1.0_dp, beta_scalar=1.0_dp)
+               CALL cp_fm_create(active_mo_coeff_im, active_mo_struct)
+               CALL cp_fm_to_fm(mo_coeff_im, active_mo_coeff_im, nocc)
+               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_c0_im, 0.0_dp)
+               CALL dbcsr_set(scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, 0.0_dp)
+               CALL copy_fm_to_dbcsr(active_mo_coeff_im, scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
+               CALL qs_ot_complex_multiply('N', 'N', matrix_sk_re, matrix_sk_im, &
+                                           scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                                           scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
+                                           scf_env%qs_ot_env(ot_channel)%matrix_sc0, &
+                                           scf_env%qs_ot_env(ot_channel)%matrix_sc0_im, &
+                                           scf_env%qs_ot_env(ot_channel)%matrix_x)
+
+               CALL cp_fm_release(active_mo_coeff)
+               CALL cp_fm_release(active_mo_coeff_im)
+               CALL cp_fm_release(mo_coeff)
+               CALL cp_fm_release(mo_coeff_im)
+            END IF
 
             CALL qs_ot_init(scf_env%qs_ot_env(ot_channel))
             IF (scf_env%qs_ot_env(ot_channel)%settings%do_ener) THEN
@@ -2270,35 +2158,40 @@ CONTAINS
                                         scf_env%qs_ot_env(ot_channel)%matrix_x_im, &
                                         scf_env%qs_ot_env(ot_channel)%matrix_sx, &
                                         scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
-                                        scf_env%qs_ot_env(ot_channel))
+                                        scf_env%qs_ot_env(ot_channel), zero_coordinates=.TRUE.)
             CASE ("REF")
-               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x, &
-                               scf_env%qs_ot_env(ot_channel)%matrix_c0)
-               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx, &
-                               scf_env%qs_ot_env(ot_channel)%matrix_sc0)
-               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x_im, &
-                               scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
-               CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
-                               scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
-               CALL qs_ot_get_orbitals_ref_complex(scf_env%qs_ot_env(ot_channel)%matrix_c0, &
-                                                   scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
-                                                   matrix_sk_re, matrix_sk_im, &
-                                                   scf_env%qs_ot_env(ot_channel))
+               IF (.NOT. local_init) THEN
+                  CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x, &
+                                  scf_env%qs_ot_env(ot_channel)%matrix_c0)
+                  CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx, &
+                                  scf_env%qs_ot_env(ot_channel)%matrix_sc0)
+                  CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_x_im, &
+                                  scf_env%qs_ot_env(ot_channel)%matrix_c0_im)
+                  CALL dbcsr_copy(scf_env%qs_ot_env(ot_channel)%matrix_sx_im, &
+                                  scf_env%qs_ot_env(ot_channel)%matrix_sc0_im)
+                  CALL qs_ot_get_orbitals_ref_complex(scf_env%qs_ot_env(ot_channel)%matrix_c0, &
+                                                      scf_env%qs_ot_env(ot_channel)%matrix_c0_im, &
+                                                      matrix_sk_re, matrix_sk_im, &
+                                                      scf_env%qs_ot_env(ot_channel))
+               END IF
             CASE DEFAULT
                CPABORT("Algorithm not yet implemented")
             END SELECT
 
             CPASSERT(scf_env%qs_ot_env(ot_channel)%state_allocated)
             CPASSERT(scf_env%qs_ot_env(ot_channel)%has_complex_kpoint_state)
-            CALL cp_fm_release(active_mo_coeff)
-            CALL cp_fm_release(active_mo_coeff_im)
-            CALL cp_fm_release(mo_coeff)
-            CALL cp_fm_release(mo_coeff_im)
             CALL cp_fm_struct_release(active_mo_struct)
          END DO
          CALL dbcsr_release_p(matrix_sk_re)
          CALL dbcsr_release_p(matrix_sk_im)
       END DO
+
+      IF (local_init) THEN
+         CALL qs_ot_get_orbitals_local_batch( &
+            scf_env%qs_ot_env(first_channel:first_channel + SIZE(local_c) - 1), &
+            local_s, local_c, handled, initialize=.TRUE.)
+         CPASSERT(handled)
+      END IF
 
       CALL qs_ot_check_channel_context(scf_env%qs_ot_env, dft_control%nspins, &
                                        nkpoint=kpoints%nkp, &
@@ -2332,10 +2225,13 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'prepare_qs_ot_kpoint_preconditioners'
 
-      INTEGER :: handle, ikpoint, ispin, ks_spin, local_kpoint, n_ot_channels, nocc, &
-         occupation_spin, ot_channel, prec_type, source_channel
+      INTEGER :: first_channel, handle, ikpoint, ispin, ks_spin, local_channel, local_kpoint, &
+         n_ot_channels, nlocal, nocc, occupation_spin, ot_channel, prec_type, source_channel
+      LOGICAL                                            :: handled
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: occupation_signature
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation_numbers
+      TYPE(cp_fm_p_type), ALLOCATABLE                    :: local_h(:, :), local_s(:, :)
+      TYPE(dbcsr_p_type), ALLOCATABLE                    :: local_c(:, :)
       TYPE(dbcsr_type), POINTER                          :: matrix_h_im, matrix_h_re, matrix_s_im, &
                                                             matrix_s_re, matrix_t_im, matrix_t_re
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -2385,6 +2281,37 @@ CONTAINS
                                      blacs_env=scf_env%qs_ot_env(ot_channel)%blacs_env)
          END DO
       END DO
+
+      IF (prec_type == ot_precond_full_all .AND. .NOT. ALLOCATED(kpoints%lowdin_v)) THEN
+         first_channel = qs_ot_channel_index(1, kpoints%kp_range(1), nspin_ot)
+         nlocal = SIZE(kpoints%kp_env)*nspin_ot
+         ALLOCATE (local_c(2, nlocal), local_h(2, nlocal), local_s(2, nlocal))
+         DO local_kpoint = 1, SIZE(kpoints%kp_env)
+            kp => kpoints%kp_env(local_kpoint)%kpoint_env
+            DO ispin = 1, nspin_ot
+               ot_channel = qs_ot_channel_index(ispin, kp%nkpoint, nspin_ot)
+               local_channel = ot_channel - first_channel + 1
+               ks_spin = MIN(ispin, SIZE(kp%ot_hmat, 2))
+               local_c(1, local_channel)%matrix => scf_env%qs_ot_env(ot_channel)%matrix_c0
+               local_c(2, local_channel)%matrix => scf_env%qs_ot_env(ot_channel)%matrix_c0_im
+               local_h(1, local_channel)%matrix => kp%ot_hmat(1, ks_spin)
+               local_h(2, local_channel)%matrix => kp%ot_hmat(2, ks_spin)
+               local_s(1, local_channel)%matrix => kp%ot_smat(1)
+               local_s(2, local_channel)%matrix => kp%ot_smat(2)
+            END DO
+         END DO
+         CALL make_preconditioner_complex_full_all_batch( &
+            scf_env%ot_preconditioner(first_channel:first_channel + nlocal - 1), local_c, local_h, local_s, &
+            scf_env%qs_ot_env(1)%settings%energy_gap, scf_env%qs_ot_env(1)%settings%precond_solver_type, handled)
+         IF (handled) THEN
+            DO ot_channel = first_channel, first_channel + nlocal - 1
+               CALL qs_ot_new_preconditioner(scf_env%qs_ot_env(ot_channel), &
+                                             scf_env%ot_preconditioner(ot_channel)%preconditioner)
+            END DO
+            CALL timestop(handle)
+            RETURN
+         END IF
+      END IF
 
       DO local_kpoint = 1, SIZE(kpoints%kp_env)
          kp => kpoints%kp_env(local_kpoint)%kpoint_env

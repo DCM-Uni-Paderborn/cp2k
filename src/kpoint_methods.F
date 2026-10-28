@@ -140,6 +140,7 @@ MODULE kpoint_methods
    ! Non-owning view of one symmetry contribution; valid while kpoint metadata is unchanged.
    TYPE :: kp_symmetry_op_type
       TYPE(kind_rotmat_type), DIMENSION(:), POINTER :: kind_rot => NULL()
+      TYPE(kind_rotmat_type), DIMENSION(:), POINTER :: kind_rot_right => NULL()
       INTEGER, DIMENSION(:), POINTER :: atom_map => NULL(), atom_kind => NULL()
       INTEGER, DIMENSION(:, :), POINTER :: cell_shift => NULL()
       REAL(KIND=dp), DIMENSION(3) :: xkp = 0.0_dp
@@ -156,9 +157,8 @@ MODULE kpoint_methods
 
    PUBLIC :: kpoint_initialize, kpoint_env_initialize, kpoint_initialize_mos, kpoint_initialize_mo_set
    PUBLIC :: kpoint_init_cell_index, kpoint_set_mo_occupation
-   PUBLIC :: calibrate_symmetry_phases
    PUBLIC :: kpoint_smearing_edge_status
-   PUBLIC :: kpoint_density_matrices, kpoint_density_transform
+   PUBLIC :: kpoint_density_matrices, kpoint_density_transform, calibrate_symmetry_phases
    PUBLIC :: kpoint_ot_energy_weighted_density
    PUBLIC :: kp_transform_plan_create
    PUBLIC :: rskp_transform, lowdin_kp_trans, lowdin_kp_mo_coeff
@@ -310,6 +310,7 @@ CONTAINS
       ALLOCATE (kpsym%phase_mode(ns), kpsym%phase_gauge(ns))
       kpsym%phase_mode(:) = 0
       kpsym%phase_gauge(:) = 0
+      kpoint%phases_calibrated = .FALSE.
 
       nr = 0
       DO ilink = link_start(ik), link_start(ik + 1) - 1
@@ -501,6 +502,12 @@ CONTAINS
                   NULLIFY (kpoint%kind_rotmat(i, j)%rmat)
                END DO
             END DO
+            ALLOCATE (kpoint%kind_rotmat_aux(ns, nkind))
+            DO i = 1, ns
+               DO j = 1, nkind
+                  NULLIFY (kpoint%kind_rotmat_aux(i, j)%rmat)
+               END DO
+            END DO
             ALLOCATE (kpoint%ibrot(ns))
             kpoint%ibrot(1:ns) = crys_sym%ibrot(1:ns)
          END IF
@@ -609,6 +616,12 @@ CONTAINS
             DO i = 1, ns
                DO j = 1, nkind
                   NULLIFY (kpoint%kind_rotmat(i, j)%rmat)
+               END DO
+            END DO
+            ALLOCATE (kpoint%kind_rotmat_aux(ns, nkind))
+            DO i = 1, ns
+               DO j = 1, nkind
+                  NULLIFY (kpoint%kind_rotmat_aux(i, j)%rmat)
                END DO
             END DO
             ALLOCATE (kpoint%ibrot(ns))
@@ -923,7 +936,8 @@ CONTAINS
             DO is = 1, nspin
                CALL get_mo_set(mos(is), nao=nao, nmo=nmo, nelectron=nelectron, &
                                n_el_f=n_el_f, maxocc=maxocc, flexible_electron_count=flexible_electron_count)
-               nmo = MIN(nao, nmo + nadd)
+               ! aux ADMM basis keeps the orbital nmo; do not cap at aux nao
+               IF (.NOT. aux_fit) nmo = MIN(nao, nmo + nadd)
                CALL allocate_mo_set(kp%mos(is), nao, nmo, nelectron, n_el_f, maxocc, &
                                     flexible_electron_count)
             END DO
@@ -947,7 +961,11 @@ CONTAINS
          ! set possible new number of MOs
          DO is = 1, nspin
             CALL get_mo_set(mos(is), nmo=nmorig(is))
-            nmo = MIN(nao, nmorig(is) + nadd)
+            IF (aux_fit) THEN
+               nmo = nmorig(is)
+            ELSE
+               nmo = MIN(nao, nmorig(is) + nadd)
+            END IF
             CALL set_mo_set(mos(is), nmo=nmo)
          END DO
          ! matrix pools for the kpoint group, information on MOs is transferred using
@@ -2268,9 +2286,10 @@ CONTAINS
 !> \param for_aux_fit ...
 !> \param pmat_ext ...
 !> \param overlap_rs ...
+!> \param mixed_aux_orb ...
 ! **************************************************************************************************
    SUBROUTINE kpoint_density_transform(kpoint, denmat, wtype, tempmat, sab_nl, fmwork, for_aux_fit, &
-                                       pmat_ext, overlap_rs)
+                                       pmat_ext, overlap_rs, mixed_aux_orb)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(dbcsr_p_type), DIMENSION(:, :)                :: denmat
@@ -2284,6 +2303,7 @@ CONTAINS
          OPTIONAL, TARGET                                :: pmat_ext
       TYPE(dbcsr_p_type), DIMENSION(:, :), OPTIONAL, &
          POINTER                                         :: overlap_rs
+      LOGICAL, OPTIONAL                                  :: mixed_aux_orb
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_density_transform'
 
@@ -2291,6 +2311,7 @@ CONTAINS
                                                             nimg, nkp, nspin
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: aux_fit, do_symmetric, local, &
+                                                            mixed_aux_orb_local, &
                                                             regular_grid_done, &
                                                             regular_grid_eligible
       TYPE(cp_fm_p_type), ALLOCATABLE, &
@@ -2310,6 +2331,11 @@ CONTAINS
       ELSE
          aux_fit = .FALSE.
       END IF
+      IF (PRESENT(mixed_aux_orb)) THEN
+         mixed_aux_orb_local = mixed_aux_orb
+      ELSE
+         mixed_aux_orb_local = .FALSE.
+      END IF
 
       IF (aux_fit) THEN
          CPASSERT(ASSOCIATED(kpoint%kp_aux_env))
@@ -2326,7 +2352,8 @@ CONTAINS
 
       CALL get_kpoint_info(kpoint, nkp=nkp, cell_to_index=cell_to_index)
       IF (PRESENT(overlap_rs)) THEN
-         CALL calibrate_symmetry_phases(kpoint, overlap_rs, tempmat, sab_nl, cell_to_index)
+         CALL calibrate_symmetry_phases(kpoint, overlap_rs, tempmat, sab_nl, cell_to_index, &
+                                        for_aux_fit=aux_fit, mixed_aux_orb=mixed_aux_orb_local)
       END IF
       ! initialize real space density matrices
       IF (aux_fit) THEN
@@ -2397,7 +2424,8 @@ CONTAINS
                                                     transform_plan, regular_grid_done)
       END IF
       IF (.NOT. regular_grid_done) THEN
-         CALL kpoint_density_transform_batched(kpoint, source, denmat, rpmat, transform_plan)
+         CALL kpoint_density_transform_batched(kpoint, source, denmat, rpmat, transform_plan, &
+                                               for_aux_fit=aux_fit, mixed_aux_orb=mixed_aux_orb_local)
       END IF
 
       CALL dbcsr_deallocate_matrix(rpmat)
@@ -2417,13 +2445,17 @@ CONTAINS
 !> \param denmat real-space output matrices
 !> \param template union of the source AO sparsities
 !> \param plan neighbor-list traversal and storage conventions
+!> \param for_aux_fit ...
+!> \param mixed_aux_orb ...
 ! **************************************************************************************************
-   SUBROUTINE kpoint_density_transform_batched(kpoint, source, denmat, template, plan)
+   SUBROUTINE kpoint_density_transform_batched(kpoint, source, denmat, template, plan, for_aux_fit, &
+                                               mixed_aux_orb)
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(cp_fm_p_type), DIMENSION(:, :, :), INTENT(IN) :: source
       TYPE(dbcsr_p_type), DIMENSION(:, :)                :: denmat
       TYPE(dbcsr_type), POINTER                          :: template
       TYPE(kp_transform_plan_type), INTENT(IN)           :: plan
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit, mixed_aux_orb
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_density_transform_batched'
       INTEGER(KIND=int_8), PARAMETER                     :: max_bytes = 64_int_8*1024*1024
@@ -2451,7 +2483,8 @@ CONTAINS
       world => kpoint%blacs_env_all%para_env
       CALL dbcsr_get_info(template, row_blk_size=row_size, col_blk_size=col_size, &
                           row_blk_offset=row_offset, col_blk_offset=col_offset)
-      CALL kp_density_groups_create(kpoint, SIZE(row_size), groups)
+      CALL kp_density_groups_create(kpoint, SIZE(row_size), groups, for_aux_fit=for_aux_fit, &
+                                    mixed_aux_orb=mixed_aux_orb)
       CPASSERT(SIZE(row_size) == SIZE(col_size))
       ALLOCATE (tiles(4, SIZE(row_size), SIZE(source, 1), SIZE(source, 2), SIZE(source, 3)))
       DO ispin = 1, SIZE(source, 3)
@@ -2589,12 +2622,15 @@ CONTAINS
 !> \param kpoint ...
 !> \param natom number of AO blocks
 !> \param groups operation views and local contribution lists; zero is the identity
+!> \param for_aux_fit ...
+!> \param mixed_aux_orb ...
 ! **************************************************************************************************
-   SUBROUTINE kp_density_groups_create(kpoint, natom, groups)
+   SUBROUTINE kp_density_groups_create(kpoint, natom, groups, for_aux_fit, mixed_aux_orb)
       TYPE(kpoint_type), POINTER                         :: kpoint
       INTEGER, INTENT(IN)                                :: natom
       TYPE(kp_density_group_type), ALLOCATABLE, &
          INTENT(OUT)                                     :: groups(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit, mixed_aux_orb
 
       INTEGER                                            :: i, ik, ikp, is, ncontrib, nrot, pass, &
                                                             slot
@@ -2630,7 +2666,8 @@ CONTAINS
                         groups(slot)%inverse(i) = i
                      END DO
                      IF (slot > 0) THEN
-                        CALL kp_symmetry_op_init(groups(slot)%op, kpoint, kpsym, is)
+                        CALL kp_symmetry_op_init(groups(slot)%op, kpoint, kpsym, is, for_aux_fit, &
+                                                 mixed_aux_orb)
                         groups(slot)%reverse_phase = kpsym%phase_mode(is) == 2
                         DO i = 1, natom
                            groups(slot)%inverse(groups(slot)%op%atom_map(i)) = i
@@ -2744,6 +2781,13 @@ CONTAINS
          IF (orientation == 1) THEN
             a = TARGET(1)
             b = TARGET(2)
+         END IF
+         RETURN
+      END IF
+      IF (.NOT. symmetric) THEN
+         IF (orientation == 1) THEN
+            a = group%inverse(TARGET(1))
+            b = group%inverse(TARGET(2))
          END IF
          RETURN
       END IF
@@ -2885,7 +2929,7 @@ CONTAINS
                TARGET(:, :) = TARGET + sums
             ELSE
                left_rot => groups(slot)%op%kind_rot(groups(slot)%op%atom_kind(groups(slot)%inverse(jobs(1, 1))))%rmat
-               right_rot => groups(slot)%op%kind_rot(groups(slot)%op%atom_kind(groups(slot)%inverse(jobs(2, 1))))%rmat
+               right_rot => groups(slot)%op%kind_rot_right(groups(slot)%op%atom_kind(groups(slot)%inverse(jobs(2, 1))))%rmat
                DO image = 1, nimage
                   source_block(1:row_size(a), 1:col_size(b)) => sums(:, image)
                   target_block(1:row_size(jobs(1, image)), 1:col_size(jobs(2, image))) => TARGET(:, image)
@@ -3458,9 +3502,11 @@ CONTAINS
 !> \param include_inactive also calibrate stored stabilizers that native CP2K does not apply
 !> \param success optional recoverable status; without it the historical abort-on-failure applies
 !> \param error_message optional diagnostic for a recoverable failure
+!> \param for_aux_fit calibrate transformations in the auxiliary fitting basis
+!> \param mixed_aux_orb use the orbital basis for the right transformation
 ! **************************************************************************************************
    SUBROUTINE calibrate_symmetry_phases(kpoint, overlap_rs, tempmat, sab_nl, cell_to_index, &
-                                        include_inactive, success, error_message)
+                                        include_inactive, success, error_message, for_aux_fit, mixed_aux_orb)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: overlap_rs
@@ -3471,6 +3517,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: include_inactive
       LOGICAL, INTENT(OUT), OPTIONAL                     :: success
       CHARACTER(LEN=*), INTENT(OUT), OPTIONAL            :: error_message
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit, mixed_aux_orb
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'calibrate_symmetry_phases'
 
@@ -3478,7 +3525,8 @@ CONTAINS
       INTEGER                                            :: best_mode, handle, iatom, ik, is, key, &
                                                             mode, nrot, rot_slot
       INTEGER, ALLOCATABLE                               :: best_ik(:), best_is(:), mode_by_op(:)
-      LOGICAL                                            :: needs_calibration, reverse
+      LOGICAL                                            :: aux_fit, mixed_aux_orb_local, &
+                                                            needs_calibration, reverse
       REAL(KIND=dp)                                      :: arg, best_residual, candidate_norm, &
                                                             direct_norm, overlap_dot, phase_score, &
                                                             phase_tolerance, relative_residual
@@ -3488,15 +3536,21 @@ CONTAINS
       TYPE(kp_symmetry_op_type)                          :: op
       TYPE(kpoint_sym_type), POINTER                     :: kpsym
 
+      aux_fit = .FALSE.
+      IF (PRESENT(for_aux_fit)) aux_fit = for_aux_fit
+      mixed_aux_orb_local = .FALSE.
+      IF (PRESENT(mixed_aux_orb)) mixed_aux_orb_local = mixed_aux_orb
       IF (PRESENT(success)) success = .TRUE.
       IF (PRESENT(error_message)) error_message = ""
       IF (PRESENT(include_inactive)) THEN
          IF (include_inactive) THEN
             CALL calibrate_symmetry_phase_gauges(kpoint, overlap_rs, tempmat, sab_nl, cell_to_index, &
-                                                 include_inactive, success, error_message)
+                                                 include_inactive, success, error_message, aux_fit, mixed_aux_orb_local)
             RETURN
          END IF
       END IF
+
+      IF (kpoint%phases_calibrated) RETURN
 
       needs_calibration = .FALSE.
       DO ik = 1, kpoint%nkp
@@ -3509,7 +3563,10 @@ CONTAINS
             END IF
          END IF
       END DO
-      IF (.NOT. needs_calibration) RETURN
+      IF (.NOT. needs_calibration) THEN
+         kpoint%phases_calibrated = .TRUE.
+         RETURN
+      END IF
 
       CALL timeset(routineN, handle)
       CPASSERT(ASSOCIATED(kpoint%ibrot))
@@ -3594,7 +3651,8 @@ CONTAINS
          CALL dbcsr_dot(direct_c, direct_c, candidate_norm)
          direct_norm = direct_norm + candidate_norm
 
-         CALL kp_symmetry_op_init(op, kpoint, kpsym, is)
+         CALL kp_symmetry_op_init(op, kpoint, kpsym, is, for_aux_fit=aux_fit, &
+                                  mixed_aux_orb=mixed_aux_orb_local)
          best_mode = 0
          best_residual = HUGE(1.0_dp)
          DO mode = 1, 2
@@ -3642,6 +3700,7 @@ CONTAINS
          END DO
       END DO
 
+      kpoint%phases_calibrated = .TRUE.
 900   CONTINUE
       CALL dbcsr_deallocate_matrix(source_r)
       CALL dbcsr_deallocate_matrix(source_c)
@@ -3663,9 +3722,11 @@ CONTAINS
 !> \param include_inactive also validate stabilizers not used in the density transform
 !> \param success optional recoverable status
 !> \param error_message optional diagnostic for a recoverable failure
+!> \param for_aux_fit calibrate transformations in the auxiliary fitting basis
+!> \param mixed_aux_orb use the orbital basis for the right transformation
 ! **************************************************************************************************
    SUBROUTINE calibrate_symmetry_phase_gauges(kpoint, overlap_rs, tempmat, sab_nl, cell_to_index, &
-                                              include_inactive, success, error_message)
+                                              include_inactive, success, error_message, for_aux_fit, mixed_aux_orb)
 
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: overlap_rs
@@ -3676,6 +3737,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: include_inactive
       LOGICAL, INTENT(OUT), OPTIONAL                     :: success
       CHARACTER(LEN=*), INTENT(OUT), OPTIONAL            :: error_message
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit, mixed_aux_orb
 
       CHARACTER(LEN=256)                                 :: phase_error
       INTEGER                                            :: best_gauge, best_mode, gauge, ik, is, &
@@ -3799,7 +3861,7 @@ CONTAINS
             best_mode = 0
             best_residual = HUGE(1.0_dp)
             DO gauge = kpoint_phase_gauge_pbc, kpoint_phase_gauge_input
-               CALL kp_symmetry_op_init(op, kpoint, kpsym, is, gauge)
+               CALL kp_symmetry_op_init(op, kpoint, kpsym, is, for_aux_fit, mixed_aux_orb, phase_gauge=gauge)
                DO mode = 1, 2
                   reverse = mode == 2
                   CALL symtrans_phase(sym_r, sym_c, source_r, source_c, .FALSE., op, reverse)
@@ -3857,23 +3919,42 @@ CONTAINS
 !> \param kpoint k-point environment
 !> \param kpsym symmetry data for the representative k-point
 !> \param is index in the existing symmetry contribution list
+!> \param for_aux_fit ...
+!> \param mixed_aux_orb ...
 !> \param phase_gauge optional atomic-image convention used during calibration
 ! **************************************************************************************************
-   SUBROUTINE kp_symmetry_op_init(op, kpoint, kpsym, is, phase_gauge)
+   SUBROUTINE kp_symmetry_op_init(op, kpoint, kpsym, is, for_aux_fit, mixed_aux_orb, phase_gauge)
       TYPE(kp_symmetry_op_type), INTENT(OUT)             :: op
       TYPE(kpoint_type), POINTER                         :: kpoint
       TYPE(kpoint_sym_type), POINTER                     :: kpsym
       INTEGER, INTENT(IN)                                :: is
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit, mixed_aux_orb
       INTEGER, INTENT(IN), OPTIONAL                      :: phase_gauge
 
       INTEGER                                            :: gauge, iatom, rot_slot
-      LOGICAL                                            :: has_phase, perm, rotates
+      LOGICAL                                            :: aux_fit, has_phase, my_mixed, perm, &
+                                                            rotates
       REAL(KIND=dp)                                      :: dr
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rot
 
+      aux_fit = .FALSE.
+      IF (PRESENT(for_aux_fit)) aux_fit = for_aux_fit
+      my_mixed = .FALSE.
+      IF (PRESENT(mixed_aux_orb)) my_mixed = mixed_aux_orb
+
       rot_slot = find_kpoint_rotation_slot(kpoint, kpsym%rotp(is))
       CPASSERT(rot_slot > 0)
-      op%kind_rot => kpoint%kind_rotmat(rot_slot, :)
+      IF (aux_fit .AND. ASSOCIATED(kpoint%kind_rotmat_aux)) THEN
+         op%kind_rot => kpoint%kind_rotmat_aux(rot_slot, :)
+         IF (my_mixed) THEN
+            op%kind_rot_right => kpoint%kind_rotmat(rot_slot, :)
+         ELSE
+            op%kind_rot_right => kpoint%kind_rotmat_aux(rot_slot, :)
+         END IF
+      ELSE
+         op%kind_rot => kpoint%kind_rotmat(rot_slot, :)
+         op%kind_rot_right => kpoint%kind_rotmat(rot_slot, :)
+      END IF
       op%atom_map => kpsym%f0(:, is)
       op%atom_kind => kpoint%atype
       gauge = kpoint_phase_gauge_pbc
@@ -3981,10 +4062,10 @@ CONTAINS
          trans = ip > jp
          IF (trans) THEN
             left_rot => op%kind_rot(op%atom_kind(icol))%rmat
-            right_rot => op%kind_rot(op%atom_kind(irow))%rmat
+            right_rot => op%kind_rot_right(op%atom_kind(irow))%rmat
          ELSE
             left_rot => op%kind_rot(op%atom_kind(irow))%rmat
-            right_rot => op%kind_rot(op%atom_kind(icol))%rmat
+            right_rot => op%kind_rot_right(op%atom_kind(icol))%rmat
          END IF
 
          CALL dbcsr_get_block_p(matrix=srpmat, row=jrow, col=jcol, block=srblock, found=found)
