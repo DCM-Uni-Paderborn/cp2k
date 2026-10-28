@@ -14,6 +14,7 @@ PROGRAM kpsym_unittest
    USE kpoint_methods,                  ONLY: kpoint_star_create,&
                                               kpoint_star_density,&
                                               kpoint_star_operator,&
+                                              kpoint_star_operator_defect,&
                                               kpoint_star_orbitals
    USE kpoint_mo_symmetry_methods,      ONLY: kpoint_cell_gauge_action
    USE kpoint_types,                    ONLY: kpoint_star_type,&
@@ -110,13 +111,14 @@ CONTAINS
 !>        unused little-group metadata, and independence from legacy SCF phase calibration.
 ! **************************************************************************************************
    SUBROUTINE check_star_adjoint()
-      COMPLEX(dp) :: action(6, 6), coefficients(6, 2, 2), density(6, 6, 2), expected(6, 2), &
-         operators(6, 6, 4), reference(6, 6, 2)
+      COMPLEX(dp) :: action(6, 6), base(6, 6), coefficients(6, 2, 2), covariant(6, 6, 4), &
+         density(6, 6, 2), expected(6, 2), inverse(6, 6), operators(6, 6, 4), reference(6, 6, 2)
       COMPLEX(dp), ALLOCATABLE                           :: expanded(:, :, :), orbitals(:, :, :), &
                                                             reduced(:, :, :), selected(:, :, :)
       INTEGER                                            :: i, ik, j, link, pass, status
       LOGICAL                                            :: antiunitary
-      REAL(dp)                                           :: lhs, rhs, rotation(3, 3)
+      REAL(dp)                                           :: defect, lhs, metric_scale(6), rhs, &
+                                                            rotation(3, 3), scale
       TYPE(kpoint_star_type)                             :: map
       TYPE(kpoint_sym_type), POINTER                     :: sym
       TYPE(kpoint_type), POINTER                         :: kpoint
@@ -210,6 +212,27 @@ CONTAINS
                ERROR STOP 'Native density symmetry differs from transformed orbital factors'
             END IF
          END DO
+         ! Independently construct covariant operators using the scaled AO metric.
+         metric_scale = [.25_dp, 1._dp, 1._dp, .25_dp, 1._dp, 1._dp]
+         DO link = 1, SIZE(map%weights)
+            ik = map%representative(link)
+            CALL kpoint_cell_gauge_action(kpoint, ik, map%operation(link), map%vectors(:, link), &
+                                          action, rotation, antiunitary, status)
+            IF (status /= 0) ERROR STOP 'Covariance control has no independent AO action'
+            DO j = 1, 6
+               DO i = 1, 6
+                  inverse(i, j) = CONJG(action(j, i))*metric_scale(j)/metric_scale(i)
+               END DO
+            END DO
+            base = density(:, :, ik)
+            IF (antiunitary) base = CONJG(base)
+            covariant(:, :, link) = MATMUL(CONJG(TRANSPOSE(inverse)), MATMUL(base, inverse))
+         END DO
+         CALL kpoint_star_operator_defect(map, covariant, defect, scale)
+         IF (defect > 1.e-12_dp*MAX(1._dp, scale)) ERROR STOP 'Covariant physical operators failed the star check'
+         covariant(1, 1, 2) = covariant(1, 1, 2) + .1_dp
+         CALL kpoint_star_operator_defect(map, covariant, defect, scale)
+         IF (defect < 1.e-4_dp) ERROR STOP 'Broken operator covariance was hidden by star averaging'
          CALL kpoint_star_operator(map, operators, reduced)
          DO ik = 1, 2
             CALL kpoint_star_operator(map, operators, selected, representative=ik)

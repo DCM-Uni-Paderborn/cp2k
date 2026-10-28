@@ -31,6 +31,7 @@ MODULE qs_external_potential
                                               default_string_length,&
                                               dp,&
                                               int_8
+   USE kpoint_methods,                  ONLY: kpoint_star_operator_defect
    USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE maxwell_solver_interface,        ONLY: maxwell_solver
@@ -50,8 +51,10 @@ MODULE qs_external_potential
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_integrate
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_local_potential
-   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_integrate_dense,&
+                                              qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_integrate_background
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
@@ -184,6 +187,7 @@ CONTAINS
             CALL MOVE_ALLOC(operators, inverse%external_operator)
             IF (ALLOCATED(inverse%external_samples)) DEALLOCATE (inverse%external_samples)
             ALLOCATE (inverse%external_samples, SOURCE=potential%array)
+            CALL external_upf_check_symmetry(ks_env, potential, control%qs_control%eps_rho_gspace)
          END IF
          CALL external_upf_trace(ks_env, inverse%external_operator, energy)
          energy = energy + inverse%external_core_energy
@@ -228,6 +232,68 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE external_upf_trace
+
+! **************************************************************************************************
+!> \brief Check the complete applied operator before averaging inequivalent Bloch contributions.
+!>        Use the density-independent field alone, so an unconverged Hartree/XC potential cannot
+!>        falsely reject a compatible applied field. The native AO adjoint includes antiunitary maps.
+!> \param ks_env Prepared inverse geometry and native Gaussian density maps.
+!> \param potential Scalar electron potential without the grid volume factor.
+!> \param eps_grid Native integration accuracy used with a roundoff floor for the AO comparison.
+! **************************************************************************************************
+   SUBROUTINE external_upf_check_symmetry(ks_env, potential, eps_grid)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      REAL(dp), INTENT(IN)                               :: eps_grid
+
+      COMPLEX(dp), ALLOCATABLE                           :: background(:, :, :), matrix(:, :), &
+                                                            operators(:, :, :)
+      INTEGER                                            :: axis, k
+      REAL(dp)                                           :: defect, scale, tolerance
+      TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      IF (.NOT. ASSOCIATED(inverse%bloch%kpoints)) RETURN
+      IF (SIZE(inverse%bloch%weights) == inverse%bloch%kpoints%nkp) RETURN
+      ALLOCATE (operators, SOURCE=inverse%external_operator)
+      IF (inverse%gaussian_background) THEN
+         ALLOCATE (background, MOLD=inverse%coulomb%metric)
+         CALL qs_upf_inverse_background_integrate(inverse%coulomb%background, potential=potential, &
+                                                  ao_operators=background, ks_env=ks_env)
+         operators = operators + background
+      ELSE
+         IF (inverse%native_gaussian) THEN
+            ALLOCATE (background, MOLD=inverse%gaussian_kinetic)
+            CALL qs_upf_inverse_background_integrate(inverse%gaussian, potential=potential, &
+                                                     ao_operators=background, ks_env=ks_env)
+            operators = operators + background
+         END IF
+         CALL zero%create(potential%pw_grid)
+         zero%array = 0.0_dp
+         DO axis = 1, 3
+            CALL zeros(axis)%create(potential%pw_grid)
+            zeros(axis)%array = 0.0_dp
+         END DO
+         DO k = 1, SIZE(operators, 3)
+            CALL qs_upf_inverse_grid_integrate_dense(inverse%bloch%frames(k), potential, zeros, zero, matrix, &
+                                                     augmentation=inverse%bloch%augmentation, fourier_charge=.TRUE., &
+                                                     orbital_fields=.NOT. inverse%native_gaussian)
+            operators(:, :, k) = operators(:, :, k) + matrix
+         END DO
+         CALL zero%release()
+         DO axis = 1, 3
+            CALL zeros(axis)%release()
+         END DO
+      END IF
+      CALL kpoint_star_operator_defect(inverse%bloch%star, operators, defect, scale)
+      tolerance = MAX(1024.0_dp*EPSILON(1.0_dp), 32.0_dp*eps_grid)*MAX(1.0_dp, scale)
+      IF (defect > tolerance) THEN
+         CALL cp_abort(__LOCATION__, &
+                       "The external potential is incompatible with the k-point symmetry reduction. "// &
+                       "Use FULL_GRID TRUE and SYMMETRY FALSE.")
+      END IF
+   END SUBROUTINE external_upf_check_symmetry
 
 ! **************************************************************************************************
 !> \brief  Computes the external potential on the grid

@@ -153,6 +153,7 @@ MODULE kpoint_methods
    PUBLIC :: kpoint_ot_energy_weighted_density
    PUBLIC :: kp_transform_plan_create
    PUBLIC :: kpoint_star_create, kpoint_star_density, kpoint_star_operator, kpoint_star_orbitals
+   PUBLIC :: kpoint_star_operator_defect
    PUBLIC :: rskp_transform, lowdin_kp_trans, lowdin_kp_mo_coeff
    PUBLIC :: rskp_grid_type, rskp_transform_grid_prepare, rskp_transform_grid_extract, &
              rskp_transform_grid_release
@@ -314,6 +315,36 @@ CONTAINS
          reduced(:, :, ik) = reduced(:, :, ik) + map%relative_weights(link)*matrix
       END DO
    END SUBROUTINE kpoint_star_operator
+
+! **************************************************************************************************
+!> \brief Covariance defect before reducing physical k-point operators.
+!>        Compare each pulled-back operator with its unweighted representative average.
+!>        This uses the real-Hermitian trace adjoint, including nonorthogonal AO rotations
+!>        and time reversal. Zero mesh weights do not remove a representative from this check.
+!> \param map Native contribution map.
+!> \param operators Complete unweighted operators indexed by physical contribution.
+!> \param defect Maximum absolute matrix-entry difference in the representative AO gauge.
+!> \param scale Maximum absolute entry of the pulled-back operators.
+! **************************************************************************************************
+   SUBROUTINE kpoint_star_operator_defect(map, operators, defect, scale)
+      TYPE(kpoint_star_type), INTENT(IN)                 :: map
+      COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: defect, scale
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), reduced(:, :, :)
+      INTEGER                                            :: link, representative
+
+      CALL kpoint_star_operator(map, operators, reduced)
+      ALLOCATE (matrix(SIZE(operators, 1), SIZE(operators, 2)))
+      defect = 0.0_dp
+      scale = 0.0_dp
+      DO link = 1, SIZE(map%weights)
+         representative = map%representative(link)
+         CALL kpoint_star_matrix(map, link, operators(:, :, link), matrix, .TRUE.)
+         defect = MAX(defect, MAXVAL(ABS(matrix - reduced(:, :, representative))))
+         scale = MAX(scale, MAXVAL(ABS(matrix)))
+      END DO
+   END SUBROUTINE kpoint_star_operator_defect
 
 ! **************************************************************************************************
 !> \brief Expand native orbital factors with the same atom/AO map as the density.
