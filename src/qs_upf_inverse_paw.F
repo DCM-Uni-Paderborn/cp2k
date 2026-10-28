@@ -164,10 +164,10 @@ CONTAINS
          core_energy = 0.0_dp
          DO ir = 1, grid%nr
             IF (grid%wr(ir) == 0.0_dp) CYCLE
-            weighted = grid%wa*potential(:, ir)
+            weighted(:) = grid%wa*potential(:, ir)
             core_energy = core_energy + grid%wr(ir)*grid%core(ir, 1)*SUM(weighted)
             IF (ir > grid%nval) CYCLE
-            harmonics = MATMUL(TRANSPOSE(grid%harmonics), weighted)
+            harmonics(:) = MATMUL(TRANSPOSE(grid%harmonics), weighted)
             DO lm = 1, SIZE(harmonics)
                l = INT(SQRT(REAL(lm - 1, dp)))
                radial(:, lm) = radial(:, lm) + grid%wr(ir)*harmonics(lm)* &

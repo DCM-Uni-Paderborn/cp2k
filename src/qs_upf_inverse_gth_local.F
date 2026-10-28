@@ -146,8 +146,8 @@ CONTAINS
                               MATMUL(cell_response, REAL(frame%images(:, image), dp))
                   END IF
                   DO ir = 1, nr
-                     displacement = grid%r(ir)*grid%directions + &
-                                    SPREAD(frame%positions(:, center_atom) - center, 2, na)
+                     displacement(:, :) = grid%r(ir)*grid%directions + &
+                                          SPREAD(frame%positions(:, center_atom) - center, 2, na)
                      IF (geometry) THEN
                         CALL gth_local_fields_evaluate(fields(gth_kind), displacement, values, gradient)
                         field_response(:, ir) = field_response(:, ir) + MATMUL(gradient, motion)
@@ -162,7 +162,7 @@ CONTAINS
          CALL qs_upf_inverse_paw_local_operator(paw(kind), field, matrix, core)
          IF (PRESENT(core_energy)) core_energy = core_energy + core
          IF (PRESENT(OPERATOR) .OR. PRESENT(response)) THEN
-            weighted = MATMUL(CMPLX(matrix, 0.0_dp, dp), frame%coefficients(p:q, :))
+            ALLOCATE (weighted, SOURCE=MATMUL(CMPLX(matrix, 0.0_dp, dp), frame%coefficients(p:q, :)))
             IF (PRESENT(OPERATOR)) THEN
                OPERATOR = OPERATOR + MATMUL(CONJG(TRANSPOSE(frame%coefficients(p:q, :))), weighted)
             END IF
@@ -179,6 +179,7 @@ CONTAINS
             END IF
             DEALLOCATE (gradient, field_response, matrix_response)
          END IF
+         IF (ALLOCATED(weighted)) DEALLOCATE (weighted)
          DEALLOCATE (displacement, values, field, matrix)
       END DO
    END SUBROUTINE qs_upf_inverse_gth_local_paw
@@ -246,7 +247,7 @@ CONTAINS
          CALL invmat(cell_inverse, info)
          CPASSERT(info == 0)
          strain = MATMUL(cell_response, cell_inverse)
-         points_response = MATMUL(strain, frame%ao%points)
+         ALLOCATE (points_response, SOURCE=MATMUL(strain, frame%ao%points))
          ALLOCATE (gradient(n, 3), total_response(n), SOURCE=0.0_dp)
       END IF
       DO atom = 1, SIZE(atoms)
@@ -256,15 +257,15 @@ CONTAINS
          CALL gth_local_fields_init(kinds(kind)%gth_potential, fields)
          DO image = 1, SIZE(frame%ao%images, 2)
             center = frame%ao%positions(:, atom) + MATMUL(frame%ao%cell, REAL(frame%ao%images(:, image), dp))
-            displacement = frame%ao%points - SPREAD(center, 2, n)
+            displacement(:, :) = frame%ao%points - SPREAD(center, 2, n)
             IF (PRESENT(response)) THEN
                motion = atom_response(:, atom) + MATMUL(cell_response, REAL(frame%ao%images(:, image), dp))
                CALL gth_local_fields_evaluate(fields, displacement, values, gradient)
-               total_response = total_response + SUM(gradient*TRANSPOSE(points_response - SPREAD(motion, 2, n)), DIM=2)
+               total_response(:) = total_response + SUM(gradient*TRANSPOSE(points_response - SPREAD(motion, 2, n)), DIM=2)
             ELSE
                CALL gth_local_fields_evaluate(fields, displacement, values)
             END IF
-            total = total + values
+            total(:) = total + values
          END DO
       END DO
       potential%array = RESHAPE(total, SHAPE(potential%array))
@@ -319,7 +320,7 @@ CONTAINS
                                                   fourier_charge=.TRUE., orbital_fields=orbital_fields)
          IF (orbital_fields) THEN
             CALL qs_upf_inverse_grid_gaussian_operator(frame, potential, gaussian)
-            OPERATOR = OPERATOR - gaussian
+            OPERATOR(:, :) = OPERATOR - gaussian
          END IF
       END IF
       IF (PRESENT(response)) THEN
@@ -336,7 +337,7 @@ CONTAINS
             CALL qs_upf_inverse_grid_gaussian_operator(frame, potential, response=gaussian, &
                                                        potential_response=potential_response, atom_response=atom_response, &
                                                        cell_response=cell_response, reduced_k_response=reduced_k_response)
-            response = response - gaussian
+            response(:, :) = response - gaussian
          END IF
       END IF
       CALL zero%release()

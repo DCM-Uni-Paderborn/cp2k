@@ -400,10 +400,10 @@ CONTAINS
       CALL collocate_xc_fields(frames, augmentation, matrices_direction, kweights, points, response%density, &
                                response%density_gradient, response%tau, kinetic, paw_reconstruction, atom_grid, &
                                cached_soft, cached_gradient)
-      fields%density = state%density
-      fields%density_gradient = state%density_gradient
+      ALLOCATE (fields%density, SOURCE=state%density)
+      ALLOCATE (fields%density_gradient, SOURCE=state%density_gradient)
       ALLOCATE (fields%tau(np, ns), SOURCE=0.0_dp)
-      IF (state%kinetic) fields%tau = state%tau
+      IF (state%kinetic) fields%tau(:, :) = state%tau
       IF (model) THEN
          ALLOCATE (fields%energy_density(np), fields%vdensity(np, ns), fields%vgradient(np, 3, ns), fields%vtau(np, ns), &
                    fields%background_vdensity(np, ns), fields%background_vgradient(np, 3, ns), fields%background_vtau(np, ns))
@@ -424,7 +424,7 @@ CONTAINS
          response%background_vtau = -response%background_vtau
       END IF
       ALLOCATE (integration_weights(np), SOURCE=1.0_dp)
-      IF (.NOT. response%weighted_adjoint) integration_weights = weights
+      IF (.NOT. response%weighted_adjoint) integration_weights(:) = weights
       CALL integrate_xc_fields(frames, augmentation, points, integration_weights, response%vdensity, &
                                response%vgradient, response%vtau, comm, response%operators, kinetic, paw_reconstruction, &
                                atom_grid, cached_soft, cached_gradient)
@@ -586,8 +586,8 @@ CONTAINS
       IF (PRESENT(atom_grid)) geometry_fields = ALLOCATED(atom_grid%inverse_values)
       ALLOCATE (soft(1, nao), soft_gradient(1, nao, 3), selected(SIZE(density, 2)))
       DO point = 1, SIZE(density, 1)
-         selected = ABS(density(point, :)) <= SQRT(EPSILON(0.0_dp))*density_scale(point, :) .AND. &
-                    density_scale(point, :) > 0.0_dp
+         selected(:) = ABS(density(point, :)) <= SQRT(EPSILON(0.0_dp))*density_scale(point, :) .AND. &
+                       density_scale(point, :) > 0.0_dp
          IF (.NOT. ANY(selected)) CYCLE
          CALL qs_upf_inverse_augmentation_point(frames(1)%frame, augmentation, points(:, point), indices, charge)
          nproj = SIZE(indices)

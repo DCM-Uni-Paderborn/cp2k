@@ -118,6 +118,7 @@ PROGRAM upf_inverse_unittest
    USE upf_types,                       ONLY: upf_radial_weights
    USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
                                               uspp_augmentation_prepare_realspace
+#include "../base/base_uses.f90"
 
    IMPLICIT NONE
    TYPE roundoff_cusp_context
@@ -736,6 +737,7 @@ CONTAINS
       REAL(dp), INTENT(OUT) :: inverse_diagonal(:)
       LOGICAL, INTENT(OUT) :: available
 
+      MARK_USED(coordinate)
       available = .TRUE.
       SELECT TYPE (context)
       TYPE IS (REAL(dp))
@@ -780,6 +782,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT) :: context
       LOGICAL, INTENT(OUT) :: smooth, interrupted
 
+      MARK_USED(curve)
       smooth = .FALSE.
       interrupted = ANY(first /= last)
    END SUBROUTINE interrupt_curvature_probe
@@ -799,6 +802,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
 
+      MARK_USED(curve)
       segment_queries = segment_queries + 1
       SELECT TYPE (context)
       TYPE IS (REAL(dp))
@@ -856,6 +860,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT) :: context
       LOGICAL, INTENT(OUT) :: interrupted
 
+      MARK_USED(curve)
       IF (first(1) /= 0.0_dp .OR. ABS(last(1) + 0.1_dp) > 1.e-14_dp) THEN
          ERROR STOP 'Stalled cusp search discarded its original feasible trial segment'
       END IF
@@ -900,6 +905,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
 
+      MARK_USED(curve)
       SELECT TYPE (context)
       TYPE IS (roundoff_cusp_context)
          IF (first(1) /= 1.e-8_dp .OR. ABS(last(1) - first(1) + 0.1_dp) > 1.e-14_dp) THEN
@@ -1355,8 +1361,8 @@ CONTAINS
          ALLOCATE (grid%r(4), grid%wr(4), grid%core(4, 2), grid%radial(4, 1, 0:0, 2))
          ALLOCATE (grid%wa(6), SOURCE=fourpi/6.0_dp)
          ALLOCATE (grid%harmonics(6, 1), SOURCE=1.0_dp/SQRT(fourpi))
-         grid%r = [0.0_dp, 0.2_dp, 0.6_dp, 1.1_dp]
-         grid%wr = [0.0_dp, 0.11_dp, 0.21_dp, 0.31_dp]
+         grid%r(:) = [0.0_dp, 0.2_dp, 0.6_dp, 1.1_dp]
+         grid%wr(:) = [0.0_dp, 0.11_dp, 0.21_dp, 0.31_dp]
          grid%core(:, 1) = 0.4_dp*EXP(-grid%r)
          grid%core(:, 2) = 0.0_dp
          grid%radial(:, 1, 0, 1) = EXP(-grid%r)
@@ -1424,16 +1430,16 @@ CONTAINS
       kinds(2)%gth_potential%alpha_ppl = 0.47_dp
       ALLOCATE (kinds(2)%gth_potential%cexp_ppl(2))
       kinds(2)%gth_potential%cexp_ppl = [-1.4_dp, 0.3_dp]
-      frame%center_atoms = [1, 3]
-      frame%center_kinds = [1, 1]
-      frame%projector_first = [1, 2]
-      frame%projector_last = [1, 2]
-      frame%positions = RESHAPE([0.1_dp, -0.2_dp, 0.3_dp, 0.7_dp, 0.4_dp, -0.6_dp, &
-                                 -0.5_dp, 0.8_dp, 0.2_dp], [3, 3])
+      ALLOCATE (frame%center_atoms, SOURCE=[1, 3])
+      ALLOCATE (frame%center_kinds, SOURCE=[1, 1])
+      ALLOCATE (frame%projector_first, SOURCE=[1, 2])
+      ALLOCATE (frame%projector_last, SOURCE=[1, 2])
+      ALLOCATE (frame%positions, SOURCE=RESHAPE([0.1_dp, -0.2_dp, 0.3_dp, 0.7_dp, 0.4_dp, -0.6_dp, &
+                                                 -0.5_dp, 0.8_dp, 0.2_dp], [3, 3]))
       frame%cell = RESHAPE([2.2_dp, 0.1_dp, 0.0_dp, 0.2_dp, 2.3_dp, 0.1_dp, 0.0_dp, -0.1_dp, 2.1_dp], [3, 3])
-      frame%images = RESHAPE([0, 0, 0, 1, -1, 0], [3, 2])
-      frame%coefficients = RESHAPE([CMPLX(0.7_dp, 0.1_dp, dp), CMPLX(-0.2_dp, 0.3_dp, dp), &
-                                    CMPLX(0.4_dp, -0.2_dp, dp), CMPLX(0.1_dp, 0.5_dp, dp)], [2, 2])
+      ALLOCATE (frame%images, SOURCE=RESHAPE([0, 0, 0, 1, -1, 0], [3, 2]))
+      ALLOCATE (frame%coefficients, SOURCE=RESHAPE([CMPLX(0.7_dp, 0.1_dp, dp), CMPLX(-0.2_dp, 0.3_dp, dp), &
+                                                    CMPLX(0.4_dp, -0.2_dp, dp), CMPLX(0.1_dp, 0.5_dp, dp)], [2, 2]))
       dw = 0.13_dp*CONJG(frame%coefficients)
       motion = 0.17_dp*frame%positions
       cell_motion = 0.11_dp*TRANSPOSE(frame%cell)
@@ -1445,15 +1451,15 @@ CONTAINS
                                         dw, motion, cell_motion)
       step = 1.e-5_dp
       shifted = frame
-      shifted%positions = frame%positions + step*motion
+      shifted%positions(:, :) = frame%positions + step*motion
       shifted%cell = frame%cell + step*cell_motion
-      shifted%coefficients = frame%coefficients + step*dw
+      shifted%coefficients(:, :) = frame%coefficients + step*dw
       plus = 0.0_dp
       core_plus = 0.0_dp
       CALL qs_upf_inverse_gth_local_paw(shifted, kinds, particles, paw, plus, core_plus)
-      shifted%positions = frame%positions - step*motion
+      shifted%positions(:, :) = frame%positions - step*motion
       shifted%cell = frame%cell - step*cell_motion
-      shifted%coefficients = frame%coefficients - step*dw
+      shifted%coefficients(:, :) = frame%coefficients - step*dw
       minus = 0.0_dp
       core_minus = 0.0_dp
       CALL qs_upf_inverse_gth_local_paw(shifted, kinds, particles, paw, minus, core_minus)
@@ -1722,8 +1728,8 @@ CONTAINS
       frame%bases(2)%gto_basis_set => basis
       frame%positions(:, 1) = center
       frame%positions(:, 2) = ao_center
-      frame%ao_first = [1, 3]
-      frame%ao_last = [2, 4]
+      frame%ao_first(:) = [1, 3]
+      frame%ao_last(:) = [2, 4]
       CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, center, cell, images, reduced_k, &
                                          frame%coefficients(:, 1:2))
       CALL qs_upf_inverse_atomic_overlap(basis, atomic%hard, center, ao_center, cell, images, reduced_k, &
@@ -1852,7 +1858,7 @@ CONTAINS
       npoint = SIZE(pot%r)*SIZE(lebedev_grid(rule)%w)
       ALLOCATE (points(3, npoint), weights(npoint), beta(npoint, np), chi(npoint, 4), soft(npoint, 4), &
                 gradient(npoint, 4, 3), correction(np, 4))
-      radial_weights = upf_radial_weights(pot)*pot%r**2
+      ALLOCATE (radial_weights, SOURCE=upf_radial_weights(pot)*pot%r**2)
       row = 0
       DO ir = 1, SIZE(pot%r)
          DO j = 1, SIZE(lebedev_grid(rule)%w)
@@ -1903,8 +1909,8 @@ CONTAINS
                                      comm, shifted, info, atom_local=.TRUE., store_fields=.FALSE.)
          IF (info /= 0) ERROR STOP 'Displaced mixed NC atomic frame rejected'
          samples(:, :, side) = shifted%coefficients
-         op = MATMUL(CONJG(TRANSPOSE(shifted%coefficients(np + 1:, :))), &
-                     MATMUL(frame%atomic_cache(2)%hard%d, shifted%coefficients(np + 1:, :)))
+         op(:, :) = MATMUL(CONJG(TRANSPOSE(shifted%coefficients(np + 1:, :))), &
+                           MATMUL(frame%atomic_cache(2)%hard%d, shifted%coefficients(np + 1:, :)))
          energies(side) = REAL(SUM(density*TRANSPOSE(op)), dp)
       END DO
       CALL check(MAXVAL(ABS((samples(:, :, 2) - samples(:, :, 1))/(2.0_dp*step) - dw)), &

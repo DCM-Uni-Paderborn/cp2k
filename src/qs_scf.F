@@ -1257,7 +1257,7 @@ CONTAINS
          remaining = remaining - steps
          IF (event%encountered .AND. .NOT. stopped) THEN
             IF (.NOT. event%resolved) EXIT
-            reached = PACK([(i, i=1, SIZE(event%spins))], event%selected)
+            ALLOCATE (reached, SOURCE=PACK([(i, i=1, SIZE(event%spins))], event%selected))
             ALLOCATE (admissible(SIZE(reached)), release_side(SIZE(reached)))
             CALL qs_skala_scf_classify(state, event%root, event%points(:, reached), event%domains(reached), &
                                        event%spins(reached), event%descriptors(reached), event%targets(reached), &
@@ -1267,7 +1267,7 @@ CONTAINS
                EXIT
             END IF
             coordinate(:) = event%root
-            DEALLOCATE (admissible, release_side)
+            DEALLOCATE (admissible, release_side, reached)
             CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid)
             CPASSERT(valid)
             IF (ALLOCATED(coordinate_bound)) DEALLOCATE (coordinate_bound)

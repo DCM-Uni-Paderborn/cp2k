@@ -191,21 +191,27 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Pull one unweighted contribution operator back to its native representative.
 !> \param state Borrowed native orbital state.
-!> \param operators AO operators indexed by the complete contribution map.
 !> \param ik Native irreducible k-point index.
 !> \param matrix Unweighted native AO operator.
+!> \param spin Hamiltonian spin channel. Without it, use the charge metric.
 ! **************************************************************************************************
-   SUBROUTINE native_bloch_operator(state, operators, ik, matrix)
+   SUBROUTINE native_bloch_operator(state, ik, matrix, spin)
       TYPE(qs_skala_scf_type), INTENT(IN)                :: state
-      COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
       INTEGER, INTENT(IN)                                :: ik
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: matrix(:, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: spin
 
       COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
+      COMPLEX(dp), POINTER                               :: hamiltonians(:, :, :, :)
 
       CPASSERT(state%bloch)
-      CALL kpoint_star_operator(state%inverse%bloch%star, operators, reduced, representative=ik)
-      matrix = reduced(:, :, 1)
+      IF (PRESENT(spin)) THEN
+         hamiltonians => state%inverse%ks_k
+         CALL kpoint_star_operator(state%inverse%bloch%star, hamiltonians(:, :, :, spin), reduced, representative=ik)
+      ELSE
+         CALL kpoint_star_operator(state%inverse%bloch%star, state%inverse%metric_k, reduced, representative=ik)
+      END IF
+      ALLOCATE (matrix, SOURCE=reduced(:, :, 1))
    END SUBROUTINE native_bloch_operator
 
 ! **************************************************************************************************
@@ -314,7 +320,7 @@ CONTAINS
             IF (weight == 0.0_dp .OR. native%nmo == 0) CYCLE
             ! Retained virtuals in an empty spin still require matching canonical eigenvalues.
             IF (state%bloch) THEN
-               CALL native_bloch_operator(state, state%inverse%metric_k, ik, metric)
+               CALL native_bloch_operator(state, ik, metric)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, metrics(1)%matrix, metric)
             END IF
@@ -323,14 +329,16 @@ CONTAINS
             IF (.NOT. block_valid) failed = 1
             IF (block_valid .AND. state%thermal) THEN
                IF (state%bloch) THEN
-                  CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
+                  CALL native_bloch_operator(state, ik, hamiltonian, spin)
                ELSE
                   CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
                END IF
-               diagonal = REAL(SUM(CONJG(state%orbitals(local, spin)%coefficients)* &
-                                   MATMUL(hamiltonian, state%orbitals(local, spin)%coefficients), DIM=1), dp)
+               ALLOCATE (diagonal(SIZE(state%orbitals(local, spin)%coefficients, 2)))
+               diagonal(:) = REAL(SUM(CONJG(state%orbitals(local, spin)%coefficients)* &
+                                      MATMUL(hamiltonian, state%orbitals(local, spin)%coefficients), DIM=1), dp)
                CALL skala_orbital_chart_precondition(state%orbitals(local, spin)%chart, diagonal, &
                                                      control%smear%electronic_temperature)
+               DEALLOCATE (diagonal)
                ALLOCATE (zero(skala_orbital_chart_size(state%orbitals(local, spin)%chart)), SOURCE=0.0_dp)
                CALL qs_skala_orbitals_evaluate(state%orbitals(local, spin), zero)
                DEALLOCATE (zero)
@@ -618,9 +626,10 @@ CONTAINS
                                          state%inverse%orbital_factors%coefficients(:, :, :SIZE(state%dimensions, 1), spin), &
                                          coefficients)
                state%inverse%orbital_factors%coefficients(:, :, :, spin) = coefficients
-               occupations = state%inverse%orbital_factors%occupations(:, :SIZE(state%dimensions, 1), spin)
+               ALLOCATE (occupations, SOURCE=state%inverse%orbital_factors%occupations(:, :SIZE(state%dimensions, 1), spin))
                state%inverse%orbital_factors%occupations(:, :, spin) = &
                   occupations(:, state%inverse%bloch%star%representative)
+               DEALLOCATE (occupations)
             END DO
          END IF
       END IF
@@ -755,7 +764,7 @@ CONTAINS
             first = state%offsets(ik, spin) + 1
             last = first + state%dimensions(ik, spin) - 1
             IF (state%bloch) THEN
-               CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
+               CALL native_bloch_operator(state, ik, hamiltonian, spin)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
             END IF
@@ -944,8 +953,8 @@ CONTAINS
                                                           weight*operators(:, :, ik, spin), &
                                                           weight*operators_direction(:, :, ik, spin), &
                                                           response(first:last), block_occupations)
-               work = MATMUL(operators(:, :, ik, spin), state%orbitals(local, spin)%coefficients)
-               work_direction = MATMUL(operators_direction(:, :, ik, spin), state%orbitals(local, spin)%coefficients)
+               ALLOCATE (work, SOURCE=MATMUL(operators(:, :, ik, spin), state%orbitals(local, spin)%coefficients))
+             ALLOCATE (work_direction, SOURCE=MATMUL(operators_direction(:, :, ik, spin), state%orbitals(local, spin)%coefficients))
                DO band = bfirst, blast
                   i = band - bfirst + 1
                   expectations(band) = REAL(SUM(CONJG(state%orbitals(local, spin)%coefficients(:, i))*work(:, i)), dp)
@@ -964,14 +973,14 @@ CONTAINS
       IF (state%thermal) THEN
          CALL state%para_env%sum(expectations)
          CALL state%para_env%sum(expectations_direction)
-         residual = expectations
-         residual_direction = expectations_direction
+         ALLOCATE (residual, SOURCE=expectations)
+         ALLOCATE (residual_direction, SOURCE=expectations_direction)
          IF (include_entropy) THEN
-            residual = residual - state%band_energies
-            residual_direction = residual_direction - energies_direction
+            residual(:) = residual - state%band_energies
+            residual_direction(:) = residual_direction - energies_direction
          END IF
          DO group = 1, SIZE(state%thermal_targets)
-            indices = PACK([(i, i=1, SIZE(state%band_reference))], state%band_groups == group)
+            CALL thermal_group_indices(state%band_groups, group, indices)
             weight = SUM(state%band_response(indices))
             IF (weight <= TINY(weight)) CYCLE
             mean = SUM(state%band_response(indices)*residual(indices))/weight
@@ -1024,7 +1033,7 @@ CONTAINS
       IF (.NOT. available) RETURN
       ALLOCATE (operators, MOLD=operators_direction)
       IF (state%bloch) THEN
-         operators = state%inverse%ks_k
+         operators(:, :, :, :) = state%inverse%ks_k
          CALL reduce_bloch_operators(state, operators)
          CALL reduce_bloch_operators(state, operators_direction)
       ELSE
@@ -1036,7 +1045,7 @@ CONTAINS
       END IF
       IF (PRESENT(constraint_operator)) THEN
          CPASSERT(ALL(SHAPE(constraint_operator) == SHAPE(operators)))
-         operators = operators - constraint_operator
+         operators(:, :, :, :) = operators - constraint_operator
       END IF
       CALL qs_skala_scf_operator_response(state, direction, operators, operators_direction, response, entropy=.TRUE.)
    END SUBROUTINE qs_skala_scf_curvature
@@ -1107,17 +1116,17 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL       :: weighted_direction(:), &
                                                             energies_direction(:)
 
-      INTEGER                                            :: group, i
+      INTEGER                                            :: group
       INTEGER, ALLOCATABLE                               :: indices(:)
       REAL(dp)                                           :: mean, weight
       REAL(dp), ALLOCATABLE                              :: energy_direction(:)
 
       CPASSERT(state%thermal)
       CPASSERT(SIZE(direction) == SIZE(state%band_reference))
-      energy_direction = state%band_scales*direction
+      ALLOCATE (energy_direction, SOURCE=state%band_scales*direction)
       ALLOCATE (occupations_direction(SIZE(direction)), SOURCE=0.0_dp)
       DO group = 1, SIZE(state%thermal_targets)
-         indices = PACK([(i, i=1, SIZE(direction))], state%band_groups == group)
+         CALL thermal_group_indices(state%band_groups, group, indices)
          weight = SUM(state%band_response(indices))
          IF (weight <= TINY(weight)) CYCLE
          mean = SUM(state%band_response(indices)*energy_direction(indices))/weight
@@ -1125,11 +1134,26 @@ CONTAINS
                         (1.0_dp - state%band_occupations(indices)/state%maxocc)/state%temperature*(energy_direction(indices) - mean)
       END DO
       IF (PRESENT(weighted_direction)) THEN
-         weighted_direction = state%band_weights*(1.0_dp - 2.0_dp*state%band_occupations/state%maxocc)* &
-                              occupations_direction
+         ALLOCATE (weighted_direction, SOURCE=state%band_weights*(1.0_dp - 2.0_dp*state%band_occupations/state%maxocc)* &
+                   occupations_direction)
       END IF
-      IF (PRESENT(energies_direction)) energies_direction = energy_direction
+      IF (PRESENT(energies_direction)) ALLOCATE (energies_direction, SOURCE=energy_direction)
    END SUBROUTINE thermal_band_direction
+
+! **************************************************************************************************
+!> \brief Return band indices for one fixed-particle-number group.
+!> \param groups Original group label of each band.
+!> \param group Requested label.
+!> \param indices Newly allocated indices, including an empty group.
+! **************************************************************************************************
+   SUBROUTINE thermal_group_indices(groups, group, indices)
+      INTEGER, INTENT(IN)                                :: groups(:), group
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: indices(:)
+
+      INTEGER                                            :: i
+
+      ALLOCATE (indices, SOURCE=PACK([(i, i=1, SIZE(groups))], groups == group))
+   END SUBROUTINE thermal_group_indices
 
 ! **************************************************************************************************
 !> \brief Read one actual physical model input, requiring exactly one distributed owner.
@@ -1342,7 +1366,7 @@ CONTAINS
             scales(spins(c), c) = 1.0_dp
          END IF
       END DO
-      positive = PACK([(i, i=1, m)], spins == qs_skala_positive_density_sum)
+      ALLOCATE (positive, SOURCE=PACK([(i, i=1, m)], spins == qs_skala_positive_density_sum))
       IF (SIZE(positive) > 0) THEN
          ALLOCATE (density(SIZE(positive)), sample_spins(SIZE(positive)))
          DO spin = 1, ns
@@ -1424,7 +1448,7 @@ CONTAINS
                END IF
                IF (cached%domain /= domain .OR. cached%descriptor /= descriptor) CYCLE
                IF (.NOT. ALL(cached%point == point)) CYCLE
-               operators = cached%matrix
+               ALLOCATE (operators, SOURCE=cached%matrix)
                RETURN
             END ASSOCIATE
          END DO
@@ -1465,7 +1489,7 @@ CONTAINS
          cached%domain = domain
          cached%point = point
          cached%descriptor = descriptor
-         cached%matrix = operators
+         ALLOCATE (cached%matrix, SOURCE=operators)
       END ASSOCIATE
       state%point_operator_bytes = state%point_operator_bytes + bytes
    END SUBROUTINE point_operators
@@ -2456,9 +2480,8 @@ CONTAINS
 
       INTEGER                                            :: i, m
       LOGICAL                                            :: coupled_curvature, valid
-      REAL(dp), ALLOCATABLE                              :: coordinate_scales(:), density_floors(:), &
-                                                            gradient(:), origin(:), response(:), &
-                                                            zero(:), zero_multipliers(:)
+      REAL(dp), ALLOCATABLE :: combined_floors(:), coordinate_scales(:), density_floors(:), &
+         gradient(:), origin(:), response(:), zero(:), zero_multipliers(:)
       TYPE(mp_comm_type)                                 :: comm
       TYPE(physical_constraints_context)                 :: context
       TYPE(section_vals_type), POINTER                   :: functional_section, xc_section
@@ -2486,10 +2509,11 @@ CONTAINS
                    SOURCE=xc_functionals_spin_floors(functional_section, SIZE(state%orbitals, 2) == 2, &
                                                      section_get_rval(xc_section, "DENSITY_CUTOFF")))
          CALL comm%set_handle(state%para_env%get_handle())
-         density_floors = native_skala_spin_floors(xc_section, comm)
+         ALLOCATE (density_floors, SOURCE=native_skala_spin_floors(xc_section, comm))
          DO i = 1, SIZE(density_floors)
             IF (ALL(context%density_floors /= density_floors(i))) THEN
-               context%density_floors = [context%density_floors, density_floors(i)]
+               ALLOCATE (combined_floors, SOURCE=[context%density_floors, density_floors(i)])
+               CALL MOVE_ALLOC(combined_floors, context%density_floors)
             END IF
          END DO
          IF (context%kinetic_boundaries .AND. ALL(context%density_floors /= 0.0_dp)) THEN
@@ -2523,7 +2547,7 @@ CONTAINS
          CPASSERT(ALL(ieee_is_finite(targets)))
          context%targets(:) = targets
       END IF
-      origin = coordinate
+      ALLOCATE (origin, SOURCE=coordinate)
       coupled_curvature = state%thermal
       IF (.NOT. coupled_curvature) THEN
          ! Probe the appropriate complete response before the native search stalls.
@@ -2780,7 +2804,7 @@ CONTAINS
          CPASSERT(SIZE(jump_values) == m)
          CALL state%para_env%sum(jump_values)
          CALL state%para_env%sum(jump_owners)
-         assembled = jump_owners == 1
+         assembled(:) = jump_owners == 1
       END IF
       ! Only the derivative selection changes from here. Keep the same installed MOs and density.
       fixed_orbitals = .TRUE.
@@ -3021,7 +3045,7 @@ CONTAINS
                   64.0_dp*EPSILON(0.0_dp), rank, work, lwork, info)
       IF (info /= 0 .OR. rank /= MAXVAL(groups)) RETURN
       direction(:) = rhs(:n, 1)
-      residual = MATMUL(jacobian/SPREAD(scales, 2, n), direction)
+      ALLOCATE (residual, SOURCE=MATMUL(jacobian/SPREAD(scales, 2, n), direction))
       WHERE (drop) residual = residual - REAL(sides, dp)
       IF (MAXVAL(ABS(residual)) > 128.0_dp*EPSILON(0.0_dp)) RETURN
       IF (NORM2(direction) <= TINY(0.0_dp)) RETURN
@@ -3029,7 +3053,7 @@ CONTAINS
       CALL skala_density_constraints_get(state%constraints, points, spins, weights, probe, tolerance, &
                                          descriptors=descriptors, domains=domains, targets=targets, &
                                          kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
-      rows = PACK([(i, i=1, m)],.NOT. drop)
+      ALLOCATE (rows, SOURCE=PACK([(i, i=1, m)],.NOT. drop))
       IF (SIZE(rows) > 0) THEN
          CALL qs_skala_scf_select(state, points(:, rows), domains(rows), spins(rows), descriptors(rows), weights(rows), &
                                   probe, tolerance, kinetic_probe, kinetic_tolerance, targets=targets(rows))
@@ -3038,11 +3062,11 @@ CONTAINS
       END IF
       context%state => state
       IF (PRESENT(check_external)) context%check_external = check_external
-      context%points = points(:, rows)
-      context%domains = domains(rows)
-      context%spins = spins(rows)
-      context%descriptors = descriptors(rows)
-      context%targets = targets(rows)
+      ALLOCATE (context%points(SIZE(points, 1), SIZE(rows)), SOURCE=points(:, rows))
+      ALLOCATE (context%domains(SIZE(rows)), SOURCE=domains(rows))
+      ALLOCATE (context%spins(SIZE(rows)), SOURCE=spins(rows))
+      ALLOCATE (context%descriptors(SIZE(rows)), SOURCE=descriptors(rows))
+      ALLOCATE (context%targets(SIZE(rows)), SOURCE=targets(rows))
       DEALLOCATE (physical, residual)
       ALLOCATE (physical(SIZE(rows), n), residual(SIZE(rows)))
       CALL skala_constraint_chart_create(evaluate_native_constraints, context, coordinate, tolerances(rows), curve, feasible)
@@ -3272,7 +3296,7 @@ CONTAINS
             IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
             IF (state%bloch) THEN
                ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
-               CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
+               CALL native_bloch_operator(state, ik, hamiltonian, spin)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
             END IF
@@ -3334,7 +3358,7 @@ CONTAINS
          ! Keep auxiliary energies and occupations while native eigenvalues and W use H.
          CPASSERT(ALL(SHAPE(canonical%band_dimensions) == SHAPE(state%band_dimensions)))
          CPASSERT(ALL(canonical%band_dimensions == state%band_dimensions))
-         canonical%band_reference = state%band_energies
+         canonical%band_reference(:) = state%band_energies
          CALL update_thermal_state(canonical, canonical%coordinate(canonical%orbital_size + 1:))
       END IF
       IF (valid) THEN
@@ -3711,6 +3735,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE :: hamiltonian(:, :)
       REAL(dp), ALLOCATABLE :: diagonal(:), block_inverse(:), gradient(:)
       TYPE(dbcsr_p_type), POINTER :: matrices(:, :)
+      TYPE(qs_skala_scf_type), POINTER :: state
       INTEGER :: i, offset, local, spin, ik, first, last
       LOGICAL :: owner
       REAL(dp) :: energy, log_inverse, curvature_floor
@@ -3719,63 +3744,63 @@ CONTAINS
       inverse_diagonal = 1.0_dp
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
-         IF (.NOT. ASSOCIATED(context%state%qs_env%scf_env)) RETURN
-         IF (.NOT. ASSOCIATED(context%state%qs_env%scf_env%qs_ot_env)) RETURN
-         IF (SIZE(context%state%qs_env%scf_env%qs_ot_env) == 0) RETURN
-         IF (context%state%thermal) THEN
-            IF (.NOT. context%state%qs_env%scf_env%qs_ot_env(1)%settings%occupation_preconditioner) RETURN
-            curvature_floor = context%state%temperature
+         state => context%state
+         IF (.NOT. ASSOCIATED(state%qs_env%scf_env)) RETURN
+         IF (.NOT. ASSOCIATED(state%qs_env%scf_env%qs_ot_env)) RETURN
+         IF (SIZE(state%qs_env%scf_env%qs_ot_env) == 0) RETURN
+         IF (state%thermal) THEN
+            IF (.NOT. state%qs_env%scf_env%qs_ot_env(1)%settings%occupation_preconditioner) RETURN
+            curvature_floor = state%temperature
          ELSE
-            IF (context%state%qs_env%scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_none) RETURN
+            IF (state%qs_env%scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_none) RETURN
             ! A positive gap regularizes only the search metric, not the zero-temperature energy.
-            curvature_floor = context%state%qs_env%scf_env%qs_ot_env(1)%settings%energy_gap
+            curvature_floor = state%qs_env%scf_env%qs_ot_env(1)%settings%energy_gap
             IF (curvature_floor <= 0.0_dp) RETURN
          END IF
-         IF (.NOT. context%state%evaluated .OR. .NOT. context%state%operator_current .OR. &
-             ANY(context%state%coordinate /= coordinate)) THEN
+         IF (.NOT. state%evaluated .OR. .NOT. state%operator_current .OR. ANY(state%coordinate /= coordinate)) THEN
             ALLOCATE (gradient(SIZE(coordinate)))
-            CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient)
+            CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient)
          END IF
-         owner = context%state%para_env%mepos == 0
-         IF (context%state%bloch) THEN
-            owner = context%state%kpoints%para_env_kp%mepos == 0
+         owner = state%para_env%mepos == 0
+         IF (state%bloch) THEN
+            owner = state%kpoints%para_env_kp%mepos == 0
          ELSE
-            CALL get_ks_env(context%state%ks_env, matrix_ks_kp=matrices)
+            CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices)
          END IF
-         inverse_diagonal(:context%state%orbital_size) = 0.0_dp
-         DO spin = 1, SIZE(context%state%orbitals, 2)
-            DO local = 1, SIZE(context%state%orbitals, 1)
-               IF (.NOT. ASSOCIATED(context%state%orbitals(local, spin)%native)) CYCLE
+         inverse_diagonal(:state%orbital_size) = 0.0_dp
+         DO spin = 1, SIZE(state%orbitals, 2)
+            DO local = 1, SIZE(state%orbitals, 1)
+               IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
                ik = 1
-               IF (context%state%bloch) ik = context%state%kpoints%kp_env(local)%kpoint_env%nkpoint
-               IF (context%state%bloch) THEN
-                  CALL native_bloch_operator(context%state, context%state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
+               IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
+               IF (state%bloch) THEN
+                  CALL native_bloch_operator(state, ik, hamiltonian, spin)
                ELSE
-                  CALL qs_upf_inverse_matrix_gather(context%state%inverse%frame%ao, &
+                  CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, &
                                                     matrices(spin, 1)%matrix, hamiltonian)
                END IF
                IF (.NOT. owner) CYCLE
-               diagonal = REAL(SUM(CONJG(context%state%orbitals(local, spin)%coefficients)* &
-                                   MATMUL(hamiltonian, context%state%orbitals(local, spin)%coefficients), DIM=1), dp)
-               first = context%state%offsets(ik, spin) + 1
-               last = first + context%state%dimensions(ik, spin) - 1
+               ALLOCATE (diagonal(SIZE(state%orbitals(local, spin)%coefficients, 2)))
+               diagonal(:) = REAL(SUM(CONJG(state%orbitals(local, spin)%coefficients)* &
+                                      MATMUL(hamiltonian, state%orbitals(local, spin)%coefficients), DIM=1), dp)
+               first = state%offsets(ik, spin) + 1
+               last = first + state%dimensions(ik, spin) - 1
                ALLOCATE (block_inverse(last - first + 1))
-               CALL skala_orbital_chart_response_inverse(context%state%orbitals(local, spin)%chart, &
+               CALL skala_orbital_chart_response_inverse(state%orbitals(local, spin)%chart, &
                                                          diagonal, curvature_floor, block_inverse)
                inverse_diagonal(first:last) = block_inverse
-               DEALLOCATE (block_inverse)
+               DEALLOCATE (block_inverse, diagonal)
             END DO
          END DO
-         CALL context%state%para_env%sum(inverse_diagonal(:context%state%orbital_size))
-         IF (.NOT. context%state%thermal) THEN
+         CALL state%para_env%sum(inverse_diagonal(:state%orbital_size))
+         IF (.NOT. state%thermal) THEN
             available = .TRUE.
             RETURN
          END IF
-         offset = context%state%orbital_size
-         DO i = 1, SIZE(context%state%band_response)
-            IF (context%state%band_response(i) <= 0.0_dp) CYCLE
-            log_inverse = LOG(context%state%temperature) - 2.0_dp*LOG(context%state%band_scales(i)) - &
-                          LOG(context%state%band_response(i))
+         offset = state%orbital_size
+         DO i = 1, SIZE(state%band_response)
+            IF (state%band_response(i) <= 0.0_dp) CYCLE
+            log_inverse = LOG(state%temperature) - 2.0_dp*LOG(state%band_scales(i)) - LOG(state%band_response(i))
             inverse_diagonal(offset + i) = EXP(MAX(LOG(TINY(1.0_dp)), &
                                                    MIN(LOG(HUGE(1.0_dp)) - LOG(2.0_dp), log_inverse)))
          END DO
@@ -3841,6 +3866,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator, classify_candidates
 
       TYPE(qs_skala_scf_crossing_type), POINTER         :: crossings
+      TYPE(qs_skala_scf_crossing_type) :: trimmed
 
       interrupted = .FALSE.
       IF (PRESENT(crossed)) crossed = .FALSE.
@@ -3887,13 +3913,19 @@ CONTAINS
                IF (ALL(crossings%points(:, i) == context%points(:, j))) keep(i) = .FALSE.
             END DO
          END DO
-         retained = PACK([(i, i=1, SIZE(keep))], keep)
-         crossings%points = crossings%points(:, retained)
-         crossings%domains = crossings%domains(retained)
-         crossings%spins = crossings%spins(retained)
-         crossings%descriptors = crossings%descriptors(retained)
-         crossings%targets = crossings%targets(retained)
-         crossings%values = crossings%values(:, retained)
+         ALLOCATE (retained, SOURCE=PACK([(i, i=1, SIZE(keep))], keep))
+         ALLOCATE (trimmed%points(SIZE(crossings%points, 1), SIZE(retained)), SOURCE=crossings%points(:, retained))
+         ALLOCATE (trimmed%domains(SIZE(retained)), SOURCE=crossings%domains(retained))
+         ALLOCATE (trimmed%spins(SIZE(retained)), SOURCE=crossings%spins(retained))
+         ALLOCATE (trimmed%descriptors(SIZE(retained)), SOURCE=crossings%descriptors(retained))
+         ALLOCATE (trimmed%targets(SIZE(retained)), SOURCE=crossings%targets(retained))
+         ALLOCATE (trimmed%values(SIZE(crossings%values, 1), SIZE(retained)), SOURCE=crossings%values(:, retained))
+         CALL MOVE_ALLOC(trimmed%points, crossings%points)
+         CALL MOVE_ALLOC(trimmed%domains, crossings%domains)
+         CALL MOVE_ALLOC(trimmed%spins, crossings%spins)
+         CALL MOVE_ALLOC(trimmed%descriptors, crossings%descriptors)
+         CALL MOVE_ALLOC(trimmed%targets, crossings%targets)
+         CALL MOVE_ALLOC(trimmed%values, crossings%values)
          crossings%curve = curve
          interrupted = SIZE(crossings%spins) > 0
          IF (.NOT. interrupted) RETURN
@@ -3929,9 +3961,8 @@ CONTAINS
       TYPE(physical_constraints_context), INTENT(INOUT)  :: context
 
       INTEGER                                            :: i, old
-      INTEGER, ALLOCATABLE                               :: old_descriptors(:), old_domains(:), &
-                                                            old_points(:, :), old_spins(:), &
-                                                            pending(:), reached(:), sides(:)
+      INTEGER, ALLOCATABLE :: old_descriptors(:), old_domains(:), old_points(:, :), old_spins(:), &
+         pending(:), reached(:), remaining(:), sides(:)
       LOGICAL                                            :: found, stopped, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:), selected(:)
       REAL(dp)                                           :: energy, first_energy, kinetic_probe, &
@@ -3978,11 +4009,12 @@ CONTAINS
          energy = context%state%energy%total
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
          IF (energy > first_energy + roundoff) THEN
-            pending = PACK(pending,.NOT. selected)
+            ALLOCATE (remaining, SOURCE=PACK(pending,.NOT. selected))
+            CALL MOVE_ALLOC(remaining, pending)
             DEALLOCATE (selected, values, windows)
             CYCLE
          END IF
-         reached = PACK(pending, selected)
+         ALLOCATE (reached, SOURCE=PACK(pending, selected))
          ALLOCATE (admissible(SIZE(reached)), sides(SIZE(reached)))
          CALL qs_skala_scf_classify(context%state, root, event%points(:, reached), event%domains(reached), &
                                     event%spins(reached), event%descriptors(reached), event%targets(reached), &
@@ -4000,8 +4032,9 @@ CONTAINS
                EXIT
             END IF
          END IF
-         pending = PACK(pending,.NOT. selected)
-         DEALLOCATE (selected, values, windows, admissible, sides)
+         ALLOCATE (remaining, SOURCE=PACK(pending,.NOT. selected))
+         CALL MOVE_ALLOC(remaining, pending)
+         DEALLOCATE (selected, values, windows, admissible, sides, reached)
       END DO
       IF (SIZE(pending) == 0) event%encountered = .FALSE.
       IF (.NOT. event%resolved) THEN
@@ -4082,7 +4115,7 @@ CONTAINS
       END DO
       CPASSERT(ALL(targets >= 0.0_dp))
       IF (separate) THEN
-         state%thermal_targets = targets
+         state%thermal_targets(:) = targets
       ELSE
          state%thermal_targets(1) = SUM(targets)
       END IF
@@ -4144,10 +4177,10 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: energies(:, :), occupations(:, :)
 
       CPASSERT(SIZE(coordinate) == SIZE(state%band_reference))
-      state%band_energies = state%band_reference + state%band_scales*coordinate
+      state%band_energies(:) = state%band_reference + state%band_scales*coordinate
       state%entropy = 0.0_dp
       DO group = 1, SIZE(state%thermal_targets)
-         indices = PACK([(i, i=1, SIZE(coordinate))], state%band_groups == group)
+         CALL thermal_group_indices(state%band_groups, group, indices)
          CPASSERT(SIZE(indices) > 0)
          ALLOCATE (energies(1, SIZE(indices)), occupations(1, SIZE(indices)))
          energies(1, :) = state%band_energies(indices)
@@ -4157,7 +4190,7 @@ CONTAINS
          state%entropy = state%entropy + entropy
          DEALLOCATE (energies, occupations)
       END DO
-      state%band_response = state%band_weights*state%band_occupations*(1.0_dp - state%band_occupations/state%maxocc)
+      state%band_response(:) = state%band_weights*state%band_occupations*(1.0_dp - state%band_occupations/state%maxocc)
       state%thermal_spin_entropy = 0.0_dp
       DO i = 1, SIZE(coordinate)
          spin = state%band_spins(i)
@@ -4180,12 +4213,12 @@ CONTAINS
    SUBROUTINE initialize_thermal_scales(state)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
 
-      INTEGER                                            :: group, i
+      INTEGER                                            :: group
       INTEGER, ALLOCATABLE                               :: indices(:)
       REAL(dp)                                           :: floor, peak
 
       DO group = 1, SIZE(state%thermal_targets)
-         indices = PACK([(i, i=1, SIZE(state%band_response))], state%band_groups == group)
+         CALL thermal_group_indices(state%band_groups, group, indices)
          peak = MAXVAL(state%band_response(indices))
          IF (peak <= 0.0_dp) CYCLE
          ! A group-mean floor limits reference conditioning without freezing empty bands.
@@ -4216,7 +4249,7 @@ CONTAINS
       IF (state%bloch) ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
       first = state%band_offsets(ik, spin) + 1
       last = first + state%band_dimensions(ik, spin) - 1
-      product = MATMUL(OPERATOR, state%orbitals(local, spin)%coefficients(:, :last - first + 1))
+      ALLOCATE (product, SOURCE=MATMUL(OPERATOR, state%orbitals(local, spin)%coefficients(:, :last - first + 1)))
       DO i = 1, last - first + 1
          values(first + i - 1) = REAL(SUM(CONJG(state%orbitals(local, spin)%coefficients(:, i))*PRODUCT(:, i)), dp)
       END DO
@@ -4240,19 +4273,19 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: derivative(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical(:)
 
-      INTEGER                                            :: group, i
+      INTEGER                                            :: group
       INTEGER, ALLOCATABLE                               :: indices(:)
       REAL(dp)                                           :: mean, weight
       REAL(dp), ALLOCATABLE                              :: residual(:)
 
       CPASSERT(SIZE(expectations) == SIZE(state%band_reference))
       CPASSERT(SIZE(derivative) == SIZE(expectations))
-      residual = expectations
-      IF (entropy) residual = residual - state%band_energies
+      ALLOCATE (residual, SOURCE=expectations)
+      IF (entropy) residual(:) = residual - state%band_energies
       derivative = 0.0_dp
       IF (PRESENT(physical)) physical = 0.0_dp
       DO group = 1, SIZE(state%thermal_targets)
-         indices = PACK([(i, i=1, SIZE(expectations))], state%band_groups == group)
+         CALL thermal_group_indices(state%band_groups, group, indices)
          weight = SUM(state%band_response(indices))
          IF (weight <= TINY(weight)) CYCLE
          mean = SUM(state%band_response(indices)*residual(indices))/weight
@@ -4370,13 +4403,13 @@ CONTAINS
             ik = 1
             IF (state%bloch) THEN
                ik = state%kpoints%kp_env(local)%kpoint_env%nkpoint
-               CALL native_bloch_operator(state, state%inverse%ks_k(:, :, :, spin), ik, hamiltonian)
+               CALL native_bloch_operator(state, ik, hamiltonian, spin)
             ELSE
                CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
             END IF
             IF (.NOT. owner) CYCLE
-            projected = MATMUL(CONJG(TRANSPOSE(state%orbitals(local, spin)%coefficients)), &
-                               MATMUL(hamiltonian, state%orbitals(local, spin)%coefficients))
+            projected(:, :) = MATMUL(CONJG(TRANSPOSE(state%orbitals(local, spin)%coefficients)), &
+                                     MATMUL(hamiltonian, state%orbitals(local, spin)%coefficients))
             IF (PRESENT(model_delta)) THEN
                DO i = 1, n
                   reference_energy = reference_energy + state%orbitals(local, spin)%weight* &
@@ -4418,7 +4451,7 @@ CONTAINS
       END DO
       target_entropy = 0.0_dp
       DO group = 1, SIZE(state%thermal_targets)
-         indices = PACK([(i, i=1, count)], groups == group)
+         CALL thermal_group_indices(groups, group, indices)
          ALLOCATE (filled(1, SIZE(indices)))
          CALL Smearkp(filled, chemical_potentials(group), correction, energies(:, indices), state%thermal_targets(group), &
                       mesh_weights(indices), state%temperature, state%maxocc, smear_fermi_dirac)
@@ -4440,7 +4473,7 @@ CONTAINS
             DO i = 1, n
                weighted(:, i) = occupations(first + i - 1)*vectors(:, i, local, spin)
             END DO
-            residual = MATMUL(weighted, CONJG(TRANSPOSE(vectors(:, :, local, spin))))
+            residual(:, :) = MATMUL(weighted, CONJG(TRANSPOSE(vectors(:, :, local, spin))))
             IF (PRESENT(density)) THEN
                density(:, :, ik, spin) = MATMUL(state%orbitals(local, spin)%coefficients, &
                                                 MATMUL(residual, CONJG(TRANSPOSE( &
