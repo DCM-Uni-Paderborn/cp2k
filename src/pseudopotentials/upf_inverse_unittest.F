@@ -32,7 +32,8 @@ PROGRAM upf_inverse_unittest
                                               gaussian_coulomb_fields_screen,&
                                               gaussian_coulomb_fields_truncate,&
                                               gaussian_coulomb_fields_type
-   USE ieee_arithmetic,                 ONLY: ieee_quiet_nan,&
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite,&
+                                              ieee_quiet_nan,&
                                               ieee_value
    USE kinds,                           ONLY: dp
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
@@ -3804,7 +3805,7 @@ CONTAINS
       tol = 2.e-12_dp
       IF (PRESENT(tolerance)) tol = tolerance
       max_error = MAX(max_error, value)
-      IF (value > tol) THEN
+      IF (.NOT. ieee_is_finite(value) .OR. value > tol) THEN
          WRITE (*, *) TRIM(label), value, tol
          ERROR STOP 'Inverse primitive mismatch'
       END IF

@@ -249,13 +249,17 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: background(:, :, :), matrix(:, :), &
                                                             operators(:, :, :)
       INTEGER                                            :: axis, k
+      LOGICAL                                            :: little_group
       REAL(dp)                                           :: defect, scale, tolerance
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      CALL get_ks_env(ks_env, upf_inverse=inverse, dft_control=control)
       IF (.NOT. ASSOCIATED(inverse%bloch%kpoints)) RETURN
-      IF (SIZE(inverse%bloch%weights) == inverse%bloch%kpoints%nkp) RETURN
+      IF (inverse%bloch%kpoints%full_grid) RETURN
+      little_group = .NOT. control%use_gauxc
+      IF (SIZE(inverse%bloch%weights) == inverse%bloch%kpoints%nkp .AND. .NOT. little_group) RETURN
       ALLOCATE (operators, SOURCE=inverse%external_operator)
       IF (inverse%gaussian_background) THEN
          ALLOCATE (background, MOLD=inverse%coulomb%metric)
@@ -286,7 +290,7 @@ CONTAINS
             CALL zeros(axis)%release()
          END DO
       END IF
-      CALL kpoint_star_operator_defect(inverse%bloch%star, operators, defect, scale)
+      CALL kpoint_star_operator_defect(inverse%bloch%star, operators, defect, scale, little_group=little_group)
       tolerance = MAX(1024.0_dp*EPSILON(1.0_dp), 32.0_dp*eps_grid)*MAX(1.0_dp, scale)
       IF (defect > tolerance) THEN
          CALL cp_abort(__LOCATION__, &

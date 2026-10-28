@@ -77,6 +77,8 @@ MODULE kpoint_methods
                                               k_grid_to_cell_work_type,&
                                               lattice_fft_shape,&
                                               regular_kpoint_grid
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_cell_gauge_action,&
+                                              kpoint_same_periodic
    USE kpoint_types,                    ONLY: &
         find_kpoint_rotation_slot, get_kpoint_info, kind_rotmat_type, kp_transform_plan_type, &
         kpoint_env_create, kpoint_env_p_type, kpoint_env_type, kpoint_star_type, &
@@ -325,14 +327,20 @@ CONTAINS
 !> \param operators Complete unweighted operators indexed by physical contribution.
 !> \param defect Maximum absolute matrix-entry difference in the representative AO gauge.
 !> \param scale Maximum absolute entry of the pulled-back operators.
+!> \param little_group Also check every operation fixing a representative on a reduced mesh.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_star_operator_defect(map, operators, defect, scale)
+   SUBROUTINE kpoint_star_operator_defect(map, operators, defect, scale, little_group)
       TYPE(kpoint_star_type), INTENT(IN)                 :: map
       COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
       REAL(dp), INTENT(OUT)                              :: defect, scale
+      LOGICAL, INTENT(IN), OPTIONAL                      :: little_group
 
-      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), reduced(:, :, :)
-      INTEGER                                            :: link, representative
+      COMPLEX(dp), ALLOCATABLE                           :: action(:, :), matrix(:, :), &
+                                                            reduced(:, :, :)
+      INTEGER                                            :: link, op, representative, status
+      LOGICAL                                            :: antiunitary
+      REAL(dp)                                           :: rotation(3, 3)
+      TYPE(kpoint_sym_type), POINTER                     :: sym
 
       CALL kpoint_star_operator(map, operators, reduced)
       ALLOCATE (matrix(SIZE(operators, 1), SIZE(operators, 2)))
@@ -343,6 +351,24 @@ CONTAINS
          CALL kpoint_star_matrix(map, link, operators(:, :, link), matrix, .TRUE.)
          defect = MAX(defect, MAXVAL(ABS(matrix - reduced(:, :, representative))))
          scale = MAX(scale, MAXVAL(ABS(matrix)))
+      END DO
+      IF (.NOT. PRESENT(little_group)) RETURN
+      IF (.NOT. little_group .OR. map%kpoints%full_grid) RETURN
+      ALLOCATE (action, MOLD=matrix)
+      DO representative = 1, map%kpoints%nkp
+         sym => map%kpoints%kp_sym(representative)%kpoint_sym
+         IF (.NOT. ASSOCIATED(sym)) CYCLE
+         IF (.NOT. ASSOCIATED(sym%rotp)) CYCLE
+         DO op = 1, sym%nwred
+            IF (.NOT. kpoint_same_periodic(sym%xkp(:, op), map%kpoints%xkp(:, representative))) CYCLE
+            CALL kpoint_cell_gauge_action(map%kpoints, representative, op, map%kpoints%xkp(:, representative), &
+                                          action, rotation, antiunitary, status)
+            CPASSERT(status == 0)
+            matrix = MATMUL(CONJG(TRANSPOSE(action)), MATMUL(reduced(:, :, representative), action))
+            IF (antiunitary) matrix = CONJG(matrix)
+            defect = MAX(defect, MAXVAL(ABS(matrix - reduced(:, :, representative))))
+            scale = MAX(scale, MAXVAL(ABS(matrix)))
+         END DO
       END DO
    END SUBROUTINE kpoint_star_operator_defect
 

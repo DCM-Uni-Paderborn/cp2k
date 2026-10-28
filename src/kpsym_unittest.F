@@ -278,6 +278,33 @@ CONTAINS
       IF (MAXVAL(ABS(expanded - density)) > 1.e-12_dp) THEN
          ERROR STOP 'Storing fixed-point operations changed the selected star density'
       END IF
+      ! A complete reflection/conjugation group at Gamma adds no mesh points.
+      kpoint%kind_rotmat(2, 1)%rmat(1, 2) = 2.0_dp
+      sym%rot(:, :, 2) = RESHAPE([0.0_dp, 1.0_dp, 0.0_dp, &
+                                  1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      sym%rot(:, :, 3) = sym%rot(:, :, 2)
+      sym%rotp(4) = -1
+      covariant = 0.0_dp
+      DO link = 1, 2
+         DO i = 1, 6
+            covariant(i, i, link) = metric_scale(i)
+         END DO
+      END DO
+      CALL kpoint_star_operator_defect(map, covariant(:, :, :2), defect, scale, little_group=.TRUE.)
+      IF (.NOT. defect <= 1.e-12_dp) ERROR STOP 'A compatible Gamma operator failed its complete-group check'
+      covariant(1, 1, 1) = covariant(1, 1, 1) + .1_dp
+      CALL kpoint_star_operator_defect(map, covariant(:, :, :2), defect, scale)
+      IF (.NOT. defect <= 1.e-12_dp) ERROR STOP 'A fixed-point operation changed the distinct-star comparison'
+      CALL kpoint_star_operator_defect(map, covariant(:, :, :2), defect, scale, little_group=.TRUE.)
+      IF (.NOT. defect >= 1.e-4_dp) ERROR STOP 'A broken fixed-point operator escaped the complete-group check'
+      covariant(1, 1, 1) = metric_scale(1)
+      covariant(1, 2, 1) = CMPLX(0.0_dp, .1_dp, dp)
+      covariant(2, 1, 1) = CONJG(covariant(1, 2, 1))
+      CALL kpoint_star_operator_defect(map, covariant(:, :, :2), defect, scale, little_group=.TRUE.)
+      IF (.NOT. defect >= 1.e-4_dp) ERROR STOP 'A broken conjugating fixed-point operator was accepted'
+      kpoint%full_grid = .TRUE.
+      CALL kpoint_star_operator_defect(map, covariant(:, :, :2), defect, scale, little_group=.TRUE.)
+      IF (.NOT. defect <= 1.e-12_dp) ERROR STOP 'The full physical mesh acquired a fixed-point restriction'
       map = kpoint_star_type()
       DEALLOCATE (sym%rot, sym%rotp, sym%f0, sym%fcell_gauge, sym%phase_mode, sym%xkp)
       DO i = 1, 2

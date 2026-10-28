@@ -242,9 +242,9 @@ MODULE qs_scf
         smeagol_method_nr, special_diag_method_nr
    USE qs_skala_scf,                    ONLY: &
         qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
-        qs_skala_scf_crossing_type, qs_skala_scf_evaluate, qs_skala_scf_inspect, &
-        qs_skala_scf_release, qs_skala_scf_release_cusp, qs_skala_scf_selected, qs_skala_scf_size, &
-        qs_skala_scf_stationarity, qs_skala_scf_type
+        qs_skala_scf_create_symmetric, qs_skala_scf_crossing_type, qs_skala_scf_evaluate, &
+        qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_release_cusp, &
+        qs_skala_scf_selected, qs_skala_scf_size, qs_skala_scf_stationarity, qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
@@ -1140,14 +1140,16 @@ CONTAINS
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy, omitted_charge, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
-                                                            gradient(:), physical(:), targets(:), &
-                                                            tolerances(:)
+                                                            full_physical(:), gradient(:), &
+                                                            physical(:), targets(:), tolerances(:)
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(qs_skala_scf_crossing_type)                   :: event
       TYPE(qs_skala_scf_type)                            :: state
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: scf_section
+
+      PROCEDURE(qs_skala_scf_create), POINTER            :: create_search_state
 
       handled = .FALSE.
       stopped = .FALSE.
@@ -1172,7 +1174,13 @@ CONTAINS
       CALL get_ks_env(qs_env%ks_env, upf_inverse=inverse)
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
-      CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
+      create_search_state => qs_skala_scf_create
+      IF (do_kpoints .AND. .NOT. scf_control%smear%do_smear .AND. .NOT. dft_control%use_gauxc) THEN
+         ! The input-selected reduction also constrains operations leaving a point fixed.
+         ! Canonical acceptance separately checks the unrestricted physical residual.
+         IF (.NOT. kpoints%full_grid) create_search_state => qs_skala_scf_create_symmetric
+      END IF
+      CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
       IF (.NOT. valid) RETURN
       n = qs_skala_scf_size(state)
       IF (n == 0) THEN
@@ -1206,7 +1214,7 @@ CONTAINS
          CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_refresh)
          iterations = iterations + 1
          remaining = remaining - 1
-         CALL qs_skala_scf_create(state, qs_env, valid, thermal=.TRUE.)
+         CALL create_search_state(state, qs_env, valid, thermal=.TRUE.)
          IF (.NOT. valid) CPABORT("Could not inspect the refreshed inverse thermal state.")
          n = qs_skala_scf_size(state)
          DEALLOCATE (coordinate, gradient, physical)
@@ -1231,8 +1239,10 @@ CONTAINS
          IF (accepted) THEN
             CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
             IF (.NOT. valid) CPABORT("Could not inspect the final inverse orbital state.")
-            CALL qs_skala_scf_inspect(state, energy, physical)
-            scf_env%iter_delta = NORM2(physical)
+            ALLOCATE (full_physical(qs_skala_scf_size(state)))
+            CALL qs_skala_scf_inspect(state, energy, full_physical)
+            scf_env%iter_delta = NORM2(full_physical)
+            DEALLOCATE (full_physical)
             accepted = scf_env%iter_delta <= scf_control%eps_scf
          END IF
       END IF
@@ -1278,7 +1288,7 @@ CONTAINS
                iterations = iterations + 1
                remaining = remaining - 1
                CALL qs_skala_scf_release(state)
-               CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
+               CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
                IF (.NOT. valid) CPABORT("Could not rebuild the released inverse orbital state.")
                CPASSERT(qs_skala_scf_size(state) == n)
                coordinate = 0.0_dp
@@ -1315,8 +1325,10 @@ CONTAINS
             IF (accepted) THEN
                CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
                IF (.NOT. valid) CPABORT("Could not inspect the accepted inverse orbital state.")
-               CALL qs_skala_scf_inspect(state, energy, physical)
-               scf_env%iter_delta = NORM2(physical)
+               ALLOCATE (full_physical(qs_skala_scf_size(state)))
+               CALL qs_skala_scf_inspect(state, energy, full_physical)
+               scf_env%iter_delta = NORM2(full_physical)
+               DEALLOCATE (full_physical)
                accepted = scf_env%iter_delta <= scf_control%eps_scf
                IF (accepted) EXIT
             END IF
@@ -1335,7 +1347,7 @@ CONTAINS
          ! falling back to ordinary OT, but do not repeat a chart with no accepted step.
          IF (.NOT. rechart .AND. steps <= 1) EXIT
          CALL qs_skala_scf_release(state)
-         CALL qs_skala_scf_create(state, qs_env, valid, thermal=scf_control%smear%do_smear)
+         CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
          IF (.NOT. valid) CPABORT("Could not rebuild the accepted inverse orbital chart.")
          IF (space_grown) THEN
             n = qs_skala_scf_size(state)
