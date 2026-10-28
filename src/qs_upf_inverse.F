@@ -134,7 +134,7 @@ CONTAINS
          END IF
          ALLOCATE (reference(np, n), deviation(np, n))
          CALL upf_inverse_project(frame%inverse, overlaps, reference)
-         deviation = frame%coefficients - reference
+         deviation(:, :) = frame%coefficients - reference
          projection = reference - MATMUL(coupling, deviation)
          IF (PRESENT(response)) THEN
             ALLOCATE (reference_response(np, n))
@@ -866,8 +866,9 @@ CONTAINS
                intersects(image) = SUM(displacement**2) < radius**2
             END DO
             IF (.NOT. ANY(intersects)) CYCLE
-            selected = PACK([(i, i=1, SIZE(intersects))], intersects)
+            ALLOCATE (selected, SOURCE=PACK([(i, i=1, SIZE(intersects))], intersects))
             ALLOCATE (images, SOURCE=frame%images(:, selected))
+            DEALLOCATE (selected)
             nc_first = frame%projector_first(center)
             nc_last = frame%projector_last(center)
             nn = nc_last - nc_first + 1

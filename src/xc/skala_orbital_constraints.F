@@ -977,13 +977,14 @@ CONTAINS
       nao = SIZE(chart%base, 1)
       CPASSERT(ALL(SHAPE(response) == [nao, nao]))
       CALL orbital_generator_direction(chart, direction, generator)
-      coefficients_direction = MATMUL(chart%base, MATMUL(chart%inverse, MATMUL(generator, chart%inverse)))
+      ALLOCATE (coefficients_direction(nao, n), weighted(nao, n))
+      coefficients_direction(:, :) = MATMUL(chart%base, MATMUL(chart%inverse, MATMUL(generator, chart%inverse)))
       IF (PRESENT(orbital_direction)) THEN
          CPASSERT(SIZE(orbital_direction, 1) == nao)
          CPASSERT(SIZE(orbital_direction, 2) == n)
          orbital_direction = coefficients_direction
       END IF
-      weighted = coefficients_direction
+      weighted(:, :) = coefficients_direction
       DO i = 1, n
          weighted(:, i) = chart%occupations(i)*weighted(:, i)
       END DO
@@ -993,7 +994,7 @@ CONTAINS
          CPASSERT(chart%variable_occupations)
          CPASSERT(SIZE(occupations_direction) == n)
          CPASSERT(ALL(ieee_is_finite(occupations_direction)))
-         weighted = chart%coefficients
+         weighted(:, :) = chart%coefficients
          DO i = 1, n
             weighted(:, i) = occupations_direction(i)*weighted(:, i)
          END DO
@@ -1033,12 +1034,14 @@ CONTAINS
       CPASSERT(ALL(SHAPE(operator_direction) == [nao, nao]))
       CPASSERT(SIZE(response) == SIZE(chart%coordinate))
       CALL orbital_generator_direction(chart, direction, generator)
-      inverse_direction = 0.5_dp*MATMUL(chart%inverse, MATMUL(generator, chart%inverse))
-      h0 = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(OPERATOR, chart%base))
-      h0_direction = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(operator_direction, chart%base))
-      transformed = MATMUL(CONJG(TRANSPOSE(chart%rotation)), h0)
-      transformed_direction = 2.0_dp*MATMUL(CONJG(TRANSPOSE(inverse_direction)), h0) + &
-                              MATMUL(CONJG(TRANSPOSE(chart%rotation)), h0_direction)
+      ALLOCATE (inverse_direction(n, n), h0(n, n), h0_direction(n, n), &
+                transformed(n, n), transformed_direction(n, n), work(n, n))
+      inverse_direction(:, :) = 0.5_dp*MATMUL(chart%inverse, MATMUL(generator, chart%inverse))
+      h0(:, :) = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(OPERATOR, chart%base))
+      h0_direction(:, :) = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(operator_direction, chart%base))
+      transformed(:, :) = MATMUL(CONJG(TRANSPOSE(chart%rotation)), h0)
+      transformed_direction(:, :) = 2.0_dp*MATMUL(CONJG(TRANSPOSE(inverse_direction)), h0) + &
+                                    MATMUL(CONJG(TRANSPOSE(chart%rotation)), h0_direction)
       IF (PRESENT(occupations_direction)) THEN
          CPASSERT(chart%variable_occupations)
          CPASSERT(SIZE(occupations_direction) == n)
@@ -1051,9 +1054,9 @@ CONTAINS
          END IF
          transformed(i, :) = chart%occupations(i)*transformed(i, :)
       END DO
-      work = MATMUL(inverse_direction, MATMUL(transformed, chart%inverse)) + &
-             MATMUL(chart%inverse, MATMUL(transformed_direction, chart%inverse)) + &
-             MATMUL(chart%inverse, MATMUL(transformed, inverse_direction))
+      work(:, :) = MATMUL(inverse_direction, MATMUL(transformed, chart%inverse)) + &
+                   MATMUL(chart%inverse, MATMUL(transformed_direction, chart%inverse)) + &
+                   MATMUL(chart%inverse, MATMUL(transformed, inverse_direction))
       CALL orbital_symmetry_project(chart%symmetry, chart%antiunitary, work, .TRUE.)
       DO i = 1, SIZE(response)
          a = chart%pairs(1, i)
@@ -1167,7 +1170,13 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL :: coordinate_scales(:)
       LOGICAL, INTENT(IN), OPTIONAL :: curvature_steps
 
-      INTEGER :: capacity, d, history, i, iteration, last_progress_check, limit, m, nf, r, shortening
+      PROCEDURE(physical_constraints), POINTER :: constraints_local
+      PROCEDURE(orbital_stationarity), POINTER :: stationarity_local
+      PROCEDURE(orbital_stop), POINTER :: stop_local
+      PROCEDURE(orbital_curvature_segment), POINTER :: curvature_segment_local
+      PROCEDURE(orbital_hessian_product), POINTER :: hessian_local
+      PROCEDURE(orbital_lagrangian_hessian), POINTER :: lagrangian_hessian_local
+      INTEGER :: capacity, d, history, iteration, last_progress_check, limit, m, nf, r, shortening
       TYPE(skala_constraint_chart_type) :: curve
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked, &
                  coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, &
@@ -1177,6 +1186,16 @@ CONTAINS
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
                                values(:), x(:), changes(:, :), stalled_trial(:), &
                                inverse_diagonal(:), free_inverse(:)
+
+      ! Preserve explicit interfaces in contained calls even on compilers that lose
+      ! the interfaces of host-associated procedure dummies with polymorphic arguments.
+      constraints_local => evaluate_constraints
+      NULLIFY (stationarity_local, stop_local, curvature_segment_local, hessian_local, lagrangian_hessian_local)
+      IF (PRESENT(verify_stationarity)) stationarity_local => verify_stationarity
+      IF (PRESENT(check_stop)) stop_local => check_stop
+      IF (PRESENT(check_curvature_segment)) curvature_segment_local => check_curvature_segment
+      IF (PRESENT(apply_hessian)) hessian_local => apply_hessian
+      IF (PRESENT(apply_lagrangian_hessian)) lagrangian_hessian_local => apply_lagrangian_hessian
 
       d = SIZE(coordinate)
       coupled_curvature = .FALSE.
@@ -1256,7 +1275,7 @@ CONTAINS
             IF (active_preconditioner) THEN
                CPASSERT(ALL(ieee_is_finite(inverse_diagonal)))
                CPASSERT(ALL(inverse_diagonal > 0.0_dp))
-               free_inverse = inverse_diagonal(curve%free)
+               free_inverse(:) = inverse_diagonal(curve%free)
                ! Nearly empty bands can yield an unresolvable inverse response. Bound
                ! only the search metric, leaving the original energy and stopping tests.
                free_inverse = MIN(free_inverse, MIN(1.0_dp, MINVAL(free_inverse))/SQRT(EPSILON(1.0_dp)))
@@ -1601,7 +1620,7 @@ CONTAINS
                ALLOCATE (full_direction(d), full_product(d))
                full_direction = 0.0_dp
                full_direction(curve%free) = direction
-               CALL apply_hessian(center, full_direction, context, full_product, valid_product)
+               CALL hessian_local(center, full_direction, context, full_product, valid_product)
                IF (valid_product) THEN
                   CPASSERT(ALL(ieee_is_finite(full_product)))
                   PRODUCT = full_product(curve%free)
@@ -1615,35 +1634,35 @@ CONTAINS
                RETURN
             END IF
             IF (.NOT. ALLOCATED(center_jacobian)) THEN
-               CALL evaluate_constraints(center, values, jacobian, context)
+               CALL constraints_local(center, values, jacobian, context)
                IF (ALL(ABS(values) <= curve%tolerances)) THEN
                   ALLOCATE (center_jacobian(r, d), center_normal(r))
-                  center_jacobian = jacobian(curve%rows(:r), :)/SPREAD(curve%scales(curve%rows(:r)), 2, d)
+                  center_jacobian(:, :) = jacobian(curve%rows(:r), :)/SPREAD(curve%scales(curve%rows(:r)), 2, d)
                   ! Backtracking can leave a rejected full gradient cached. Refresh the
                   ! accepted center once, before any of its conjugate-gradient products.
                   CALL evaluate_gradient(center, energy_trial, g, context)
-                  center_normal = g(curve%dependent)
+                  center_normal(:) = g(curve%dependent)
                END IF
             END IF
             IF (ALLOCATED(center_jacobian)) THEN
                ALLOCATE (full_direction(d), full_product(d), matrix(r, r), rhs(r, 1), multipliers(m))
-               matrix = center_jacobian(:, curve%dependent)
+               matrix(:, :) = center_jacobian(:, curve%dependent)
                rhs(:, 1) = -MATMUL(center_jacobian(:, curve%free), direction)
                CALL solve_constraint_system(matrix, rhs, valid_trial)
                IF (valid_trial) THEN
                   full_direction(curve%free) = direction
                   full_direction(curve%dependent) = rhs(:, 1)
-                  matrix = TRANSPOSE(center_jacobian(:, curve%dependent))
+                  matrix(:, :) = TRANSPOSE(center_jacobian(:, curve%dependent))
                   rhs(:, 1) = center_normal
                   CALL solve_constraint_system(matrix, rhs, valid_trial)
                   IF (valid_trial) THEN
                      multipliers = 0.0_dp
                      multipliers(curve%rows(:r)) = rhs(:, 1)/curve%scales(curve%rows(:r))
-                     CALL apply_lagrangian_hessian(center, full_direction, multipliers, context, &
+                     CALL lagrangian_hessian_local(center, full_direction, multipliers, context, &
                                                    full_product, valid_product)
                      IF (valid_product) THEN
                         CPASSERT(ALL(ieee_is_finite(full_product)))
-                        matrix = TRANSPOSE(center_jacobian(:, curve%dependent))
+                        matrix(:, :) = TRANSPOSE(center_jacobian(:, curve%dependent))
                         rhs(:, 1) = full_product(curve%dependent)
                         CALL solve_constraint_system(matrix, rhs, valid_product)
                         IF (valid_product) THEN
@@ -1729,7 +1748,7 @@ CONTAINS
       LOGICAL                                            :: requested
 
          requested = .FALSE.
-         IF (PRESENT(check_stop)) CALL check_stop(context, requested)
+         IF (PRESENT(check_stop)) CALL stop_local(context, requested)
          IF (.NOT. requested) RETURN
          coordinate(:) = x
          IF (PRESENT(stopped)) stopped = .TRUE.
@@ -1746,7 +1765,7 @@ CONTAINS
 
          converged_trial = free_gradient_norm(rg) <= gradient_tolerance
          IF (.NOT. converged_trial) RETURN
-         IF (PRESENT(verify_stationarity)) CALL verify_stationarity(c, context, converged_trial)
+         IF (PRESENT(verify_stationarity)) CALL stationarity_local(c, context, converged_trial)
       END FUNCTION stationary
 ! **************************************************************************************************
 !> \brief Test stationarity in the original coordinates independently of preconditioning.
@@ -1788,7 +1807,7 @@ CONTAINS
          success = .FALSE.
          IF (PRESENT(probe_origin) .AND. have_curvature_check) THEN
             CPASSERT(PRESENT(probe_smooth))
-            CALL check_curvature_segment(probe_origin, c, curve, context, probe_smooth, curvature_interrupted)
+            CALL curvature_segment_local(probe_origin, c, curve, context, probe_smooth, curvature_interrupted)
             IF (curvature_interrupted .OR. .NOT. probe_smooth) RETURN
          END IF
          ! A branch check can restore other native fields. Rebuild this trial's gradient afterwards.

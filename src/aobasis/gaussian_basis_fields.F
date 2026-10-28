@@ -356,11 +356,11 @@ CONTAINS
 !> \param cell_gradient Optional cell derivatives, indexed (point,AO,axis,column).
 !> \param factored Whether the supplied cell and image list permit this factorization.
 !> \param response Optional joint first response of the fields.
-!> \param gradient_response Optional joint response of the spatial gradients.
 !> \param point_response Optional motion of the evaluation points.
 !> \param center_response Motion of the Gaussian center.
 !> \param cell_response Lattice derivative at fixed reduced Bloch coordinates.
 !> \param reduced_k_response Reduced Bloch-vector derivative.
+!> \param gradient_response Optional joint response of the spatial gradients.
 ! **************************************************************************************************
    SUBROUTINE periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
                                          value, gradient, cell_gradient, factored, &
@@ -446,8 +446,8 @@ CONTAINS
             DO axis = 1, 3
                DO translation = lower(axis), upper(axis)
                   phase = EXP(CMPLX(0.0_dp, twopi*reduced_k(axis)*REAL(translation, dp), dp))
-                  displacement = points(axis, :) - center(axis) - cell(axis, axis)*REAL(translation, dp)
-                  exponential = EXP(-alpha*displacement**2)
+                  displacement(:) = points(axis, :) - center(axis) - cell(axis, axis)*REAL(translation, dp)
+                  exponential(:) = EXP(-alpha*displacement**2)
                   power = 1.0_dp
                   WHERE (exponential == 0.0_dp) power = 0.0_dp
                   DO degree = 0, moment_degree
@@ -456,7 +456,7 @@ CONTAINS
                         image_moments(:, degree, axis) = image_moments(:, degree, axis) + &
                                                          REAL(translation, dp)*phase*power*exponential
                      END IF
-                     power = power*displacement
+                     power(:) = power*displacement
                   END DO
                END DO
             END DO
@@ -467,7 +467,7 @@ CONTAINS
                DO ico = ncoset(l - 1) + 1, ncoset(l)
                   irow = (ipgf - 1)*ncart + ico
                   powers = indco(:, ico)
-                  primitive_value = moments(:, powers(1), 1)*moments(:, powers(2), 2)*moments(:, powers(3), 3)
+                  primitive_value(:) = moments(:, powers(1), 1)*moments(:, powers(2), 2)*moments(:, powers(3), 3)
                   IF (derivatives) THEN
                      DO axis = 1, 3
                         derivative(:, axis) = -2.0_dp*alpha*moments(:, powers(axis) + 1, axis)
@@ -503,23 +503,23 @@ CONTAINS
                   IF (PRESENT(response)) THEN
                      primitive_response = CMPLX(0.0_dp, 0.0_dp, dp)
                      DO axis = 1, 3
-                        primitive_response = primitive_response - center_response(axis)*primitive_gradient(:, axis)
+                        primitive_response(:) = primitive_response - center_response(axis)*primitive_gradient(:, axis)
                         IF (PRESENT(point_response)) THEN
-                           primitive_response = primitive_response + point_response(axis, :)*primitive_gradient(:, axis)
+                           primitive_response(:) = primitive_response + point_response(axis, :)*primitive_gradient(:, axis)
                         END IF
                         IF (cell_derivatives) THEN
                            DO column = 1, 3
-                              primitive_response = primitive_response + cell_response(axis, column)*primitive_cell(:, axis, column)
+                            primitive_response(:) = primitive_response + cell_response(axis, column)*primitive_cell(:, axis, column)
                            END DO
                         END IF
                         IF (reduced_k_response(axis) /= 0.0_dp) THEN
-                           phase_moment = image_moments(:, powers(axis), axis)
+                           phase_moment(:) = image_moments(:, powers(axis), axis)
                            DO other = 1, 3
                               IF (other == axis) CYCLE
-                              phase_moment = phase_moment*moments(:, powers(other), other)
+                              phase_moment(:) = phase_moment*moments(:, powers(other), other)
                            END DO
-                           primitive_response = primitive_response + &
-                                                CMPLX(0.0_dp, twopi*reduced_k_response(axis), dp)*phase_moment
+                           primitive_response(:) = primitive_response + &
+                                                   CMPLX(0.0_dp, twopi*reduced_k_response(axis), dp)*phase_moment
                         END IF
                      END DO
                   END IF
@@ -527,7 +527,7 @@ CONTAINS
                      primitive_gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
                      DO axis = 1, 3
                         DO other = 1, 3
-                           hessian_component = factored_hessian(moments, image_moments, powers, alpha, axis, other, 0)
+                           hessian_component(:) = factored_hessian(moments, image_moments, powers, alpha, axis, other, 0)
                            primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
                                                                   center_response(other)*hessian_component
                            IF (PRESENT(point_response)) THEN
@@ -536,7 +536,7 @@ CONTAINS
                            END IF
                            DO column = 1, 3
                               IF (cell_response(other, column) == 0.0_dp) CYCLE
-                              hessian_component = factored_hessian(moments, image_moments, powers, alpha, axis, other, column)
+                              hessian_component(:) = factored_hessian(moments, image_moments, powers, alpha, axis, other, column)
                               primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
                                                                      cell_response(other, column)*hessian_component
                            END DO

@@ -557,7 +557,8 @@ CONTAINS
       CPASSERT(ASSOCIATED(cell))
       CPASSERT(SIZE(positions, 1) == 3 .AND. SIZE(positions, 2) > 0)
       CPASSERT(radius > 0.0_dp .AND. radius < SQRT(HUGE(1.0_dp)))
-      state%positions = positions
+      ALLOCATE (state%positions(3, SIZE(positions, 2)))
+      state%positions(:, :) = positions
       state%cell = cell%hmat
       state%inverse_cell = cell%h_inv
       state%periodicity = cell%perd
@@ -771,8 +772,8 @@ CONTAINS
                          internal_adjoint(image)*values%windows(image))*values%switch_derivatives(image)
       END DO
       mean_extra = SUM(values%probabilities*extra)
-      logarithm_adjoint = values%energy*(energy_adjoint - mean_energy) + &
-                          values%probabilities*(extra - mean_extra)
+      logarithm_adjoint(:) = values%energy*(energy_adjoint - mean_energy) + &
+                             values%probabilities*(extra - mean_extra)
       DO image = 1, SIZE(values%energy) - 1
          atom = values%atoms(image)
          cutoff_adjoint = internal_adjoint(image)*values%switches(image)

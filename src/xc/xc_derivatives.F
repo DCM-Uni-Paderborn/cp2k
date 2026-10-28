@@ -914,6 +914,8 @@ CONTAINS
             values(n) = libxc_density_floor(density_cutoff)
          END IF
       END IF
+#else
+      MARK_USED(density_cutoff)
 #endif
       ALLOCATE (floors(n))
       floors(:) = values(:n)
@@ -1112,15 +1114,15 @@ CONTAINS
          IF (ANY(rho_set%pbe_spin_floor_slopes >= 0.0_dp .AND. rho_set%pbe_spin_floor_slopes /= 1.0_dp)) RETURN
          ALLOCATE (pbe_slopes, SOURCE=rho_set%pbe_spin_floor_slopes)
       END IF
-      ALLOCATE (values(m), owned(m), outside(n, 2), weighted(n))
+      ALLOCATE (values(m), owned(m), outside(n, 2), weighted(n), difference(n))
       values = 0.0_dp
-      owned = rows > 0
+      owned(:) = rows > 0
       outside = .TRUE.
       weighted = measure
       IF (PRESENT(point_weights)) THEN
          valid = ALL(UBOUND(point_weights) >= bo(2, :))
          CPASSERT(valid)
-         weighted = weighted*RESHAPE(point_weights(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), [n])
+         weighted(:) = weighted*RESHAPE(point_weights(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), [n])
       END IF
       DO c = 1, m
          IF (owned(c)) outside(rows(c), spins(c)) = .FALSE.
@@ -1133,8 +1135,8 @@ CONTAINS
       END IF
       CALL xc_dset_create(negative, local_bounds=rho_set%local_bounds)
       CALL xc_functionals_eval(functionals, .TRUE., rho_set, negative, 1)
-      IF (ALLOCATED(libxc_slopes)) rho_set%spin_floor_slopes = libxc_slopes
-      IF (ALLOCATED(pbe_slopes)) rho_set%pbe_spin_floor_slopes = pbe_slopes
+      IF (ALLOCATED(libxc_slopes)) rho_set%spin_floor_slopes(:, :) = libxc_slopes
+      IF (ALLOCATED(pbe_slopes)) rho_set%pbe_spin_floor_slopes(:, :) = pbe_slopes
       valid = .TRUE.
       npositive = 0
       pos => positive%derivs
@@ -1158,8 +1160,8 @@ CONTAINS
             IF (ANY(first%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)) /= &
                     second%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)))) valid = .FALSE.
          ELSE
-            difference = RESHAPE(second%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)) - &
-                                 first%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), [n])
+            difference(:) = RESHAPE(second%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)) - &
+                                    first%deriv_data(bo(1, 1):bo(2, 1), bo(1, 2):bo(2, 2), bo(1, 3):bo(2, 3)), [n])
             IF (ANY(difference /= 0.0_dp .AND. outside(:, spin))) valid = .FALSE.
             DO c = 1, m
                IF (.NOT. owned(c) .OR. spins(c) /= spin) CYCLE

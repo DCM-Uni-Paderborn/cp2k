@@ -65,7 +65,7 @@ PROGRAM qs_ot_complex_ref_unittest
                                               kpoint_density_state_read,&
                                               kpoint_density_state_write
    USE qs_kpoint_operators,             ONLY: kpoint_slot_s
-   USE qs_ot,                           ONLY: qs_ot_apply_complex_frechet_dbcsr,&
+   USE qs_ot_kp,                        ONLY: qs_ot_apply_complex_frechet_dbcsr,&
                                               qs_ot_complex_exp_frechet_kernel,&
                                               qs_ot_density_tangent,&
                                               qs_ot_get_derivative_complex,&

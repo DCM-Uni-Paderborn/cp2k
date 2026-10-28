@@ -104,7 +104,8 @@ MODULE skala_gpw_functional
              native_skala_gapw_composite_direct_ao, native_skala_gapw_composite_reference, &
              native_skala_gapw_density_partition, skala_gpw_eval, skala_gpw_weight_derivative, &
              skala_gapw_representation, xc_section_uses_native_skala_evaluator, &
-             xc_section_uses_native_skala_grid, xc_section_uses_gauxc_model
+             xc_section_uses_native_skala_grid, xc_section_uses_gauxc_model, &
+             xc_section_uses_skala_model
 
    TYPE(skala_torch_model_type), SAVE                  :: cached_model
    TYPE(skala_gapw_atom_cuda_tensor_cache_type), SAVE, TARGET :: cached_atom_cuda_tensors
@@ -308,6 +309,29 @@ CONTAINS
       END IF
 
    END FUNCTION xc_section_uses_gauxc_model
+
+! **************************************************************************************************
+!> \brief Return true if the XC section requests a SKALA model (GauXC or native/FTorch).
+!> \param xc_section ...
+!> \return ...
+! **************************************************************************************************
+   FUNCTION xc_section_uses_skala_model(xc_section) RESULT(uses_skala_model)
+      TYPE(section_vals_type), INTENT(IN), POINTER       :: xc_section
+      LOGICAL                                            :: uses_skala_model
+
+      CHARACTER(len=default_path_length)                 :: model_key, model_name
+      TYPE(section_vals_type), POINTER                   :: gauxc_section
+
+      uses_skala_model = .FALSE.
+      gauxc_section => get_gauxc_section(xc_section)
+      IF (.NOT. ASSOCIATED(gauxc_section)) RETURN
+
+      CALL section_vals_val_get(gauxc_section, "MODEL", c_val=model_name)
+      model_key = ADJUSTL(model_name)
+      CALL uppercase(model_key)
+      uses_skala_model = INDEX(TRIM(model_key), "SKALA") > 0
+
+   END FUNCTION xc_section_uses_skala_model
 
 ! **************************************************************************************************
 !> \brief Return the hard/soft GAPW one-center density partition for native SKALA.
@@ -625,18 +649,18 @@ CONTAINS
          response_collapsed_rks = direction_features%uses_collapsed_rks_dynamic
          IF (direction_features%uses_atom_chunks) THEN
             IF (direction_features%chunk_feature_count > 0) THEN
-               model_density_direction = direction_features%chunk_density
-               model_grad_direction = direction_features%chunk_grad
-               model_kin_direction = direction_features%chunk_kin
+               ALLOCATE (model_density_direction, SOURCE=direction_features%chunk_density)
+               ALLOCATE (model_grad_direction, SOURCE=direction_features%chunk_grad)
+               ALLOCATE (model_kin_direction, SOURCE=direction_features%chunk_kin)
             ELSE
                i = 2
                IF (response_collapsed_rks) i = 1
                ALLOCATE (model_density_direction(0, i), model_grad_direction(0, 3, i), model_kin_direction(0, i))
             END IF
          ELSE
-            model_density_direction = direction_features%density
-            model_grad_direction = direction_features%grad
-            model_kin_direction = direction_features%kin
+            ALLOCATE (model_density_direction, SOURCE=direction_features%density)
+            ALLOCATE (model_grad_direction, SOURCE=direction_features%grad)
+            ALLOCATE (model_kin_direction, SOURCE=direction_features%kin)
          END IF
          CALL skala_gpw_feature_release(direction_features)
          CALL xc_rho_set_release(direction_rho_set, pw_pool=pw_pool)
@@ -1594,9 +1618,12 @@ CONTAINS
                ! The three primitive fields enter the same nonlocal energy graph.
                ! Differentiate them jointly before the ordinary backward releases it.
                ! Keep contiguous buffers alive while Torch borrows their storage.
-               density_direction_buffer = density_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :)
-               grad_direction_buffer = grad_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :, :)
-               kin_direction_buffer = kin_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :)
+               ALLOCATE (density_direction_buffer, &
+                         SOURCE=density_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :))
+               ALLOCATE (grad_direction_buffer, &
+                         SOURCE=grad_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :, :))
+               ALLOCATE (kin_direction_buffer, &
+                         SOURCE=kin_direction(chunk_row_start:chunk_row_start + chunk_row_count - 1, :))
                CALL torch_tensor_from_array(response_directions(1), density_direction_buffer)
                CALL torch_tensor_from_array(response_directions(2), grad_direction_buffer)
                CALL torch_tensor_from_array(response_directions(3), kin_direction_buffer)
@@ -2513,9 +2540,9 @@ CONTAINS
       TYPE(torch_tensor_type)                            :: directions(3), fields(3)
 
       fields = [features%density_t, features%grad_t, features%kin_t]
-      density = density_direction
-      gradient = grad_direction
-      kinetic = kin_direction
+      ALLOCATE (density, SOURCE=density_direction)
+      ALLOCATE (gradient, SOURCE=grad_direction)
+      ALLOCATE (kinetic, SOURCE=kin_direction)
       CALL torch_tensor_from_array(directions(1), density)
       CALL torch_tensor_from_array(directions(2), gradient)
       CALL torch_tensor_from_array(directions(3), kinetic)
@@ -3815,7 +3842,7 @@ CONTAINS
       CPASSERT(owner < group%num_pe)
       count = 0
       IF (group%mepos == owner) THEN
-         local_floors = skala_torch_model_density_floors(cached_model)
+         ALLOCATE (local_floors, SOURCE=skala_torch_model_density_floors(cached_model))
          count = SIZE(local_floors)
       END IF
       CALL group%max(count)

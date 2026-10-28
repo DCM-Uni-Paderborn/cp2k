@@ -127,13 +127,13 @@ CONTAINS
          DO alias = 1, nalias
             phase = phase + EXP(CMPLX(0.0_dp, DOT_PRODUCT(vectors(:, alias), point), dp))/REAL(nalias, dp)
          END DO
-         IF (ABS(phase - EXP(CMPLX(0.0_dp, DOT_PRODUCT(coarse_grid%g(:, ig), point), dp))) > 3.e-14_dp) then
-           ERROR STOP "Fourier boundary aliases changed the native grid phase."
-         end if
+         IF (ABS(phase - EXP(CMPLX(0.0_dp, DOT_PRODUCT(coarse_grid%g(:, ig), point), dp))) > 3.e-14_dp) THEN
+            ERROR STOP "Fourier boundary aliases changed the native grid phase."
+         END IF
          IF (boundary(1) .AND. boundary(2)) THEN
-            IF (ABS(SUM(vectors(1, :nalias)*vectors(2, :nalias))/REAL(nalias, dp)) > 3.e-14_dp) then
-              ERROR STOP "A mixed odd kernel survived independent Nyquist reflection."
-            end if
+            IF (ABS(SUM(vectors(1, :nalias)*vectors(2, :nalias))/REAL(nalias, dp)) > 3.e-14_dp) THEN
+               ERROR STOP "A mixed odd kernel survived independent Nyquist reflection."
+            END IF
          END IF
       END DO
       DO axes = 1, 3

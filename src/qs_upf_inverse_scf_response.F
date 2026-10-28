@@ -135,11 +135,12 @@ CONTAINS
             IF (active .AND. component%section%name /= "GAUXC") RETURN
          END DO
          CALL group%set_handle(para_env%get_handle())
-         floors = native_skala_spin_floors(xc, group)
+         ALLOCATE (floors, SOURCE=native_skala_spin_floors(xc, group))
       ELSE
          needs = xc_functionals_get_needs(functional, control%nspins == 2, kinetic_density_boundary=kinetic_boundary)
          IF (kinetic_boundary .AND. (needs%tau .OR. needs%tau_spin)) RETURN
-         floors = xc_functionals_spin_floors(functional, control%nspins == 2, section_get_rval(xc, "DENSITY_CUTOFF"))
+         ALLOCATE (floors, &
+                   SOURCE=xc_functionals_spin_floors(functional, control%nspins == 2, section_get_rval(xc, "DENSITY_CUTOFF")))
       END IF
       CALL skala_density_constraints_get(constraints, points, spins, weights, probe, tolerance, &
                                          descriptors=descriptors, domains=domains, targets=targets, &
@@ -390,7 +391,7 @@ CONTAINS
          combined_tau(spin)%array = combined_tau(spin)%array + response_tau(spin)%array
       END DO
       CALL qs_upf_inverse_scf_xc_source_adjoint(ks_env, combined_rho, combined_tau, operators_direction)
-      IF (atomic_xc) operators_direction = operators_direction + atomic
+      IF (atomic_xc) operators_direction(:, :, :, :) = operators_direction + atomic
       ALLOCATE (hartree(n, n, nk))
       IF (state%gaussian_background) THEN
          CPASSERT(ASSOCIATED(state%coulomb))
@@ -401,7 +402,7 @@ CONTAINS
          END DO
       ELSE
          CALL native_hartree_response(ks_env, matrices_direction, atomic)
-         operators_direction = operators_direction + atomic
+         operators_direction(:, :, :, :) = operators_direction + atomic
       END IF
       NULLIFY (orbital_factors)
       IF (state%orbital_factors%density_evaluation == state%density_evaluations) orbital_factors => state%orbital_factors
@@ -409,19 +410,19 @@ CONTAINS
          ALLOCATE (paw(n, n, nk, ns))
          functional => section_vals_get_subs_vals(xc, "XC_FUNCTIONAL")
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
-            kweights = state%bloch%weights
+            ALLOCATE (kweights, SOURCE=state%bloch%weights)
             CALL qs_upf_inverse_paw_evaluate(state%paw, state%bloch%frames, matrices_direction, kweights, &
                                              functional, section_get_rval(xc, "DENSITY_CUTOFF"), &
                                              section_get_rval(xc, "GRADIENT_CUTOFF"), energies, paw, paw_potential, &
                                              semilocal_xc=.FALSE.)
          ELSE
-            kweights = [1.0_dp]
+            ALLOCATE (kweights(1), SOURCE=1.0_dp)
             CALL qs_upf_inverse_paw_evaluate(state%paw, [state%frame], matrices_direction, kweights, &
                                              functional, section_get_rval(xc, "DENSITY_CUTOFF"), &
                                              section_get_rval(xc, "GRADIENT_CUTOFF"), energies, paw, paw_potential, &
                                              semilocal_xc=.FALSE.)
          END IF
-         operators_direction = operators_direction + paw
+         operators_direction(:, :, :, :) = operators_direction + paw
          IF (.NOT. ALLOCATED(state%paw_reconstruction)) THEN
             CPASSERT(.NOT. model)
             CPASSERT(ALLOCATED(state%paw_density))
@@ -433,7 +434,7 @@ CONTAINS
                CALL qs_upf_inverse_paw_xc_kernel(state%paw, [state%frame], state%paw_density, &
                                                  matrices_direction, kweights, xc, paw, orbital_factors, orbital_direction)
             END IF
-            operators_direction = operators_direction + paw
+            operators_direction(:, :, :, :) = operators_direction + paw
          END IF
       END IF
       DO spin = 1, ns
@@ -452,7 +453,7 @@ CONTAINS
          CALL combined_rho(spin)%release()
          CALL combined_tau(spin)%release()
       END DO
-      IF (do_hfx) operators_direction = operators_direction + exchange
+      IF (do_hfx) operators_direction(:, :, :, :) = operators_direction + exchange
       IF (model) DEALLOCATE (first_rho, first_tau)
       DEALLOCATE (response_rho, response_tau, density, density_g, kinetic, &
                   direction, direction_g, kinetic_direction)
@@ -532,7 +533,7 @@ CONTAINS
                CALL hfx_ri_update_ks_kp(qs_env, hf%ri_data, real_operator, unused_energy, images, .FALSE., ns, &
                                         hf%general_parameter%fraction, density_matrices=direction, &
                                         operators_response=contribution)
-               operators = operators + contribution
+               operators(:, :, :, :) = operators + contribution
             ELSE
                CALL hfx_ri_update_ks(qs_env, hf%ri_data, real_operator, unused_energy, rho_ao=real_source, &
                                      geometry_did_change=.FALSE., nspins=ns, &
@@ -614,7 +615,7 @@ CONTAINS
       w = 1.0_dp
       IF (ASSOCIATED(weights)) THEN
          CPASSERT(pw_grid_compare(weights%pw_grid, grid))
-         w = RESHAPE(weights%array, [np])
+         w(:) = RESHAPE(weights%array, [np])
       END IF
       CALL derivative_g%create(grid)
       CALL gradient_r%create(grid)

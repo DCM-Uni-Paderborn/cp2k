@@ -35,7 +35,7 @@ MODULE gth_projector_fields
       INTEGER, PRIVATE :: nset = 0
       INTEGER, ALLOCATABLE, PRIVATE :: lmax(:), npgf(:), nshell(:), l(:, :), first(:, :), last(:, :)
       REAL(dp), ALLOCATABLE, PRIVATE :: zet(:, :), sphi(:, :)
-   END TYPE
+   END TYPE gth_projector_fields_type
 CONTAINS
 ! **************************************************************************************************
 !> \brief Own the exact native projector polynomials and their Cartesian coupling matrix.
@@ -81,9 +81,10 @@ CONTAINS
       n = MAXVAL(potential%nprj_ppnl)
       ALLOCATE (fields%lmax(fields%nset), fields%npgf(fields%nset), fields%nshell(fields%nset), &
                 fields%zet(1, fields%nset), fields%sphi(ncoset(maximum), fields%nfunction), &
+                fields%coupling(fields%nfunction, fields%nfunction), &
                 fields%l(n, fields%nset), fields%first(n, fields%nset), fields%last(n, fields%nset))
-      fields%coupling = potential%vprj_ppnl
-      fields%sphi = potential%cprj(:ncoset(maximum), :)
+      fields%coupling(:, :) = potential%vprj_ppnl
+      fields%sphi(:, :) = potential%cprj(:ncoset(maximum), :)
       fields%npgf = 1
       fields%l = 0
       fields%first = 0
@@ -290,16 +291,16 @@ CONTAINS
                   CALL overlap_ab(projectors%lmax(a), 0, 1, radii(:1), projectors%zet(:, a), &
                                   basis%lmax(b), 0, nprim, radii, basis%zet(:, b), displacement, sab=native)
                END IF
-               contracted = MATMUL(TRANSPOSE(projectors%sphi(:na, projector_first:projector_last)), &
-                                   MATMUL(native, basis%sphi(:nb, first:last)))
+               contracted(:, :) = MATMUL(TRANSPOSE(projectors%sphi(:na, projector_first:projector_last)), &
+                                         MATMUL(native, basis%sphi(:nb, first:last)))
                overlaps(projector_first:projector_last, first:last) = &
                   overlaps(projector_first:projector_last, first:last) + phase*contracted
                IF (PRESENT(response)) THEN
                   response_block = 0.0_dp
                   DO axis = 1, 3
-            response_block = response_block + motion(axis)*MATMUL(TRANSPOSE(projectors%sphi(:na, projector_first:projector_last)), &
-                                                                           MATMUL(derivative(:, :, axis), &
-                                                                                  basis%sphi(:nb, first:last)))
+      response_block(:, :) = response_block + motion(axis)*MATMUL(TRANSPOSE(projectors%sphi(:na, projector_first:projector_last)), &
+                                                                                 MATMUL(derivative(:, :, axis), &
+                                                                                        basis%sphi(:nb, first:last)))
                   END DO
                   response(projector_first:projector_last, first:last) = &
                      response(projector_first:projector_last, first:last) + phase_response*contracted + phase*response_block

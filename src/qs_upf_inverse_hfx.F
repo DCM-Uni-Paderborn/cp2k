@@ -2065,7 +2065,7 @@ CONTAINS
 !> \param key Reconstruction center, Gaussian basis and three relative image components.
 !> \param nprojector Number of atomic projectors.
 !> \param ngaussian Complete Gaussian basis size at the selected atom.
-!> \param entry Cached values or a null pointer when the table or payload budget is exhausted.
+!> \param ENTRY Cached values or a null pointer when the table or payload budget is exhausted.
 ! **************************************************************************************************
    SUBROUTINE lattice_projection_entry(cache, key, nprojector, ngaussian, ENTRY)
       TYPE(lattice_potential_cache_type), &
@@ -2233,7 +2233,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE prepare_transition_potentials(cache, fields, r, radial_weights, directions, position, &
                                             auxiliary_center, radius, cell, auxiliary_images, gradients)
-      TYPE(transition_augmentation_type), INTENT(INOUT)  :: cache
+      TYPE(transition_augmentation_type), &
+         INTENT(INOUT), TARGET                           :: cache
       TYPE(gaussian_coulomb_fields_type), INTENT(IN)     :: fields
       REAL(dp), INTENT(IN)                               :: r(:), radial_weights(:), &
                                                             directions(:, :), position(3), &
@@ -2244,6 +2245,8 @@ CONTAINS
       INTEGER                                            :: ia, ir, nang, naux, ncomponent, nrow, row
       LOGICAL                                            :: new_gradients, new_values
       REAL(dp)                                           :: point(3), value_words, words
+      REAL(dp), POINTER :: cached_cell_gradient(:, :, :, :, :), cached_gradient(:, :, :, :), &
+         cached_values(:, :, :)
 
       IF (.NOT. ASSOCIATED(cache%potential_budget)) RETURN
       CPASSERT(cache%potential_budget >= 0)
@@ -2280,6 +2283,11 @@ CONTAINS
          IF (PRESENT(auxiliary_images)) ALLOCATE (cache%potential_fields%cell_gradient(3, 3, naux, nang, nrow))
       END IF
       cache%potential_budget = cache%potential_budget - INT(words)
+      cached_values => cache%potential_fields%values
+      IF (new_gradients) THEN
+         cached_gradient => cache%potential_fields%gradient
+         IF (PRESENT(auxiliary_images)) cached_cell_gradient => cache%potential_fields%cell_gradient
+      END IF
       row = 0
       DO ir = 1, SIZE(r)
          IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
@@ -2289,18 +2297,18 @@ CONTAINS
             IF (new_gradients) THEN
                IF (PRESENT(auxiliary_images)) THEN
                   CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
-                                        cache%potential_fields%values(ia, :, row), cache%potential_fields%gradient(:, :, ia, row), &
-                                                        cache%potential_fields%cell_gradient(:, :, :, ia, row))
+                                                        cached_values(ia, :, row), cached_gradient(:, :, ia, row), &
+                                                        cached_cell_gradient(:, :, :, ia, row))
                ELSE
-                CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cache%potential_fields%values(ia, :, row), &
-                                                        cache%potential_fields%gradient(:, :, ia, row))
+                  CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cached_values(ia, :, row), &
+                                                        cached_gradient(:, :, ia, row))
                END IF
             ELSE
                IF (PRESENT(auxiliary_images)) THEN
                   CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
-                                                        cache%potential_fields%values(ia, :, row))
+                                                        cached_values(ia, :, row))
                ELSE
-                  CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cache%potential_fields%values(ia, :, row))
+                  CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cached_values(ia, :, row))
                END IF
             END IF
          END DO

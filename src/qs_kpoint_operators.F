@@ -38,7 +38,7 @@ MODULE qs_kpoint_operators
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               copy_fm_to_dbcsr_bc,&
                                               dbcsr_fm_copy_plan_type
-   USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
+   USE cp_fm_pool_types,                ONLY: cp_fm_pool_type,&
                                               fm_pool_create_fm,&
                                               fm_pool_give_back_fm
    USE cp_fm_struct,                    ONLY: cp_fm_struct_equivalent,&
@@ -154,23 +154,24 @@ MODULE qs_kpoint_operators
    INTEGER(KIND=int_8), PARAMETER :: rs_batch_bytes = 32_int_8*1024_int_8**2
 
 ! **************************************************************************************************
-!> \brief Caller-owned assembly context for one driver call.
-!>        Created and released in the same driver routine and passed to helpers
-!>        as an argument; never stored on the host kpoint_type.
+!> \brief Caller-owned assembly context for a fixed geometry and parallel layout.
+!>        OT retains it for one inner SCF loop; other drivers use one call.
+!>        Release before changing the neighbor lists, matrix pools or k-point groups.
 !>        Components are private and touched only by this module.
 ! **************************************************************************************************
    TYPE, PUBLIC :: kpoint_operator_context_type
       PRIVATE
-      ! Instance spin space of the owning driver call: the bound of the spin
+      ! Instance spin capacity of the owning driver: the bound of the spin
       ! loop that start and finish key. Declared once at creation. It never
       ! comes from the operators: the first matrix dimension of a spin-free
       ! operator such as S counts derivatives, and the images live in the
       ! second, so callers address operator rows through matrix_row instead.
       INTEGER                                            :: nspin = 0
+      LOGICAL                                            :: overlap_stored = .FALSE.
       ! Borrowed host/distribution references; the context cannot span an energy evaluation.
       TYPE(kpoint_type), POINTER                          :: kpoints => NULL()
       TYPE(cp_fm_struct_type), POINTER                    :: ao_ao_fmstruct => NULL()
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER      :: group_fm_pools => NULL()
+      TYPE(cp_fm_pool_type), POINTER                      :: group_fm_pool => NULL()
       ! Identity of the neighbor lists used by scratch and prepared snapshots.
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                          :: work_sab => NULL()
@@ -616,7 +617,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Release the context together with every buffer it created.
-!>        Call once, at the exit of the routine that created the context.
+!>        Call once, at the end of the fixed-layout scope that created the context.
 !>        Every started instance must be idle at this point. The call aborts
 !>        when a transfer is still in flight, because nothing would ever wait
 !>        for its MPI requests.
@@ -678,12 +679,13 @@ CONTAINS
          DEALLOCATE (ctx%fmimag)
       END IF
       IF (ALLOCATED(ctx%fmlocal)) THEN
-         CALL fm_pool_give_back_fm(ctx%group_fm_pools(1)%pool, ctx%fmlocal)
+         CALL fm_pool_give_back_fm(ctx%group_fm_pool, ctx%fmlocal)
          DEALLOCATE (ctx%fmlocal)
       END IF
       IF (ALLOCATED(ctx%info)) DEALLOCATE (ctx%info)
       IF (ALLOCATED(ctx%status)) DEALLOCATE (ctx%status)
-      NULLIFY (ctx%kpoints, ctx%ao_ao_fmstruct, ctx%group_fm_pools)
+      NULLIFY (ctx%kpoints, ctx%ao_ao_fmstruct, ctx%group_fm_pool)
+      ctx%overlap_stored = .FALSE.
 
       CALL timestop(handle)
 
@@ -696,7 +698,7 @@ CONTAINS
 !>        transfer target from the group pools.
 !>        The per-instance slot bookkeeping is not scratch: start creates it
 !>        on its first call, because the synchronous get call never touches it.
-!>        The buffers assume the context lifetime of one driver call: the
+!>        The buffers assume a fixed-layout context scope: the
 !>        host neighbor lists do not change within it, and every buffer use
 !>        asserts this identity. Buffers from an earlier call stay in place.
 !>        Called from the service routines only.
@@ -717,8 +719,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       ! The pair must still match the host neighbor lists: they are
-      ! reallocated at every energy evaluation, while the context spans one
-      ! driver call within it.
+      ! reallocated at every energy evaluation; the context stays within it.
       IF (ASSOCIATED(ctx%work_sab)) THEN
          CPASSERT(ASSOCIATED(ctx%work_sab, ctx%kpoints%sab_nl))
       END IF
@@ -760,9 +761,9 @@ CONTAINS
       TYPE(kpoint_operator_context_type), INTENT(INOUT)  :: ctx
 
       IF (.NOT. ALLOCATED(ctx%fmlocal)) THEN
-         CALL mpools_get(ctx%kpoints%mpools, ao_ao_fm_pools=ctx%group_fm_pools)
+         CALL mpools_get(ctx%kpoints%mpools, ao_ao_fm_pool=ctx%group_fm_pool)
          ALLOCATE (ctx%fmlocal)
-         CALL fm_pool_create_fm(ctx%group_fm_pools(1)%pool, ctx%fmlocal)
+         CALL fm_pool_create_fm(ctx%group_fm_pool, ctx%fmlocal)
       END IF
 
    END SUBROUTINE kpoint_operator_ensure_group
@@ -1418,7 +1419,7 @@ CONTAINS
       COMPLEX(KIND=dp), CONTIGUOUS, POINTER              :: output(:, :, :)
       COMPLEX(KIND=dp), POINTER                          :: phase(:, :)
       INTEGER                                            :: first, iblock, k, last, nbatch, ncol, &
-                                                            nthreads, thread
+                                                            nthreads, previous, thread
       LOGICAL                                            :: parallel
       REAL(KIND=dp)                                      :: arg
 
@@ -1449,12 +1450,21 @@ CONTAINS
          ALLOCATE (owned_phase(nbatch, SIZE(route%entry, 2)))
          phase => owned_phase
       END IF
+      previous = 0
       DO iblock = 1, SIZE(route%entry, 2)
          IF (.NOT. snapshot%nonzero(iblock)) CYCLE
+         ! Neighboring blocks often share a lattice translation, including its symmetry sign.
+         IF (previous > 0) THEN
+            IF (ALL(route%entry(5:7, iblock) == route%entry(5:7, previous))) THEN
+               phase(:, iblock) = phase(:, previous)
+               CYCLE
+            END IF
+         END IF
          DO k = 1, nbatch
             arg = twopi*DOT_PRODUCT(REAL(route%entry(5:7, iblock), dp), xkp(:, k))
             phase(k, iblock) = CMPLX(COS(arg), SIN(arg), KIND=dp)
          END DO
+         previous = iblock
       END DO
       ncol = route%ncol
       parallel = .TRUE.
@@ -1502,10 +1512,14 @@ CONTAINS
       COMPLEX(KIND=dp), CONTIGUOUS, POINTER              :: full(:, :)
       INTEGER                                            :: c0, col, hi, iblock, j, k, lo, nc, nr, &
                                                             part, r0, row, source_col, source_row
-      REAL(KIND=dp)                                      :: element
+      LOGICAL                                            :: full_fm
+      REAL(KIND=dp)                                      :: element, phase_im, phase_re
 
       IF (first > last) RETURN
       NULLIFY (full)
+      full_fm = .NOT. ASSOCIATED(output) .AND. &
+                route%nrow == route%matrix_struct%nrow_global .AND. &
+                route%ncol == route%matrix_struct%ncol_global
       IF (ASSOCIATED(output)) THEN
          IF (SIZE(output, 1) == 1 .AND. &
              route%nrow == route%matrix_struct%nrow_global .AND. &
@@ -1519,6 +1533,39 @@ CONTAINS
          c0 = route%entry(2, iblock)
          nr = route%entry(3, iblock)
          nc = route%entry(4, iblock)
+         IF (full_fm) THEN
+            ! Single-rank split-FM caches have contiguous global rows and columns.
+            ! Keep each block's direct/mirrored order, without per-element index lookup.
+            phase_re = REAL(phase(1, iblock), dp)
+            phase_im = AIMAG(phase(1, iblock))
+            lo = MAX(first, c0)
+            hi = MIN(last, c0 + nc - 1)
+            DO j = lo, hi
+!$OMP SIMD PRIVATE(element)
+               DO row = 1, nr
+                  element = snapshot%blocks(iblock)%data(row, j - c0 + 1)
+                  fm_re%local_data(r0 + row - 1, j) = fm_re%local_data(r0 + row - 1, j) + phase_re*element
+                  IF (PRESENT(fm_im)) THEN
+                     fm_im%local_data(r0 + row - 1, j) = fm_im%local_data(r0 + row - 1, j) + phase_im*element
+                  END IF
+               END DO
+            END DO
+            IF (route%entry(8, iblock) /= 0) THEN
+               lo = MAX(first, r0)
+               hi = MIN(last, r0 + nr - 1)
+               DO j = lo, hi
+!$OMP SIMD PRIVATE(element)
+                  DO row = 1, nc
+                     element = snapshot%blocks(iblock)%data(j - r0 + 1, row)
+                     fm_re%local_data(c0 + row - 1, j) = fm_re%local_data(c0 + row - 1, j) + phase_re*element
+                     IF (PRESENT(fm_im)) THEN
+                        fm_im%local_data(c0 + row - 1, j) = fm_im%local_data(c0 + row - 1, j) - phase_im*element
+                     END IF
+                  END DO
+               END DO
+            END IF
+            CYCLE
+         END IF
          IF (ASSOCIATED(full)) THEN
             ! Update whole contiguous blocks, clipped to this worker's columns.
             lo = MAX(first, c0)
@@ -1983,14 +2030,14 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Read an operator inside a group-local OT loop, after collective cache preparation.
-!>        One group retains the sparse transform and distribution required by OT's DBCSR kernels.
-!>        Multiple groups read their owned cache; no world collective may occur in this loop.
+!>        A single distributed group retains the sparse transform and distribution.
+!>        One-rank or multiple groups read their owned cache, without world collectives.
 !> \param matrix_rs current real-space operator
 !> \param kpoints host environment
 !> \param kp local k-point state
 !> \param ispin source row (one for spin-free S/T)
-!> \param cache_re owned real part, used with multiple groups
-!> \param cache_im owned imaginary part, used with multiple groups
+!> \param cache_re prepared real part on the k-point group
+!> \param cache_im prepared imaginary part on the k-point group
 !> \param matrix_re newly initialized sparse real output
 !> \param matrix_im newly initialized sparse imaginary output
 ! **************************************************************************************************
@@ -2021,7 +2068,8 @@ CONTAINS
       xkp => kpoints%xkp
       cell_to_index => kpoints%cell_to_index
       sab_nl => kpoints%sab_nl
-      IF (nkp_groups == 1 .AND. kpoint_operator_native_match(kpoints, matrix_rs) == 0) THEN
+      IF (nkp_groups == 1 .AND. kpoints%para_env_kp%num_pe > 1 .AND. &
+          kpoint_operator_native_match(kpoints, matrix_rs) == 0) THEN
          CPASSERT(ASSOCIATED(xkp))
          CPASSERT(ASSOCIATED(cell_to_index))
          CPASSERT(ASSOCIATED(sab_nl))
@@ -2111,17 +2159,16 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Prepare owned split-FM operators for OT without entering an SCF eigensolver.
-!>        H (or the initialization density) retains all source spins; S/T are built only once.
-!>        Outputs survive the transient context. Compatible cache storage is reused, values refreshed.
-!> \param kpoints host environment and owned OT caches
-!> \param ao_ao_fm global-layout template
+!>        H (or the initialization density) retains all source spins and is refreshed on each call.
+!>        S is stored once per context; the caller controls when to prepare T.
+!>        Outputs survive the context. Only routing and scratch persist between calls.
+!> \param ctx context with fixed geometry, AO layout and spin capacity
 !> \param matrix_ks Hamiltonian or initialization density
 !> \param matrix_s spin-free overlap
 !> \param matrix_t optional spin-free kinetic operator; absent leaves the existing kinetic cache alone
 ! **************************************************************************************************
-   SUBROUTINE kpoint_operator_store(kpoints, ao_ao_fm, matrix_ks, matrix_s, matrix_t)
-      TYPE(kpoint_type), POINTER                         :: kpoints
-      TYPE(cp_fm_type), INTENT(IN)                       :: ao_ao_fm
+   SUBROUTINE kpoint_operator_store(ctx, matrix_ks, matrix_s, matrix_t)
+      TYPE(kpoint_operator_context_type), INTENT(INOUT)  :: ctx
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
       TYPE(dbcsr_p_type), DIMENSION(:, :), OPTIONAL, &
          POINTER                                         :: matrix_t
@@ -2131,14 +2178,15 @@ CONTAINS
       LOGICAL                                            :: kinetic, reuse
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(kpoint_env_type), POINTER                     :: kp
-      TYPE(kpoint_operator_context_type)                 :: ctx
+      TYPE(kpoint_type), POINTER                         :: kpoints
 
       CALL timeset(routineN, handle)
+      kpoints => ctx%kpoints
       nspin = SIZE(matrix_ks, 1)
+      CPASSERT(nspin == 1 .OR. nspin == ctx%nspin)
       ncomp = MERGE(1, 2, kpoints%use_real_wfn)
       kinetic = PRESENT(matrix_t)
       IF (kinetic) kinetic = ASSOCIATED(matrix_t)
-      CALL kpoint_operator_context_create(ctx, kpoints, ao_ao_fm, nspin)
       CALL kpoint_operator_ensure_group(ctx)
       matrix_struct => ctx%fmlocal%matrix_struct
       DO ikp = 1, SIZE(kpoints%kp_env)
@@ -2162,9 +2210,11 @@ CONTAINS
          IF (kinetic) CALL allocate_spin_free(kp%ot_tmat)
       END DO
       CALL store_slot(matrix_ks, kpoint_slot_ks, nspin)
-      CALL store_slot(matrix_s, kpoint_slot_s, 1)
+      IF (.NOT. ctx%overlap_stored) THEN
+         CALL store_slot(matrix_s, kpoint_slot_s, 1)
+         ctx%overlap_stored = .TRUE.
+      END IF
       IF (kinetic) CALL store_slot(matrix_t, kpoint_slot_t, 1)
-      CALL kpoint_operator_context_release(ctx)
       CALL timestop(handle)
 
    CONTAINS
@@ -2215,7 +2265,7 @@ CONTAINS
          prepared = .FALSE.
          ! Match STANDARD's single-world-rank, single-thread preference for the forward lattice FFT.
          IF (.NOT. use_grid .OR. nworkers > 1 .OR. kpoints%blacs_env_all%para_env%num_pe > 1) THEN
-            IF (slot == kpoint_slot_ks) THEN
+            IF (slot == kpoint_slot_ks .AND. nrows == ctx%nspin) THEN
                CALL kpoint_operator_prepare(ctx, rsmat, slot, prepared)
             ELSE
                CALL kpoint_operator_prepare(ctx, rsmat, slot, prepared, matrix_row=kpoint_spin_free)
@@ -2267,6 +2317,15 @@ CONTAINS
                END DO
                DEALLOCATE (grids)
             END IF
+         END IF
+         ! The split-FM caches now own the results. Do not retain source block
+         ! pointers or duplicate snapshots across Hamiltonian rebuilds.
+         IF (ALLOCATED(ctx%rs)) THEN
+            DO ispin = 1, ctx%nspin
+               CALL kpoint_operator_rs_clear(ctx%rs(ispin, slot))
+               IF (ALLOCATED(ctx%rs_batch(ispin, slot)%data)) DEALLOCATE (ctx%rs_batch(ispin, slot)%data)
+               ctx%rs_batch(ispin, slot)%first = 0
+            END DO
          END IF
       END SUBROUTINE store_slot
 

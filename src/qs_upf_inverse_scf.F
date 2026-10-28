@@ -678,7 +678,7 @@ CONTAINS
          CALL qs_upf_inverse_gth_local_field(ks_env, state%frame, gth_r)
          CALL qs_upf_inverse_gth_local_residual(state%frame, state%augmentation, gth_r, &
                                                 .NOT. state%native_gaussian, OPERATOR=gth_residual)
-         atomic_t = atomic_t + gth_operator(:, :, 1) + gth_residual
+         atomic_t(:, :) = atomic_t + gth_operator(:, :, 1) + gth_residual
          CALL gth_r%release()
       END IF
       CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
@@ -1113,7 +1113,7 @@ CONTAINS
                                                 potential_response=local_response, atom_response=atom_response, &
                                                 cell_response=cell_response, reduced_k_response=reduced_k_response, &
                                                 coefficients_response=dw)
-         core_response = core_response + dt
+         core_response(:, :) = core_response + dt
       END IF
       IF (PRESENT(coefficients_response)) CALL MOVE_ALLOC(dw, coefficients_response)
       CALL local_r%release()
@@ -1663,8 +1663,8 @@ CONTAINS
             CPASSERT(info == 0)
             strain = MATMUL(cell_response, cell_inverse)
             trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
-            points_response = MATMUL(strain, frame%ao%points)
-            weights_response = trace_strain*frame%ao%weights
+            ALLOCATE (points_response, SOURCE=MATMUL(strain, frame%ao%points))
+            ALLOCATE (weights_response, SOURCE=trace_strain*frame%ao%weights)
             CALL qs_upf_inverse_soft_projectors(frame%ao, kinds, projection, projection_response, &
                                                 coefficients_response, points_response, atom_response, &
                                                 cell_response, reduced_k_response, weights_response)
@@ -1814,7 +1814,7 @@ CONTAINS
          IF (state%native_gth_local) THEN
             CALL qs_upf_inverse_gth_local_residual(state%bloch%frames(ik), state%bloch%augmentation, gth_r, &
                                                    .NOT. state%native_gaussian, OPERATOR=gth_residual)
-            matrix = matrix + gth_operator(:, :, ik) + gth_residual
+            matrix(:, :) = matrix + gth_operator(:, :, ik) + gth_residual
          END IF
          state%core_k(:, :, ik) = matrix
          IF (state%native_gaussian) state%core_k(:, :, ik) = state%core_k(:, :, ik) + gaussian_local(:, :, ik)

@@ -118,8 +118,8 @@ CONTAINS
       CPASSERT(ASSOCIATED(overlap))
       CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes)
       CALL kpoint_star_create(kpoints, sizes, frame%star)
-      frame%reduced_k = frame%star%vectors
-      frame%weights = frame%star%weights
+      ALLOCATE (frame%reduced_k, SOURCE=frame%star%vectors)
+      ALLOCATE (frame%weights, SOURCE=frame%star%weights)
       ALLOCATE (frame%frames(SIZE(frame%weights)))
       DO ik = 1, SIZE(frame%weights)
          CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info, &
@@ -252,7 +252,7 @@ CONTAINS
             tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(density_matrices(:, :, k))))
             CPASSERT(defect <= tolerance)
          END DO
-         density = density_matrices
+         ALLOCATE (density, SOURCE=density_matrices)
       ELSE
          CALL qs_upf_inverse_kpoints_density(frame, spin, density)
       END IF

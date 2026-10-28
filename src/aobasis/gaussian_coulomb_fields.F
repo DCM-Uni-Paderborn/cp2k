@@ -503,7 +503,7 @@ CONTAINS
                 squared_radius(npoint), exponential(npoint), h(npoint), dh(npoint))
       potential = 0.0_dp
       IF (PRESENT(gradient)) gradient = 0.0_dp
-      squared_radius = SUM(displacement**2, DIM=1)
+      squared_radius(:) = SUM(displacement**2, DIM=1)
       angular_ready = .FALSE.
       last_alpha = -1.0_dp
       DO block = 1, SIZE(fields%primitives)
@@ -511,19 +511,19 @@ CONTAINS
             IF (.NOT. ANY(primitive%coefficients /= 0.0_dp)) CYCLE
             l = primitive%l
             IF (primitive%alpha /= last_alpha) THEN
-               exponential = EXP(-primitive%alpha*squared_radius)
+               exponential(:) = EXP(-primitive%alpha*squared_radius)
                last_alpha = primitive%alpha
             END IF
             IF (primitive%power == 0) THEN
                ! Match the scalar evaluator when the complete exponential batch vanishes.
                IF (ALL(exponential == 0.0_dp)) CYCLE
-               h = exponential
+               h(:) = exponential
             ELSE
-               h = squared_radius**primitive%power*exponential
+               h(:) = squared_radius**primitive%power*exponential
             END IF
             IF (PRESENT(gradient)) THEN
-               dh = -primitive%alpha*h
-               IF (primitive%power > 0) dh = dh + primitive%power*squared_radius**(primitive%power - 1)*exponential
+               dh(:) = -primitive%alpha*h
+               IF (primitive%power > 0) dh(:) = dh + primitive%power*squared_radius**(primitive%power - 1)*exponential
             END IF
             IF (.NOT. angular_ready(l)) THEN
                CALL native_solid_harmonics_batch(l, displacement, PRESENT(gradient), &

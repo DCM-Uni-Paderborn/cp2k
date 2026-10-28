@@ -475,7 +475,7 @@ CONTAINS
       natom = SIZE(atoms)
       CPASSERT(ALL(SHAPE(charges) == [natom, SIZE(density)]))
       ALLOCATE (alpha(natom), logarithm(natom), active(natom), weights(natom), tails(natom, SIZE(density)))
-      active = hirshfeld_env%charges > 0.0_dp
+      active(:) = hirshfeld_env%charges > 0.0_dp
       DO atom = 1, natom
          kind = atoms(atom)%atomic_kind%kind_number
          CPASSERT(hirshfeld_env%kind_shape_fn(kind)%numexp == 1)

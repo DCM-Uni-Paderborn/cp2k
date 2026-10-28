@@ -197,9 +197,9 @@ CONTAINS
          IF (ANY(SHAPE(state%xc_core) /= [np, core_components, ns])) DEALLOCATE (state%xc_core)
       END IF
       IF (ALLOCATED(state%xc_core)) THEN
-         core = state%xc_core(:, 1, :)
-         core_gradient = state%xc_core(:, 2:4, :)
-         IF (PRESENT(kinetic)) core_tau = state%xc_core(:, 5, :)
+         core(:, :) = state%xc_core(:, 1, :)
+         core_gradient(:, :, :) = state%xc_core(:, 2:4, :)
+         IF (PRESENT(kinetic)) core_tau(:, :) = state%xc_core(:, 5, :)
       ELSE
          CALL core_fields(ks_env, state, core, core_gradient, kinetic=core_tau)
          retained_bytes = 0_int_8
@@ -476,7 +476,7 @@ CONTAINS
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
 
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
-         weights = state%bloch%weights
+         ALLOCATE (weights, SOURCE=state%bloch%weights)
          augmentation => state%bloch%augmentation
       ELSE
          ALLOCATE (weights(1), SOURCE=1.0_dp)

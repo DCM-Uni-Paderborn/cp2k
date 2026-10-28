@@ -797,7 +797,7 @@ CONTAINS
                CALL dbt_batched_contract_init(t_2c_work(2))
                CALL get_iapc_pairs(iapc_pairs, b_img, ri_data, qs_env)
                ! Match fill_3c_stack, which skips intermediate images outside its retained tensors.
-               apc_stack_images = iapc_pairs(:, 2)
+               apc_stack_images(:) = iapc_pairs(:, 2)
                WHERE (apc_stack_images > nimg) apc_stack_images = 0
                CALL timeset(routineN//"_3c", handle2)
 
@@ -1699,6 +1699,8 @@ CONTAINS
       TYPE(dbt_iterator_type)                            :: iterator
 
       CALL dbt_get_info(covectors(1), nblks_total=nblks)
+!$OMP PARALLEL DEFAULT(NONE) SHARED(covectors,stacked,images,first,pref,nblks) &
+!$OMP PRIVATE(iterator,ind,index,image,block,found)
       CALL dbt_iterator_start(iterator, stacked)
       DO WHILE (dbt_iterator_blocks_left(iterator))
          CALL dbt_iterator_next_block(iterator, ind)
@@ -1714,6 +1716,7 @@ CONTAINS
          DEALLOCATE (block)
       END DO
       CALL dbt_iterator_stop(iterator)
+!$OMP END PARALLEL
    END SUBROUTINE add_inverse_lattice_covector
 
 ! **************************************************************************************************
@@ -2351,13 +2354,15 @@ CONTAINS
       TYPE(neighbor_list_iterator_p_type), &
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_nl, sab_nl_nosym
+         POINTER                                         :: sab_aux_fit, sab_aux_fit_asymm, sab_nl, &
+                                                            sab_nl_nosym
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
       NULLIFY (rho_desymm, kpoints, sab_nl_nosym, scf_env, matrix_ks, dft_control, &
-               sab_nl, nl_iterator, cell_to_index, index_to_cell, pblock, pblock_desymm)
+               sab_nl, sab_aux_fit, sab_aux_fit_asymm, nl_iterator, cell_to_index, &
+               index_to_cell, pblock, pblock_desymm)
 
       CALL get_qs_env(qs_env, kpoints=kpoints, scf_env=scf_env, matrix_ks_kp=matrix_ks, &
                       dft_control=dft_control, ks_env=ks_env)
@@ -2368,7 +2373,12 @@ CONTAINS
                            index_to_cell=index_to_cell, sab_nl=sab_nl)
 
       IF (dft_control%do_admm) THEN
-         CALL get_admm_env(qs_env%admm_env, matrix_ks_aux_fit_kp=matrix_ks)
+         CALL get_admm_env(qs_env%admm_env, matrix_ks_aux_fit_kp=matrix_ks, &
+                           sab_aux_fit=sab_aux_fit, sab_aux_fit_asymm=sab_aux_fit_asymm)
+         IF (ASSOCIATED(sab_aux_fit) .AND. ASSOCIATED(sab_aux_fit_asymm)) THEN
+            sab_nl => sab_aux_fit
+            sab_nl_nosym => sab_aux_fit_asymm
+         END IF
       END IF
 
       nspins = SIZE(matrix_ks, 1)
@@ -2975,8 +2985,8 @@ CONTAINS
       nblks = SIZE(ri_data%bsizes_AO_split)
       ALLOCATE (ac_pairs(nimg, 2), density_images(nimg_nze, batch_size), &
                 image_indices(nimg), integral_indices(nimg_nze))
-      image_indices = [(i, i=1, nimg)]
-      integral_indices = [(i, i=1, nimg_nze)]
+      image_indices(:) = [(i, i=1, nimg)]
+      integral_indices(:) = [(i, i=1, nimg_nze)]
       CALL get_stack_tensors(result_stack, density_stack, integral_stack, density_adjoint(1, 1), &
                              ri_data%t_3c_int_ctr_1(1, 1), batch_size, ri_data, qs_env)
 
@@ -3005,6 +3015,9 @@ CONTAINS
                CALL dbt_copy(density_stack(2), density_stack(1), move_data=.TRUE.)
 
                ! Transpose the original image stacking, including every repeated density image.
+!$OMP PARALLEL DEFAULT(NONE) &
+!$OMP SHARED(density_stack,density_adjoint,density_images,first_int,last_int,first_apc,last_apc,nblks,spin,nimg) &
+!$OMP PRIVATE(iterator,ind,i,j,image,block,found)
                CALL dbt_iterator_start(iterator, density_stack(1))
                DO WHILE (dbt_iterator_blocks_left(iterator))
                   CALL dbt_iterator_next_block(iterator, ind)
@@ -3020,6 +3033,7 @@ CONTAINS
                   DEALLOCATE (block)
                END DO
                CALL dbt_iterator_stop(iterator)
+!$OMP END PARALLEL
                CALL dbt_clear(density_stack(1))
             END DO
          END DO
@@ -3069,6 +3083,8 @@ CONTAINS
       DO group = 0, ngroups - 1
          block_source = -1
          IF (para_env%mepos/group_size == group) THEN
+!$OMP PARALLEL DEFAULT(NONE) SHARED(subgroup,block_source,para_env) &
+!$OMP PRIVATE(iterator,ind,block,found)
             CALL dbt_iterator_start(iterator, subgroup)
             DO WHILE (dbt_iterator_blocks_left(iterator))
                CALL dbt_iterator_next_block(iterator, ind)
@@ -3078,6 +3094,7 @@ CONTAINS
                DEALLOCATE (block)
             END DO
             CALL dbt_iterator_stop(iterator)
+!$OMP END PARALLEL
          END IF
          CALL para_env%sum(block_source)
          block_source = block_source + para_env%num_pe - 1

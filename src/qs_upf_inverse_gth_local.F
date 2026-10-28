@@ -61,7 +61,7 @@ CONTAINS
 !> \param kinds Original native scalar GTH datasets, without fitting or additional truncation.
 !> \param particles Original atom-to-kind mapping in the frame's atom order.
 !> \param paw Prepared original PAW density products and frozen AE-core densities by kind.
-!> \param operator Optional existing AO operator, incremented without spin or k-point weights.
+!> \param OPERATOR Optional existing AO operator, incremented without spin or k-point weights.
 !> \param core_energy Optional existing frozen-core constant, incremented once outside spin/k loops.
 !> \param response Optional existing AO operator response, including both responses of W.
 !> \param core_response Optional existing frozen-core response, independent of W and valence density.
@@ -146,8 +146,8 @@ CONTAINS
                               MATMUL(cell_response, REAL(frame%images(:, image), dp))
                   END IF
                   DO ir = 1, nr
-                     displacement = grid%r(ir)*grid%directions + &
-                                    SPREAD(frame%positions(:, center_atom) - center, 2, na)
+                     displacement(:, :) = grid%r(ir)*grid%directions + &
+                                          SPREAD(frame%positions(:, center_atom) - center, 2, na)
                      IF (geometry) THEN
                         CALL gth_local_fields_evaluate(fields(gth_kind), displacement, values, gradient)
                         field_response(:, ir) = field_response(:, ir) + MATMUL(gradient, motion)
@@ -162,7 +162,7 @@ CONTAINS
          CALL qs_upf_inverse_paw_local_operator(paw(kind), field, matrix, core)
          IF (PRESENT(core_energy)) core_energy = core_energy + core
          IF (PRESENT(OPERATOR) .OR. PRESENT(response)) THEN
-            weighted = MATMUL(CMPLX(matrix, 0.0_dp, dp), frame%coefficients(p:q, :))
+            ALLOCATE (weighted, SOURCE=MATMUL(CMPLX(matrix, 0.0_dp, dp), frame%coefficients(p:q, :)))
             IF (PRESENT(OPERATOR)) THEN
                OPERATOR = OPERATOR + MATMUL(CONJG(TRANSPOSE(frame%coefficients(p:q, :))), weighted)
             END IF
@@ -179,12 +179,16 @@ CONTAINS
             END IF
             DEALLOCATE (gradient, field_response, matrix_response)
          END IF
+         IF (ALLOCATED(weighted)) DEALLOCATE (weighted)
          DEALLOCATE (displacement, values, field, matrix)
       END DO
    END SUBROUTINE qs_upf_inverse_gth_local_paw
 
 ! **************************************************************************************************
 !> \brief Whether any physical GTH center has native local Gaussian terms.
+!> \param kinds ...
+!> \return ...
+! **************************************************************************************************
    FUNCTION qs_upf_inverse_gth_local_active(kinds) RESULT(active)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       LOGICAL                                            :: active
@@ -243,7 +247,7 @@ CONTAINS
          CALL invmat(cell_inverse, info)
          CPASSERT(info == 0)
          strain = MATMUL(cell_response, cell_inverse)
-         points_response = MATMUL(strain, frame%ao%points)
+         ALLOCATE (points_response, SOURCE=MATMUL(strain, frame%ao%points))
          ALLOCATE (gradient(n, 3), total_response(n), SOURCE=0.0_dp)
       END IF
       DO atom = 1, SIZE(atoms)
@@ -253,15 +257,15 @@ CONTAINS
          CALL gth_local_fields_init(kinds(kind)%gth_potential, fields)
          DO image = 1, SIZE(frame%ao%images, 2)
             center = frame%ao%positions(:, atom) + MATMUL(frame%ao%cell, REAL(frame%ao%images(:, image), dp))
-            displacement = frame%ao%points - SPREAD(center, 2, n)
+            displacement(:, :) = frame%ao%points - SPREAD(center, 2, n)
             IF (PRESENT(response)) THEN
                motion = atom_response(:, atom) + MATMUL(cell_response, REAL(frame%ao%images(:, image), dp))
                CALL gth_local_fields_evaluate(fields, displacement, values, gradient)
-               total_response = total_response + SUM(gradient*TRANSPOSE(points_response - SPREAD(motion, 2, n)), DIM=2)
+               total_response(:) = total_response + SUM(gradient*TRANSPOSE(points_response - SPREAD(motion, 2, n)), DIM=2)
             ELSE
                CALL gth_local_fields_evaluate(fields, displacement, values)
             END IF
-            total = total + values
+            total(:) = total + values
          END DO
       END DO
       potential%array = RESHAPE(total, SHAPE(potential%array))
@@ -277,7 +281,7 @@ CONTAINS
 !> \param augmentation Original UPF Q kernels, with their native Fourier charge integration.
 !> \param potential Local GTH scalar field on the defining grid.
 !> \param orbital_fields Include explicit inverse orbitals. False is the native DIRECT base.
-!> \param operator Optional new residual matrix, without occupation or k weights.
+!> \param OPERATOR Optional new residual matrix, without occupation or k weights.
 !> \param response Optional joint residual derivative, without a duplicate metric derivative.
 !> \param potential_response Local field derivative at moving grid points.
 !> \param atom_response Motion of every atomic center.
@@ -316,7 +320,7 @@ CONTAINS
                                                   fourier_charge=.TRUE., orbital_fields=orbital_fields)
          IF (orbital_fields) THEN
             CALL qs_upf_inverse_grid_gaussian_operator(frame, potential, gaussian)
-            OPERATOR = OPERATOR - gaussian
+            OPERATOR(:, :) = OPERATOR - gaussian
          END IF
       END IF
       IF (PRESENT(response)) THEN
@@ -333,7 +337,7 @@ CONTAINS
             CALL qs_upf_inverse_grid_gaussian_operator(frame, potential, response=gaussian, &
                                                        potential_response=potential_response, atom_response=atom_response, &
                                                        cell_response=cell_response, reduced_k_response=reduced_k_response)
-            response = response - gaussian
+            response(:, :) = response - gaussian
          END IF
       END IF
       CALL zero%release()
@@ -379,6 +383,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Select native GTH potential centers while retaining all orbital centers and contractions.
+!> \param ks_env ...
+!> \param map ...
+!> \param operators ...
+!> \param matrix ...
+!> \param gradients ...
+!> \param local_virial ...
 ! **************************************************************************************************
    SUBROUTINE native_local(ks_env, map, operators, matrix, gradients, local_virial)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
@@ -397,10 +407,11 @@ CONTAINS
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(neighbor_list_set_p_type), POINTER            :: centers(:), overlap(:)
       TYPE(particle_type), POINTER                       :: atoms(:)
-      TYPE(qs_force_type), POINTER                       :: force(:) => NULL()
+      TYPE(qs_force_type), POINTER                       :: force(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
-      TYPE(virial_type), POINTER                         :: virial => NULL()
+      TYPE(virial_type), POINTER                         :: virial
 
+      NULLIFY (force, virial)
       CPASSERT(ASSOCIATED(map%potential))
       CALL get_ks_env(ks_env, atomic_kind_set=atomic_kinds, qs_kind_set=kinds, particle_set=atoms, &
                       sab_orb=overlap, sac_ppl=centers, kpoints=kpoints)

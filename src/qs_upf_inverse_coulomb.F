@@ -508,7 +508,7 @@ CONTAINS
       IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
       ALLOCATE (matrices(nao, nao, nk, ns), weights(nk))
       weights = 1.0_dp
-      IF (ASSOCIATED(state%bloch%kpoints)) weights = state%bloch%weights
+      IF (ASSOCIATED(state%bloch%kpoints)) weights(:) = state%bloch%weights
       DO spin = 1, ns
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_kpoints_density(state%bloch, spin, matrix)
@@ -1055,7 +1055,7 @@ CONTAINS
             CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), &
                                              map%pairs(a), matrix_direction(:, :, k), radial, &
                                              atom_index=map%center_atoms(a), cache=map%fields(a, k))
-            centers(a)%density = centers(a)%density + map%weights(k)*radial
+            centers(a)%density(:, :) = centers(a)%density + map%weights(k)*radial
          END DO
          DEALLOCATE (radial)
       END DO

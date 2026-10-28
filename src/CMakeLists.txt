@@ -260,6 +260,10 @@ list(
   force_fields_input.F
   force_fields_util.F
   force_field_types.F
+  four_center_integral_interface.F
+  four_center_integral_methods.F
+  four_center_integral_preparation.F
+  four_center_integral_types.F
   fp_methods.F
   fp_types.F
   free_energy_types.F
@@ -310,7 +314,6 @@ list(
   hfx_energy_potential.F
   hfx_exx.F
   hfx_helpers.F
-  hfx_libint_interface.F
   hfx_load_balance_methods.F
   hfx_pair_list_methods.F
   hfx_pw_methods.F
@@ -781,6 +784,7 @@ list(
   qs_operators_ao.F
   qs_ot_eigensolver.F
   qs_ot.F
+  qs_ot_kp.F
   qs_ot_minimizer.F
   qs_ot_scf.F
   qs_ot_types.F
@@ -1807,6 +1811,9 @@ if(CP2K_USE_CUDA)
       INTERFACE
         $<$<BOOL:${CP2K_USE_CUSOLVER_MP}>:cp2k::CUSOLVER_MP::cusolver_mp>
         CUDA::cufft CUDA::cufftw CUDA::cublas CUDA::cudart CUDA::cuda_driver)
+  endif()
+  if(CP2K_WITH_GPU_PROFILING)
+    target_link_libraries(cp2k_cuda_libs INTERFACE CUDA::nvtx3)
   endif()
 endif()
 

@@ -252,6 +252,10 @@ CONTAINS
 
    CONTAINS
 
+! **************************************************************************************************
+!> \brief ...
+!> \param new_image ...
+! **************************************************************************************************
       SUBROUTINE append_image(new_image)
       INTEGER, INTENT(IN)                                :: new_image(3)
 
@@ -284,6 +288,11 @@ CONTAINS
          buckets(slot) = n
       END SUBROUTINE append_image
 
+! **************************************************************************************************
+!> \brief ...
+!> \param new_image ...
+!> \return ...
+! **************************************************************************************************
       INTEGER FUNCTION lookup_image(new_image) RESULT(index)
       INTEGER, INTENT(IN)                                :: new_image(3)
 
@@ -300,6 +309,11 @@ CONTAINS
          END DO
       END FUNCTION lookup_image
 
+! **************************************************************************************************
+!> \brief ...
+!> \param new_image ...
+!> \return ...
+! **************************************************************************************************
       INTEGER FUNCTION image_bucket(new_image) RESULT(slot)
       INTEGER, INTENT(IN)                                :: new_image(3)
 
@@ -550,6 +564,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Count exact nonzero kernel blocks without removing any physical images.
+!> \param matrices ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION nonzero_matrices(matrices) RESULT(n)
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :)
@@ -565,6 +581,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Maximum number of overlap contributions to any one physical image.
+!> \param images ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION image_multiplicity(images) RESULT(multiplicity)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -592,6 +610,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Stable Frobenius norm and l1/l2 matrix-sequence norms, without squared large entries.
+!> \param matrix ...
+!> \return ...
 ! **************************************************************************************************
    FUNCTION matrix_norm(matrix) RESULT(norm)
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
@@ -606,6 +626,12 @@ CONTAINS
       END DO
    END FUNCTION matrix_norm
 
+! **************************************************************************************************
+!> \brief ...
+!> \param SEQUENCE ...
+!> \param norm2 ...
+!> \param norm1 ...
+! **************************************************************************************************
    SUBROUTINE sequence_norms(SEQUENCE, norm2, norm1)
       COMPLEX(dp), INTENT(IN)                            :: sequence(:, :, :)
       REAL(dp), INTENT(OUT)                              :: norm2, norm1
@@ -776,7 +802,7 @@ CONTAINS
 !> \brief Apply K or its exact conjugate transpose without wrapping physical indices.
 !> \param lattice ...
 !> \param vector ...
-!> \param result ...
+!> \param RESULT ...
 !> \param adjoint ...
 ! **************************************************************************************************
    SUBROUTINE apply(lattice, vector, RESULT, adjoint)
