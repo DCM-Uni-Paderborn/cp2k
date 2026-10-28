@@ -25,6 +25,7 @@ PROGRAM kpsym_unittest
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
    USE physcon,                         ONLY: bohr
+   USE spglib_f08,                      ONLY: spg_get_major_version
 
    IMPLICIT NONE
    REAL(dp), PARAMETER :: ice_ix(3, 36) = RESHAPE([ &
@@ -102,6 +103,14 @@ PROGRAM kpsym_unittest
    halfturn_cell(3, 3) = 6.7_dp
    CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
                    1.e-8_dp, 8, .FALSE., .TRUE., cartesian_half_turns=.TRUE.)
+   IF (spg_get_major_version() > 0) THEN
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
+                      1.e-8_dp, 8, .FALSE., .TRUE., cartesian_half_turns=.TRUE., &
+                      use_spglib_reduction=.TRUE.)
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
+                      1.e-8_dp, 8, .FALSE., .TRUE., cartesian_half_turns=.TRUE., &
+                      use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE.)
+   END IF
 
    ! Genuine tolerance-induced nonclosure must still trigger the orbit guard.
    coords = ice_ix
@@ -333,25 +342,34 @@ CONTAINS
 !> \param closed whether to check closure of the retained atomic operations
 !> \param full_grid keep every mesh point, including time-reversed partners
 !> \param cartesian_half_turns ...
+!> \param use_spglib_reduction ...
+!> \param use_spglib_backend ...
 ! **************************************************************************************************
-   SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid, cartesian_half_turns)
+   SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid, cartesian_half_turns, &
+                         use_spglib_reduction, use_spglib_backend)
       REAL(dp), INTENT(IN)                               :: x(:, :), h(3, 3), delta
       INTEGER, INTENT(IN)                                :: expected
       LOGICAL, INTENT(IN)                                :: fallback, closed
-      LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid, cartesian_half_turns
+      LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid, cartesian_half_turns, &
+                                                            use_spglib_reduction, &
+                                                            use_spglib_backend
 
       INTEGER                                            :: a, i, j, k
-      LOGICAL                                            :: found
+      LOGICAL                                            :: found, spglib
       REAL(dp)                                           :: product(3, 3)
       TYPE(csym_type)                                    :: csym
 
-      CALL crys_sym_gen(csym, x, types(:SIZE(x, 2)), h, delta=delta, use_spglib=.FALSE.)
+      spglib = .FALSE.
+      IF (PRESENT(use_spglib_reduction)) spglib = use_spglib_reduction
+      CALL crys_sym_gen(csym, x, types(:SIZE(x, 2)), h, delta=delta, use_spglib=spglib)
       IF (PRESENT(full_grid)) THEN
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., full_grid=full_grid, &
-                         cartesian_half_turns=cartesian_half_turns)
+                         cartesian_half_turns=cartesian_half_turns, &
+                         use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend)
       ELSE
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp], &
-                         cartesian_half_turns=cartesian_half_turns)
+                         cartesian_half_turns=cartesian_half_turns, &
+                         use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend)
       END IF
       IF (csym%nkpoint /= expected) ERROR STOP "Incorrect irreducible mesh size"
       IF (csym%inversion_only .NEQV. fallback) ERROR STOP "Incorrect orbit-guard decision"
@@ -374,7 +392,7 @@ CONTAINS
             END DO
          END IF
       END IF
-      DO k = 1, SIZE(csym%rt, 3)
+      DO k = 1, csym%nrtot
          DO a = 1, SIZE(x, 2)
             IF (COUNT(csym%f0(:, k) == a) /= 1) ERROR STOP "Nonbijective atom mapping"
          END DO
