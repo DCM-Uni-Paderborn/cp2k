@@ -1259,6 +1259,21 @@ CONTAINS
       CALL keyword_release(keyword)
       CALL keyword_create( &
          keyword, __LOCATION__, &
+         name="UNIT", &
+         description="Unit of the printed electric multipole moments. Multipoles of order L are "// &
+         "printed in UNIT*length^(L-1), where length is angstrom for debye and e_angstrom, bohr for "// &
+         "au_dip (atomic unit of the dipole) and m for C_m (Coulomb meter). For k-point calculations the "// &
+         "dipole matrix elements are printed in UNIT and the Berry curvature in length^2. The FORMAT "// &
+         "TRAJECTORY output is always in Debye.", &
+         usage="UNIT {debye|e_angstrom|au_dip|C_m}", &
+         repeats=.FALSE., &
+         n_var=1, &
+         type_of_var=char_t, &
+         default_c_val="debye")
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create( &
+         keyword, __LOCATION__, &
          name="FORMAT", &
          description="Format of the moments output. DETAILED prints the traditional multi-line report. "// &
          "TRAJECTORY prints one machine-readable electric-dipole record per iteration. For periodic "// &
@@ -1350,6 +1365,41 @@ CONTAINS
                           repeats=.FALSE., &
                           n_var=1, default_i_val=10, &
                           type_of_var=integer_t)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="SOC", &
+                          description="Compute the k-point dipole matrix elements and Berry "// &
+                          "curvature with spin-orbit coupling (SOC) included, in the 2*n_ao "// &
+                          "spinor basis.", &
+                          usage="SOC .TRUE.", &
+                          repeats=.FALSE., &
+                          n_var=1, &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="KPOINT_DIPOLE_FILE", &
+                          description="Write the k-point dipole matrix elements to this file. "// &
+                          "Without a value, the file kpoint_dipoles.dat "// &
+                          "is used. Only used for KPOINT calculations.", &
+                          usage="KPOINT_DIPOLE_FILE {filename}", &
+                          repeats=.FALSE., &
+                          n_var=1, &
+                          type_of_var=char_t, &
+                          default_c_val="", &
+                          lone_keyword_c_val="kpoint_dipoles.dat")
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="BERRY_CURVATURE_FILE", &
+                          description="Write the k-point Berry curvature to this file. "// &
+                          "Without a value, the file berry_curvature.dat "// &
+                          "is used. Only used for KPOINT calculations.", &
+                          usage="BERRY_CURVATURE_FILE {filename}", &
+                          repeats=.FALSE., &
+                          n_var=1, &
+                          type_of_var=char_t, &
+                          default_c_val="", &
+                          lone_keyword_c_val="berry_curvature.dat")
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
       CALL create_kpoint_set_section(subsection)
@@ -2323,13 +2373,7 @@ CONTAINS
          "Only Gamma-point (un)restricted HF and Kohn-Sham wavefunctions are supported.", &
          print_level=debug_print_level + 1, &
          filename="CHARGEMOL", &
-         add_last=add_last_numeric)
-      CALL keyword_create(keyword, __LOCATION__, name="BACKUP_COPIES", &
-                          description="Specifies the maximum number of backup copies.", &
-                          usage="BACKUP_COPIES {int}", &
-                          default_i_val=1)
-      CALL section_add_keyword(print_key, keyword)
-      CALL keyword_release(keyword)
+         add_last=add_last_numeric, do_backup=.TRUE.)
       CALL keyword_create(keyword, __LOCATION__, name="PERIODIC", &
                           description="Write information about cell periodicity.", &
                           usage="PERIODIC {LOGICAL}", &

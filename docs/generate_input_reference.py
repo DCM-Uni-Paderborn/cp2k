@@ -322,6 +322,10 @@ def render_keyword(
     data_type_element = keyword.find("DATA_TYPE")
     assert data_type_element is not None
     data_type = data_type_element.attrib["kind"]
+    # Preserve distinction between string (lchar_t) and word (char_t) to make
+    # a notice about comments: the former must have the value double-quoted
+    # to prevent consumption of inline comments
+    double_quote_required_before_comments = data_type == "string"
     if data_type == "word":
         data_type = "string"
     if data_type == "keyword":
@@ -367,6 +371,10 @@ def render_keyword(
     metadata = [f"**Type:** {escape_markdown(data_type + n_var_brackets)}"]
     if default_value or default_unit:
         default = default_value
+        # Print keys may use __STD_OUT__ as the default
+        # filename; escape underscores to avoid bolding
+        if default_value == "__STD_OUT__":
+            default = default_value.replace("_", r"\_")
         if default_unit:
             default += f" [{default_unit}]"
         metadata += [f"**Default:** {escape_markdown(default.strip())}"]
@@ -377,6 +385,8 @@ def render_keyword(
         metadata += [f"**Aliases:** {escape_markdown(aliases)}"]
     if lone_keyword_value:
         metadata += [f"**Lone keyword:** {escape_markdown(lone_keyword_value)}"]
+    if double_quote_required_before_comments:
+        metadata += [f"Value must be double-quoted if followed by inline comments."]
     if usage:
         metadata += [f"**Usage:** `{escape_markdown(usage)}`"]
     output += ["  \n".join(metadata), ""]
@@ -455,8 +465,9 @@ def sanitize_name(name: str) -> str:
 
 # ======================================================================================
 def escape_markdown(text: str) -> str:
-    # Underscores are very common in our docs. Luckily asterisks also work for emphasis.
-    text = text.replace(r"__", r"\_\_")
+    # Escape some characters that may be rendered as markdown formatting syntax
+    # regardless of the context. This can be disruptive for inline code blocks
+    # wrapped in backticks.
 
     # Headings mess up the page structure. Please use paragraphs and bold text instead.
     text = text.replace(r"#", r"\#")

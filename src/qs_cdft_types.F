@@ -125,7 +125,6 @@ MODULE qs_cdft_types
 !>                              of isolated fragment a
 !> \param fragment_b_spin_fname filename of cube file holding the spin difference density
 !>                              of isolated fragment b
-!> \param ref_count             the ref count
 !> \param need_pot              logical which determines if the Becke potential needs to be built
 !> \param save_pot              logical which determines if the Becke potential should be saved until forces
 !>                              have been evaluated
@@ -221,7 +220,7 @@ MODULE qs_cdft_types
                                               fragment_b_fname = "", &
                                               fragment_a_spin_fname = "", &
                                               fragment_b_spin_fname = ""
-      INTEGER                              :: ref_count = -1, total_steps = -1, TYPE = -1, &
+      INTEGER                              :: total_steps = -1, TYPE = -1, &
                                               precond_freq = -1, nreused = -1, max_reuse = -1, &
                                               purge_freq = -1, nbad_conv = -1, purge_offset = -1, &
                                               istep = -1, ienergy = -1, natoms = -1
