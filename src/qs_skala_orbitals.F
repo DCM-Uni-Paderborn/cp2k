@@ -36,6 +36,7 @@ MODULE qs_skala_orbitals
    PRIVATE
    PUBLIC :: qs_skala_orbitals_type, qs_skala_orbitals_create, qs_skala_orbitals_release
    PUBLIC :: qs_skala_orbitals_adapt_symmetry
+   PUBLIC :: qs_skala_orbitals_retained_symmetry
    PUBLIC :: qs_skala_orbitals_evaluate, qs_skala_orbitals_canonicalize
    PUBLIC :: qs_skala_orbitals_install_gamma, qs_skala_orbitals_install_kpoint
 
@@ -86,6 +87,69 @@ CONTAINS
       IF (SIZE(operations) == 0) RETURN
       CALL adapt_little_group(state, metric, kpoints, representative, operations, info)
    END SUBROUTINE qs_skala_orbitals_adapt_symmetry
+
+! **************************************************************************************************
+!> \brief Check closure of the retained thermal span in the original charge metric.
+!>        Small occupations do not permit a symmetry multiplet to be split by the band cutoff.
+!> \param native Original native orbitals, borrowing their MO matrix communicator.
+!> \param metric Complete physical charge metric in the same AO order.
+!> \param kpoints Selected cell-gauge symmetry operations.
+!> \param representative Irreducible k-point index.
+!> \param closed Every selected little-group action preserves the retained span.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_retained_symmetry(native, metric, kpoints, representative, closed)
+      TYPE(mo_set_type), INTENT(INOUT)                   :: native
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      INTEGER, INTENT(IN)                                :: representative
+      LOGICAL, INTENT(OUT)                               :: closed
+
+      REAL(dp), PARAMETER                                :: tolerance = 3.e-11_dp
+
+      COMPLEX(dp), ALLOCATABLE                           :: action(:, :), coefficients(:, :), &
+                                                            projection(:, :), residual(:, :)
+      INTEGER                                            :: n, nr, op, status
+      LOGICAL                                            :: anti
+      REAL(dp)                                           :: rotation(3, 3)
+      REAL(dp), ALLOCATABLE                              :: real_part(:, :)
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      closed = .TRUE.
+      n = native%nao
+      nr = native%nmo
+      CPASSERT(nr >= 0 .AND. nr <= n)
+      CPASSERT(ALL(SHAPE(metric) == [n, n]))
+      CPASSERT(ASSOCIATED(kpoints))
+      IF (nr == 0 .OR. nr == n) RETURN
+      IF (.NOT. ASSOCIATED(kpoints%kp_sym)) RETURN
+      sym => kpoints%kp_sym(representative)%kpoint_sym
+      IF (.NOT. ASSOCIATED(sym)) RETURN
+      IF (.NOT. ASSOCIATED(sym%rotp)) RETURN
+      ALLOCATE (coefficients(n, nr), action(n, n))
+      IF (ASSOCIATED(native%cmo_coeff)) THEN
+         CALL cp_cfm_get_submatrix(native%cmo_coeff, coefficients)
+      ELSE
+         IF (native%use_mo_coeff_b) CALL copy_dbcsr_to_fm(native%mo_coeff_b, native%mo_coeff)
+         ALLOCATE (real_part(n, nr))
+         CALL cp_fm_get_submatrix(native%mo_coeff, real_part)
+         coefficients = CMPLX(real_part, 0.0_dp, dp)
+      END IF
+      DO op = 1, sym%nwred
+         IF (.NOT. kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative))) CYCLE
+         CALL kpoint_cell_gauge_action(kpoints, representative, op, kpoints%xkp(:, representative), &
+                                       action, rotation, anti, status)
+         IF (status /= 0) CPABORT("Cannot apply thermal orbital symmetry.")
+         residual = coefficients
+         IF (anti) residual = CONJG(residual)
+         residual = MATMUL(action, residual)
+         projection = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, residual))
+         residual = residual - MATMUL(coefficients, projection)
+         IF (MAXVAL(ABS(SUM(CONJG(residual)*MATMUL(metric, residual), DIM=1))) > tolerance**2) THEN
+            closed = .FALSE.
+            RETURN
+         END IF
+      END DO
+   END SUBROUTINE qs_skala_orbitals_retained_symmetry
 
 ! **************************************************************************************************
 !> \brief Smaller independent chart for compatible real one-dimensional characters.

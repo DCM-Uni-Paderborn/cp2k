@@ -50,14 +50,11 @@ MODULE qs_skala_scf
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
-   USE qs_skala_orbitals,               ONLY: qs_skala_orbitals_adapt_symmetry,&
-                                              qs_skala_orbitals_canonicalize,&
-                                              qs_skala_orbitals_create,&
-                                              qs_skala_orbitals_evaluate,&
-                                              qs_skala_orbitals_install_gamma,&
-                                              qs_skala_orbitals_install_kpoint,&
-                                              qs_skala_orbitals_release,&
-                                              qs_skala_orbitals_type
+   USE qs_skala_orbitals,               ONLY: &
+        qs_skala_orbitals_adapt_symmetry, qs_skala_orbitals_canonicalize, &
+        qs_skala_orbitals_create, qs_skala_orbitals_evaluate, qs_skala_orbitals_install_gamma, &
+        qs_skala_orbitals_install_kpoint, qs_skala_orbitals_release, &
+        qs_skala_orbitals_retained_symmetry, qs_skala_orbitals_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_evaluate
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_integrate
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_integrate
@@ -106,6 +103,7 @@ MODULE qs_skala_scf
    ! Atomic energy unit for temperature-independent frozen-Hamiltonian occupation curvature.
    REAL(dp), PARAMETER :: thermal_energy_unit = 1.0_dp
    PUBLIC :: qs_skala_scf_create_symmetric
+   PUBLIC :: qs_skala_scf_retained_symmetry
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
    PUBLIC :: qs_skala_scf_evaluate, qs_skala_scf_inspect, qs_skala_scf_value, qs_skala_scf_values, qs_skala_scf_root
    PUBLIC :: qs_skala_scf_point_derivative
@@ -233,6 +231,43 @@ CONTAINS
       END DO
       CALL MOVE_ALLOC(reduced, operators)
    END SUBROUTINE reduce_bloch_operators
+
+! **************************************************************************************************
+!> \brief Inspect thermal-band closure before native inverse SCF initialization is accepted.
+!> \param qs_env Native USPP or PAW environment with the initial generalized eigenvectors.
+!> \param closed All nonzero-weight retained spans preserve their selected little group.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_retained_symmetry(qs_env, closed)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(OUT)                               :: closed
+
+      COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
+      INTEGER                                            :: failed, ik, local, spin
+      LOGICAL                                            :: block_closed
+      TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mp_para_env_type), POINTER                    :: para
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+
+      CALL get_qs_env(qs_env, kpoints=kpoints, para_env=para)
+      CALL get_ks_env(qs_env%ks_env, upf_inverse=inverse)
+      CPASSERT(ASSOCIATED(inverse))
+      CPASSERT(ASSOCIATED(kpoints))
+      failed = 0
+      DO local = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local)%kpoint_env
+         ik = kp%nkpoint
+         IF (kpoints%wkp(ik) == 0.0_dp) CYCLE
+         CALL kpoint_star_operator(inverse%bloch%star, inverse%metric_k, reduced, representative=ik)
+         DO spin = 1, SIZE(kp%mos)
+            CALL qs_skala_orbitals_retained_symmetry(kp%mos(spin), reduced(:, :, 1), kpoints, ik, block_closed)
+            IF (.NOT. block_closed) failed = 1
+         END DO
+         DEALLOCATE (reduced)
+      END DO
+      CALL para%max(failed)
+      closed = failed == 0
+   END SUBROUTINE qs_skala_scf_retained_symmetry
 
 ! **************************************************************************************************
 !> \brief Borrow the native QS state and complete each occupied block in its original charge metric.

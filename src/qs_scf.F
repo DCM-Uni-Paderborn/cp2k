@@ -244,7 +244,8 @@ MODULE qs_scf
         qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
         qs_skala_scf_create_symmetric, qs_skala_scf_crossing_type, qs_skala_scf_evaluate, &
         qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_release_cusp, &
-        qs_skala_scf_selected, qs_skala_scf_size, qs_skala_scf_stationarity, qs_skala_scf_type
+        qs_skala_scf_retained_symmetry, qs_skala_scf_selected, qs_skala_scf_size, &
+        qs_skala_scf_stationarity, qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
@@ -1694,7 +1695,7 @@ CONTAINS
                                                             nkpoint, nmo, nspin_ot
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL :: added_mos_auto_grow, do_adiis, do_kpoints, do_rotation, fixed_density_prepared, &
-         has_unit_metric, kp_diis_step, kpoint_mos_initialized
+         has_unit_metric, kp_diis_step, kpoint_mos_initialized, retained_symmetry
       REAL(KIND=dp)                                      :: u_ramping
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
@@ -1751,6 +1752,16 @@ CONTAINS
                   kp_diis_step = .FALSE.
                   CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, scf_control, .TRUE., kp_diis_step, &
                                           added_mos_auto_grow=added_mos_auto_grow)
+                  IF (.NOT. added_mos_auto_grow .AND. scf_env%method == ot_method_nr .AND. &
+                      scf_control%smear%do_smear .AND. .NOT. kpoints%full_grid) THEN
+                     CALL qs_skala_scf_retained_symmetry(qs_env, retained_symmetry)
+                     IF (.NOT. retained_symmetry) THEN
+                        IF (.NOT. ANY(scf_control%added_mos_auto(1:dft_control%nspins))) THEN
+                           CPABORT("Symmetry requires more thermal bands. Use ADDED_MOS AUTO.")
+                        END IF
+                        added_mos_auto_grow = .TRUE.
+                     END IF
+                  END IF
                   IF (.NOT. added_mos_auto_grow) EXIT
                   ! No trial density exists until the requested virtual-space growth succeeds.
                   CALL qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, &
