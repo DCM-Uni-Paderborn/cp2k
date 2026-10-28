@@ -1323,7 +1323,10 @@ CONTAINS
          END IF
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
          scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
-         IF (converged) THEN
+         ! Small search-coordinate derivatives do not establish physical thermal stationarity.
+         IF (converged .OR. (scf_control%smear%do_smear .AND. do_kpoints .AND. &
+                             SIZE(tolerances) == 0 .AND. NORM2(gradient) <= scf_control%eps_scf .AND. &
+                             .NOT. stopped .AND. remaining > 0)) THEN
             CALL qs_skala_scf_accept(state, coordinate, scf_control%eps_scf, accepted, omitted_charge)
             IF (.NOT. accepted .AND. omitted_charge > scf_control%smear%eps_fermi_dirac) THEN
                IF (.NOT. do_kpoints .OR. .NOT. ANY(scf_control%added_mos_auto(1:dft_control%nspins))) THEN
@@ -1351,13 +1354,12 @@ CONTAINS
                IF (accepted) EXIT
             END IF
             IF (scf_control%smear%do_smear .AND. do_kpoints .AND. .NOT. space_grown .AND. &
-                ASSOCIATED(create_search_state, qs_skala_scf_create_symmetric) .AND. &
-                remaining > 0) THEN
+                .NOT. stopped .AND. remaining > 0) THEN
                ! Read the current selection even when canonical rejection invalidated the fields.
                CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
                                           require_feasible=.FALSE.)
                IF (valid .AND. SIZE(tolerances) == 0) THEN
-                  ! Refresh the physical thermal subspace after a stationary symmetric chart
+                  ! Refresh the physical thermal subspace after a stationary coordinate chart
                   ! fails unrestricted canonical acceptance. Keep the original SCF budget.
                   CALL qs_skala_scf_release(state)
                   DO i = 1, SIZE(scf_env%qs_ot_env)
