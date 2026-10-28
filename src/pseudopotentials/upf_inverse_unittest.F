@@ -39,6 +39,8 @@ PROGRAM upf_inverse_unittest
                                               lebedev_grid
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
+   USE mathlib,                         ONLY: det_3x3,&
+                                              invmat
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_world_finalize,&
                                               mp_world_init
@@ -2840,10 +2842,11 @@ CONTAINS
       COMPLEX(dp)                                        :: derivative(ng, nr, nh), &
                                                             kernel(ng, nr, nh), other(ng, nr, nh), &
                                                             samples(ng, nr, nh, 2)
-      INTEGER                                            :: l(nh), lm(nh), side
-      REAL(dp)                                           :: dg(3, ng), dp_center(3), dr(nr), &
-                                                            g(3, ng), position(3), radii(nr), &
-                                                            shift, volume
+      INTEGER                                            :: axis, info, l(nh), lm(nh), &
+                                                            miller(3, ng), side
+      REAL(dp) :: cell(3, 3), changed_cell(3, 3), dcell(3, 3), deformation(3, 3), dg(3, ng), &
+         dp_center(3), dr(nr), dvolume, g(3, ng), inverse_cell(3, 3), position(3), radii(nr), &
+         shift, volume
 
       radii = [0.3_dp, 1.2_dp]
       l = [0, 1, 2]
@@ -2876,6 +2879,51 @@ CONTAINS
                  'shell Fourier radius center reciprocal volume response', 2.e-9_dp)
       CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, other)
       CALL check(MAXVAL(ABS(kernel - other)), 'optional Fourier response preserves forward map', 0.0_dp)
+
+      ! A real grid needs independent boundary signs, beyond reciprocal conjugacy.
+      cell = 0.0_dp
+      DO axis = 1, 3
+         cell(axis, axis) = REAL(8 - axis, dp)
+      END DO
+      miller(:, 1) = 0
+      miller(:, 2) = [-3, 0, 0]
+      miller(:, 3) = [-3, -3, 1]
+      miller(:, 4) = [-3, -3, -3]
+      lm(3) = 5
+      position = 0.0_dp
+      inverse_cell = cell
+      CALL invmat(inverse_cell, info)
+      IF (info /= 0) ERROR STOP 'Singular Fourier boundary cell'
+      g = 2*pi*MATMUL(TRANSPOSE(inverse_cell), REAL(miller, dp))
+      volume = det_3x3(cell)
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, kernel, &
+                                              cell=cell, grid_shape=[6, 6, 6])
+      CALL check(MAXVAL(ABS(kernel(3:, :, 3))), 'independent atomic quadrupole boundary signs', 2.e-15_dp)
+      cell(1, 2) = 0.3_dp
+      cell(2, 3) = 0.2_dp
+      inverse_cell = cell
+      CALL invmat(inverse_cell, info)
+      IF (info /= 0) ERROR STOP 'Singular sheared Fourier boundary cell'
+      g = 2*pi*MATMUL(TRANSPOSE(inverse_cell), REAL(miller, dp))
+      position = [0.2_dp, -0.7_dp, 0.4_dp]
+      dcell = RESHAPE([0.03_dp, -0.01_dp, 0.02_dp, 0.01_dp, -0.02_dp, 0.01_dp, -0.02_dp, 0.03_dp, 0.01_dp], [3, 3])
+      deformation = MATMUL(dcell, inverse_cell)
+      dg = -MATMUL(TRANSPOSE(deformation), g)
+      dvolume = volume*(deformation(1, 1) + deformation(2, 2) + deformation(3, 3))
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, kernel, derivative, &
+                                              dr, dg, dp_center, dvolume, cell, [6, 6, 6], dcell)
+      DO side = 1, 2
+         shift = step*(2*side - 3)
+         changed_cell = cell + shift*dcell
+         inverse_cell = changed_cell
+         CALL invmat(inverse_cell, info)
+         IF (info /= 0) ERROR STOP 'Singular displaced Fourier boundary cell'
+         CALL upf_inverse_coulomb_fourier_kernel(radii + shift*dr, l, lm, &
+                                               2*pi*MATMUL(TRANSPOSE(inverse_cell), REAL(miller, dp)), position + shift*dp_center, &
+                                             det_3x3(changed_cell), samples(:, :, :, side), cell=changed_cell, grid_shape=[6, 6, 6])
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, :, 2) - samples(:, :, :, 1))/(2*step) - derivative)), &
+                 'real boundary shell center and general cell response', 2.e-9_dp)
    END SUBROUTINE check_fourier_coulomb
 
 ! **************************************************************************************************

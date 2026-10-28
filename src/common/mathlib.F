@@ -32,7 +32,8 @@ MODULE mathlib
 
    ! Public subroutines
 
-   PUBLIC :: build_rotmat, &
+   PUBLIC :: real_fourier_aliases, &
+             build_rotmat, &
              jacobi, &
              diamat_all, &
              invmat, &
@@ -93,6 +94,46 @@ MODULE mathlib
    END INTERFACE
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Physical aliases of one real tensor-product Fourier coefficient.
+!>        Both signs are represented independently at every even-grid boundary. The returned
+!>        vectors have equal weights, including intersections of Nyquist planes.
+!> \param vector Original physical reciprocal vector.
+!> \param miller Its integer grid index.
+!> \param grid_shape Number of real-space grid points along each lattice vector.
+!> \param alias_steps Columns are the reciprocal jumps for a full grid period in each direction.
+!> \param vectors Physical aliases, each with weight 1/count, in the first count columns.
+!> \param count Number of aliases, between one and eight.
+! **************************************************************************************************
+   SUBROUTINE real_fourier_aliases(vector, miller, grid_shape, alias_steps, vectors, count)
+      REAL(dp), INTENT(IN) :: vector(3), alias_steps(3, 3)
+      INTEGER, INTENT(IN) :: miller(3), grid_shape(3)
+      REAL(dp), INTENT(OUT) :: vectors(3, 8)
+      INTEGER, INTENT(OUT) :: count
+
+      INTEGER :: axis, mask
+      LOGICAL :: boundary(3)
+      REAL(dp) :: value(3)
+
+      CPASSERT(ALL(grid_shape > 0))
+      boundary = MOD(grid_shape, 2) == 0 .AND. ABS(miller) == grid_shape/2
+      vectors = 0.0_dp
+      vectors(:, 1) = vector
+      count = 1
+      IF (.NOT. ANY(boundary)) RETURN
+      count = 0
+      masks: DO mask = 0, 7
+         value = vector
+         DO axis = 1, 3
+            IF (.NOT. BTEST(mask, axis - 1)) CYCLE
+            IF (.NOT. boundary(axis)) CYCLE masks
+            value = value - REAL(SIGN(1, miller(axis)), dp)*alias_steps(:, axis)
+         END DO
+         count = count + 1
+         vectors(:, count) = value
+      END DO masks
+   END SUBROUTINE real_fourier_aliases
 
 ! **************************************************************************************************
 !> \brief Polynomial (5th degree) switching function

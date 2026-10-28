@@ -36,6 +36,7 @@ MODULE pw_methods
    USE mathconstants, ONLY: gaussi, &
                             twopi, &
                             z_zero
+   USE mathlib, ONLY: real_fourier_aliases
    USE pw_copy_all, ONLY: pw_copy_match
    USE pw_fpga, ONLY: pw_fpga_c1dr3d_3d_dp, &
                       pw_fpga_c1dr3d_3d_sp, &
@@ -248,28 +249,13 @@ CONTAINS
       REAL(dp), INTENT(OUT) :: vectors(3, 8)
       INTEGER, INTENT(OUT) :: count
 
-      INTEGER :: axis, mask
-      LOGICAL :: boundary(3)
-      REAL(dp) :: vector(3)
-
       CPASSERT(index >= 1 .AND. index <= SIZE(grid%g, 2))
       vectors = 0.0_dp
       vectors(:, 1) = grid%g(:, index)
       count = 1
       IF (grid%grid_span /= FULLSPACE .OR. grid%spherical) RETURN
-      boundary = MOD(grid%npts, 2) == 0 .AND. ABS(grid%g_hat(:, index)) == grid%npts/2
-      IF (.NOT. ANY(boundary)) RETURN
-      count = 0
-      masks: DO mask = 0, 7
-         vector = grid%g(:, index)
-         DO axis = 1, 3
-            IF (.NOT. BTEST(mask, axis - 1)) CYCLE
-            IF (.NOT. boundary(axis)) CYCLE masks
-            vector = vector - twopi*REAL(SIGN(1, grid%g_hat(axis, index)), dp)*grid%dh_inv(axis, :)
-         END DO
-         count = count + 1
-         vectors(:, count) = vector
-      END DO masks
+      CALL real_fourier_aliases(grid%g(:, index), grid%g_hat(:, index), grid%npts, &
+                                twopi*TRANSPOSE(grid%dh_inv), vectors, count)
    END SUBROUTINE pw_real_fourier_aliases
 
    #:for kind, type in pw_list

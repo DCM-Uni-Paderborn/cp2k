@@ -15,7 +15,8 @@ MODULE upf_inverse_coulomb
    USE mathconstants,                   ONLY: fourpi,&
                                               pi,&
                                               twopi
-   USE mathlib,                         ONLY: invmat
+   USE mathlib,                         ONLY: invmat,&
+                                              real_fourier_aliases
    USE message_passing,                 ONLY: mp_comm_type
    USE orbital_pointers,                ONLY: indco,&
                                               init_orbital_pointers,&
@@ -62,7 +63,7 @@ MODULE upf_inverse_coulomb
 
    TYPE upf_inverse_coulomb_map_type
       PRIVATE
-      INTEGER :: periodicity(3) = [1, 1, 1]
+      INTEGER :: periodicity(3) = [1, 1, 1], grid_shape(3) = 0
       REAL(dp) :: cell(3, 3) = 0.0_dp, volume = 0.0_dp
       REAL(dp), ALLOCATABLE :: gvecs(:, :)
       TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers(:)
@@ -91,12 +92,13 @@ CONTAINS
 !> \param volume ...
 !> \param map Owned maps. Rebuild after changing centers, cell, reciprocal vectors or radial grids.
 !> \param periodicity Optional lattice directions to repeat. Defaults to three periodic directions.
+!> \param grid_shape Optional full-box real-grid dimensions. Zero or omission retains continuous coefficients.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_coulomb_prepare(centers, cell, gvecs, volume, map, periodicity)
+   SUBROUTINE upf_inverse_coulomb_prepare(centers, cell, gvecs, volume, map, periodicity, grid_shape)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
       TYPE(upf_inverse_coulomb_map_type), INTENT(OUT)    :: map
-      INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3), grid_shape(3)
 
       INTEGER                                            :: a, b, h, i, image(3), info, j, k, &
                                                             limits(2, 3), r
@@ -106,6 +108,8 @@ CONTAINS
 
       CPASSERT(volume > 0.0_dp .AND. SIZE(gvecs, 1) == 3)
       IF (PRESENT(periodicity)) map%periodicity = periodicity
+      IF (PRESENT(grid_shape)) map%grid_shape = grid_shape
+      CPASSERT(ALL(map%grid_shape == 0) .OR. ALL(map%grid_shape > 0))
       CPASSERT(ALL(map%periodicity == 0 .OR. map%periodicity == 1))
       map%cell = cell
       map%volume = volume
@@ -118,7 +122,8 @@ CONTAINS
       DO a = 1, SIZE(centers)
          ALLOCATE (map%fourier(a)%values(SIZE(gvecs, 2), SIZE(centers(a)%radii), SIZE(centers(a)%l)))
          CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
-                                                 gvecs, centers(a)%position, volume, map%fourier(a)%values)
+                                                 gvecs, centers(a)%position, volume, map%fourier(a)%values, &
+                                                 cell=cell, grid_shape=map%grid_shape)
          DO b = a, SIZE(centers)
             ALLOCATE (kernel(SIZE(centers(a)%radii), SIZE(centers(a)%l), &
                              SIZE(centers(b)%radii), SIZE(centers(b)%l)))
@@ -271,9 +276,10 @@ CONTAINS
 !> \param center_response Radial-node, measure, density and center motion, required with response.
 !> \param gvecs_response Reciprocal-vector motion, required with response.
 !> \param volume_response Cell-volume derivative, required with response.
+!> \param cell_response Optional lattice derivative for the prepared real-grid boundary convention.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_coulomb_density(centers, cell, gvecs, volume, density, map, response, &
-                                          center_response, gvecs_response, volume_response)
+                                          center_response, gvecs_response, volume_response, cell_response)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
       COMPLEX(dp), INTENT(OUT)                           :: density(:)
@@ -281,7 +287,8 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:)
       TYPE(upf_inverse_coulomb_center_type), &
          INTENT(IN), OPTIONAL                            :: center_response(:)
-      REAL(dp), INTENT(IN), OPTIONAL                     :: gvecs_response(:, :), volume_response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: gvecs_response(:, :), volume_response, &
+                                                            cell_response(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), fourier(:, :, :)
       INTEGER                                            :: a, channel, ir
@@ -311,7 +318,8 @@ CONTAINS
             CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                     gvecs, centers(a)%position, volume, fourier, dfourier, &
                                                     center_response(a)%radii, gvecs_response, &
-                                                    center_response(a)%position, volume_response)
+                                                    center_response(a)%position, volume_response, &
+                                                    cell=cell, grid_shape=map%grid_shape, cell_response=cell_response)
          END IF
          DO channel = 1, SIZE(centers(a)%l)
             DO ir = 1, SIZE(centers(a)%radii)
@@ -446,9 +454,9 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
                                                             h(:)
-      INTEGER                                            :: a, b, channel, i, image(3), info, j, &
-                                                            limits(2, 3), na, nb, ng, nh, nr, &
-                                                            REPEAT(3)
+      INTEGER                                            :: a, b, channel, fourier_shape(3), i, &
+                                                            image(3), info, j, limits(2, 3), na, &
+                                                            nb, ng, nh, nr, REPEAT(3)
       LOGICAL                                            :: derive, reuse_pair_geometry
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
                                                             dmoment, dnorm, dpair, dpw, epair, &
@@ -459,6 +467,8 @@ CONTAINS
       TYPE(center_work_type), ALLOCATABLE                :: work(:)
 
       ng = SIZE(background)
+      fourier_shape = 0
+      IF (PRESENT(map)) fourier_shape = map%grid_shape
       repeat = [1, 1, 1]
       IF (PRESENT(map)) repeat = map%periodicity
       IF (PRESENT(periodicity)) repeat = periodicity
@@ -538,7 +548,8 @@ CONTAINS
             CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                     gvecs, centers(a)%position, volume, work(a)%fourier, dfourier, &
                                                     center_response(a)%radii, gvecs_response, &
-                                                    center_response(a)%position, volume_response)
+                                                    center_response(a)%position, volume_response, &
+                                                    cell=cell, grid_shape=fourier_shape, cell_response=cell_response)
          END IF
          DO channel = 1, nh
             DO i = 1, nr
@@ -1309,24 +1320,34 @@ CONTAINS
 !> \param gvecs_response Required with response, including reciprocal-vector strain.
 !> \param position_response Required with response.
 !> \param volume_response Required with response.
+!> \param cell Lattice vectors in columns, required for a nonzero grid_shape.
+!> \param grid_shape Optional full-box real-grid dimensions. Zero or omission gives continuous coefficients.
+!> \param cell_response Optional lattice derivative of alias jumps. Omission holds the jumps fixed.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_coulomb_fourier_kernel(radii, angular_momenta, harmonic_indices, gvecs, position, volume, &
-                                                 kernel, response, radii_response, gvecs_response, &
-                                                 position_response, volume_response)
+   RECURSIVE SUBROUTINE upf_inverse_coulomb_fourier_kernel(radii, angular_momenta, harmonic_indices, gvecs, position, volume, &
+                                                           kernel, response, radii_response, gvecs_response, &
+                                                           position_response, volume_response, cell, grid_shape, cell_response)
       REAL(dp), INTENT(IN)                               :: radii(:)
       INTEGER, INTENT(IN)                                :: angular_momenta(:), harmonic_indices(:)
       REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
       COMPLEX(dp), INTENT(OUT)                           :: kernel(:, :, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: radii_response(:), gvecs_response(:, :), &
-                                                            position_response(3), volume_response
+                                                            position_response(3), volume_response, &
+                                                            cell(3, 3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: grid_shape(3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cell_response(3, 3)
 
       COMPLEX(dp)                                        :: phase, phase_l, phase_response
-      INTEGER                                            :: a, axis, channel, ig, ir, l, m, &
-                                                            powers(3), reduced(3)
-      REAL(dp)                                           :: angular, angular_gradient(3), &
-                                                            direction(3), factor, gradient(3), jl, &
-                                                            jnext, norm_g, radial
+      COMPLEX(dp), ALLOCATABLE                           :: alias_kernel(:, :, :), &
+                                                            alias_response(:, :, :)
+      INTEGER                                            :: a, alias, axis, channel, count, ig, &
+                                                            info, ir, l, m, miller(3), powers(3), &
+                                                            reduced(3)
+      LOGICAL                                            :: valid_lattice
+      REAL(dp) :: alias_steps(3, 3), angular, angular_gradient(3), deformation(3, 3), &
+         direction(3), factor, g_response(3, 1), gradient(3), inverse_cell(3, 3), jl, jnext, &
+         lattice_error, lattice_index(3), norm_g, radial, vectors(3, 8)
 
       CPASSERT(SIZE(harmonic_indices) == SIZE(angular_momenta))
       CPASSERT(SIZE(angular_momenta) > 0)
@@ -1398,6 +1419,50 @@ CONTAINS
                                            phase_l*(DOT_PRODUCT(gradient, gvecs_response(:, ig)) + &
                                                     radial*radii_response(ir))
             END DO
+         END DO
+      END DO
+
+      IF (.NOT. PRESENT(grid_shape)) RETURN
+      IF (ALL(grid_shape == 0)) RETURN
+      CPASSERT(ALL(grid_shape > 0))
+      CPASSERT(PRESENT(cell))
+      inverse_cell = cell
+      CALL invmat(inverse_cell, info)
+      CPASSERT(info == 0)
+      alias_steps = twopi*TRANSPOSE(inverse_cell)
+      DO axis = 1, 3
+         alias_steps(:, axis) = alias_steps(:, axis)*REAL(grid_shape(axis), dp)
+      END DO
+      deformation = 0.0_dp
+      IF (PRESENT(cell_response)) deformation = MATMUL(cell_response, inverse_cell)
+      DO ig = 1, SIZE(gvecs, 2)
+         lattice_index = MATMUL(TRANSPOSE(cell), gvecs(:, ig))/twopi
+         miller = NINT(lattice_index)
+         lattice_error = MAXVAL(ABS(lattice_index - REAL(miller, dp)))
+         valid_lattice = lattice_error <= 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(lattice_index)))
+         CPASSERT(valid_lattice)
+         CALL real_fourier_aliases(gvecs(:, ig), miller, grid_shape, alias_steps, vectors, count)
+         IF (count == 1) CYCLE
+         IF (.NOT. ALLOCATED(alias_kernel)) THEN
+            ALLOCATE (alias_kernel(1, SIZE(radii), SIZE(angular_momenta)))
+            IF (PRESENT(response)) ALLOCATE (alias_response, MOLD=alias_kernel)
+         END IF
+         kernel(ig, :, :) = kernel(ig, :, :)/REAL(count, dp)
+         IF (PRESENT(response)) response(ig, :, :) = response(ig, :, :)/REAL(count, dp)
+         DO alias = 2, count
+            IF (PRESENT(response)) THEN
+               ! The reciprocal alias jump follows the cell deformation.
+               g_response(:, 1) = gvecs_response(:, ig) - &
+                                  MATMUL(TRANSPOSE(deformation), vectors(:, alias) - gvecs(:, ig))
+               CALL upf_inverse_coulomb_fourier_kernel(radii, angular_momenta, harmonic_indices, &
+                                                       vectors(:, alias:alias), position, volume, alias_kernel, alias_response, &
+                                                       radii_response, g_response, position_response, volume_response)
+               response(ig, :, :) = response(ig, :, :) + alias_response(1, :, :)/REAL(count, dp)
+            ELSE
+               CALL upf_inverse_coulomb_fourier_kernel(radii, angular_momenta, harmonic_indices, &
+                                                       vectors(:, alias:alias), position, volume, alias_kernel)
+            END IF
+            kernel(ig, :, :) = kernel(ig, :, :) + alias_kernel(1, :, :)/REAL(count, dp)
          END DO
       END DO
    END SUBROUTINE upf_inverse_coulomb_fourier_kernel

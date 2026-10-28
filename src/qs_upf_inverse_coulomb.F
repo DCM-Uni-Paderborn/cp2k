@@ -236,7 +236,8 @@ CONTAINS
                CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, &
                                             center_response, coefficients_response)
                CALL upf_inverse_coulomb_density(centers, map%cell, map%grid%g, map%grid%vol, correction, map%maps, &
-                                                derivative, center_response, g_response, trace_strain*map%grid%vol)
+                                                derivative, center_response, g_response, trace_strain*map%grid%vol, &
+                                                cell_response=cell_response)
             ELSE
                CALL upf_inverse_coulomb_density(centers, map%cell, map%grid%g, map%grid%vol, correction, map%maps)
             END IF
@@ -287,23 +288,26 @@ CONTAINS
          IF (PRESENT(response)) THEN
             CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, field%pw_grid%g, &
                                      frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, paw_density, paw_response, &
-                       projected_response, g_response, atom_response(:, frame%center_atoms(center)), trace_strain*field%pw_grid%vol)
+                     projected_response, g_response, atom_response(:, frame%center_atoms(center)), trace_strain*field%pw_grid%vol, &
+                                                    pw_grid=field%pw_grid, cell_response=cell_response)
             derivative = derivative + paw_response(:, 1)
             DEALLOCATE (projected_response)
          ELSE
             CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, field%pw_grid%g, &
-                                                    frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, paw_density)
+                                                   frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, paw_density, &
+                                                    pw_grid=field%pw_grid)
          END IF
          correction = correction + paw_density(:, 1)
          IF (PRESENT(operators)) THEN
             ALLOCATE (paw_operator(last - first + 1, last - first + 1))
             IF (field%pw_grid%para%mode == PW_MODE_LOCAL) THEN
                CALL qs_upf_inverse_paw_density_adjoint(state%paw(kind), field%pw_grid%g, &
-                               frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_part)
+                             frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_part, &
+                                                       pw_grid=field%pw_grid)
             ELSE
                CALL qs_upf_inverse_paw_density_adjoint(state%paw(kind), field%pw_grid%g, &
                              frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, covector, paw_operator, core_part, &
-                                                       field%pw_grid%para%group%mp_comm_type)
+                                                       field%pw_grid%para%group%mp_comm_type, pw_grid=field%pw_grid)
             END IF
             IF (PRESENT(core_energy)) core_energy = core_energy + core_part
             DO k = 1, nk
@@ -760,8 +764,8 @@ CONTAINS
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
 
       COMPLEX(dp), ALLOCATABLE                           :: ao_operator(:, :)
-      INTEGER                                            :: a, atom, b, channel, k, kind, nao, &
-                                                            ncenter, nh, nr
+      INTEGER                                            :: a, atom, b, channel, grid_shape(3), k, &
+                                                            kind, nao, ncenter, nh, nr
       INTEGER(int_8)                                     :: remaining_bytes
       LOGICAL                                            :: paw_atom
       REAL(dp)                                           :: alpha, tolerance, total
@@ -901,7 +905,9 @@ CONTAINS
          END DO
          DEALLOCATE (unit)
       END DO
-      CALL upf_inverse_coulomb_prepare(map%centers, map%cell, map%grid%g, map%grid%vol, map%maps, frame%periodicity)
+      grid_shape = 0
+      IF (map%grid%grid_span == FULLSPACE .AND. .NOT. map%grid%spherical) grid_shape = map%grid%npts
+      CALL upf_inverse_coulomb_prepare(map%centers, map%cell, map%grid%g, map%grid%vol, map%maps, frame%periodicity, grid_shape)
       map%ready = .TRUE.
    END SUBROUTINE qs_upf_inverse_coulomb_prepare
 

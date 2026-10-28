@@ -37,6 +37,8 @@ MODULE qs_upf_inverse_paw
    USE paw_xc,                          ONLY: paw_xc_evaluate,&
                                               paw_xc_init,&
                                               paw_xc_response
+   USE pw_grid_types,                   ONLY: FULLSPACE,&
+                                              pw_grid_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
@@ -68,7 +70,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Fourier coefficients of the original PAW AE-minus-compensated-PS density and AE core.
-!>        Evaluate on the original radial mesh, without an intervening real-space FFT projection.
+!>        Evaluate on the original radial mesh. An optional native full-box grid specifies
+!>        real tensor-product boundary coefficients, with matching geometry responses.
+!>        Omit that grid for continuous Fourier observables.
 !>        The core is shared equally between physical spins and contributes once to their sum.
 !> \param kind Prepared original PAW radial products and magnetic-projector Gaunt tensor.
 !> \param projected Hermitian spin projector occupations, with k weights already applied once.
@@ -81,9 +85,11 @@ CONTAINS
 !> \param gvecs_response Reciprocal-vector derivative, required with response.
 !> \param position_response Atomic-center derivative, required with response.
 !> \param volume_response Cell-volume derivative, required with response.
+!> \param pw_grid Optional native full-box grid for real density and energy consumers. Omit for continuous coefficients.
+!> \param cell_response Optional cell derivative of reciprocal alias jumps, zero if omitted.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_density_fourier(kind, projected, gvecs, position, volume, density, response, &
-                                                 projected_response, gvecs_response, position_response, volume_response)
+                                     projected_response, gvecs_response, position_response, volume_response, pw_grid, cell_response)
       TYPE(paw_kind_type), INTENT(IN)                    :: kind
       COMPLEX(dp), INTENT(IN)                            :: projected(:, :, :)
       REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
@@ -92,13 +98,26 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projected_response(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: gvecs_response(:, :), &
                                                             position_response(3), volume_response
+      TYPE(pw_grid_type), INTENT(IN), OPTIONAL           :: pw_grid
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cell_response(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: kernel(:, :, :), kernel_response(:, :, :)
-      INTEGER                                            :: first, gh, gl, l, lm, nh, nr, ns, rh, &
-                                                            rl, spin
+      INTEGER                                            :: axis, first, gh, gl, grid_shape(3), l, &
+                                                            lm, nh, nr, ns, rh, rl, spin
       LOGICAL                                            :: valid_shape
+      REAL(dp)                                           :: cell_h(3, 3)
       REAL(dp), ALLOCATABLE                              :: radial(:, :, :), radial_response(:, :, :)
 
+      cell_h = 0.0_dp
+      grid_shape = 0
+      IF (PRESENT(pw_grid)) THEN
+         IF (pw_grid%grid_span == FULLSPACE .AND. .NOT. pw_grid%spherical) THEN
+            grid_shape = pw_grid%npts
+            DO axis = 1, 3
+               cell_h(:, axis) = pw_grid%dh(:, axis)*REAL(grid_shape(axis), dp)
+            END DO
+         END IF
+      END IF
       CPASSERT(kind%active)
       ns = SIZE(projected, 3)
       CPASSERT(ns == 1 .OR. ns == 2)
@@ -140,10 +159,11 @@ CONTAINS
                      CALL upf_inverse_coulomb_fourier_kernel(grid%r(rl:rh), [l], [lm], gvecs(:, gl:gh), &
                                                              position, volume, kernel, kernel_response, &
                                                              0.0_dp*grid%r(rl:rh), gvecs_response(:, gl:gh), &
-                                                             position_response, volume_response)
+                                                             position_response, volume_response, &
+                                                             cell=cell_h, grid_shape=grid_shape, cell_response=cell_response)
                   ELSE
                      CALL upf_inverse_coulomb_fourier_kernel(grid%r(rl:rh), [l], [lm], gvecs(:, gl:gh), &
-                                                             position, volume, kernel)
+                                                             position, volume, kernel, cell=cell_h, grid_shape=grid_shape)
                   END IF
                   DO spin = 1, ns
                      density(gl:gh, spin) = density(gl:gh, spin) + &
@@ -216,20 +236,33 @@ CONTAINS
 !> \param OPERATOR Overwritten real symmetric valence projector operator.
 !> \param core_energy Coupling to the full frozen AE core, without an ionic counterterm.
 !> \param comm Optional communicator distributing Fourier rows. Results are replicated.
+!> \param pw_grid Optional native full-box grid for real density and energy consumers. Omit for continuous coefficients.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_paw_density_adjoint(kind, gvecs, position, volume, potential, OPERATOR, core_energy, comm)
+   SUBROUTINE qs_upf_inverse_paw_density_adjoint(kind, gvecs, position, volume, potential, OPERATOR, core_energy, comm, pw_grid)
       TYPE(paw_kind_type), INTENT(IN)                    :: kind
       REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
       COMPLEX(dp), INTENT(IN)                            :: potential(:)
       REAL(dp), INTENT(OUT)                              :: OPERATOR(:, :), core_energy
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      TYPE(pw_grid_type), INTENT(IN), OPTIONAL           :: pw_grid
 
       COMPLEX(dp), ALLOCATABLE                           :: kernel(:, :, :)
-      INTEGER                                            :: first, gh, gl, ir, l, lm, nr, p, pair, &
-                                                            q, rh, rl
+      INTEGER                                            :: axis, first, gh, gl, grid_shape(3), ir, &
+                                                            l, lm, nr, p, pair, q, rh, rl
       LOGICAL                                            :: valid_shape
+      REAL(dp)                                           :: cell_h(3, 3)
       REAL(dp), ALLOCATABLE                              :: harmonics(:, :), radial(:, :)
 
+      cell_h = 0.0_dp
+      grid_shape = 0
+      IF (PRESENT(pw_grid)) THEN
+         IF (pw_grid%grid_span == FULLSPACE .AND. .NOT. pw_grid%spherical) THEN
+            grid_shape = pw_grid%npts
+            DO axis = 1, 3
+               cell_h(:, axis) = pw_grid%dh(:, axis)*REAL(grid_shape(axis), dp)
+            END DO
+         END IF
+      END IF
       CPASSERT(kind%active)
       CPASSERT(SIZE(gvecs, 1) == 3)
       CPASSERT(SIZE(gvecs, 2) == SIZE(potential))
@@ -251,7 +284,7 @@ CONTAINS
                DO lm = 1, SIZE(harmonics, 2)
                   l = INT(SQRT(REAL(lm - 1, dp)))
                   CALL upf_inverse_coulomb_fourier_kernel(grid%r(rl:rh), [l], [lm], gvecs(:, gl:gh), &
-                                                          position, volume, kernel)
+                                                          position, volume, kernel, cell=cell_h, grid_shape=grid_shape)
                   DO ir = rl, rh
                      harmonics(ir, lm) = harmonics(ir, lm) + &
                                          REAL(SUM(CONJG(kernel(:, ir - rl + 1, 1))*potential(gl:gh)), dp)
