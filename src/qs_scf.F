@@ -1182,7 +1182,14 @@ CONTAINS
          IF (.NOT. kpoints%full_grid) create_search_state => qs_skala_scf_create_symmetric
       END IF
       CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
-      IF (.NOT. valid) RETURN
+      IF (.NOT. valid) THEN
+         ! An incompatible physical reference cannot certify an ordinary OT candidate.
+         IF (final_stage) THEN
+            handled = .TRUE.
+            scf_env%iter_delta = HUGE(0.0_dp)
+         END IF
+         RETURN
+      END IF
       n = qs_skala_scf_size(state)
       IF (n == 0) THEN
          CALL qs_skala_scf_release(state)
