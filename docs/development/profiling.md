@@ -26,7 +26,7 @@ sys     0m0.186s
 This matches, apart from small program start-up overhead, the time that is measured by CP2K.
 
 ```
-grep -e "STARTED AT" -e "ENDED AT" -e " CP2K      " C.out 
+grep -e "STARTED AT" -e "ENDED AT" -e " CP2K      " C.out
   **** **** ******  **  PROGRAM STARTED AT               2013-07-01 19:59:53.408
  CP2K                                 1  1.0    0.007    0.007    6.590    6.590
   **** **** ******  **  PROGRAM ENDED AT                 2013-07-01 20:00:00.060
