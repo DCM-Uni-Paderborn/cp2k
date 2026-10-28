@@ -756,7 +756,9 @@ CONTAINS
       CALL get_kpoint_info(kpoints, nkp=nkpoint, wkp=wkp, use_real_wfn=use_real_wfn, &
                            kp_range=kp_range, nkp_groups=nkp_groups, para_env_inter_kp=para_env_inter_kp, &
                            sab_nl=sab_nl)
-      use_operator_cache = nkp_groups > 1 .OR. kpoints%para_env_kp%num_pe == 1
+      ! Complete native Bloch operators require the group cache for every distribution.
+      use_operator_cache = nkp_groups > 1 .OR. kpoints%para_env_kp%num_pe == 1 .OR. &
+                           ALLOCATED(kpoints%native_density)
       fmwork => scf_env%scf_work1
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
       CPASSERT(ASSOCIATED(sab_nl))
@@ -784,12 +786,6 @@ CONTAINS
                                        wkp=wkp, &
                                        require_local_state=.TRUE., &
                                        require_complex_state=.TRUE.)
-
-      ! Complete native Bloch operators use the local cache even in a single group.
-      ! Refresh that cache at every orbital step with the current Hamiltonian.
-      IF (nkp_groups > 1 .OR. ALLOCATED(kpoints%native_density)) THEN
-         CALL kpoint_operator_store(kpoints, fmwork(1), matrix_ks, matrix_s)
-      END IF
 
       first_channel = qs_ot_channel_index(1, kp_range(1), nspin_ot)
       nlocal_channels = SIZE(kpoints%kp_env)*nspin_ot
@@ -1361,7 +1357,7 @@ CONTAINS
             spin = MERGE(1, ispin, restricted_roks)
             CALL get_mo_set(kp%mos(spin), homo=homo, nao=nao, nmo=nmo)
             IF (do_ener) homo = nmo
-            CPASSERT(homo >= 1 .AND. homo <= nmo)
+            CPASSERT(homo >= 0 .AND. homo <= nmo)
             CALL cp_fm_struct_create(active_mo_struct, template_fmstruct=kp%mos(spin)%cmo_coeff%matrix_struct, &
                                      ncol_global=homo)
             CALL cp_fm_create(hc(1, ispin, ikp), active_mo_struct, set_zero=.TRUE.)
@@ -1389,6 +1385,7 @@ CONTAINS
             hc_im => hc(2, ispin, ikp)
             nao = hc_re%matrix_struct%nrow_global
             homo = hc_re%matrix_struct%ncol_global
+            IF (homo == 0) CYCLE
             h_re => kp%ot_hmat(1, MIN(ispin, SIZE(kp%ot_hmat, 2)))
             h_im => kp%ot_hmat(2, MIN(ispin, SIZE(kp%ot_hmat, 2)))
             coeff(1:nao, 1:homo, 1, thread) = REAL(kp%mos(spin)%cmo_coeff%local_data(1:nao, 1:homo), KIND=dp)
