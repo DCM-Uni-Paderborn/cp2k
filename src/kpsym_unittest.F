@@ -6,7 +6,8 @@
 !--------------------------------------------------------------------------------------------------!
 PROGRAM kpsym_unittest
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cryssym,                         ONLY: crys_sym_gen,&
+   USE cryssym,                         ONLY: crys_sym_cartesian_halfturn,&
+                                              crys_sym_gen,&
                                               csym_type,&
                                               kpoint_gen,&
                                               release_csym_type
@@ -63,7 +64,7 @@ PROGRAM kpsym_unittest
                                                   0.095744_dp, 0.904256_dp, 0.250000_dp, &
                                                   0.904256_dp, 0.095744_dp, 0.750000_dp, &
                                                   0.595744_dp, 0.595744_dp, 0.500000_dp], [3, 36])
-   REAL(dp) :: cell(3, 3), coords(3, 36), shifted(3, 36)
+   REAL(dp) :: cell(3, 3), coords(3, 36), halfturn_cell(3, 3), shifted(3, 36)
    INTEGER :: i, io_unit
    INTEGER :: types(36)
 
@@ -93,6 +94,14 @@ PROGRAM kpsym_unittest
       shifted(:, i) = coords(:, 61 - i)
    END DO
    CALL check_mesh(shifted, cell, 1.0e-6_dp, 6, .FALSE., .TRUE.)
+
+   ! Restrict the complete orthorhombic group without adding little-group weights.
+   halfturn_cell = 0.0_dp
+   halfturn_cell(1, 1) = 7.0_dp
+   halfturn_cell(2, 2) = 6.4_dp
+   halfturn_cell(3, 3) = 6.7_dp
+   CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
+                   1.e-8_dp, 8, .FALSE., .TRUE., cartesian_half_turns=.TRUE.)
 
    ! Genuine tolerance-induced nonclosure must still trigger the orbit guard.
    coords = ice_ix
@@ -323,23 +332,26 @@ CONTAINS
 !> \param fallback expected inversion fallback
 !> \param closed whether to check closure of the retained atomic operations
 !> \param full_grid keep every mesh point, including time-reversed partners
+!> \param cartesian_half_turns ...
 ! **************************************************************************************************
-   SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid)
+   SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid, cartesian_half_turns)
       REAL(dp), INTENT(IN)                               :: x(:, :), h(3, 3), delta
       INTEGER, INTENT(IN)                                :: expected
       LOGICAL, INTENT(IN)                                :: fallback, closed
-      LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid
+      LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid, cartesian_half_turns
 
       INTEGER                                            :: a, i, j, k
       LOGICAL                                            :: found
       REAL(dp)                                           :: product(3, 3)
       TYPE(csym_type)                                    :: csym
 
-      CALL crys_sym_gen(csym, x, types, h, delta=delta, use_spglib=.FALSE.)
+      CALL crys_sym_gen(csym, x, types(:SIZE(x, 2)), h, delta=delta, use_spglib=.FALSE.)
       IF (PRESENT(full_grid)) THEN
-         CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., full_grid=full_grid)
+         CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., full_grid=full_grid, &
+                         cartesian_half_turns=cartesian_half_turns)
       ELSE
-         CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp])
+         CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp], &
+                         cartesian_half_turns=cartesian_half_turns)
       END IF
       IF (csym%nkpoint /= expected) ERROR STOP "Incorrect irreducible mesh size"
       IF (csym%inversion_only .NEQV. fallback) ERROR STOP "Incorrect orbit-guard decision"
@@ -354,11 +366,19 @@ CONTAINS
             IF (ANY(ABS(csym%xkpoint - csym%kpmesh) > 1.0e-12_dp)) ERROR STOP "Full mesh reordered points"
          END IF
       END IF
+      IF (PRESENT(cartesian_half_turns)) THEN
+         IF (cartesian_half_turns) THEN
+            IF (csym%nrtot /= 4) ERROR STOP "Incorrect Cartesian half-turn group size"
+            DO k = 1, csym%nrtot
+               IF (.NOT. crys_sym_cartesian_halfturn(csym%rt(:, :, k))) ERROR STOP "Non-half-turn operation retained"
+            END DO
+         END IF
+      END IF
       DO k = 1, SIZE(csym%rt, 3)
-         DO a = 1, SIZE(types)
+         DO a = 1, SIZE(x, 2)
             IF (COUNT(csym%f0(:, k) == a) /= 1) ERROR STOP "Nonbijective atom mapping"
          END DO
-         IF (ANY(types(csym%f0(:, k)) /= types)) ERROR STOP "Atom types not preserved"
+         IF (ANY(types(csym%f0(:, k)) /= types(:SIZE(x, 2)))) ERROR STOP "Atom types not preserved"
       END DO
       IF (closed) THEN
          DO i = 1, csym%nrtot

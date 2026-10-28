@@ -32,6 +32,7 @@ MODULE qs_upf_inverse_kpoints
    USE kpoint_methods,                  ONLY: kpoint_star_create,&
                                               kpoint_star_density,&
                                               kpoint_star_operator
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_halfturn_symmetry
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_star_type,&
                                               kpoint_type
@@ -105,12 +106,9 @@ CONTAINS
          CPASSERT(folding_error < 1.e-9_dp)
       END DO
       CPASSERT(kpoints%nkp > 0)
-      DO ik = 1, kpoints%nkp
-         IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry .AND. &
-             control%use_gauxc) THEN
-            CPABORT("Spatial k-point symmetry with learned XC is not implemented yet")
-         END IF
-      END DO
+      IF (control%use_gauxc .AND. .NOT. kpoint_halfturn_symmetry(kpoints)) THEN
+         CPABORT("Use CARTESIAN_HALF_TURNS for learned XC spatial symmetry")
+      END IF
       CPASSERT(ASSOCIATED(kpoints%kp_env))
       CPASSERT(ASSOCIATED(kpoints%para_env_kp))
       CPASSERT(ALL(kpoints%wkp >= 0.0_dp))

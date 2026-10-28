@@ -174,6 +174,15 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="CARTESIAN_HALF_TURNS", &
+                          description="Restrict spatial symmetry to the identity and proper 180-degree rotations "// &
+                          "about the Cartesian axes that preserve the atomic geometry. Scalar time reversal "// &
+                          "remains available. The chosen functional must admit these operations.", &
+                          usage="CARTESIAN_HALF_TURNS <LOGICAL>", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="DEBUG_FULL_KPOINT_SYMMETRY", &
                           description="Use full atomic k-point symmetry also for DEBUG finite-difference "// &
                           "points. This is enabled by default so analytical and finite-difference "// &

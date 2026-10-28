@@ -31,7 +31,7 @@ MODULE cryssym
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: csym_type, release_csym_type, print_crys_symmetry, print_kp_symmetry
-   PUBLIC :: crys_sym_gen, kpoint_gen, kpoint_gen_general
+   PUBLIC :: crys_sym_gen, kpoint_gen, kpoint_gen_general, crys_sym_cartesian_halfturn
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cryssym'
 
@@ -44,6 +44,7 @@ MODULE cryssym
       LOGICAL                                     :: symlib = .FALSE.
       LOGICAL                                     :: fullgrid = .FALSE.
       LOGICAL                                     :: inversion_only = .FALSE.
+      LOGICAL                                     :: cartesian_half_turns = .FALSE.
       LOGICAL                                     :: spglib_reduction = .FALSE.
       LOGICAL                                     :: spglib_backend = .FALSE.
       LOGICAL                                     :: spglib_requested = .TRUE.
@@ -80,6 +81,25 @@ MODULE cryssym
    END TYPE csym_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Identity or a proper half-turn about one of the Cartesian axes.
+!> \param rotation Cartesian spatial action, independently of scalar time reversal.
+!> \return Whether the action is a diagonal sign matrix with positive determinant.
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION crys_sym_cartesian_halfturn(rotation) RESULT(allowed)
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3)
+
+      INTEGER                                            :: i
+      REAL(dp)                                           :: signs(3, 3)
+
+      signs = 0.0_dp
+      DO i = 1, 3
+         signs(i, i) = SIGN(1.0_dp, rotation(i, i))
+      END DO
+      allowed = MAXVAL(ABS(rotation - signs)) <= 1.e-12_dp .AND. &
+                signs(1, 1)*signs(2, 2)*signs(3, 3) > 0.0_dp
+   END FUNCTION crys_sym_cartesian_halfturn
 
 ! **************************************************************************************************
 !> \brief Release the CSYM type
@@ -246,17 +266,16 @@ CONTAINS
 !> \param inversion_symmetry_only ...
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
+!> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen(csym, nk, symm, shift, full_grid, gamma_centered, &
-                         inversion_symmetry_only, use_spglib_reduction, use_spglib_backend)
+                         inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns)
       TYPE(csym_type)                                    :: csym
       INTEGER, INTENT(IN)                                :: nk(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: symm
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: shift(3)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid, gamma_centered, &
-                                                            inversion_symmetry_only, &
-                                                            use_spglib_reduction, &
-                                                            use_spglib_backend
+      LOGICAL, INTENT(IN), OPTIONAL :: full_grid, gamma_centered, inversion_symmetry_only, &
+         use_spglib_reduction, use_spglib_backend, cartesian_half_turns
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'kpoint_gen'
 
@@ -299,6 +318,8 @@ CONTAINS
          inversion_only = .FALSE.
       END IF
       csym%inversion_only = inversion_only
+      csym%cartesian_half_turns = .FALSE.
+      IF (PRESENT(cartesian_half_turns)) csym%cartesian_half_turns = cartesian_half_turns
 
       IF (PRESENT(use_spglib_reduction)) THEN
          spglib_reduction = use_spglib_reduction
@@ -441,16 +462,18 @@ CONTAINS
 !> \param inversion_symmetry_only ...
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
+!> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen_general(csym, xkp_in, wkp_in, symm, full_grid, &
-                                 inversion_symmetry_only, use_spglib_reduction, use_spglib_backend)
+                                 inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_in
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp_in
       LOGICAL, INTENT(IN), OPTIONAL                      :: symm, full_grid, &
                                                             inversion_symmetry_only, &
                                                             use_spglib_reduction, &
-                                                            use_spglib_backend
+                                                            use_spglib_backend, &
+                                                            cartesian_half_turns
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_gen_general'
 
@@ -481,6 +504,8 @@ CONTAINS
 
       csym%fullgrid = fullmesh
       csym%inversion_only = inversion_only
+      csym%cartesian_half_turns = .FALSE.
+      IF (PRESENT(cartesian_half_turns)) csym%cartesian_half_turns = cartesian_half_turns
       csym%spglib_reduction = spglib_reduction
       csym%spglib_backend = spglib_backend
       csym%nkpoint = 0
@@ -573,7 +598,7 @@ CONTAINS
       CALL detect_k290_symmetry(csym, a1, a2, a3, b1, b2, b3, alat, nc, ib, r)
       IF (spglib_reduction) CALL cite_reference(Togo2018)
 
-      IF (csym%n_operations > nc .AND. .NOT. spglib_reduction) THEN
+      IF (csym%n_operations > nc .AND. .NOT. spglib_reduction .AND. .NOT. csym%cartesian_half_turns) THEN
          ALLOCATE (srot(3, 3, csym%n_operations))
          CALL setup_spglib_operations(csym, srot, nrot)
          CALL reduce_spglib_kpoint_mesh(csym, xkp, wkp, kpop, srot, nrot)
@@ -670,7 +695,7 @@ CONTAINS
 
       INTEGER                                            :: i, ihc, ihg, indpg, iou, isy, li, nat, &
                                                             ntvec
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: isc, ty
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: isc, retained, ty
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: f0
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: rx, tvec, xkapa
       REAL(KIND=dp), DIMENSION(3)                        :: origin
@@ -717,6 +742,18 @@ CONTAINS
          csym%f0(1:nat, i) = f0(i, 1:nat)
       END DO
       csym%ibrot(1:nc) = ib(1:nc)
+
+      IF (csym%cartesian_half_turns) THEN
+         retained = PACK([(i, i=1, nc)], [(crys_sym_cartesian_halfturn(csym%rt(:, :, i)), i=1, nc)])
+         CPASSERT(SIZE(retained) > 0)
+         csym%rt = csym%rt(:, :, retained)
+         csym%vt = csym%vt(:, retained)
+         csym%f0 = csym%f0(:, retained)
+         csym%ibrot = csym%ibrot(retained)
+         nc = SIZE(retained)
+         csym%nrtot = nc
+         ib(:nc) = csym%ibrot
+      END IF
 
       DEALLOCATE (xkapa, rx, tvec, ty, isc, f0)
 
@@ -810,6 +847,10 @@ CONTAINS
          DO iop = 1, csym%n_operations
             irot(1:3, 1:3) = csym%rotations(1:3, 1:3, iop)
             frot(1:3, 1:3) = TRANSPOSE(irot(1:3, 1:3))
+            IF (csym%cartesian_half_turns) THEN
+               rfrac = REAL(frot, dp)
+               IF (.NOT. crys_sym_cartesian_halfturn(MATMUL(csym%hmat, MATMUL(rfrac, h_inv)))) CYCLE
+            END IF
             identity = ALL(frot == eye)
             zero_translation = ALL(ABS(csym%translations(1:3, iop) - &
                                        ANINT(csym%translations(1:3, iop))) <= eps)
@@ -861,9 +902,11 @@ CONTAINS
       INTEGER                                            :: iop, jop, pass
       INTEGER, DIMENSION(3, 3)                           :: eye, frot, irot
       LOGICAL                                            :: duplicate, identity
+      REAL(dp)                                           :: h_inv(3, 3)
 
       CPASSERT(csym%symlib)
 
+      h_inv = inv_3x3(csym%hmat)
       srot = 0
       eye = 0
       eye(1, 1) = 1
@@ -876,6 +919,9 @@ CONTAINS
          DO iop = 1, csym%n_operations
             irot(1:3, 1:3) = csym%rotations(1:3, 1:3, iop)
             frot(1:3, 1:3) = TRANSPOSE(irot(1:3, 1:3))
+            IF (csym%cartesian_half_turns) THEN
+               IF (.NOT. crys_sym_cartesian_halfturn(MATMUL(csym%hmat, MATMUL(REAL(frot, dp), h_inv)))) CYCLE
+            END IF
             identity = ALL(frot == eye)
             IF (pass == 1 .AND. .NOT. identity) CYCLE
             IF (pass == 2 .AND. identity) CYCLE

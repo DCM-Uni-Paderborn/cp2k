@@ -14,6 +14,7 @@ MODULE kpoint_mo_symmetry_methods
                                               cp_cfm_set_submatrix,&
                                               cp_cfm_to_cfm,&
                                               cp_cfm_type
+   USE cryssym,                         ONLY: crys_sym_cartesian_halfturn
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: find_kpoint_rotation_slot,&
                                               kind_rotmat_type,&
@@ -28,9 +29,35 @@ MODULE kpoint_mo_symmetry_methods
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'kpoint_mo_symmetry_methods'
 
    PUBLIC :: kpoint_same_periodic, &
-             kpoint_transform_scf_mo, kpoint_cell_gauge_action
+             kpoint_transform_scf_mo, kpoint_cell_gauge_action, kpoint_halfturn_symmetry
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check every selected spatial action, including operations fixing one point.
+!> \param kpoints Initialized native mesh with its spatial and time-reversal metadata.
+!> \return Whether all spatial actions belong to the Cartesian proper half-turn group.
+! **************************************************************************************************
+   LOGICAL FUNCTION kpoint_halfturn_symmetry(kpoints) RESULT(allowed)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+
+      INTEGER                                            :: ik, op
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      allowed = .FALSE.
+      IF (.NOT. ASSOCIATED(kpoints)) RETURN
+      IF (.NOT. ASSOCIATED(kpoints%kp_sym)) RETURN
+      DO ik = 1, kpoints%nkp
+         sym => kpoints%kp_sym(ik)%kpoint_sym
+         IF (.NOT. ASSOCIATED(sym)) RETURN
+         IF (sym%nwred <= 0) CYCLE
+         IF (.NOT. ASSOCIATED(sym%rot)) RETURN
+         DO op = 1, sym%nwred
+            IF (.NOT. crys_sym_cartesian_halfturn(sym%rot(:, :, op))) RETURN
+         END DO
+      END DO
+      allowed = .TRUE.
+   END FUNCTION kpoint_halfturn_symmetry
 
 ! **************************************************************************************************
 !> \brief AO action in the cell Fourier gauge H(k)=sum_R exp(+ikR) H(R).

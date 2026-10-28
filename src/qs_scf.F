@@ -1176,7 +1176,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
       create_search_state => qs_skala_scf_create
-      IF (do_kpoints .AND. .NOT. dft_control%use_gauxc) THEN
+      IF (do_kpoints) THEN
          ! The input-selected reduction also constrains operations leaving a point fixed.
          ! Canonical acceptance separately checks the unrestricted physical residual.
          IF (.NOT. kpoints%full_grid) create_search_state => qs_skala_scf_create_symmetric

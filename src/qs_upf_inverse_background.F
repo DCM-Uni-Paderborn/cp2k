@@ -17,6 +17,7 @@ MODULE qs_upf_inverse_background
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kp_transform_plan_create,&
                                               kpoint_star_create
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_halfturn_symmetry
    USE kpoint_types,                    ONLY: kpoint_star_type,&
                                               kpoint_type
    USE mathconstants,                   ONLY: twopi
@@ -72,8 +73,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: soft_basis
 
       CHARACTER(LEN=1)                                   :: symmetry
-      INTEGER                                            :: a, b, ENTRY, ik, image, info, &
-                                                            native_cell(3)
+      INTEGER                                            :: a, b, ENTRY, image, info, native_cell(3)
       INTEGER, POINTER                                   :: sizes(:)
       REAL(dp)                                           :: image_error, inverse_lattice(3, 3), &
                                                             rab(3), tolerance
@@ -104,12 +104,9 @@ CONTAINS
       END DO
       IF (map%bloch) THEN
          CPASSERT(ASSOCIATED(kpoints))
-         DO ik = 1, kpoints%nkp
-            IF (kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry .AND. &
-                control%use_gauxc) THEN
-               CPABORT("Spatial k-point symmetry with learned XC is not implemented yet")
-            END IF
-         END DO
+         IF (control%use_gauxc .AND. .NOT. kpoint_halfturn_symmetry(kpoints)) THEN
+            CPABORT("Use CARTESIAN_HALF_TURNS for learned XC spatial symmetry")
+         END IF
          ! The star retains physical AO actions for both spatial and time-reversed partners.
          CALL kp_transform_plan_create(map%plan, sab, kpoints%cell_to_index, SIZE(overlap, 2), &
                                        block_template=overlap(1, 1)%matrix)
