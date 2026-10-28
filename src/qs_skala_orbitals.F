@@ -28,7 +28,8 @@ MODULE qs_skala_orbitals
         skala_orbital_chart_create, skala_orbital_chart_derivative, skala_orbital_chart_evaluate, &
         skala_orbital_chart_release, skala_orbital_chart_restrict, &
         skala_orbital_chart_set_occupations, skala_orbital_chart_set_reference, &
-        skala_orbital_chart_size, skala_orbital_chart_symmetry, skala_orbital_chart_type
+        skala_orbital_chart_size, skala_orbital_chart_symmetry, skala_orbital_chart_type, &
+        skala_orbital_multiplets
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -43,6 +44,7 @@ MODULE qs_skala_orbitals
       TYPE(mo_set_type), POINTER :: native => NULL()
       COMPLEX(dp), ALLOCATABLE :: coefficients(:, :)
       REAL(dp), ALLOCATABLE :: occupations(:), eigenvalues(:)
+      INTEGER, ALLOCATABLE :: occupation_groups(:)
       REAL(dp) :: weight = 1.0_dp
       LOGICAL :: canonicalized = .FALSE., variable_occupations = .FALSE.
    END TYPE qs_skala_orbitals_type
@@ -51,8 +53,8 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Preserve the complete little group of the initial original-metric orbital reference.
 !>        Fixed occupations use the full unitary/antiunitary group without diagonalizing its actions.
-!>        Independent thermal variables require diagonal actions. A real-character adaptation
-!>        remains available inside exactly equal native occupation and energy subspaces.
+!>        Thermal variables share occupations within irreducible multiplets. A real-character
+!>        adaptation remains available inside equal native occupation and energy subspaces.
 !>        A failed adaptation leaves the state and all native MO/density storage unchanged.
 !> \param state Initial normalized orbital state, before canonical acceptance.
 !> \param metric Original complete charge metric.
@@ -288,14 +290,14 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: representative, operations(:)
       INTEGER, INTENT(OUT)                               :: info
 
-      COMPLEX(dp), ALLOCATABLE                           :: action(:, :), actions(:, :, :), &
-                                                            coefficients(:, :), original(:, :), &
-                                                            source(:, :), weighted(:, :)
+      COMPLEX(dp), ALLOCATABLE :: action(:, :), actions(:, :, :), coefficients(:, :), gauge(:, :), &
+         original(:, :), source(:, :), weighted(:, :)
       INTEGER                                            :: i, n, op, status
+      INTEGER, ALLOCATABLE                               :: groups(:)
       LOGICAL                                            :: valid
       LOGICAL, ALLOCATABLE                               :: antiunitary(:)
       REAL(dp)                                           :: rotation(3, 3)
-      REAL(dp), ALLOCATABLE                              :: zero(:)
+      REAL(dp), ALLOCATABLE                              :: energies(:), zero(:)
       TYPE(skala_orbital_chart_type)                     :: chart
 
       info = -1
@@ -310,10 +312,21 @@ CONTAINS
          actions(:, :, op) = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, MATMUL(action, source)))
       END DO
       chart = state%chart
-      CALL skala_orbital_chart_symmetry(chart, actions, antiunitary, valid)
+      IF (state%variable_occupations) THEN
+         CALL skala_orbital_multiplets(actions, antiunitary, state%occupations, state%eigenvalues, &
+                                       state%native%nmo, gauge, groups, energies, valid)
+         IF (.NOT. valid) RETURN
+         coefficients = MATMUL(state%coefficients, gauge)
+         CALL skala_orbital_chart_set_reference(chart, coefficients, metric, valid)
+         IF (.NOT. valid) RETURN
+         CALL skala_orbital_chart_symmetry(chart, actions, antiunitary, valid, occupation_groups=groups)
+      ELSE
+         CALL skala_orbital_chart_symmetry(chart, actions, antiunitary, valid)
+      END IF
       IF (.NOT. valid) RETURN
       CALL orbital_density(state, original)
-      ALLOCATE (zero(skala_orbital_chart_size(chart)), coefficients(n, n))
+      ALLOCATE (zero(skala_orbital_chart_size(chart)))
+      IF (.NOT. ALLOCATED(coefficients)) ALLOCATE (coefficients(n, n))
       zero = 0.0_dp
       CALL skala_orbital_chart_evaluate(chart, zero, coefficients)
       weighted = coefficients
@@ -325,6 +338,10 @@ CONTAINS
       CALL skala_orbital_chart_release(state%chart)
       state%chart = chart
       state%coefficients = coefficients
+      IF (state%variable_occupations) THEN
+         state%occupation_groups = groups
+         state%eigenvalues = energies
+      END IF
       info = 0
    END SUBROUTINE adapt_little_group
 
@@ -416,6 +433,7 @@ CONTAINS
       state%occupations = 0.0_dp
       state%occupations(:nreference) = native%occupation_numbers(:nreference)
       state%eigenvalues = 0.0_dp
+      state%eigenvalues(:nreference) = native%eigenvalues(:nreference)
       zero = 0.0_dp
       CALL qs_skala_orbitals_evaluate(state, zero)
    END SUBROUTINE qs_skala_orbitals_create
@@ -429,6 +447,7 @@ CONTAINS
 
       CALL skala_orbital_chart_release(state%chart)
       IF (ALLOCATED(state%coefficients)) DEALLOCATE (state%coefficients, state%occupations, state%eigenvalues)
+      IF (ALLOCATED(state%occupation_groups)) DEALLOCATE (state%occupation_groups)
       NULLIFY (state%native)
       state%weight = 1.0_dp
       state%canonicalized = .FALSE.
@@ -484,6 +503,7 @@ CONTAINS
       INTEGER                                            :: i, info, n, ng
       INTEGER, ALLOCATABLE                               :: indices(:)
       LOGICAL, ALLOCATABLE                               :: done(:)
+      REAL(dp)                                           :: block_mean
       REAL(dp), ALLOCATABLE                              :: eigenvalues(:), gradient(:), &
                                                             group_values(:), real_work(:)
 
@@ -508,6 +528,20 @@ CONTAINS
          indices(:) = PACK([(info, info=1, n)], state%occupations == state%occupations(i))
          done(indices) = .TRUE.
          rotation(:, :) = projected(indices, indices)
+         IF (ng > 1) THEN
+            block_mean = SUM([(REAL(rotation(info, info), dp), info=1, ng)])/REAL(ng, dp)
+            DO info = 1, ng
+               rotation(info, info) = rotation(info, info) - block_mean
+            END DO
+            ! Avoid arbitrary rotations selected by roundoff inside a degenerate eigenspace.
+            ! The caller still checks the rebuilt unrestricted gradient and thermal stationarity.
+            IF (SQRT(SUM(ABS(rotation)**2)) <= tolerance) THEN
+               eigenvalues(indices) = block_mean
+               DEALLOCATE (indices, rotation, group_values, work, real_work)
+               CYCLE
+            END IF
+            rotation(:, :) = projected(indices, indices)
+         END IF
          CALL zheev('V', 'U', ng, rotation, ng, group_values, work, SIZE(work), real_work, info)
          valid = info == 0
          IF (.NOT. valid) RETURN

@@ -27,7 +27,7 @@ MODULE skala_orbital_constraints
 
    PUBLIC :: skala_orbital_chart_set_reference
    PUBLIC :: skala_orbital_chart_restrict
-   PUBLIC :: skala_orbital_chart_symmetry
+   PUBLIC :: skala_orbital_chart_symmetry, skala_orbital_multiplets
 
    TYPE skala_orbital_chart_type
       PRIVATE
@@ -35,6 +35,7 @@ MODULE skala_orbital_constraints
                                   work(:, :), transformed(:, :)
       REAL(dp), ALLOCATABLE :: occupations(:), coordinate(:), coordinate_scale(:)
       INTEGER, ALLOCATABLE :: pairs(:, :), component(:), pivots(:)
+      INTEGER, ALLOCATABLE :: occupation_groups(:)
       COMPLEX(dp), ALLOCATABLE :: symmetry(:, :, :)
       LOGICAL, ALLOCATABLE :: antiunitary(:)
       REAL(dp) :: metric_weight = 1.0_dp
@@ -377,22 +378,25 @@ CONTAINS
 !>        for every allowed generator. Projected coordinates may include null directions.
 !>        The caller supplies the complete group, including its identity. Scalar projective phases
 !>        cancel in the conjugation action. Initial occupations must commute with every action.
-!>        Independent thermal occupations additionally require diagonal actions in this frame.
+!>        Thermal occupations may vary independently between the supplied multiplets.
 !> \param chart Initial orbital chart at zero coordinates.
 !> \param actions Complete unitary parts of the unitary or antiunitary reference-space actions.
 !> \param antiunitary Whether the corresponding action conjugates orbital coefficients.
 !> \param valid Whether the original reference and occupation variables admit these actions.
+!> \param occupation_groups Optional multiplet labels. Occupations are equal within each label.
 ! **************************************************************************************************
-   SUBROUTINE skala_orbital_chart_symmetry(chart, actions, antiunitary, valid)
+   SUBROUTINE skala_orbital_chart_symmetry(chart, actions, antiunitary, valid, occupation_groups)
       TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
       COMPLEX(dp), INTENT(IN)                            :: actions(:, :, :)
       LOGICAL, INTENT(IN)                                :: antiunitary(:)
       LOGICAL, INTENT(OUT)                               :: valid
+      INTEGER, INTENT(IN), OPTIONAL                      :: occupation_groups(:)
 
       REAL(dp), PARAMETER                                :: tolerance = 3.e-11_dp
 
       COMPLEX(dp), ALLOCATABLE                           :: gram(:, :)
       INTEGER                                            :: i, j, n, op
+      INTEGER, ALLOCATABLE                               :: groups(:)
 
       CPASSERT(ALLOCATED(chart%base))
       IF (chart%evaluated) THEN
@@ -405,6 +409,16 @@ CONTAINS
       IF (SIZE(antiunitary) == 0) RETURN
       IF (.NOT. ALL(ieee_is_finite(REAL(actions, dp)))) RETURN
       IF (.NOT. ALL(ieee_is_finite(AIMAG(actions)))) RETURN
+      groups = [(i, i=1, n)]
+      IF (PRESENT(occupation_groups)) THEN
+         CPASSERT(SIZE(occupation_groups) == n)
+         DO i = 1, n
+            groups(i) = MINVAL(PACK([(j, j=1, n)], occupation_groups == occupation_groups(i)))
+         END DO
+      END IF
+      IF (chart%variable_occupations) THEN
+         IF (MAXVAL(ABS(chart%occupations - chart%occupations(groups))) > tolerance) RETURN
+      END IF
       ALLOCATE (gram(n, n))
       DO op = 1, SIZE(antiunitary)
          gram = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
@@ -415,19 +429,171 @@ CONTAINS
          DO j = 1, n
             DO i = 1, n
                IF (i == j) CYCLE
+               IF (ABS((chart%occupations(i) - chart%occupations(j))*actions(i, j, op)) > tolerance) RETURN
                IF (chart%variable_occupations) THEN
-                  IF (ABS(actions(i, j, op)) > tolerance) RETURN
-               ELSE
-                  IF (ABS((chart%occupations(i) - chart%occupations(j))*actions(i, j, op)) > tolerance) RETURN
+                  IF (groups(i) /= groups(j) .AND. ABS(actions(i, j, op)) > tolerance) RETURN
                END IF
             END DO
          END DO
       END DO
       chart%symmetry = actions
       chart%antiunitary = antiunitary
+      IF (chart%variable_occupations) chart%occupation_groups = groups
       chart%evaluated = .FALSE.
       valid = .TRUE.
    END SUBROUTINE skala_orbital_chart_symmetry
+
+! **************************************************************************************************
+!> \brief Resolve irreducible thermal multiplets of a complete unitary and conjugating group.
+!>        Preserve retained-band, occupation and auxiliary-energy sectors to symmetry tolerance.
+!>        A nonscalar averaged Hermitian basis element splits equivalent copies. Repeating until
+!>        every averaged basis element is scalar avoids tying independent copies accidentally.
+!>        Permanently empty completion sectors need no irreducible decomposition or gauge change.
+!> \param actions Reference-space actions, rotated into the resulting multiplet basis.
+!> \param antiunitary Conjugating actions.
+!> \param occupations Original complete occupation vector.
+!> \param reference_energies Original complete auxiliary energies, in hartree.
+!> \param nretained Number of thermally variable bands preceding the empty completion.
+!> \param gauge Unitary reference rotation.
+!> \param groups Minimal reference index of each irreducible multiplet.
+!> \param energies New auxiliary energies, scalar inside each multiplet.
+!> \param valid Whether the original reference admits the construction.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_multiplets(actions, antiunitary, occupations, reference_energies, nretained, &
+                                       gauge, groups, energies, valid)
+      COMPLEX(dp), INTENT(INOUT)                         :: actions(:, :, :)
+      LOGICAL, INTENT(IN)                                :: antiunitary(:)
+      REAL(dp), INTENT(IN)                               :: occupations(:), reference_energies(:)
+      INTEGER, INTENT(IN)                                :: nretained
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: gauge(:, :)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: groups(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: energies(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      REAL(dp), PARAMETER                                :: tolerance = 3.e-11_dp
+
+      COMPLEX(dp), ALLOCATABLE                           :: action(:, :), basis(:, :), label(:, :), &
+                                                            source(:, :), term(:, :), work(:)
+      INTEGER                                            :: first, i, j, m, mode, n, op, status
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      LOGICAL                                            :: consistent, split
+      REAL(dp)                                           :: scale
+      REAL(dp), ALLOCATABLE                              :: real_work(:), values(:)
+
+      valid = .FALSE.
+      n = SIZE(occupations)
+      consistent = SIZE(reference_energies) == n .AND. nretained >= 0 .AND. nretained <= n
+      CPASSERT(consistent)
+      consistent = ALL(SHAPE(actions) == [n, n, SIZE(antiunitary)])
+      CPASSERT(consistent)
+      IF (SIZE(antiunitary) == 0) RETURN
+      IF (.NOT. ALL(ieee_is_finite(occupations)) .OR. .NOT. ALL(ieee_is_finite(reference_energies))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(actions, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(actions)))) RETURN
+      ALLOCATE (groups(n), gauge(n, n))
+      groups = 0
+      gauge = 0.0_dp
+      DO i = 1, n
+         gauge(i, i) = 1.0_dp
+         IF (groups(i) /= 0) CYCLE
+         groups(i) = i
+         DO j = i + 1, n
+            IF (groups(j) /= 0) CYCLE
+            IF ((i <= nretained) .NEQV. (j <= nretained)) CYCLE
+            IF (ABS(occupations(i) - occupations(j)) > tolerance) CYCLE
+            scale = MAX(1.0_dp, ABS(reference_energies(i)), ABS(reference_energies(j)))
+            IF (ABS(reference_energies(i) - reference_energies(j)) > tolerance*scale) CYCLE
+            groups(j) = i
+         END DO
+      END DO
+      DO op = 1, SIZE(antiunitary)
+         source = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
+         DO i = 1, n
+            source(i, i) = source(i, i) - 1.0_dp
+         END DO
+         IF (MAXVAL(ABS(source)) > tolerance) RETURN
+         DO j = 1, n
+            DO i = 1, n
+               IF (groups(i) /= groups(j) .AND. ABS(actions(i, j, op)) > tolerance) RETURN
+            END DO
+         END DO
+      END DO
+      DO
+         split = .FALSE.
+         DO first = 1, n
+            IF (groups(first) /= first) CYCLE
+            IF (first > nretained) CYCLE
+            indices = PACK([(i, i=1, n)], groups == first)
+            m = SIZE(indices)
+            IF (m <= 1) CYCLE
+            ALLOCATE (basis(m, m), label(m, m), values(m), work(2*m), real_work(3*m))
+            search: DO mode = 1, 3
+               DO j = 1, m
+                  DO i = 1, j
+                     IF ((mode == 1) .NEQV. (i == j)) CYCLE
+                     basis = 0.0_dp
+                     SELECT CASE (mode)
+                     CASE (1)
+                        basis(i, i) = 1.0_dp
+                     CASE (2)
+                        basis(i, j) = 1.0_dp
+                        basis(j, i) = 1.0_dp
+                     CASE (3)
+                        basis(i, j) = CMPLX(0.0_dp, 1.0_dp, dp)
+                        basis(j, i) = CMPLX(0.0_dp, -1.0_dp, dp)
+                     END SELECT
+                     label = 0.0_dp
+                     DO op = 1, SIZE(antiunitary)
+                        action = actions(indices, indices, op)
+                        term = basis
+                        IF (antiunitary(op)) term = CONJG(term)
+                        label = label + MATMUL(action, MATMUL(term, CONJG(TRANSPOSE(action))))/REAL(SIZE(antiunitary), dp)
+                     END DO
+                     label = 0.5_dp*(label + CONJG(TRANSPOSE(label)))
+                     scale = SUM([(REAL(label(op, op), dp), op=1, m)])/REAL(m, dp)
+                     DO op = 1, m
+                        label(op, op) = label(op, op) - scale
+                     END DO
+                     IF (MAXVAL(ABS(label)) <= tolerance) CYCLE
+                     CALL zheev('V', 'U', m, label, m, values, work, SIZE(work), real_work, status)
+                     IF (status /= 0) RETURN
+                     IF (MAXVAL(values(2:) - values(:m - 1)) <= tolerance) RETURN
+                     gauge(:, indices) = MATMUL(gauge(:, indices), label)
+                     DO op = 1, SIZE(antiunitary)
+                        basis = label
+                        IF (antiunitary(op)) basis = CONJG(basis)
+                        source = actions(:, :, op)
+                        source(:, indices) = MATMUL(source(:, indices), basis)
+                        source(indices, :) = MATMUL(CONJG(TRANSPOSE(label)), source(indices, :))
+                        actions(:, :, op) = source
+                     END DO
+                     groups(indices(1)) = indices(1)
+                     DO op = 2, m
+                        groups(indices(op)) = groups(indices(op - 1))
+                        IF (values(op) - values(op - 1) > tolerance) groups(indices(op)) = indices(op)
+                     END DO
+                     split = .TRUE.
+                     EXIT search
+                  END DO
+               END DO
+            END DO search
+            DEALLOCATE (basis, label, values, work, real_work)
+            IF (split) EXIT
+         END DO
+         IF (.NOT. split) EXIT
+      END DO
+      energies = SUM(ABS(gauge)**2*SPREAD(reference_energies, 2, n), DIM=1)
+      DO first = 1, n
+         IF (groups(first) /= first) CYCLE
+         indices = PACK([(i, i=1, n)], groups == first)
+         energies(indices) = SUM(energies(indices))/REAL(SIZE(indices), dp)
+      END DO
+      source = MATMUL(gauge*SPREAD(energies, 1, n), CONJG(TRANSPOSE(gauge)))
+      DO i = 1, n
+         source(i, i) = source(i, i) - reference_energies(i)
+      END DO
+      IF (MAXVAL(ABS(source)) > tolerance*MAX(1.0_dp, MAXVAL(ABS(reference_energies)))) RETURN
+      valid = .TRUE.
+   END SUBROUTINE skala_orbital_multiplets
 
 ! **************************************************************************************************
 !> \brief Apply the real-linear group average or its exact transpose in the reference frame.
@@ -474,9 +640,15 @@ CONTAINS
       TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
       REAL(dp), INTENT(IN)                               :: occupations(:)
 
+      LOGICAL                                            :: invariant
+
       CPASSERT(chart%variable_occupations)
       CPASSERT(SIZE(occupations) == SIZE(chart%occupations))
       CPASSERT(ALL(ieee_is_finite(occupations)) .AND. ALL(occupations >= 0.0_dp))
+      IF (ALLOCATED(chart%occupation_groups)) THEN
+         invariant = MAXVAL(ABS(occupations - occupations(chart%occupation_groups))) <= 3.e-11_dp
+         CPASSERT(invariant)
+      END IF
       chart%occupations(:) = occupations
    END SUBROUTINE skala_orbital_chart_set_occupations
 
@@ -633,6 +805,7 @@ CONTAINS
                      chart%pairs, chart%component, chart%pivots)
       END IF
       IF (ALLOCATED(chart%symmetry)) DEALLOCATE (chart%symmetry, chart%antiunitary)
+      IF (ALLOCATED(chart%occupation_groups)) DEALLOCATE (chart%occupation_groups)
       chart%evaluated = .FALSE.
       chart%metric_weight = 1.0_dp
       chart%variable_occupations = .FALSE.
@@ -718,7 +891,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: derivative(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: physical_tangent
 
-      INTEGER                                            :: a, b, i, n
+      INTEGER                                            :: a, b, i, j, n
       LOGICAL                                            :: physical
       REAL(dp)                                           :: value
 
@@ -732,6 +905,18 @@ CONTAINS
       IF (physical) THEN
          chart%transformed(:, :) = MATMUL(CONJG(TRANSPOSE(chart%coefficients)), &
                                           MATMUL(OPERATOR, chart%coefficients))
+         ! Form the occupation commutator before averaging to preserve the energy zero.
+         DO j = 1, n
+            DO i = 1, n
+               IF (chart%occupations(i) + chart%occupations(j) == 0.0_dp) THEN
+                  chart%transformed(i, j) = 0.0_dp
+               ELSE
+                  chart%transformed(i, j) = 2.0_dp*(chart%occupations(j) - chart%occupations(i))* &
+                                            chart%transformed(i, j)/ &
+                                            SQRT(chart%metric_weight*(chart%occupations(i) + chart%occupations(j)))
+               END IF
+            END DO
+         END DO
       ELSE
          chart%transformed(:, :) = MATMUL(CONJG(TRANSPOSE(chart%base)), MATMUL(OPERATOR, chart%base))
          chart%work(:, :) = MATMUL(CONJG(TRANSPOSE(chart%rotation)), chart%transformed)
@@ -739,6 +924,8 @@ CONTAINS
             chart%work(i, :) = chart%occupations(i)*chart%work(i, :)
          END DO
          chart%transformed(:, :) = MATMUL(chart%inverse, MATMUL(chart%work, chart%inverse))
+         ! The Hermitian part has zero contraction with every anti-Hermitian generator.
+         chart%transformed = 0.5_dp*(chart%transformed - CONJG(TRANSPOSE(chart%transformed)))
       END IF
       CALL orbital_symmetry_project(chart%symmetry, chart%antiunitary, chart%transformed, .TRUE.)
       DO i = 1, SIZE(derivative)
@@ -754,8 +941,7 @@ CONTAINS
             ELSE
                value = AIMAG(chart%transformed(a, b))
             END IF
-            derivative(i) = 2.0_dp*(chart%occupations(b) - chart%occupations(a))*value/ &
-                            SQRT(chart%metric_weight*(chart%occupations(a) + chart%occupations(b)))
+            derivative(i) = value
          ELSE IF (chart%component(i) == 1) THEN
             derivative(i) = 2.0_dp*REAL(chart%transformed(b, a) - chart%transformed(a, b), dp)
          ELSE

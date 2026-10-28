@@ -145,6 +145,7 @@ MODULE qs_skala_scf
       INTEGER(KIND=int_8) :: point_operator_bytes = 0_int_8
       INTEGER, ALLOCATABLE :: dimensions(:, :), offsets(:, :)
       INTEGER, ALLOCATABLE :: band_dimensions(:, :), band_offsets(:, :), band_groups(:), band_spins(:)
+      INTEGER, ALLOCATABLE :: multiplet_offsets(:), multiplet_members(:)
       REAL(dp), ALLOCATABLE :: band_reference(:), band_energies(:), band_weights(:), band_occupations(:), &
                                band_response(:), band_scales(:), thermal_targets(:), thermal_mu(:), thermal_spin_entropy(:)
       INTEGER :: orbital_size = 0
@@ -425,6 +426,7 @@ CONTAINS
       END IF
       IF (ALLOCATED(state%band_dimensions)) THEN
          DEALLOCATE (state%band_dimensions, state%band_offsets, state%band_groups, state%band_spins, &
+                     state%multiplet_offsets, state%multiplet_members, &
                      state%band_reference, state%band_energies, state%band_weights, state%band_occupations, &
                      state%band_response, state%band_scales, state%thermal_targets, state%thermal_mu, state%thermal_spin_entropy)
       END IF
@@ -460,8 +462,8 @@ CONTAINS
    END FUNCTION qs_skala_scf_size
 
 ! **************************************************************************************************
-!> \brief Read the constant map to unscaled Cayley and dimensionless auxiliary-energy coordinates.
-!>        This map is frozen at construction, including the positive thermal response factors.
+!> \brief Read positive reference scales before the fixed orbital and occupation projections.
+!>        These diagonal scales do not invert null directions of the symmetry projections.
 !> \param state Native chart with its original particle-number groups.
 !> \param scales Per-coordinate multiplier to the unscaled reference variables.
 ! **************************************************************************************************
@@ -1056,10 +1058,12 @@ CONTAINS
             mean = SUM(state%band_response(indices)*residual(indices))/weight
             mean_direction = (SUM(weighted_direction(indices)*(residual(indices) - mean)) + &
                               SUM(state%band_response(indices)*residual_direction(indices)))/weight
-            response(state%orbital_size + indices) = -state%band_scales(indices)/state%temperature* &
+            response(state%orbital_size + indices) = -1.0_dp/state%temperature* &
                                                      (weighted_direction(indices)*(residual(indices) - mean) + &
                                                       state%band_response(indices)*(residual_direction(indices) - mean_direction))
          END DO
+         CALL project_band_multiplets(state%multiplet_offsets, state%multiplet_members, response(state%orbital_size + 1:))
+         response(state%orbital_size + 1:) = state%band_scales*response(state%orbital_size + 1:)
       END IF
    END SUBROUTINE qs_skala_scf_operator_response
 
@@ -1196,6 +1200,7 @@ CONTAINS
       CPASSERT(state%thermal)
       CPASSERT(SIZE(direction) == SIZE(state%band_reference))
       energy_direction = state%band_scales*direction
+      CALL project_band_multiplets(state%multiplet_offsets, state%multiplet_members, energy_direction)
       ALLOCATE (occupations_direction(SIZE(direction)), SOURCE=0.0_dp)
       DO group = 1, SIZE(state%thermal_targets)
          indices = PACK([(i, i=1, SIZE(direction))], state%band_groups == group)
@@ -2726,7 +2731,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Read owned constraints and verify their current physical feasibility.
 !>        An empty selection is valid. Do not reuse a selection from another geometry or FFT layout.
-!> \param state Evaluated native orbital state with its original physical sample keys.
+!> \param state Native orbital state with its original physical sample keys.
 !> \param points Global physical sample keys.
 !> \param domains Evaluation domain per selected sample.
 !> \param spins Physical spin selectors.
@@ -2735,7 +2740,8 @@ CONTAINS
 !> \param tolerances Original absolute physical feasibility windows.
 !> \param valid Whether every selected physical value remains within its original window.
 !> \param require_feasible Check current values, default true. False permits restoring the same
-!>        owned constraints before minimization, but still requires the original geometry and layout.
+!>        owned constraints before minimization or reading their metadata after canonical rejection.
+!>        Metadata still requires the original geometry and layout, but no evaluated orbital fields.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, require_feasible)
       TYPE(qs_skala_scf_type), INTENT(IN)                :: state
@@ -2752,7 +2758,6 @@ CONTAINS
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:)
 
-      CPASSERT(state%evaluated)
       m = skala_density_constraints_count(state%constraints)
       valid = .TRUE.
       IF (m == 0) THEN
@@ -2772,6 +2777,7 @@ CONTAINS
       IF (PRESENT(require_feasible)) THEN
          IF (.NOT. require_feasible) RETURN
       END IF
+      CPASSERT(state%evaluated)
       CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values)
       valid = ALL(ABS(values - targets) <= tolerances)
    END SUBROUTINE qs_skala_scf_selected
@@ -4130,9 +4136,10 @@ CONTAINS
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       INTEGER, INTENT(INOUT)                             :: offset
 
-      INTEGER                                            :: count, first, groups, ik, last, local, &
-                                                            nk, ns, spin
-      LOGICAL                                            :: owner, separate
+      INTEGER                                            :: count, first, groups, i, ik, last, &
+                                                            local, nk, ns, spin
+      INTEGER, ALLOCATABLE                               :: counts(:), multiplets(:)
+      LOGICAL                                            :: owner, separate, valid
       REAL(dp), ALLOCATABLE                              :: targets(:)
       TYPE(dft_control_type), POINTER                    :: dft
       TYPE(mo_set_type), POINTER                         :: mos(:)
@@ -4181,6 +4188,8 @@ CONTAINS
       ALLOCATE (state%band_reference(count), state%band_energies(count), state%band_weights(count), &
                 state%band_occupations(count), state%band_response(count), state%band_groups(count), &
                 state%band_spins(count), state%band_scales(count))
+      ALLOCATE (multiplets(count), counts(count), state%multiplet_offsets(count + 1), state%multiplet_members(count))
+      multiplets = 0
       state%band_scales = SQRT(state%temperature*thermal_energy_unit)
       state%band_reference = 0.0_dp
       state%band_weights = 0.0_dp
@@ -4198,17 +4207,66 @@ CONTAINS
             first = state%band_offsets(ik, spin) + 1
             last = first + state%band_dimensions(ik, spin) - 1
             IF (owner) THEN
-               state%band_reference(first:last) = state%orbitals(local, spin)%native%eigenvalues(:last - first + 1)
+               state%band_reference(first:last) = state%orbitals(local, spin)%eigenvalues(:last - first + 1)
                state%band_weights(first:last) = state%orbitals(local, spin)%weight
+               multiplets(first:last) = [(i, i=first, last)]
+               IF (ALLOCATED(state%orbitals(local, spin)%occupation_groups)) THEN
+                  multiplets(first:last) = first - 1 + state%orbitals(local, spin)%occupation_groups(:last - first + 1)
+               END IF
             END IF
          END DO
       END DO
       CALL state%para_env%sum(state%band_reference)
       CALL state%para_env%sum(state%band_weights)
+      CALL state%para_env%sum(multiplets)
       CPASSERT(ALL(ieee_is_finite(state%band_reference)))
       CPASSERT(ALL(state%band_weights > 0.0_dp))
+      valid = ALL(multiplets >= 1 .AND. multiplets <= count)
+      CPASSERT(valid)
+      counts = 0
+      DO i = 1, count
+         counts(multiplets(i)) = counts(multiplets(i)) + 1
+      END DO
+      state%multiplet_offsets(1) = 1
+      DO i = 1, count
+         state%multiplet_offsets(i + 1) = state%multiplet_offsets(i) + counts(i)
+      END DO
+      counts = state%multiplet_offsets(:count)
+      DO i = 1, count
+         state%multiplet_members(counts(multiplets(i))) = i
+         counts(multiplets(i)) = counts(multiplets(i)) + 1
+      END DO
       offset = offset + count
    END SUBROUTINE initialize_thermal_state
+
+! **************************************************************************************************
+!> \brief Average a band vector within the original symmetry multiplets.
+!>        The same orthogonal projection acts on energy directions and their covectors.
+!>        Compressed membership gives linear cost without a dense band-space projector.
+!> \param offsets Start of each multiplet in the compressed membership list.
+!> \param members Global band indices, grouped by multiplet.
+!> \param values Band vector, overwritten by its multiplet average.
+! **************************************************************************************************
+   SUBROUTINE project_band_multiplets(offsets, members, values)
+      INTEGER, INTENT(IN)                                :: offsets(:), members(:)
+      REAL(dp), INTENT(INOUT)                            :: values(:)
+
+      INTEGER                                            :: first, group, last
+      LOGICAL                                            :: consistent
+      REAL(dp)                                           :: mean
+
+      consistent = SIZE(offsets) == SIZE(values) + 1 .AND. SIZE(members) == SIZE(values)
+      CPASSERT(consistent)
+      DO group = 1, SIZE(values)
+         first = offsets(group)
+         last = offsets(group + 1) - 1
+         IF (last <= first) CYCLE
+         ASSOCIATE (indices => members(first:last))
+            mean = SUM(values(indices))/REAL(SIZE(indices), dp)
+            values(indices) = mean
+         END ASSOCIATE
+      END DO
+   END SUBROUTINE project_band_multiplets
 
 ! **************************************************************************************************
 !> \brief Solve the original weighted Fermi constraint in every particle-number group.
@@ -4228,7 +4286,9 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: energies(:, :), occupations(:, :)
 
       CPASSERT(SIZE(coordinate) == SIZE(state%band_reference))
-      state%band_energies = state%band_reference + state%band_scales*coordinate
+      state%band_energies = state%band_scales*coordinate
+      CALL project_band_multiplets(state%multiplet_offsets, state%multiplet_members, state%band_energies)
+      state%band_energies = state%band_reference + state%band_energies
       state%entropy = 0.0_dp
       DO group = 1, SIZE(state%thermal_targets)
          indices = PACK([(i, i=1, SIZE(coordinate))], state%band_groups == group)
@@ -4343,7 +4403,9 @@ CONTAINS
          derivative(indices) = -state%band_response(indices)*(residual(indices) - mean)
          IF (PRESENT(physical)) physical(indices) = -SQRT(state%band_response(indices))*(residual(indices) - mean)
       END DO
+      CALL project_band_multiplets(state%multiplet_offsets, state%multiplet_members, derivative)
       derivative = state%band_scales/state%temperature*derivative
+      IF (PRESENT(physical)) CALL project_band_multiplets(state%multiplet_offsets, state%multiplet_members, physical)
    END SUBROUTINE thermal_covector
 
 ! **************************************************************************************************

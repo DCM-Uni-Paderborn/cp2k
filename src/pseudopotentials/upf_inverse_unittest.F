@@ -88,7 +88,7 @@ PROGRAM upf_inverse_unittest
         skala_orbital_chart_operator_response, skala_orbital_chart_release, &
         skala_orbital_chart_restrict, skala_orbital_chart_set_occupations, &
         skala_orbital_chart_set_reference, skala_orbital_chart_size, skala_orbital_chart_symmetry, &
-        skala_orbital_chart_type
+        skala_orbital_chart_type, skala_orbital_multiplets
    USE t_c_g0,                          ONLY: free_C0,&
                                               init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
@@ -178,15 +178,19 @@ CONTAINS
          occupations(4) = [1.7_dp, 0.3_dp, 1.2_dp, 0.8_dp], step = 1.e-5_dp
 
       COMPLEX(dp) :: actions(4, 4, 12), anti(4, 4), block(2, 2), coefficients(4, 4), &
-         density(4, 4), group_h(4, 4), h(4, 4), metric(4, 4), minus(4, 4), mo_density(4, 4), &
-         orbital_rotation(4, 4), plus(4, 4), reference(4, 4), response(4, 4), rotation(4, 4), &
-         term(4, 4), weighted(4, 4), zero(4, 4)
+         density(4, 4), group_h(4, 4), h(4, 4), house(4), metric(4, 4), minus(4, 4), &
+         mo_density(4, 4), orbital_rotation(4, 4), plus(4, 4), reference(4, 4), &
+         reference_actions(4, 4, 12), response(4, 4), rotation(4, 4), term(4, 4), weighted(4, 4), &
+         zero(4, 4)
+      COMPLEX(dp), ALLOCATABLE                           :: gauge(:, :)
       INTEGER                                            :: a, b, copy, i, j, mode, ngroup, op, &
                                                             reflection
+      INTEGER, ALLOCATABLE                               :: multiplets(:)
       LOGICAL                                            :: conjugating(12), valid
-      REAL(dp) :: analytic, angle, derivative(2), dq(8), em, ep, expected(8), f(4), g(8), gm(8), &
-         gp(8), gradient_minus(2), gradient_plus(2), hessian(2), hg(8), phase, phases(4), &
-         physical(8), q(8), value
+      REAL(dp) :: analytic, angle, derivative(2), df(4), dq(8), dqt(12), em, ep, expected(8), &
+         f(4), g(8), gm(8), gp(8), gradient_minus(2), gradient_plus(2), gt(12), gtm(12), gtp(12), &
+         hessian(2), hg(8), ht(12), phase, phases(4), physical(8), q(8), qt(12), value
+      REAL(dp), ALLOCATABLE                              :: auxiliary(:)
       TYPE(skala_orbital_chart_type)                     :: chart
 
       reference = 0.0_dp
@@ -344,6 +348,110 @@ CONTAINS
       CALL skala_orbital_chart_symmetry(chart, actions(:, :, :6), conjugating(:6), valid)
       IF (valid) ERROR STOP 'Independent thermal variables cannot split a multidimensional representation'
       CALL skala_orbital_chart_release(chart)
+      ! Thermal multiplets retain independent copies and the same mixed orbital/occupation response.
+      f = [1.6_dp, 1.6_dp, 0.4_dp, 0.4_dp]
+      df = [0.07_dp, 0.07_dp, -0.07_dp, -0.07_dp]
+      qt = [(0.07_dp*SIN(REAL(i, dp)), i=1, 12)]
+      dqt = [(0.13_dp*COS(REAL(i, dp)), i=1, 12)]
+      DO mode = 1, 2
+         ngroup = 6*mode
+         CALL skala_orbital_chart_create(reference, metric, f, .TRUE., chart, valid, variable_occupations=.TRUE.)
+         IF (.NOT. valid) ERROR STOP 'Thermal multiplet metric is not positive'
+         CALL skala_orbital_chart_symmetry(chart, actions(:, :, :ngroup), conjugating(:ngroup), valid, &
+                                           occupation_groups=[1, 1, 3, 3])
+         IF (.NOT. valid) ERROR STOP 'Compatible thermal multiplets were rejected'
+         CALL skala_orbital_chart_evaluate(chart, qt, coefficients)
+         CALL skala_orbital_chart_derivative(chart, h, gt)
+         CALL skala_orbital_chart_density_response(chart, dqt, response, df)
+         weighted = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(h, coefficients))
+         analytic = SUM(gt*dqt) + SUM([(df(i)*REAL(weighted(i, i), dp), i=1, 4)])
+         weighted = MATMUL(h, response)
+         CALL check(ABS(SUM([(REAL(weighted(i, i), dp), i=1, 4)]) - analytic), 'Thermal multiplet density adjoint')
+         CALL skala_orbital_chart_operator_response(chart, dqt, h, zero, ht, df)
+         CALL skala_orbital_chart_set_occupations(chart, f + step*df)
+         CALL skala_orbital_chart_evaluate(chart, qt + step*dqt, plus)
+         CALL skala_orbital_chart_derivative(chart, h, gtp)
+         weighted = MATMUL(CONJG(TRANSPOSE(plus)), MATMUL(h, plus))
+         ep = SUM([((f(i) + step*df(i))*REAL(weighted(i, i), dp), i=1, 4)])
+         CALL skala_orbital_chart_set_occupations(chart, f - step*df)
+         CALL skala_orbital_chart_evaluate(chart, qt - step*dqt, minus)
+         CALL skala_orbital_chart_derivative(chart, h, gtm)
+         weighted = MATMUL(CONJG(TRANSPOSE(minus)), MATMUL(h, minus))
+         em = SUM([((f(i) - step*df(i))*REAL(weighted(i, i), dp), i=1, 4)])
+         CALL check(ABS((ep - em)/(2*step) - analytic), 'Finite thermal multiplet energy derivative', 1.e-9_dp)
+         CALL check(MAXVAL(ABS((gtp - gtm)/(2*step) - ht)), 'Mixed thermal multiplet Hessian', 1.e-8_dp)
+         orbital_rotation = MATMUL(CONJG(TRANSPOSE(reference)), MATMUL(metric, minus))
+         weighted = orbital_rotation
+         DO i = 1, 4
+            weighted(:, i) = (f(i) - step*df(i))*weighted(:, i)
+         END DO
+         mo_density = MATMUL(weighted, CONJG(TRANSPOSE(orbital_rotation)))
+         DO op = 1, ngroup
+            term = mo_density
+            IF (conjugating(op)) term = CONJG(term)
+            weighted = MATMUL(actions(:, :, op), MATMUL(term, CONJG(TRANSPOSE(actions(:, :, op)))))
+            CALL check(MAXVAL(ABS(weighted - mo_density)), 'Thermal multiplet density covariance')
+         END DO
+         CALL skala_orbital_chart_release(chart)
+      END DO
+      ! Allowed roundoff in the group actions must preserve the orbital energy-zero invariance.
+      reference_actions = actions
+      actions(1, 3, 1) = actions(1, 3, 1) + 2.e-12_dp
+      actions(3, 1, 1) = actions(3, 1, 1) + 2.e-12_dp
+      CALL skala_orbital_chart_create(reference, metric, f, .TRUE., chart, valid, variable_occupations=.TRUE.)
+      CALL skala_orbital_chart_symmetry(chart, actions, conjugating, valid, occupation_groups=[1, 1, 3, 3])
+      IF (.NOT. valid) ERROR STOP 'Roundoff-scale group errors were rejected'
+      qt = 0.0_dp
+      CALL skala_orbital_chart_evaluate(chart, qt, coefficients)
+      CALL skala_orbital_chart_derivative(chart, h, gt, physical_tangent=.TRUE.)
+      CALL skala_orbital_chart_derivative(chart, h + 100.0_dp*metric, gtp, physical_tangent=.TRUE.)
+      CALL check(MAXVAL(ABS(gtp - gt)), 'Thermal symmetry preserves potential-zero invariance')
+      CALL skala_orbital_chart_release(chart)
+      actions = reference_actions
+      house = CMPLX([1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp], [0.0_dp, 1.0_dp, -2.0_dp, 0.5_dp], dp)
+      house = house/NORM2(ABS(house))
+      rotation = -2.0_dp*SPREAD(house, 2, 4)*SPREAD(CONJG(house), 1, 4)
+      DO i = 1, 4
+         rotation(i, i) = rotation(i, i) + 1.0_dp
+      END DO
+      DO op = 1, 12
+         term = rotation
+         IF (conjugating(op)) term = CONJG(term)
+         reference_actions(:, :, op) = MATMUL(CONJG(TRANSPOSE(rotation)), MATMUL(actions(:, :, op), term))
+      END DO
+      DO mode = 1, 2
+         ngroup = 6*mode
+         actions = reference_actions
+         CALL skala_orbital_multiplets(actions(:, :, :ngroup), conjugating(:ngroup), &
+                                       [1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp], [0.1_dp, 0.1_dp, 0.1_dp, 0.1_dp], &
+                                       4, gauge, multiplets, auxiliary, valid)
+         IF (.NOT. valid) ERROR STOP 'Equivalent thermal multiplets were not resolved'
+         IF (COUNT(multiplets == [(i, i=1, 4)]) /= 2) ERROR STOP 'Equivalent copies were coupled unnecessarily'
+         IF (COUNT(multiplets == multiplets(1)) /= 2) ERROR STOP 'An irreducible multiplet was split'
+         weighted = MATMUL(CONJG(TRANSPOSE(gauge)), gauge)
+         DO i = 1, 4
+            weighted(i, i) = weighted(i, i) - 1.0_dp
+         END DO
+         CALL check(MAXVAL(ABS(weighted)), 'Thermal multiplet gauge unitarity')
+         CALL check(MAXVAL(ABS(auxiliary - 0.1_dp)), 'Thermal multiplet reference energies preserved')
+         DO op = 1, ngroup
+            CALL check(MAXVAL(PACK(ABS(actions(:, :, op)), &
+                                   SPREAD(multiplets, 2, 4) /= SPREAD(multiplets, 1, 4))), &
+                       'Thermal reference actions close within each multiplet')
+         END DO
+      END DO
+      actions = reference_actions
+      CALL skala_orbital_multiplets(actions, conjugating, [1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp], &
+                                    [0.1_dp, 0.1_dp, 0.1_dp, 0.1_dp], 3, gauge, multiplets, auxiliary, valid)
+      IF (valid) ERROR STOP 'Incomplete retained multiplet was accepted'
+      actions = reference_actions
+      CALL skala_orbital_multiplets(actions, conjugating, [0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp], &
+                                    [0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp], 0, gauge, multiplets, auxiliary, valid)
+      IF (.NOT. valid) ERROR STOP 'Invariant empty completion was rejected'
+      DO i = 1, 4
+         gauge(i, i) = gauge(i, i) - 1.0_dp
+      END DO
+      CALL check(MAXVAL(ABS(gauge)), 'Empty completion retains its original gauge')
       CALL skala_orbital_chart_create(reference, metric, occupations, .TRUE., chart, valid)
       CALL skala_orbital_chart_symmetry(chart, actions(:, :, :6), conjugating(:6), valid)
       IF (valid) ERROR STOP 'Noncovariant initial occupations were silently changed'

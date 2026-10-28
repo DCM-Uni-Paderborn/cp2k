@@ -1136,7 +1136,8 @@ CONTAINS
                                                             release_side(:), spins(:)
       LOGICAL                                            :: accepted, balanced, converged, &
                                                             do_kpoints, final_stage, rechart, &
-                                                            released, space_grown, valid
+                                                            reference_refreshed, released, &
+                                                            space_grown, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy, omitted_charge, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
@@ -1175,7 +1176,7 @@ CONTAINS
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
       create_search_state => qs_skala_scf_create
-      IF (do_kpoints .AND. .NOT. scf_control%smear%do_smear .AND. .NOT. dft_control%use_gauxc) THEN
+      IF (do_kpoints .AND. .NOT. dft_control%use_gauxc) THEN
          ! The input-selected reduction also constrains operations leaving a point fixed.
          ! Canonical acceptance separately checks the unrestricted physical residual.
          IF (.NOT. kpoints%full_grid) create_search_state => qs_skala_scf_create_symmetric
@@ -1248,6 +1249,7 @@ CONTAINS
       END IF
       DO WHILE (remaining > 0 .AND. .NOT. accepted)
          space_grown = .FALSE.
+         reference_refreshed = .FALSE.
          inner_limit = remaining
          ! The occupation-weighted model uses a fresh reference after each accepted step.
          IF (scf_control%smear%do_smear .AND. &
@@ -1332,10 +1334,33 @@ CONTAINS
                accepted = scf_env%iter_delta <= scf_control%eps_scf
                IF (accepted) EXIT
             END IF
+            IF (scf_control%smear%do_smear .AND. do_kpoints .AND. .NOT. space_grown .AND. &
+                ASSOCIATED(create_search_state, qs_skala_scf_create_symmetric) .AND. &
+                remaining > 0) THEN
+               ! Read the current selection even when canonical rejection invalidated the fields.
+               CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
+                                          require_feasible=.FALSE.)
+               IF (valid .AND. SIZE(tolerances) == 0) THEN
+                  ! Refresh the physical thermal subspace after a stationary symmetric chart
+                  ! fails unrestricted canonical acceptance. Keep the original SCF budget.
+                  CALL qs_skala_scf_release(state)
+                  DO i = 1, SIZE(scf_env%qs_ot_env)
+                     CALL ot_scf_destroy(scf_env%qs_ot_env(i))
+                  END DO
+                  DEALLOCATE (scf_env%qs_ot_env)
+                  NULLIFY (scf_env%qs_ot_env)
+                  reuse_precond = .FALSE.
+                  scf_section => section_vals_get_subs_vals(qs_env%input, "DFT%SCF")
+                  CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_refresh)
+                  iterations = iterations + 1
+                  remaining = remaining - 1
+                  reference_refreshed = .TRUE.
+               END IF
+            END IF
             ! The canonical density can differ at rounding scale near an active physical boundary.
             ! Its rejected gradient must not inherit the pre-rotation convergence flag.
             scf_env%iter_delta = HUGE(0.0_dp)
-            IF (steps == 0 .AND. .NOT. space_grown) THEN
+            IF (steps == 0 .AND. .NOT. space_grown .AND. .NOT. reference_refreshed) THEN
                ! A failed canonical trial consumes budget even if its original chart was stationary.
                iterations = iterations + 1
                remaining = remaining - 1
@@ -1366,7 +1391,8 @@ CONTAINS
             scf_env%iter_delta = HUGE(0.0_dp)
             EXIT
          END IF
-         IF (space_grown .AND. SIZE(tolerances) == 0) ALLOCATE (coordinate_bound, SOURCE=1.0_dp)
+         IF (ALLOCATED(coordinate_bound)) DEALLOCATE (coordinate_bound)
+         IF (SIZE(tolerances) == 0) ALLOCATE (coordinate_bound, SOURCE=1.0_dp)
       END DO
       IF (.NOT. accepted) scf_env%iter_delta = HUGE(0.0_dp)
       CALL qs_skala_scf_release(state)
