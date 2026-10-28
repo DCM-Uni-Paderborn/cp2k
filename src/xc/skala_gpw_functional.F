@@ -562,6 +562,9 @@ CONTAINS
       CALL skala_grid_feature_build(features, grid, density, gradient, kinetic, particle_set, cell, &
                                     requires_grad=.TRUE., use_atom_chunks=atom_chunks, &
                                     route_atom_chunks=routing, atom_partition=partition)
+      IF (features%uses_atom_chunks .AND. max_rows == -1) THEN
+         max_rows = auto_atom_chunk_max_rows(features, grid%group)
+      END IF
       nchunks = 1
       IF (features%uses_atom_chunks .AND. max_rows > 0) THEN
          nchunks = skala_gpw_atom_subchunk_count(max_rows)

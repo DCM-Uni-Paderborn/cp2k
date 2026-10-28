@@ -10,15 +10,20 @@ import torch
 
 
 class GridTestFunctional(torch.nn.Module):
-    __constants__ = ["geometry", "spin_nonlocal", "float32"]
+    __constants__ = ["geometry", "spin_nonlocal", "float32", "max_rows"]
 
     def __init__(
-        self, geometry: bool = False, spin_nonlocal: bool = False, float32: bool = False
+        self,
+        geometry: bool = False,
+        spin_nonlocal: bool = False,
+        float32: bool = False,
+        max_rows: int = 0,
     ):
         super().__init__()
         self.geometry = geometry
         self.spin_nonlocal = spin_nonlocal
         self.float32 = float32
+        self.max_rows = max_rows
         self.scale = torch.nn.Parameter(
             torch.ones((1, 1), dtype=torch.float32), requires_grad=False
         )
@@ -28,6 +33,8 @@ class GridTestFunctional(torch.nn.Module):
     @torch.jit.export
     def get_exc_density(self, fields: Dict[str, torch.Tensor]) -> torch.Tensor:
         rho = fields["density"]
+        if self.max_rows > 0 and rho.size(1) > self.max_rows:
+            raise RuntimeError("Analytic test model exceeded its atom-chunk row limit")
         tau = fields["kin"]
         grad = fields["grad"]
         if self.float32:
@@ -75,6 +82,12 @@ if __name__ == "__main__":
     parser.add_argument("--geometry", action="store_true")
     parser.add_argument("--spin", action="store_true")
     parser.add_argument(
+        "--max-rows",
+        type=int,
+        default=0,
+        help="Reject larger batches to verify automatic atom subchunks",
+    )
+    parser.add_argument(
         "--float32",
         action="store_true",
         help="Exercise noncollinear precision promotion",
@@ -83,7 +96,11 @@ if __name__ == "__main__":
     features = ["density", "grad", "kin", "atomic_grid_weights", "atomic_grid_sizes"]
     if args.geometry:
         features += ["grid_coords", "coarse_0_atomic_coords"]
-    model = torch.jit.script(GridTestFunctional(args.geometry, args.spin, args.float32))
+    if args.max_rows < 0:
+        parser.error("--max-rows must be nonnegative")
+    model = torch.jit.script(
+        GridTestFunctional(args.geometry, args.spin, args.float32, args.max_rows)
+    )
     torch.jit.save(
         model,
         args.output,

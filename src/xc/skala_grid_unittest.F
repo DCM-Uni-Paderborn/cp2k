@@ -40,8 +40,8 @@ PROGRAM skala_grid_unittest
    TYPE(section_vals_type), POINTER :: xc => NULL()
    CHARACTER(len=default_path_length) :: model
    CHARACTER(len=32) :: model_mode, device_arg
-   LOGICAL :: cuda_points, spinor_test, spinor_precision_test, point_fp64
-   INTEGER :: ns, partition, i, s, first_z, last_z, nr, component, step, mode, device, caller_threads
+   LOGICAL :: cuda_points, spinor_test, spinor_precision_test, point_fp64, chunk_limit_test
+   INTEGER :: ns, partition, i, s, first_z, last_z, first_point, nr, component, step, mode, device, caller_threads
    REAL(dp) :: hmat(3, 3), energy, reference, ep, em, derivative, h, error, maximum_error, &
                step_size, response_step_size, routing_tolerance, derivative_tolerance
    REAL(dp), ALLOCATABLE :: rho(:, :), grad(:, :, :), tau(:, :), drho(:, :), dgrad(:, :, :), dtau(:, :), &
@@ -53,6 +53,8 @@ PROGRAM skala_grid_unittest
       ERROR STOP "Use MODEL SKALA and set SKALA_MODEL for a long model path"
    END IF
    CALL get_command_argument(2, model_mode)
+   chunk_limit_test = model_mode == "chunk-limit"
+   IF (chunk_limit_test) model_mode = ""
    spinor_precision_test = model_mode == "spinor-precision"
    spinor_test = model_mode == "spinor" .OR. model_mode == "spinor-float32" .OR. spinor_precision_test
    IF (model_mode == "spinor") model_mode = "geometry"
@@ -93,10 +95,12 @@ PROGRAM skala_grid_unittest
    grid%group => comm
    grid%npts = [4, 4, 3]
    IF (model_mode == "skala-float32") grid%npts = [8, 8, 7]
+   IF (chunk_limit_test) grid%npts = [80, 80, 64]
    grid%bounds(1, :) = 0
    grid%bounds(2, :) = grid%npts - 1
    first_z = grid%npts(3)*comm%mepos/comm%num_pe
    last_z = grid%npts(3)*(comm%mepos + 1)/comm%num_pe - 1
+   first_point = PRODUCT(grid%npts(1:2))*first_z
    grid%bounds_local = grid%bounds
    grid%bounds_local(:, 3) = [first_z, last_z]
    nr = PRODUCT(grid%npts(1:2))*(last_z - first_z + 1)
@@ -113,20 +117,24 @@ PROGRAM skala_grid_unittest
                 ref_vrho(nr, ns), ref_vgrad(nr, 3, ns), ref_vtau(nr, ns))
       DO s = 1, ns
          DO i = 1, nr
-            rho(i, s) = 0.1_dp + 0.03_dp*SIN(REAL(i + 16*first_z + s, dp))
-            tau(i, s) = 0.04_dp + 0.01_dp*COS(REAL(i + 16*first_z + 2*s, dp))
-            grad(i, :, s) = 0.01_dp*SIN(REAL(i + 16*first_z + s + [1, 2, 3], dp))
-            drho(i, s) = 0.01_dp*COS(REAL(i + 16*first_z + s, dp))
-            dtau(i, s) = 0.02_dp*SIN(REAL(i + 16*first_z + 2*s, dp))
-            dgrad(i, :, s) = 0.01_dp*COS(REAL(i + 16*first_z + s + [1, 2, 3], dp))
+            rho(i, s) = 0.1_dp + 0.03_dp*SIN(REAL(i + first_point + s, dp))
+            tau(i, s) = 0.04_dp + 0.01_dp*COS(REAL(i + first_point + 2*s, dp))
+            grad(i, :, s) = 0.01_dp*SIN(REAL(i + first_point + s + [1, 2, 3], dp))
+            drho(i, s) = 0.01_dp*COS(REAL(i + first_point + s, dp))
+            dtau(i, s) = 0.02_dp*SIN(REAL(i + first_point + 2*s, dp))
+            dgrad(i, :, s) = 0.01_dp*COS(REAL(i + first_point + s + [1, 2, 3], dp))
          END DO
       END DO
       IF (model_mode == "skala-float32") CALL atomic_fields()
-      DO partition = 1, 2
+      DO partition = 1, MERGE(1, 2, chunk_limit_test)
          CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_PARTITION", i_val=partition)
          DO mode = 0, 1
-            CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNKS", l_val=(mode == 1))
+            CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNKS", &
+                                      l_val=(mode == 1 .OR. chunk_limit_test))
             CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=1)
+            IF (chunk_limit_test .AND. mode == 1) THEN
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=-1)
+            END IF
             CALL evaluate(rho, grad, tau, energy)
             IF (model_mode == "skala-float32" .AND. energy >= -1.0e-6_dp) THEN
                ERROR STOP "The Skala field fixture must have a nontrivial XC energy"
@@ -154,6 +162,7 @@ PROGRAM skala_grid_unittest
                   IF (error > routing_tolerance) ERROR STOP "Device switching changes the energy or primitive derivatives"
                END DO
             END IF
+            IF (chunk_limit_test) CYCLE
             DO component = 1, 3
                SELECT CASE (component)
                CASE (1)
