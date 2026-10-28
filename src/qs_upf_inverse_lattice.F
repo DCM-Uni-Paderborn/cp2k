@@ -34,7 +34,7 @@ MODULE qs_upf_inverse_lattice
    PUBLIC :: qs_upf_inverse_lattice_kernel
    PUBLIC :: qs_upf_inverse_lattice_kernel_adjoint
    PUBLIC :: qs_upf_inverse_lattice_fields, qs_upf_inverse_lattice_field_adjoint
-   PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint
+   PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint, qs_upf_inverse_lattice_gaussian_adjoint
    PUBLIC :: qs_upf_inverse_lattice_prepare, qs_upf_inverse_lattice_adjoint
    PUBLIC :: qs_upf_inverse_lattice_delta_fields, qs_upf_inverse_lattice_intersects
 
@@ -481,14 +481,10 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_factor
 
       COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), delta_covector(:, :), &
-                                                            delta_gradient(:, :, :), &
-                                                            gaussian(:, :), &
-                                                            gaussian_gradient(:, :, :)
+                                                            delta_gradient(:, :, :)
       INTEGER                                            :: atom, axis, center, first, image(3), j, &
-                                                            last, n, nao, np, q, &
-                                                            single_image(3, 1), source_first, &
-                                                            source_last
-      REAL(dp)                                           :: factor, point_bounds(3, 2), total
+                                                            last, n, nao, np, q
+      REAL(dp)                                           :: point_bounds(3, 2), total
       REAL(dp), ALLOCATABLE                              :: point_component(:)
 
       CALL check_lattice_images(frame, coefficient_images)
@@ -508,32 +504,9 @@ CONTAINS
       point_geometry = 0.0_dp
       atom_geometry = 0.0_dp
       cell_geometry = 0.0_dp
-      factor = 1.0_dp
-      IF (PRESENT(gaussian_factor)) factor = gaussian_factor
+      CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, ao_range, covector, &
+                                                   point_geometry, atom_geometry, cell_geometry, gaussian_factor)
       ALLOCATE (point_component(n))
-      single_image(:, 1) = ao_image
-      DO atom = 1, SIZE(frame%bases)
-         first = MAX(frame%ao_first(atom), ao_range(1))
-         last = MIN(frame%ao_last(atom), ao_range(2))
-         IF (last < first) CYCLE
-         ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf), &
-                   gaussian_gradient(n, frame%bases(atom)%gto_basis_set%nsgf, 3))
-         CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient)
-         source_first = first - frame%ao_first(atom) + 1
-         source_last = last - frame%ao_first(atom) + 1
-         first = first - ao_range(1) + 1
-         last = last - ao_range(1) + 1
-         DO axis = 1, 3
-            point_component(:) = factor*REAL(SUM(CONJG(covector(:, first:last))* &
-                                                 gaussian_gradient(:, source_first:source_last, axis), DIM=2), dp)
-            point_geometry(axis, :) = point_geometry(axis, :) + point_component
-            total = SUM(point_component)
-            atom_geometry(axis, atom) = atom_geometry(axis, atom) - total
-            cell_geometry(axis, :) = cell_geometry(axis, :) - total*REAL(ao_image, dp)
-         END DO
-         DEALLOCATE (gaussian, gaussian_gradient)
-      END DO
       ALLOCATE (delta(n, np), delta_gradient(n, np, 3), delta_covector(n, np))
       IF (n > 0) THEN
          CPASSERT(ALL(ieee_is_finite(points)))
@@ -565,6 +538,77 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_lattice_geometry_adjoint
+
+! **************************************************************************************************
+!> \brief Geometry transpose of one original Gaussian image, shared by local and coupled reconstructions.
+!> \param frame Original Gaussian bases and Cartesian centers.
+!> \param points Original integration points.
+!> \param ao_image Physical Gaussian translation.
+!> \param ao_range Original Gaussian columns.
+!> \param covector Point-field energy derivative.
+!> \param point_geometry Derivative with respect to the integration points.
+!> \param atom_geometry Derivative with respect to Gaussian centers at fixed points.
+!> \param cell_geometry Derivative of the physical Gaussian translation.
+!> \param gaussian_factor Optional multiplier of the Gaussian field.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, ao_range, covector, &
+                                                      point_geometry, atom_geometry, cell_geometry, gaussian_factor)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      REAL(dp), INTENT(IN)                               :: points(:, :)
+      INTEGER, INTENT(IN)                                :: ao_image(3), ao_range(2)
+      COMPLEX(dp), INTENT(IN)                            :: covector(:, :)
+      REAL(dp), INTENT(OUT)                              :: point_geometry(:, :), &
+                                                            atom_geometry(:, :), &
+                                                            cell_geometry(3, 3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_factor
+
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), &
+                                                            gaussian_gradient(:, :, :)
+      INTEGER                                            :: atom, axis, first, last, n, nao, &
+                                                            single_image(3, 1), source_first, &
+                                                            source_last
+      REAL(dp)                                           :: factor, total
+      REAL(dp), ALLOCATABLE                              :: point_component(:)
+
+      CPASSERT(SIZE(points, 1) == 3)
+      CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
+      n = SIZE(points, 2)
+      nao = ao_range(2) - ao_range(1) + 1
+      CPASSERT(nao > 0 .AND. ao_range(1) > 0)
+      CPASSERT(ao_range(2) <= SIZE(frame%gaussian, 2))
+      CPASSERT(ALL(SHAPE(covector) == [n, nao]))
+      CPASSERT(ALL(SHAPE(point_geometry) == SHAPE(points)))
+      CPASSERT(ALL(SHAPE(atom_geometry) == SHAPE(frame%positions)))
+      point_geometry = 0.0_dp
+      atom_geometry = 0.0_dp
+      cell_geometry = 0.0_dp
+      factor = 1.0_dp
+      IF (PRESENT(gaussian_factor)) factor = gaussian_factor
+      ALLOCATE (point_component(n))
+      single_image(:, 1) = ao_image
+      DO atom = 1, SIZE(frame%bases)
+         first = MAX(frame%ao_first(atom), ao_range(1))
+         last = MIN(frame%ao_last(atom), ao_range(2))
+         IF (last < first) CYCLE
+         ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf), &
+                   gaussian_gradient(n, frame%bases(atom)%gto_basis_set%nsgf, 3))
+         CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient)
+         source_first = first - frame%ao_first(atom) + 1
+         source_last = last - frame%ao_first(atom) + 1
+         first = first - ao_range(1) + 1
+         last = last - ao_range(1) + 1
+         DO axis = 1, 3
+            point_component(:) = factor*REAL(SUM(CONJG(covector(:, first:last))* &
+                                                 gaussian_gradient(:, source_first:source_last, axis), DIM=2), dp)
+            point_geometry(axis, :) = point_geometry(axis, :) + point_component
+            total = SUM(point_component)
+            atom_geometry(axis, atom) = atom_geometry(axis, atom) - total
+            cell_geometry(axis, :) = cell_geometry(axis, :) - total*REAL(ao_image, dp)
+         END DO
+         DEALLOCATE (gaussian, gaussian_gradient)
+      END DO
+   END SUBROUTINE qs_upf_inverse_lattice_gaussian_adjoint
 
 ! **************************************************************************************************
 !> \brief Reject an image only when every original radial support misses the point bounding box.
