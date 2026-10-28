@@ -14,6 +14,7 @@
 !> \author Joost VandeVondele
 ! **************************************************************************************************
 MODULE cp_cfm_basic_linalg
+   USE OMP_LIB, ONLY: omp_get_max_threads
    USE cp_blacs_env, ONLY: cp_blacs_env_type
    USE cp_cfm_types, ONLY: cp_cfm_create, &
                            cp_cfm_get_info, &
@@ -52,6 +53,7 @@ MODULE cp_cfm_basic_linalg
              cp_cfm_scale_and_add, &
              cp_cfm_scale_and_add_fm, &
              cp_cfm_schur_product, &
+             cp_cfm_schur_product_cc, &
              cp_cfm_solve, &
              cp_cfm_trace, &
              cp_cfm_transpose, &
@@ -627,44 +629,47 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Scales columns of the full matrix by corresponding factors.
-!> \param matrix_a matrix to scale
-!> \param scaling  scale factors for every column. The actual number of scaled columns is
-!>                 limited by the number of scale factors given or by the actual number of columns
-!>                 whichever is smaller.
+!> \param matrix_a target matrix; columns outside the selected window are unchanged
+!> \param scaling factors for consecutive columns starting at first_col;
+!>        the window is truncated at the last global column of the matrix
+!> \param first_col first global column to scale (defaults to 1)
+!> \param source optional source with the same shape and distribution as matrix_a;
+!>        if omitted, matrix_a is scaled in place
 !> \author Joost VandeVondele
 ! **************************************************************************************************
-   SUBROUTINE cp_cfm_column_scale(matrix_a, scaling)
+   SUBROUTINE cp_cfm_column_scale(matrix_a, scaling, first_col, source)
       TYPE(cp_cfm_type), INTENT(INOUT)                   :: matrix_a
       COMPLEX(kind=dp), DIMENSION(:), INTENT(IN)         :: scaling
+      INTEGER, INTENT(IN), OPTIONAL                      :: first_col
+      TYPE(cp_cfm_type), INTENT(IN), OPTIONAL            :: source
 
       CHARACTER(len=*), PARAMETER :: routineN = 'cp_cfm_column_scale'
 
-      COMPLEX(kind=dp), DIMENSION(:, :), POINTER         :: a
-      INTEGER                                            :: handle, icol_local, ncol_local, &
-                                                            nrow_local
-#if defined(__parallel)
+      COMPLEX(kind=dp), DIMENSION(:, :), POINTER         :: a, b
+      INTEGER                                            :: first, handle, i_factor, icol_local, &
+                                                            ncol_local, nrow_local
       INTEGER, DIMENSION(:), POINTER                     :: col_indices
-#endif
+      LOGICAL                                            :: compatible_layout
 
       CALL timeset(routineN, handle)
 
       a => matrix_a%local_data
-
-#if defined(__parallel)
+      b => a
+      IF (PRESENT(source)) THEN
+         compatible_layout = cp_fm_struct_equivalent(matrix_a%matrix_struct, source%matrix_struct)
+         CPASSERT(compatible_layout)
+         b => source%local_data
+      END IF
+      first = 1
+      IF (PRESENT(first_col)) first = first_col
+      CPASSERT(first >= 1)
       CALL cp_cfm_get_info(matrix_a, nrow_local=nrow_local, ncol_local=ncol_local, col_indices=col_indices)
-      ncol_local = MIN(ncol_local, SIZE(scaling))
 
       DO icol_local = 1, ncol_local
-         a(1:nrow_local, icol_local) = scaling(col_indices(icol_local))*a(1:nrow_local, icol_local)
+         i_factor = col_indices(icol_local) - first + 1
+         IF (i_factor < 1 .OR. i_factor > SIZE(scaling)) CYCLE
+         a(1:nrow_local, icol_local) = scaling(i_factor)*b(1:nrow_local, icol_local)
       END DO
-#else
-      nrow_local = SIZE(a, 1)
-      ncol_local = MIN(SIZE(a, 2), SIZE(scaling))
-
-      DO icol_local = 1, ncol_local
-         a(1:nrow_local, icol_local) = scaling(icol_local)*a(1:nrow_local, icol_local)
-      END DO
-#endif
 
       CALL timestop(handle)
    END SUBROUTINE cp_cfm_column_scale
@@ -1434,32 +1439,51 @@ CONTAINS
 !>        Complex-valued mirror of cp_fm_vectorsnorm.
 !> \param matrix ...
 !> \param norm_array ...
+!> \param squared return squared norms instead (default: false)
 ! **************************************************************************************************
-   SUBROUTINE cp_cfm_vectorsnorm(matrix, norm_array)
+   SUBROUTINE cp_cfm_vectorsnorm(matrix, norm_array, squared)
       TYPE(cp_cfm_type), INTENT(IN)                      :: matrix
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: norm_array
+      LOGICAL, INTENT(IN), OPTIONAL                      :: squared
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'cp_cfm_vectorsnorm'
 
       INTEGER                                            :: handle, i, j, ncol_local, nrow_local
+
+!$    INTEGER                                            :: nworkers
       INTEGER, DIMENSION(:), POINTER                     :: col_indices
+      LOGICAL                                            :: take_sqrt
+      REAL(KIND=dp)                                      :: norm_sq
+      COMPLEX(KIND=dp), CONTIGUOUS, DIMENSION(:, :), &
+         POINTER                                         :: local_data
 
       CALL timeset(routineN, handle)
 
+      local_data => matrix%local_data
       CALL cp_cfm_get_info(matrix, col_indices=col_indices, nrow_local=nrow_local, &
                            ncol_local=ncol_local)
 
-      ! the efficiency could be improved by making use of the row-col distribution of scalapack
       norm_array = 0.0_dp
+      ! Own whole columns and keep at least 8192 elements per worker to amortize team startup.
+!$    nworkers = MAX(1, MIN(omp_get_max_threads(), ncol_local))
+!$    nworkers = MAX(1, MIN(nworkers, (nrow_local*ncol_local + 1)/8192))
+!$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(STATIC) &
+!$OMP SHARED(local_data, col_indices, nrow_local, ncol_local, norm_array) PRIVATE(i, j, norm_sq) &
+!$OMP NUM_THREADS(nworkers) IF(nworkers > 1)
       DO j = 1, ncol_local
+         norm_sq = 0.0_dp
+!$OMP SIMD REDUCTION(+:norm_sq)
          DO i = 1, nrow_local
-            norm_array(col_indices(j)) = norm_array(col_indices(j)) + &
-                                         REAL(matrix%local_data(i, j), KIND=dp)**2 + &
-                                         AIMAG(matrix%local_data(i, j))**2
+            norm_sq = norm_sq + REAL(local_data(i, j), KIND=dp)**2 + AIMAG(local_data(i, j))**2
          END DO
+!$OMP END SIMD
+         norm_array(col_indices(j)) = norm_sq
       END DO
+!$OMP END PARALLEL DO
       CALL matrix%matrix_struct%para_env%sum(norm_array)
-      norm_array = SQRT(norm_array)
+      take_sqrt = .TRUE.
+      IF (PRESENT(squared)) take_sqrt = .NOT. squared
+      IF (take_sqrt) norm_array = SQRT(norm_array)
 
       CALL timestop(handle)
    END SUBROUTINE cp_cfm_vectorsnorm

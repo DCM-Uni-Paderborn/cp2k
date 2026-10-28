@@ -143,7 +143,9 @@ MODULE qs_scf_loop_utils
    USE smeagol_interface,               ONLY: run_smeagol_emtrans
    USE smearing_utils,                  ONLY: Smearkp,&
                                               Smearkp2,&
-                                              smearing_response_weight
+                                              smearing_response_weight,&
+                                              smearing_separate_spin,&
+                                              smearing_spin_targets
    USE tblite_interface,                ONLY: tb_native_scc_mixer_active
 #include "./base/base_uses.f90"
 
@@ -605,7 +607,8 @@ CONTAINS
          residual = MAX(scf_env%iter_delta, scf_env%qs_ot_env(1)%delta)
          refresh = (allow_refresh .OR. allow_exit_refresh) .AND. &
                    scf_env%qs_ot_env(1)%settings%do_ener .AND. &
-                   scf_env%qs_ot_env(1)%settings%occupation_preconditioner .AND. &
+                   (scf_env%qs_ot_env(1)%settings%occupation_preconditioner .OR. &
+                    scf_control%smear%method == smear_fermi_dirac) .AND. &
                    (dft_control%smear .OR. scf_control%smear%do_smear) .AND. &
                    qs_scf_kp_ref_refresh_ready(accepted_searches, residual, &
                                                scf_control%eps_scf, base_state, allow_exit_refresh)
@@ -1944,7 +1947,7 @@ CONTAINS
                                                             local_channel, local_kpoint, ne_a, &
                                                             ne_b, nelectron, nkpoint, nmo
       REAL(KIND=dp)                                      :: kTS, mu, nel, sigma
-      REAL(KIND=dp), DIMENSION(2)                        :: mus
+      REAL(KIND=dp), DIMENSION(2)                        :: mus, spin_targets
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       CPASSERT(smear%do_smear)
@@ -1964,6 +1967,7 @@ CONTAINS
       ne_a = nelectron
       ne_b = 0
       IF (nspin_energy == 2) CALL get_mo_set(kp%mos(2), nelectron=ne_b)
+      spin_targets(:) = smearing_spin_targets([ne_a, ne_b], smear%fixed_mag_mom)
 
       ALLOCATE (trial_eigenvalues(nmo, nkpoint, nspin_energy))
       ALLOCATE (trial_occupation(nmo, nkpoint, nspin_energy))
@@ -1991,12 +1995,12 @@ CONTAINS
          nel = REAL(nelectron, KIND=dp)
          CALL Smearkp(trial_occupation(:, :, 1), mus(1), trial_kTS, &
                       trial_eigenvalues(:, :, 1), nel, wkp, sigma, 2.0_dp, smear%method)
-      ELSE IF (restricted_roks .OR. smear%fixed_mag_mom > 0.0_dp) THEN
-         nel = REAL(ne_a, KIND=dp)
+      ELSE IF (restricted_roks .OR. smearing_separate_spin(smear%fixed_mag_mom)) THEN
+         nel = spin_targets(1)
          CALL Smearkp(trial_occupation(:, :, 1), mus(1), kTS, &
                       trial_eigenvalues(:, :, 1), nel, wkp, sigma, 1.0_dp, smear%method)
          trial_kTS = kTS
-         nel = REAL(ne_b, KIND=dp)
+         nel = spin_targets(2)
          CALL Smearkp(trial_occupation(:, :, 2), mus(2), kTS, &
                       trial_eigenvalues(:, :, 2), nel, wkp, sigma, 1.0_dp, smear%method)
          trial_kTS = trial_kTS + kTS
@@ -2063,7 +2067,7 @@ CONTAINS
 
       ngroups = 1
       IF (restricted_roks .OR. &
-          (nspin_energy == 2 .AND. smear%fixed_mag_mom > 0.0_dp)) ngroups = 2
+          (nspin_energy == 2 .AND. smearing_separate_spin(smear%fixed_mag_mom))) ngroups = 2
       nmo = SIZE(trial_eigenvalues, 1)
       ALLOCATE (fixed_n_residual(ngroups), fixed_n_weight(ngroups), &
                 preconditioner_count(ngroups), preconditioner_shift(ngroups), &
@@ -2314,7 +2318,7 @@ CONTAINS
       ngroups = 1
       IF (restricted_roks) THEN
          ngroups = nspin_energy
-      ELSE IF (nspin_ot == 2 .AND. smear%fixed_mag_mom > 0.0_dp) THEN
+      ELSE IF (nspin_ot == 2 .AND. smearing_separate_spin(smear%fixed_mag_mom)) THEN
          ngroups = 2
       END IF
       nrotation_groups = ngroups

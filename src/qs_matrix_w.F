@@ -20,7 +20,7 @@ MODULE qs_matrix_w
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type,&
                                               dbcsr_set
-   USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
+   USE cp_fm_pool_types,                ONLY: cp_fm_pool_type,&
                                               fm_pool_get_el_struct
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
@@ -245,13 +245,13 @@ CONTAINS
                                                             nao, nmo, nspin
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occupation
       TYPE(cp_cfm_type)                                  :: h_k, hc, wmat
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: h_k_struct
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_operator_context_type)                 :: op_ctx
 
       CALL timeset(routineN, handle)
-      NULLIFY (ao_ao_fm_pools, h_k_struct, occupation)
+      NULLIFY (ao_ao_fm_pool, h_k_struct, occupation)
       CPASSERT(.NOT. kpoint%use_real_wfn)
       CPASSERT(ASSOCIATED(matrix_ks))
 
@@ -261,8 +261,8 @@ CONTAINS
       CALL kpoint_operator_context_create(op_ctx, kpoint, ao_ao_fm, nspin)
       ! Capture the current Hamiltonian after SCF, independently of OT's iteration caches.
       CALL kpoint_operator_prepare(op_ctx, matrix_ks, kpoint_slot_ks)
-      CALL mpools_get(kpoint%mpools, ao_ao_fm_pools=ao_ao_fm_pools)
-      h_k_struct => fm_pool_get_el_struct(ao_ao_fm_pools(1)%pool)
+      CALL mpools_get(kpoint%mpools, ao_ao_fm_pool=ao_ao_fm_pool)
+      h_k_struct => fm_pool_get_el_struct(ao_ao_fm_pool)
       CALL cp_cfm_create(h_k, h_k_struct)
 
       DO ikpgr = 1, kpmax

@@ -72,7 +72,7 @@ MODULE qs_scf_diagonalization
       diag_check_requested, &
       direct_generalized_diagonalization
    USE cp_fm_pool_types, ONLY: &
-      cp_fm_pool_p_type, &
+      cp_fm_pool_type, &
       fm_pool_create_fm, &
       fm_pool_get_el_struct, &
       fm_pool_give_back_fm
@@ -835,7 +835,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_cfm_type), POINTER :: cksmat, cmos, csmat, cwork
       TYPE(kp_diag_workspace_type), ALLOCATABLE, TARGET :: workspace(:)
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct, mo_struct
       TYPE(cp_fm_type)                                   :: fmlocal, rksmat, rsmat
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
@@ -965,9 +965,9 @@ CONTAINS
 
       ! fm pools to be used within a kpoint group
       CALL get_kpoint_info(kpoints, mpools=mpools)
-      CALL mpools_get(mpools, ao_ao_fm_pools=ao_ao_fm_pools)
+      CALL mpools_get(mpools, ao_ao_fm_pool=ao_ao_fm_pool)
 
-      CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+      CALL fm_pool_create_fm(ao_ao_fm_pool, fmlocal)
       CALL cp_fm_get_info(fmlocal, matrix_struct=matrix_struct)
 
       IF (use_real_wfn) THEN
@@ -1242,7 +1242,7 @@ CONTAINS
          CALL cp_fm_release(rsmat)
       END IF
       IF (ALLOCATED(workspace)) CALL kp_diag_workspaces_release(workspace)
-      CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+      CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmlocal)
 
       CALL timestop(handle)
 
@@ -1590,7 +1590,7 @@ CONTAINS
       LOGICAL                                            :: use_real_wfn
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(cp_cfm_type)                                  :: cksmat, cmos, csmat, cwork
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct, mo_struct
       TYPE(cp_fm_type)                                   :: fmlocal, rksmat, rsmat
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
@@ -1611,9 +1611,9 @@ CONTAINS
 
       ! fm pools to be used within a kpoint group
       CALL get_kpoint_info(kpoints, mpools=mpools)
-      CALL mpools_get(mpools, ao_ao_fm_pools=ao_ao_fm_pools)
+      CALL mpools_get(mpools, ao_ao_fm_pool=ao_ao_fm_pool)
 
-      CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+      CALL fm_pool_create_fm(ao_ao_fm_pool, fmlocal)
       CALL cp_fm_get_info(fmlocal, matrix_struct=matrix_struct)
 
       IF (use_real_wfn) THEN
@@ -1678,7 +1678,7 @@ CONTAINS
          CALL cp_cfm_release(cwork)
          CALL cp_cfm_release(cmos)
       END IF
-      CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+      CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmlocal)
 
       CALL timestop(handle)
 
@@ -2976,7 +2976,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: eps_iter, eps_iter_empty
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_cfm_type)                                  :: cksmat, csmat, csmat_base
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools, kp_ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool, kp_ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(cp_logger_type), POINTER                      :: logger
@@ -3101,16 +3101,16 @@ CONTAINS
       ! template), two k-group fms as preconditioner outputs, and the
       ! complex H(k)/S(k)
       CALL get_qs_env(qs_env, mpools=mpools)
-      CALL mpools_get(mpools, ao_ao_fm_pools=ao_ao_fm_pools)
+      CALL mpools_get(mpools, ao_ao_fm_pool=ao_ao_fm_pool)
       ALLOCATE (fmwork(4))
       DO iwork = 1, 4
-         CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmwork(iwork))
+         CALL fm_pool_create_fm(ao_ao_fm_pool, fmwork(iwork))
       END DO
       CALL kpoint_operator_context_create(op_ctx, kpoints, fmwork(1), nspin)
       CALL kpoint_operator_prepare(op_ctx, matrix_ks_kp, kpoint_slot_ks)
       CALL kpoint_operator_prepare(op_ctx, matrix_s_kp, kpoint_slot_s, matrix_row=kpoint_spin_free)
-      CALL mpools_get(kp_mpools, ao_ao_fm_pools=kp_ao_ao_fm_pools)
-      matrix_struct => fm_pool_get_el_struct(kp_ao_ao_fm_pools(1)%pool)
+      CALL mpools_get(kp_mpools, ao_ao_fm_pool=kp_ao_ao_fm_pool)
+      matrix_struct => fm_pool_get_el_struct(kp_ao_ao_fm_pool)
       CALL cp_cfm_create(cksmat, matrix_struct, name="dav_hk")
       CALL cp_cfm_create(csmat, matrix_struct, name="dav_sk")
       CALL cp_cfm_create(csmat_base, matrix_struct, name="dav_sk_base")
@@ -3178,7 +3178,7 @@ CONTAINS
       CALL cp_cfm_release(csmat_base)
       CALL kpoint_operator_context_release(op_ctx)
       DO iwork = 1, 4
-         CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmwork(iwork))
+         CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmwork(iwork))
       END DO
       DEALLOCATE (fmwork)
 
@@ -3423,7 +3423,7 @@ CONTAINS
       LOGICAL                                            :: save_spectrum, use_real_wfn
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenvalues
       TYPE(cp_cfm_type)                                  :: csmat, cwork
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type)                                   :: fmlocal, rsmat
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -3443,9 +3443,9 @@ CONTAINS
 
       ! fm pools to be used within a kpoint group
       CALL get_kpoint_info(kpoints, mpools=mpools)
-      CALL mpools_get(mpools, ao_ao_fm_pools=ao_ao_fm_pools)
+      CALL mpools_get(mpools, ao_ao_fm_pool=ao_ao_fm_pool)
 
-      CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+      CALL fm_pool_create_fm(ao_ao_fm_pool, fmlocal)
       CALL cp_fm_get_info(fmlocal, matrix_struct=matrix_struct)
 
       IF (use_real_wfn) THEN
@@ -3532,7 +3532,7 @@ CONTAINS
          CALL cp_cfm_release(csmat)
          CALL cp_cfm_release(cwork)
       END IF
-      CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+      CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmlocal)
 
       CALL timestop(handle)
 

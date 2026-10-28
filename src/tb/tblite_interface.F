@@ -171,7 +171,7 @@ MODULE tblite_interface
    USE cp_fm_types, ONLY: copy_info_type, cp_fm_cleanup_copy_general, &
                           cp_fm_create, cp_fm_finish_copy_general, cp_fm_get_info, &
                           cp_fm_release, cp_fm_start_copy_general, cp_fm_type
-   USE cp_fm_pool_types, ONLY: cp_fm_pool_p_type, &
+   USE cp_fm_pool_types, ONLY: cp_fm_pool_type, &
                                fm_pool_create_fm, fm_pool_give_back_fm
    USE cp_log_handling, ONLY: cp_get_default_logger, &
                               cp_logger_type, cp_logger_get_default_io_unit
@@ -1697,17 +1697,15 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: dense_part
       TYPE(copy_info_type), ALLOCATABLE, &
          DIMENSION(:, :, :)                              :: info
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool
       TYPE(cp_fm_type)                                   :: fmdummy
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: fmwork
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
-      NULLIFY (ao_ao_fm_pools, kp, para_env)
-      CALL mpools_get(qs_env%mpools, ao_ao_fm_pools=ao_ao_fm_pools)
-      CPASSERT(ASSOCIATED(ao_ao_fm_pools))
-      CPASSERT(SIZE(ao_ao_fm_pools) >= 1)
-      CPASSERT(ASSOCIATED(ao_ao_fm_pools(1)%pool))
+      NULLIFY (ao_ao_fm_pool, kp, para_env)
+      CALL mpools_get(qs_env%mpools, ao_ao_fm_pool=ao_ao_fm_pool)
+      CPASSERT(ASSOCIATED(ao_ao_fm_pool))
       para_env => kpoints%blacs_env_all%para_env
       CALL get_kpoint_info(kpoints, nkp=nkp, kp_range=kp_range, use_real_wfn=use_real_wfn)
       nspin = tb%wfn%nspin
@@ -1722,7 +1720,7 @@ CONTAINS
       END IF
       ALLOCATE (fmwork(nc))
       DO ic = 1, nc
-         CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_create_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       ALLOCATE (dense_part(SIZE(density, 1), SIZE(density, 2)))
       ALLOCATE (info(nc, nkp, nspin))
@@ -1774,7 +1772,7 @@ CONTAINS
          END DO
       END DO
       DO ic = 1, nc
-         CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       DEALLOCATE (fmwork)
       DEALLOCATE (dense_part, info)
@@ -8496,7 +8494,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: hermitian_error, star_weight
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: k_gradient, k_sigma, overlap_part
       REAL(KIND=dp), DIMENSION(3, 3)                     :: rotated_sigma
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: fmwork
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:, :, :)  :: pmat_ext
@@ -8511,7 +8509,7 @@ CONTAINS
          POINTER                                         :: sab_nl
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
 
-      NULLIFY (ao_ao_fm_pools, cell_to_index, cmatrix, exchange_w_rs, kmap, kp, kpoints, &
+      NULLIFY (ao_ao_fm_pool, cell_to_index, cmatrix, exchange_w_rs, kmap, kp, kpoints, &
                kpsym, matrix_s, matrix_struct, matrix_w, para_env, rmatrix, sab_nl)
       gradient = 0.0_dp
       sigma = 0.0_dp
@@ -8528,13 +8526,9 @@ CONTAINS
       IF (.NOT. ASSOCIATED(para_env)) THEN
          CPABORT("Missing parallel environment for g-xTB exchange gradient")
       END IF
-      CALL mpools_get(qs_env%mpools, ao_ao_fm_pools=ao_ao_fm_pools)
-      IF (.NOT. ASSOCIATED(ao_ao_fm_pools)) THEN
+      CALL mpools_get(qs_env%mpools, ao_ao_fm_pool=ao_ao_fm_pool)
+      IF (.NOT. ASSOCIATED(ao_ao_fm_pool)) THEN
          CPABORT("Missing AO full-matrix pool for g-xTB exchange gradient")
-      END IF
-      CPASSERT(SIZE(ao_ao_fm_pools) >= 1)
-      IF (.NOT. ASSOCIATED(ao_ao_fm_pools(1)%pool)) THEN
-         CPABORT("Uninitialized AO full-matrix pool for g-xTB exchange gradient")
       END IF
 
       CALL get_kpoint_info(kpoints, nkp=nred, kp_range=kp_range, &
@@ -8807,13 +8801,13 @@ CONTAINS
       ! matrix workspace from the persistent pool for the inverse k-point transform instead.
       ALLOCATE (fmwork(nc))
       DO ic = 1, nc
-         CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_create_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       CALL kpoint_density_transform(kpoints, exchange_w_rs, .TRUE., &
                                     matrix_s(1, 1)%matrix, sab_nl, fmwork, &
                                     pmat_ext=pmat_ext, overlap_rs=matrix_s)
       DO ic = 1, nc
-         CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       DEALLOCATE (fmwork)
       DO img = 1, nimg
@@ -8882,7 +8876,7 @@ CONTAINS
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: overlap_cached_valid
       REAL(KIND=dp)                                      :: hermitian_error
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: k_gradient, k_sigma, overlap_part
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: fmwork
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:, :, :)  :: pmat_ext
@@ -8897,7 +8891,7 @@ CONTAINS
          POINTER                                         :: sab_nl
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
 
-      NULLIFY (ao_ao_fm_pools, cell_to_index, cmatrix, exchange_w_rs, kmap, kp, kpoints, &
+      NULLIFY (ao_ao_fm_pool, cell_to_index, cmatrix, exchange_w_rs, kmap, kp, kpoints, &
                matrix_s, matrix_struct, matrix_w, para_env, rmatrix, sab_nl)
       gradient = 0.0_dp
       sigma = 0.0_dp
@@ -8916,13 +8910,9 @@ CONTAINS
       IF (.NOT. ASSOCIATED(para_env)) THEN
          CPABORT("Missing parallel environment for streamed g-xTB exchange gradient")
       END IF
-      CALL mpools_get(qs_env%mpools, ao_ao_fm_pools=ao_ao_fm_pools)
-      IF (.NOT. ASSOCIATED(ao_ao_fm_pools)) THEN
+      CALL mpools_get(qs_env%mpools, ao_ao_fm_pool=ao_ao_fm_pool)
+      IF (.NOT. ASSOCIATED(ao_ao_fm_pool)) THEN
          CPABORT("Missing AO full-matrix pool for streamed g-xTB exchange gradient")
-      END IF
-      CPASSERT(SIZE(ao_ao_fm_pools) >= 1)
-      IF (.NOT. ASSOCIATED(ao_ao_fm_pools(1)%pool)) THEN
-         CPABORT("Uninitialized AO full-matrix pool for streamed g-xTB exchange gradient")
       END IF
 
       CALL get_kpoint_info(kpoints, nkp=nred, kp_range=kp_range, use_real_wfn=use_real_wfn, &
@@ -9142,13 +9132,13 @@ CONTAINS
       END DO
       ALLOCATE (fmwork(nc))
       DO ic = 1, nc
-         CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_create_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       CALL kpoint_density_transform(kpoints, exchange_w_rs, .TRUE., &
                                     matrix_s(1, 1)%matrix, sab_nl, fmwork, &
                                     pmat_ext=pmat_ext, overlap_rs=matrix_s)
       DO ic = 1, nc
-         CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       DEALLOCATE (fmwork)
       DO img = 1, nimg
@@ -9472,7 +9462,7 @@ CONTAINS
                                                             service_rank, transform_done, use_real_wfn
       REAL(KIND=dp)                                      :: hermitian_error
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: k_gradient, k_sigma, overlap_part
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:)        :: fmwork
       TYPE(cp_fm_type), ALLOCATABLE, DIMENSION(:, :, :)  :: pmat_ext
@@ -9490,7 +9480,7 @@ CONTAINS
          POINTER                                         :: sab_nl
       TYPE(tb_gxtb_kmesh_map_type), POINTER              :: kmap
 
-      NULLIFY (ao_ao_fm_pools, cell_to_index, cmatrix, exchange_w_rs, kmap, kp, &
+      NULLIFY (ao_ao_fm_pool, cell_to_index, cmatrix, exchange_w_rs, kmap, kp, &
                kp_dist, kpoints, matrix_s, matrix_struct, matrix_w, para_env_global, &
                para_env_inter_kp, para_env_kp, rmatrix, sab_nl)
       gradient = 0.0_dp
@@ -9502,15 +9492,9 @@ CONTAINS
           .NOT. ASSOCIATED(matrix_w) .OR. .NOT. ASSOCIATED(para_env_global)) THEN
          CPABORT("Missing CP2K state for KGROUP_PARTIAL_ROOT reverse exchange")
       END IF
-      CALL mpools_get(qs_env%mpools, ao_ao_fm_pools=ao_ao_fm_pools)
-      IF (.NOT. ASSOCIATED(ao_ao_fm_pools)) THEN
+      CALL mpools_get(qs_env%mpools, ao_ao_fm_pool=ao_ao_fm_pool)
+      IF (.NOT. ASSOCIATED(ao_ao_fm_pool)) THEN
          CPABORT("Missing AO full-matrix pool for KGROUP_PARTIAL_ROOT reverse")
-      END IF
-      IF (SIZE(ao_ao_fm_pools) < 1) THEN
-         CPABORT("Missing AO full-matrix pool for KGROUP_PARTIAL_ROOT reverse")
-      END IF
-      IF (.NOT. ASSOCIATED(ao_ao_fm_pools(1)%pool)) THEN
-         CPABORT("Uninitialized AO pool for KGROUP_PARTIAL_ROOT reverse")
       END IF
 
       CALL get_kpoint_info(kpoints, nkp=nred, kp_range=kp_range, nkp_groups=nkp_groups, &
@@ -10198,13 +10182,13 @@ CONTAINS
       END DO
       ALLOCATE (fmwork(nc))
       DO ic = 1, nc
-         CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_create_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       CALL kpoint_density_transform(kpoints, exchange_w_rs, .TRUE., &
                                     matrix_s(1, 1)%matrix, sab_nl, fmwork, &
                                     pmat_ext=pmat_ext, overlap_rs=matrix_s)
       DO ic = 1, nc
-         CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmwork(ic))
+         CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmwork(ic))
       END DO
       DEALLOCATE (fmwork)
       DO img = 1, nimg

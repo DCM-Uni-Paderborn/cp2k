@@ -43,6 +43,7 @@ MODULE kpoint_methods
    USE cp_dbcsr_operations,             ONLY: copy_fm_to_dbcsr
    USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
+                                              cp_fm_pool_type,&
                                               fm_pool_create_fm,&
                                               fm_pool_give_back_fm
    USE cp_fm_struct,                    ONLY: cp_fm_struct_equivalent,&
@@ -112,7 +113,9 @@ MODULE kpoint_methods
                                               neighbor_list_set_p_type
    USE scf_control_types,               ONLY: smear_type
    USE smearing_utils,                  ONLY: Smearkp,&
-                                              Smearkp2
+                                              Smearkp2,&
+                                              smearing_separate_spin,&
+                                              smearing_spin_targets
    USE util,                            ONLY: get_limit,&
                                               sort
 
@@ -870,7 +873,7 @@ CONTAINS
       LOGICAL                                            :: aux_fit
       REAL(KIND=dp)                                      :: flexible_electron_count, maxocc, n_el_f
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_fm_pool_p_type), DIMENSION(:), POINTER     :: ao_ao_fm_pools
+      TYPE(cp_fm_pool_type), POINTER     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type), POINTER                          :: fmlocal
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -966,9 +969,9 @@ CONTAINS
          END DO
 
          ! allocate density matrices
-         CALL mpools_get(mpools, ao_ao_fm_pools=ao_ao_fm_pools)
+         CALL mpools_get(mpools, ao_ao_fm_pool=ao_ao_fm_pool)
          ALLOCATE (fmlocal)
-         CALL fm_pool_create_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+         CALL fm_pool_create_fm(ao_ao_fm_pool, fmlocal)
          CALL cp_fm_get_info(fmlocal, matrix_struct=matrix_struct)
          DO ik = 1, nkp_loc
             IF (aux_fit) THEN
@@ -993,7 +996,7 @@ CONTAINS
                END DO
             END DO
          END DO
-         CALL fm_pool_give_back_fm(ao_ao_fm_pools(1)%pool, fmlocal)
+         CALL fm_pool_give_back_fm(ao_ao_fm_pool, fmlocal)
          DEALLOCATE (fmlocal)
 
       END IF
@@ -1562,14 +1565,13 @@ CONTAINS
                                                             nb, ncol_global, ne_a, ne_b, &
                                                             nelectron, nkp, nmo, nrow_global, nspin
       INTEGER, DIMENSION(2)                              :: kp_range
-      LOGICAL                                            :: fixed_spin_counts, &
-                                                            my_added_mos_auto_grow, &
+      LOGICAL                                            :: my_added_mos_auto_grow, &
                                                             my_separate_spin_occupations
-      REAL(KIND=dp)                                      :: kTS, kTS_spin(2), mu, mus(2), nel, &
-                                                            nel_alpha, nel_beta
+      REAL(KIND=dp)                                      :: kTS, kTS_spin(2), mu, mus(2), nel
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: smatrix
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: weig, wocc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :, :)  :: icoeff, rcoeff
+      REAL(KIND=dp), DIMENSION(2)                        :: spin_targets
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, occupation, wkp
       TYPE(cp_cfm_type), POINTER                         :: cmo_coeff
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
@@ -1586,17 +1588,19 @@ CONTAINS
       CALL get_kpoint_info(kpoint, nkp=nkp)
       kp => kpoint%kp_env(1)%kpoint_env
       nspin = SIZE(kp%mos)
-      my_separate_spin_occupations = smear%fixed_mag_mom > 0.0_dp
+      my_separate_spin_occupations = smearing_separate_spin(smear%fixed_mag_mom)
       IF (PRESENT(separate_spin_occupations)) THEN
          my_separate_spin_occupations = my_separate_spin_occupations .OR. separate_spin_occupations
       END IF
       mo_set => kp%mos(1)
       CALL get_mo_set(mo_set, nmo=nmo, nao=nao, nelectron=nelectron)
       ne_a = nelectron
+      ne_b = 0
       IF (nspin == 2) THEN
          CALL get_mo_set(kp%mos(2), nmo=nb, nelectron=ne_b)
          CPASSERT(nmo == nb)
       END IF
+      spin_targets(:) = smearing_spin_targets([ne_a, ne_b], smear%fixed_mag_mom)
       ALLOCATE (weig(nmo, nkp, nspin), wocc(nmo, nkp, nspin))
       weig = 0.0_dp
       wocc = 0.0_dp
@@ -1681,24 +1685,9 @@ CONTAINS
 
       IF (PRESENT(probe) .EQV. .FALSE.) THEN
          IF (smear%do_smear) THEN
-            ! Match the Gamma-point convention: -1 preserves the initialized alpha/beta
-            ! electron counts, nonnegative values impose a magnetic moment, and all other
-            ! negative values allow occupations to relax jointly across both spin channels.
-            fixed_spin_counts = nspin == 2 .AND. &
-                                (my_separate_spin_occupations .OR. &
-                                 smear%fixed_mag_mom == -1.0_dp .OR. &
-                                 smear%fixed_mag_mom >= 0.0_dp)
-            IF (fixed_spin_counts) THEN
-               IF (smear%fixed_mag_mom >= 0.0_dp) THEN
-                  nel = REAL(ne_a + ne_b, KIND=dp)
-                  nel_alpha = 0.5_dp*(nel + smear%fixed_mag_mom)
-                  nel_beta = 0.5_dp*(nel - smear%fixed_mag_mom)
-                  IF (nel_beta < 0.0_dp) THEN
-                     CPABORT("K-point fixed magnetic moment exceeds the electron count")
-                  END IF
-               ELSE
-                  nel_alpha = REAL(ne_a, KIND=dp)
-                  nel_beta = REAL(ne_b, KIND=dp)
+            IF (nspin == 2 .AND. my_separate_spin_occupations) THEN
+               IF (MINVAL(spin_targets) < 0.0_dp) THEN
+                  CPABORT("K-point fixed magnetic moment exceeds the electron count")
                END IF
             END IF
             SELECT CASE (smear%method)
@@ -1709,11 +1698,13 @@ CONTAINS
                   CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
                                smear%electronic_temperature, 2.0_dp, smear_fermi_dirac)
                   kTS_spin(1) = kTS
-               ELSE IF (fixed_spin_counts) THEN
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel_alpha, wkp, &
+               ELSE IF (my_separate_spin_occupations) THEN
+                  nel = spin_targets(1)
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
                                smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
                   kTS_spin(1) = kTS
-                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel_beta, wkp, &
+                  nel = spin_targets(2)
+                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
                                smear%electronic_temperature, 1.0_dp, smear_fermi_dirac)
                   kTS_spin(2) = kTS
                ELSE
@@ -1730,11 +1721,13 @@ CONTAINS
                   CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
                                smear%smearing_width, 2.0_dp, smear%method)
                   kTS_spin(1) = kTS
-               ELSE IF (fixed_spin_counts) THEN
-                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel_alpha, wkp, &
+               ELSE IF (my_separate_spin_occupations) THEN
+                  nel = spin_targets(1)
+                  CALL Smearkp(wocc(:, :, 1), mus(1), kTS, weig(:, :, 1), nel, wkp, &
                                smear%smearing_width, 1.0_dp, smear%method)
                   kTS_spin(1) = kTS
-                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel_beta, wkp, &
+                  nel = spin_targets(2)
+                  CALL Smearkp(wocc(:, :, 2), mus(2), kTS, weig(:, :, 2), nel, wkp, &
                                smear%smearing_width, 1.0_dp, smear%method)
                   kTS_spin(2) = kTS
                ELSE
