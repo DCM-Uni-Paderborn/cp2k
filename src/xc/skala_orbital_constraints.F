@@ -27,6 +27,7 @@ MODULE skala_orbital_constraints
 
    PUBLIC :: skala_orbital_chart_set_reference
    PUBLIC :: skala_orbital_chart_restrict
+   PUBLIC :: skala_orbital_chart_symmetry
 
    TYPE skala_orbital_chart_type
       PRIVATE
@@ -34,6 +35,8 @@ MODULE skala_orbital_constraints
                                   work(:, :), transformed(:, :)
       REAL(dp), ALLOCATABLE :: occupations(:), coordinate(:), coordinate_scale(:)
       INTEGER, ALLOCATABLE :: pairs(:, :), component(:), pivots(:)
+      COMPLEX(dp), ALLOCATABLE :: symmetry(:, :, :)
+      LOGICAL, ALLOCATABLE :: antiunitary(:)
       REAL(dp) :: metric_weight = 1.0_dp
       LOGICAL :: evaluated = .FALSE., variable_occupations = .FALSE.
    END TYPE skala_orbital_chart_type
@@ -313,6 +316,7 @@ CONTAINS
       INTEGER                                            :: info, n, rows
 
       CPASSERT(ALLOCATED(chart%base))
+      CPASSERT(.NOT. ALLOCATED(chart%symmetry))
       IF (chart%evaluated) THEN
          CPASSERT(ALL(chart%coordinate == 0.0_dp))
       END IF
@@ -349,6 +353,7 @@ CONTAINS
       LOGICAL, ALLOCATABLE                               :: keep(:)
 
       CPASSERT(ALLOCATED(chart%base) .AND. ALLOCATED(chart%coordinate))
+      CPASSERT(.NOT. ALLOCATED(chart%symmetry))
       CPASSERT(.NOT. chart%evaluated)
       CPASSERT(SIZE(rotation_groups) == SIZE(chart%base, 2))
       CPASSERT(ALL(rotation_groups > 0))
@@ -364,6 +369,98 @@ CONTAINS
       ALLOCATE (chart%coordinate(nkeep), SOURCE=0.0_dp)
       chart%coordinate_scale = PACK(chart%coordinate_scale, keep)
    END SUBROUTINE skala_orbital_chart_restrict
+
+! **************************************************************************************************
+!> \brief Preserve a complete little group in the original metric-normalized reference.
+!>        The real-linear group average acts on Cayley generators and its exact transpose acts
+!>        on covectors. Coordinate storage stays quadratic rather than storing a dense matrix
+!>        for every allowed generator. Projected coordinates may include null directions.
+!>        The caller supplies the complete group, including its identity. Scalar projective phases
+!>        cancel in the conjugation action. Initial occupations must commute with every action.
+!>        Independent thermal occupations additionally require diagonal actions in this frame.
+!> \param chart Initial orbital chart at zero coordinates.
+!> \param actions Complete unitary parts of the unitary or antiunitary reference-space actions.
+!> \param antiunitary Whether the corresponding action conjugates orbital coefficients.
+!> \param valid Whether the original reference and occupation variables admit these actions.
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_chart_symmetry(chart, actions, antiunitary, valid)
+      TYPE(skala_orbital_chart_type), INTENT(INOUT)      :: chart
+      COMPLEX(dp), INTENT(IN)                            :: actions(:, :, :)
+      LOGICAL, INTENT(IN)                                :: antiunitary(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      REAL(dp), PARAMETER                                :: tolerance = 3.e-11_dp
+
+      COMPLEX(dp), ALLOCATABLE                           :: gram(:, :)
+      INTEGER                                            :: i, j, n, op
+
+      CPASSERT(ALLOCATED(chart%base))
+      IF (chart%evaluated) THEN
+         CPASSERT(ALL(chart%coordinate == 0.0_dp))
+      END IF
+      n = SIZE(chart%base, 2)
+      CPASSERT(SIZE(actions, 1) == n .AND. SIZE(actions, 2) == n)
+      CPASSERT(SIZE(actions, 3) == SIZE(antiunitary))
+      valid = .FALSE.
+      IF (SIZE(antiunitary) == 0) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(actions, dp)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(AIMAG(actions)))) RETURN
+      ALLOCATE (gram(n, n))
+      DO op = 1, SIZE(antiunitary)
+         gram = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
+         DO i = 1, n
+            gram(i, i) = gram(i, i) - 1.0_dp
+         END DO
+         IF (MAXVAL(ABS(gram)) > tolerance) RETURN
+         DO j = 1, n
+            DO i = 1, n
+               IF (i == j) CYCLE
+               IF (chart%variable_occupations) THEN
+                  IF (ABS(actions(i, j, op)) > tolerance) RETURN
+               ELSE
+                  IF (ABS((chart%occupations(i) - chart%occupations(j))*actions(i, j, op)) > tolerance) RETURN
+               END IF
+            END DO
+         END DO
+      END DO
+      chart%symmetry = actions
+      chart%antiunitary = antiunitary
+      chart%evaluated = .FALSE.
+      valid = .TRUE.
+   END SUBROUTINE skala_orbital_chart_symmetry
+
+! **************************************************************************************************
+!> \brief Apply the real-linear group average or its exact transpose in the reference frame.
+!> \param actions Optional complete reference-space symmetry group.
+!> \param antiunitary Whether the corresponding action conjugates coefficients.
+!> \param matrix Reference-space matrix, replaced by its group average.
+!> \param adjoint Use the transpose for the real Frobenius pairing.
+! **************************************************************************************************
+   SUBROUTINE orbital_symmetry_project(actions, antiunitary, matrix, adjoint)
+      COMPLEX(dp), ALLOCATABLE, INTENT(IN)               :: actions(:, :, :)
+      LOGICAL, ALLOCATABLE, INTENT(IN)                   :: antiunitary(:)
+      COMPLEX(dp), INTENT(INOUT)                         :: matrix(:, :)
+      LOGICAL, INTENT(IN)                                :: adjoint
+
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), source(:, :), term(:, :)
+      INTEGER                                            :: op
+
+      IF (.NOT. ALLOCATED(actions)) RETURN
+      ALLOCATE (projected, MOLD=matrix)
+      projected = 0.0_dp
+      DO op = 1, SIZE(antiunitary)
+         IF (adjoint) THEN
+            term = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), MATMUL(matrix, actions(:, :, op)))
+            IF (antiunitary(op)) term = CONJG(term)
+         ELSE
+            source = matrix
+            IF (antiunitary(op)) source = CONJG(source)
+            term = MATMUL(actions(:, :, op), MATMUL(source, CONJG(TRANSPOSE(actions(:, :, op)))))
+         END IF
+         projected = projected + term/REAL(SIZE(antiunitary), dp)
+      END DO
+      matrix = projected
+   END SUBROUTINE orbital_symmetry_project
 
 ! **************************************************************************************************
 !> \brief Update physical occupations without changing the retained orbital coordinates.
@@ -535,6 +632,7 @@ CONTAINS
                      chart%work, chart%transformed, chart%occupations, chart%coordinate, chart%coordinate_scale, &
                      chart%pairs, chart%component, chart%pivots)
       END IF
+      IF (ALLOCATED(chart%symmetry)) DEALLOCATE (chart%symmetry, chart%antiunitary)
       chart%evaluated = .FALSE.
       chart%metric_weight = 1.0_dp
       chart%variable_occupations = .FALSE.
@@ -568,8 +666,8 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       COMPLEX(dp), INTENT(OUT)                           :: coefficients(:, :)
 
-      COMPLEX(dp)                                        :: element
-      INTEGER                                            :: a, b, i, info, n
+      COMPLEX(dp), ALLOCATABLE                           :: generator(:, :)
+      INTEGER                                            :: i, info, n
 
       CPASSERT(ALLOCATED(chart%base))
       CPASSERT(SIZE(coordinate) == SIZE(chart%coordinate))
@@ -583,20 +681,12 @@ CONTAINS
          END IF
       END IF
       n = SIZE(chart%base, 2)
-      chart%work = CMPLX(0.0_dp, 0.0_dp, dp)
+      CALL orbital_generator_direction(chart, coordinate, generator)
+      chart%work = -0.5_dp*generator
       chart%inverse = CMPLX(0.0_dp, 0.0_dp, dp)
       DO i = 1, n
-         chart%work(i, i) = 1.0_dp
+         chart%work(i, i) = chart%work(i, i) + 1.0_dp
          chart%inverse(i, i) = 1.0_dp
-      END DO
-      DO i = 1, SIZE(coordinate)
-         a = chart%pairs(1, i)
-         b = chart%pairs(2, i)
-         element = CMPLX(coordinate(i), 0.0_dp, dp)
-         IF (chart%component(i) == 2) element = CMPLX(0.0_dp, coordinate(i), dp)
-         element = chart%coordinate_scale(i)*element
-         chart%work(a, b) = chart%work(a, b) - 0.5_dp*element
-         chart%work(b, a) = chart%work(b, a) + 0.5_dp*CONJG(element)
       END DO
       CALL zgesv(n, n, chart%work, n, chart%pivots, chart%inverse, n, info)
       CPASSERT(info == 0)
@@ -650,6 +740,7 @@ CONTAINS
          END DO
          chart%transformed(:, :) = MATMUL(chart%inverse, MATMUL(chart%work, chart%inverse))
       END IF
+      CALL orbital_symmetry_project(chart%symmetry, chart%antiunitary, chart%transformed, .TRUE.)
       DO i = 1, SIZE(derivative)
          a = chart%pairs(1, i)
          b = chart%pairs(2, i)
@@ -777,6 +868,7 @@ CONTAINS
       work = MATMUL(inverse_direction, MATMUL(transformed, chart%inverse)) + &
              MATMUL(chart%inverse, MATMUL(transformed_direction, chart%inverse)) + &
              MATMUL(chart%inverse, MATMUL(transformed, inverse_direction))
+      CALL orbital_symmetry_project(chart%symmetry, chart%antiunitary, work, .TRUE.)
       DO i = 1, SIZE(response)
          a = chart%pairs(1, i)
          b = chart%pairs(2, i)
@@ -816,6 +908,7 @@ CONTAINS
          generator(a, b) = generator(a, b) + element
          generator(b, a) = generator(b, a) - CONJG(element)
       END DO
+      CALL orbital_symmetry_project(chart%symmetry, chart%antiunitary, generator, .FALSE.)
    END SUBROUTINE orbital_generator_direction
 
 ! **************************************************************************************************

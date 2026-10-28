@@ -28,7 +28,7 @@ MODULE qs_skala_orbitals
         skala_orbital_chart_create, skala_orbital_chart_derivative, skala_orbital_chart_evaluate, &
         skala_orbital_chart_release, skala_orbital_chart_restrict, &
         skala_orbital_chart_set_occupations, skala_orbital_chart_set_reference, &
-        skala_orbital_chart_size, skala_orbital_chart_type
+        skala_orbital_chart_size, skala_orbital_chart_symmetry, skala_orbital_chart_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -49,8 +49,10 @@ MODULE qs_skala_orbitals
 
 CONTAINS
 ! **************************************************************************************************
-!> \brief Adapt an initial complete reference inside equal-occupation spaces.
-!>        Supports real one-dimensional unitary characters and a compatible scalar real structure.
+!> \brief Preserve the complete little group of the initial original-metric orbital reference.
+!>        Fixed occupations use the full unitary/antiunitary group without diagonalizing its actions.
+!>        Independent thermal variables require diagonal actions. A real-character adaptation
+!>        remains available inside exactly equal native occupation and energy subspaces.
 !>        A failed adaptation leaves the state and all native MO/density storage unchanged.
 !> \param state Initial normalized orbital state, before canonical acceptance.
 !> \param metric Original complete charge metric.
@@ -59,6 +61,39 @@ CONTAINS
 !> \param info Zero success, minus one incompatible reference, minus two unsupported representation.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_orbitals_adapt_symmetry(state, metric, kpoints, representative, info)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      INTEGER, INTENT(IN)                                :: representative
+      INTEGER, INTENT(OUT)                               :: info
+
+      INTEGER                                            :: op
+      INTEGER, ALLOCATABLE                               :: operations(:)
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      ! Preserve the smaller independent chart when real characters suffice.
+      CALL adapt_real_characters(state, metric, kpoints, representative, info)
+      IF (info == 0) RETURN
+      IF (.NOT. ASSOCIATED(kpoints)) RETURN
+      IF (.NOT. ASSOCIATED(kpoints%kp_sym)) RETURN
+      sym => kpoints%kp_sym(representative)%kpoint_sym
+      IF (.NOT. ASSOCIATED(sym)) RETURN
+      IF (.NOT. ASSOCIATED(sym%rotp)) RETURN
+      operations = PACK([(op, op=1, sym%nwred)], &
+                        [(kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative)), op=1, sym%nwred)])
+      IF (SIZE(operations) == 0) RETURN
+      CALL adapt_little_group(state, metric, kpoints, representative, operations, info)
+   END SUBROUTINE qs_skala_orbitals_adapt_symmetry
+
+! **************************************************************************************************
+!> \brief Smaller independent chart for compatible real one-dimensional characters.
+!> \param state Initial complete orbital state.
+!> \param metric Original charge metric.
+!> \param kpoints Native cell-gauge symmetry metadata.
+!> \param representative Irreducible k-point.
+!> \param info Zero on success, minus one incompatible reference, minus two unsupported representation.
+! **************************************************************************************************
+   SUBROUTINE adapt_real_characters(state, metric, kpoints, representative, info)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
       COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -235,7 +270,63 @@ CONTAINS
       state%chart = chart
       state%coefficients = final
       info = 0
-   END SUBROUTINE qs_skala_orbitals_adapt_symmetry
+   END SUBROUTINE adapt_real_characters
+
+! **************************************************************************************************
+!> \brief Attach the complete reference-space group without changing the initial AO density.
+!> \param state Initial native orbital state at zero coordinates.
+!> \param metric Original charge metric.
+!> \param kpoints Native cell-gauge symmetry metadata.
+!> \param representative Irreducible k-point.
+!> \param operations Complete operations leaving this point fixed modulo a reciprocal vector.
+!> \param info Zero on success, minus one for an incompatible reference or occupation variable.
+! **************************************************************************************************
+   SUBROUTINE adapt_little_group(state, metric, kpoints, representative, operations, info)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      COMPLEX(dp), INTENT(IN)                            :: metric(:, :)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      INTEGER, INTENT(IN)                                :: representative, operations(:)
+      INTEGER, INTENT(OUT)                               :: info
+
+      COMPLEX(dp), ALLOCATABLE                           :: action(:, :), actions(:, :, :), &
+                                                            coefficients(:, :), original(:, :), &
+                                                            source(:, :), weighted(:, :)
+      INTEGER                                            :: i, n, op, status
+      LOGICAL                                            :: valid
+      LOGICAL, ALLOCATABLE                               :: antiunitary(:)
+      REAL(dp)                                           :: rotation(3, 3)
+      REAL(dp), ALLOCATABLE                              :: zero(:)
+      TYPE(skala_orbital_chart_type)                     :: chart
+
+      info = -1
+      n = SIZE(state%coefficients, 2)
+      ALLOCATE (action(n, n), actions(n, n, SIZE(operations)), antiunitary(SIZE(operations)))
+      DO op = 1, SIZE(operations)
+         CALL kpoint_cell_gauge_action(kpoints, representative, operations(op), &
+                                       kpoints%xkp(:, representative), action, rotation, antiunitary(op), status)
+         IF (status /= 0) RETURN
+         source = state%coefficients
+         IF (antiunitary(op)) source = CONJG(source)
+         actions(:, :, op) = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, MATMUL(action, source)))
+      END DO
+      chart = state%chart
+      CALL skala_orbital_chart_symmetry(chart, actions, antiunitary, valid)
+      IF (.NOT. valid) RETURN
+      CALL orbital_density(state, original)
+      ALLOCATE (zero(skala_orbital_chart_size(chart)), coefficients(n, n))
+      zero = 0.0_dp
+      CALL skala_orbital_chart_evaluate(chart, zero, coefficients)
+      weighted = coefficients
+      DO i = 1, n
+         weighted(:, i) = weighted(:, i)*state%occupations(i)
+      END DO
+      source = MATMUL(weighted, CONJG(TRANSPOSE(coefficients)))
+      IF (MAXVAL(ABS(source - original)) > 3.e-11_dp) RETURN
+      CALL skala_orbital_chart_release(state%chart)
+      state%chart = chart
+      state%coefficients = coefficients
+      info = 0
+   END SUBROUTINE adapt_little_group
 
 ! **************************************************************************************************
 !> \brief Borrow native MOs and complete their missing virtual space in the original charge metric.
@@ -246,6 +337,7 @@ CONTAINS
 !> \param complex_orbitals Whether imaginary orbital variations are physical.
 !> \param weight Positive k-point weight, applied once to physical tangent derivatives.
 !> \param valid Whether the complete requested charge space is positive.
+!> \param variable_occupations ...
 ! **************************************************************************************************
    SUBROUTINE qs_skala_orbitals_create(state, native, metric, complex_orbitals, weight, valid, variable_occupations)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
@@ -347,6 +439,8 @@ CONTAINS
 !> \brief Evaluate the complete fixed-occupation orbital trial without changing native storage.
 !> \param state ...
 !> \param coordinate ...
+!> \param occupations ...
+!> \param energies ...
 ! **************************************************************************************************
    SUBROUTINE qs_skala_orbitals_evaluate(state, coordinate, occupations, energies)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state

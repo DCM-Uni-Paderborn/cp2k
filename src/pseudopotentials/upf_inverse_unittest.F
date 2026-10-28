@@ -86,7 +86,8 @@ PROGRAM upf_inverse_unittest
         skala_orbital_chart_derivative, skala_orbital_chart_evaluate, &
         skala_orbital_chart_operator_response, skala_orbital_chart_release, &
         skala_orbital_chart_restrict, skala_orbital_chart_set_occupations, &
-        skala_orbital_chart_set_reference, skala_orbital_chart_size, skala_orbital_chart_type
+        skala_orbital_chart_set_reference, skala_orbital_chart_size, skala_orbital_chart_symmetry, &
+        skala_orbital_chart_type
    USE t_c_g0,                          ONLY: free_C0,&
                                               init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
@@ -175,14 +176,16 @@ CONTAINS
          occupation_direction(4) = [0.07_dp, -0.07_dp, -0.03_dp, 0.03_dp], &
          occupations(4) = [1.7_dp, 0.3_dp, 1.2_dp, 0.8_dp], step = 1.e-5_dp
 
-      COMPLEX(dp) :: anti(4, 4), coefficients(4, 4), density(4, 4), h(4, 4), metric(4, 4), &
-         minus(4, 4), plus(4, 4), reference(4, 4), response(4, 4), rotation(4, 4), weighted(4, 4), &
-         zero(4, 4)
-      INTEGER                                            :: i, j
-      LOGICAL                                            :: valid
-      REAL(dp)                                           :: analytic, derivative(2), &
-                                                            gradient_minus(2), gradient_plus(2), &
-                                                            hessian(2), phase
+      COMPLEX(dp) :: actions(4, 4, 12), anti(4, 4), block(2, 2), coefficients(4, 4), &
+         density(4, 4), group_h(4, 4), h(4, 4), metric(4, 4), minus(4, 4), mo_density(4, 4), &
+         orbital_rotation(4, 4), plus(4, 4), reference(4, 4), response(4, 4), rotation(4, 4), &
+         term(4, 4), weighted(4, 4), zero(4, 4)
+      INTEGER                                            :: a, b, copy, i, j, mode, ngroup, op, &
+                                                            reflection
+      LOGICAL                                            :: conjugating(12), valid
+      REAL(dp) :: analytic, angle, derivative(2), dq(8), em, ep, expected(8), f(4), g(8), gm(8), &
+         gp(8), gradient_minus(2), gradient_plus(2), hessian(2), hg(8), phase, phases(4), &
+         physical(8), q(8), value
       TYPE(skala_orbital_chart_type)                     :: chart
 
       reference = 0.0_dp
@@ -251,6 +254,98 @@ CONTAINS
       IF (skala_orbital_chart_size(chart) /= 0) ERROR STOP 'Forbidden orbital rotations retained'
       CALL skala_orbital_chart_evaluate(chart, [REAL(dp) ::], coefficients)
       CALL check(MAXVAL(ABS(coefficients - reference)), 'Empty orbital restriction preserves reference')
+      CALL skala_orbital_chart_release(chart)
+
+      ! Two equivalent two-dimensional non-Abelian representations, with a complex gauge.
+      actions = 0.0_dp
+      conjugating = .FALSE.
+      phases = [0.17_dp, -0.23_dp, 0.31_dp, -0.41_dp]
+      DO reflection = 0, 1
+         DO i = 0, 2
+            angle = 2.0_dp*pi*REAL(i, dp)/3.0_dp
+            block = RESHAPE(CMPLX([COS(angle), SIN(angle), -SIN(angle), COS(angle)], 0.0_dp, dp), [2, 2])
+            IF (reflection == 1) block(:, 2) = -block(:, 2)
+            op = 1 + i + 3*reflection
+            DO copy = 0, 1
+               actions(2*copy + 1:2*copy + 2, 2*copy + 1:2*copy + 2, op) = block
+            END DO
+         END DO
+      END DO
+      actions(:, :, 7:) = actions(:, :, :6)
+      conjugating(7:) = .TRUE.
+      DO op = 1, 12
+         DO j = 1, 4
+            DO i = 1, 4
+               phase = phases(j) - phases(i)
+               IF (conjugating(op)) phase = -phases(i) - phases(j)
+               actions(i, j, op) = actions(i, j, op)*EXP(CMPLX(0.0_dp, phase, dp))
+            END DO
+         END DO
+      END DO
+      f = [2.0_dp, 2.0_dp, 0.0_dp, 0.0_dp]
+      q = [(0.07_dp*SIN(REAL(i, dp)), i=1, 8)]
+      dq = [(0.13_dp*COS(REAL(i, dp)), i=1, 8)]
+      DO mode = 1, 2
+         ngroup = 6*mode
+         CALL skala_orbital_chart_create(reference, metric, f, .TRUE., chart, valid)
+         IF (.NOT. valid) ERROR STOP 'Non-Abelian reference metric is not positive'
+         CALL skala_orbital_chart_symmetry(chart, actions(:, :, :ngroup), conjugating(:ngroup), valid)
+         IF (.NOT. valid) ERROR STOP 'Complete non-Abelian group was rejected'
+         CALL skala_orbital_chart_evaluate(chart, q, coefficients)
+         orbital_rotation = MATMUL(CONJG(TRANSPOSE(reference)), MATMUL(metric, coefficients))
+         weighted = orbital_rotation
+         DO i = 1, 4
+            weighted(:, i) = f(i)*weighted(:, i)
+         END DO
+         mo_density = MATMUL(weighted, CONJG(TRANSPOSE(orbital_rotation)))
+         DO op = 1, ngroup
+            term = mo_density
+            IF (conjugating(op)) term = CONJG(term)
+            weighted = MATMUL(actions(:, :, op), MATMUL(term, CONJG(TRANSPOSE(actions(:, :, op)))))
+            CALL check(MAXVAL(ABS(weighted - mo_density)), 'Complete non-Abelian orbital density covariance')
+         END DO
+         CALL skala_orbital_chart_derivative(chart, h, g)
+         CALL skala_orbital_chart_density_response(chart, dq, response)
+         weighted = MATMUL(h, response)
+         CALL check(ABS(SUM([(REAL(weighted(i, i), dp), i=1, 4)]) - SUM(g*dq)), 'Group-projected orbital density adjoint')
+         CALL skala_orbital_chart_operator_response(chart, dq, h, zero, hg)
+         CALL skala_orbital_chart_derivative(chart, h, physical, physical_tangent=.TRUE.)
+         term = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(h, coefficients))
+         group_h = 0.0_dp
+         DO op = 1, ngroup
+            weighted = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), MATMUL(term, actions(:, :, op)))
+            IF (conjugating(op)) weighted = CONJG(weighted)
+            group_h = group_h + weighted/REAL(ngroup, dp)
+         END DO
+         j = 0
+         DO b = 2, 4
+            DO a = 1, b - 1
+               IF (f(a) == f(b)) CYCLE
+               value = 2.0_dp*(f(b) - f(a))/SQRT(f(a) + f(b))
+               expected(j + 1:j + 2) = value*[REAL(group_h(a, b), dp), AIMAG(group_h(a, b))]
+               j = j + 2
+            END DO
+         END DO
+         CALL check(MAXVAL(ABS(physical - expected)), 'Complete-group weighted physical tangent covector')
+         CALL skala_orbital_chart_evaluate(chart, q + step*dq, plus)
+         CALL skala_orbital_chart_derivative(chart, h, gp)
+         weighted = MATMUL(CONJG(TRANSPOSE(plus)), MATMUL(h, plus))
+         ep = SUM([(f(i)*REAL(weighted(i, i), dp), i=1, 4)])
+         CALL skala_orbital_chart_evaluate(chart, q - step*dq, minus)
+         CALL skala_orbital_chart_derivative(chart, h, gm)
+         weighted = MATMUL(CONJG(TRANSPOSE(minus)), MATMUL(h, minus))
+         em = SUM([(f(i)*REAL(weighted(i, i), dp), i=1, 4)])
+         CALL check(ABS((ep - em)/(2*step) - SUM(g*dq)), 'Complete-group finite orbital energy derivative', 1.e-9_dp)
+         CALL check(MAXVAL(ABS((gp - gm)/(2*step) - hg)), 'Complete-group orbital Hessian', 1.e-8_dp)
+         CALL skala_orbital_chart_release(chart)
+      END DO
+      CALL skala_orbital_chart_create(reference, metric, f, .TRUE., chart, valid, variable_occupations=.TRUE.)
+      CALL skala_orbital_chart_symmetry(chart, actions(:, :, :6), conjugating(:6), valid)
+      IF (valid) ERROR STOP 'Independent thermal variables cannot split a multidimensional representation'
+      CALL skala_orbital_chart_release(chart)
+      CALL skala_orbital_chart_create(reference, metric, occupations, .TRUE., chart, valid)
+      CALL skala_orbital_chart_symmetry(chart, actions(:, :, :6), conjugating(:6), valid)
+      IF (valid) ERROR STOP 'Noncovariant initial occupations were silently changed'
       CALL skala_orbital_chart_release(chart)
    END SUBROUTINE check_orbital_symmetry
 
