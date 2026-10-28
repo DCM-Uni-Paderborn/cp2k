@@ -31,7 +31,8 @@ PROGRAM pw_unittest
                                               pw_grid_release
    USE pw_methods,                      ONLY: do_accurate_sum,&
                                               do_standard_sum,&
-                                              pw_integral_ab
+                                              pw_integral_ab,&
+                                              pw_real_fourier_aliases
    USE pw_poisson_methods,              ONLY: pw_green_strain_response,&
                                               pw_poisson_set,&
                                               pw_poisson_solve
@@ -88,8 +89,12 @@ CONTAINS
    SUBROUTINE check_real_interpolation(partial)
       LOGICAL, INTENT(IN)                                :: partial
 
-      INTEGER                                            :: axes, fine_sizes(3), ig, nsplit
-      REAL(dp)                                           :: cell(3, 3), error, expected, left, right
+      COMPLEX(dp)                                        :: phase
+      INTEGER                                            :: alias, axes, fine_sizes(3), ig, nalias, &
+                                                            nsplit
+      LOGICAL                                            :: boundary(3)
+      REAL(dp)                                           :: cell(3, 3), error, expected, left, &
+                                                            point(3), right, vectors(3, 8)
       TYPE(mp_comm_type)                                 :: comm
       TYPE(pw_c1d_gs_type)                               :: coarse, fine, restricted, test
       TYPE(pw_grid_type), POINTER                        :: coarse_grid, fine_grid
@@ -112,6 +117,25 @@ CONTAINS
       CALL fine%create(fine_grid)
       CALL test%create(fine_grid)
       CALL restricted%create(coarse_grid)
+      ! Real atomic Fourier kernels need the same independent boundary signs.
+      point = MATMUL(coarse_grid%dh, REAL([1, 2, -1], dp))
+      DO ig = 1, SIZE(coarse%array)
+         CALL pw_real_fourier_aliases(coarse_grid, ig, vectors, nalias)
+         boundary = ABS(coarse_grid%g_hat(:, ig)) == 3
+         IF (nalias /= 2**COUNT(boundary)) ERROR STOP "Missing real Fourier boundary aliases."
+         phase = 0.0_dp
+         DO alias = 1, nalias
+            phase = phase + EXP(CMPLX(0.0_dp, DOT_PRODUCT(vectors(:, alias), point), dp))/REAL(nalias, dp)
+         END DO
+         IF (ABS(phase - EXP(CMPLX(0.0_dp, DOT_PRODUCT(coarse_grid%g(:, ig), point), dp))) > 3.e-14_dp) then
+           ERROR STOP "Fourier boundary aliases changed the native grid phase."
+         end if
+         IF (boundary(1) .AND. boundary(2)) THEN
+            IF (ABS(SUM(vectors(1, :nalias)*vectors(2, :nalias))/REAL(nalias, dp)) > 3.e-14_dp) then
+              ERROR STOP "A mixed odd kernel survived independent Nyquist reflection."
+            end if
+         END IF
+      END DO
       DO axes = 1, 3
          nsplit = axes
          IF (partial) nsplit = axes - 1
