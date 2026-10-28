@@ -590,7 +590,12 @@ CONTAINS
 
             IF (pw1%pw_grid%spherical .neqv. pw2%pw_grid%spherical) &
                CPABORT("Both grids must be either spherical or non-spherical!")
-            #:if space != "gs"
+            #:if space == "rs" and kind[1:] == "3d"
+               ! The FFT real-space layout remains defined on a spherical reciprocal grid.
+               IF (pw1%pw_grid%spherical) THEN
+                  CPASSERT(ASSOCIATED(pw1%pw_grid, pw2%pw_grid))
+               END IF
+            #:elif space != "gs"
                IF (pw1%pw_grid%spherical) &
                   CPABORT("Spherical grids only exist in reciprocal space!")
             #:endif
@@ -674,8 +679,10 @@ CONTAINS
             #:else
                IF (ANY(SHAPE(pw2%array) /= SHAPE(pw1%array))) &
                   CPABORT("3D grids must be compatible!")
-               IF (pw1%pw_grid%spherical) &
-                  CPABORT("3D grids must not be spherical!")
+               #:if space != "rs"
+                  IF (pw1%pw_grid%spherical) &
+                     CPABORT("3D grids must not be spherical!")
+               #:endif
 !$OMP PARALLEL WORKSHARE DEFAULT(NONE) SHARED(pw1,pw2)
                pw2%array(:, :, :) = ${type2type("pw1%array(:, :, :)", kind, kind2)}$
 !$OMP END PARALLEL WORKSHARE

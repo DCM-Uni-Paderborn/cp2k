@@ -691,7 +691,7 @@ CONTAINS
 
       IF ((has_gradient .AND. xc_requires_tmp_g(xc_deriv_method_id)) .OR. pw_grid%spherical) THEN
          CALL pw_pool%create_pw(vxc_g)
-         IF (.NOT. pw_grid%spherical) THEN
+         IF (has_gradient .AND. xc_requires_tmp_g(xc_deriv_method_id)) THEN
             CALL pw_pool%create_pw(tmp_g)
          END IF
       END IF
