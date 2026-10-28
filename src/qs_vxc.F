@@ -681,7 +681,8 @@ CONTAINS
                                   xc_section=xc_section, &
                                   weights=weights_use, pw_pool=xc_pw_pool, &
                                   compute_virial=compute_virial, &
-                                  virial_xc=virial%pv_xc, density_constraints=skala_constraints)
+                                  virial_xc=virial%pv_xc, density_constraints=skala_constraints, &
+                                  project_density_potential=.NOT. qs_upf_inverse_scf_active(ks_env))
          END IF
 
          IF ((dft_control%qs_control%gapw_xc .OR. dft_control%qs_control%gapw .OR. &
@@ -1427,7 +1428,8 @@ CONTAINS
                                weights=weights_use, pw_pool=xc_pw_pool, &
                                compute_virial=.FALSE., &
                                virial_xc=vdum, &
-                               exc_r=exc_r)
+                               exc_r=exc_r, &
+                               project_density_potential=.NOT. qs_upf_inverse_scf_active(ks_env))
          ! calclulate non-local vdW functional
          ! only if this XC_SECTION has it
          ! if yes, we use the dispersion_env from ks_env

@@ -544,6 +544,8 @@ CONTAINS
 !> \param compute_virial ...
 !> \param virial_xc ...
 !> \param exc_r the value of the xc functional in the real space
+!> \param project_density_potential Apply the spherical density-space transpose to the potential.
+!>        Keep false when the supplied density varies in the full real-space grid.
 !> \par History
 !>      JGH (13-Jun-2002): adaptation to new functionals
 !>      Fawzi (11.2002): drho_g(1:3)->drho_g
@@ -558,7 +560,7 @@ CONTAINS
 !>      energy should be kept consistent with xc_exc_calc
 ! **************************************************************************************************
    SUBROUTINE xc_vxc_pw_create(vxc_rho, vxc_tau, exc, rho_r, rho_g, tau, xc_section, weights, &
-                               pw_pool, compute_virial, virial_xc, exc_r, density_constraints)
+                               pw_pool, compute_virial, virial_xc, exc_r, density_constraints, project_density_potential)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: vxc_rho, vxc_tau
       REAL(KIND=dp), INTENT(out)                         :: exc
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, tau
@@ -569,6 +571,7 @@ CONTAINS
       LOGICAL                                            :: compute_virial
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(OUT)        :: virial_xc
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: exc_r
+      LOGICAL, INTENT(IN), OPTIONAL                      :: project_density_potential
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: density_constraints
 
@@ -579,7 +582,7 @@ CONTAINS
                                                             npoints, nspins, &
                                                             xc_deriv_method_id, xc_rho_smooth_id, deriv_id
       INTEGER, DIMENSION(2, 3)                           :: bo
-      LOGICAL                                            :: dealloc_pw_to_deriv, has_laplace, &
+      LOGICAL                                            :: project_density, dealloc_pw_to_deriv, has_laplace, &
                                                             has_tau, lsd, use_virial, has_gradient, &
                                                             has_derivs, has_rho, dealloc_pw_to_deriv_rho
       REAL(KIND=dp)                                      :: density_smooth_cut_range, drho_cutoff, &
@@ -598,6 +601,8 @@ CONTAINS
       CALL timeset(routineN, handle)
       NULLIFY (norm_drho_spin, norm_drho, pos)
 
+      project_density = .TRUE.
+      IF (PRESENT(project_density_potential)) project_density = project_density_potential
       pw_grid => rho_r(1)%pw_grid
 
       CPASSERT(ASSOCIATED(xc_section))
@@ -799,7 +804,8 @@ CONTAINS
             CALL pw_pool%give_back_pw(pw_to_deriv(1))
          END IF
 
-         IF (pw_grid%spherical) THEN
+         IF (pw_grid%spherical .AND. project_density) THEN
+            ! Apply the transpose of the projected-density map only for that input convention.
             ! filter vxc
             CALL pw_transfer(vxc_rho(ispin), vxc_g)
             CALL pw_transfer(vxc_g, vxc_rho(ispin))
