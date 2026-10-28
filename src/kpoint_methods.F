@@ -3054,7 +3054,8 @@ CONTAINS
                                                             k, last, nc, nelement, nimage, nrow, &
                                                             orientation, shift(3), slot
       LOGICAL                                            :: contributes, real_only, trans
-      REAL(KIND=dp)                                      :: arg, cosine, factors(2, 2), sine
+      REAL(KIND=dp)                                      :: arg, cosine, factors(2, 2), point(3), &
+                                                            sine
       REAL(KIND=dp), POINTER                             :: left_rot(:, :), right_rot(:, :), &
                                                             source_block(:, :), target_block(:, :)
       TYPE(cp_fm_type), POINTER                          :: matrix
@@ -3087,10 +3088,11 @@ CONTAINS
                contributes = .FALSE.
                DO k = first, last
                   ikp = groups(slot)%ikp(k)
-                  CALL kp_symmetry_phase_factors(shift, groups(slot)%xkp(:, k), &
+                  point(:) = groups(slot)%xkp(:, k)
+                  CALL kp_symmetry_phase_factors(shift, point, &
                                                  groups(slot)%op%time_reversal, real_only, factors)
                   DO image = 1, nimage
-                     arg = twopi*DOT_PRODUCT(REAL(jobs(4:6, image), dp), groups(slot)%xkp(:, k))
+                     arg = twopi*DOT_PRODUCT(REAL(jobs(4:6, image), dp), point)
                      cosine = REAL(jobs(7, image), dp)*COS(arg)
                      sine = REAL(jobs(8, image), dp)*SIN(arg)*MERGE(-1.0_dp, 1.0_dp, trans)
                      IF (real_only) sine = 0.0_dp
