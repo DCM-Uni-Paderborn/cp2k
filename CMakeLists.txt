@@ -5,7 +5,7 @@
 #!   SPDX-License-Identifier: GPL-2.0-or-later                                                     !
 #!-------------------------------------------------------------------------------------------------!
 
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.25)
 
 # include our cmake snippets
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
@@ -566,21 +566,15 @@ if(CP2K_USE_ACCEL MATCHES "CUDA")
   enable_language(CUDA)
   if(CP2K_USE_NVHPC)
     find_package(NVHPC REQUIRED COMPONENTS CUDA MATH HOSTUTILS NCCL)
+    if(CP2K_WITH_GPU_PROFILING)
+      find_package(CUDAToolkit REQUIRED)
+    endif()
   else()
     find_package(CUDAToolkit REQUIRED)
   endif()
 
   message(STATUS "GPU architecture number: ${CMAKE_CUDA_ARCHITECTURES}")
   message(STATUS "GPU profiling enabled: ${CP2K_WITH_GPU_PROFILING}")
-
-  if(CP2K_WITH_GPU_PROFILING)
-    find_library(
-      CUDA_NVTOOLSEXT nvToolsExt
-      PATHS ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES}
-      DOC "Building with CUDA profiling requires the nvToolsExt CUDA library"
-          REQUIRED)
-    message(STATUS "Found nvToolsExt: ${CUDA_NVTOOLSEXT}")
-  endif()
 
   set(CP2K_USE_CUDA ON)
 
@@ -1083,6 +1077,16 @@ if(CP2K_USE_ACCEL MATCHES "CUDA" OR CP2K_USE_ACCEL MATCHES "HIP")
     "      - LIBXC: ${CP2K_ENABLE_LIBXC_GPU}\n")
 endif()
 
+if(CP2K_USE_ACCEL MATCHES "OPENCL")
+  message(
+    "  - Hardware acceleration\n"
+    "    - Backend: OpenCL\n"
+    "    - OpenCL library: ${OpenCL_LIBRARIES}\n"
+    "    - LIBXSTREAM package directory: ${libxstream_DIR}\n"
+    "    - GPU-accelerated modules\n"
+    "      - DBM: ${CP2K_ENABLE_DBM_GPU}\n")
+endif()
+
 if(CP2K_USE_CUSOLVER_MP)
   message("  - cuSOLVERMp\n"
           "    - Include directories: ${CP2K_CUSOLVER_MP_INCLUDE_DIRS}\n"
@@ -1142,9 +1146,11 @@ if(CP2K_USE_PLUMED)
 endif()
 
 if(CP2K_USE_LIBXS)
-  message("  - LIBXS\n"
-          "    - Include directories: ${CP2K_LIBXS_INCLUDE_DIRS}\n"
-          "    - Libraries: ${CP2K_LIBXS_LINK_LIBRARIES}\n")
+  message("  - LIBXS\n" "    - Package directory: ${libxs_DIR}\n")
+endif()
+
+if(CP2K_USE_LIBXSMM)
+  message("  - LIBXSMM\n" "    - Package directory: ${libxsmm_DIR}\n")
 endif()
 
 if(CP2K_USE_SPLA)

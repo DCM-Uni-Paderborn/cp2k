@@ -11,30 +11,30 @@
 !> \author teo & fawzi
 ! **************************************************************************************************
 MODULE input_cp2k_free_energy
-   USE bibliography,                    ONLY: BarducBus2008,&
-                                              VandenCic2006
-   USE cp_output_handling,              ONLY: add_last_numeric,&
-                                              cp_print_key_section_create,&
-                                              high_print_level,&
-                                              low_print_level
-   USE cp_units,                        ONLY: cp_unit_to_cp2k
-   USE input_constants,                 ONLY: &
-        do_fe_ac, do_fe_meta, do_fe_ui, do_wall_gaussian, do_wall_m, do_wall_none, do_wall_p, &
-        do_wall_quadratic, do_wall_quartic, do_wall_reflective, gaussian
-   USE input_keyword_types,             ONLY: keyword_create,&
-                                              keyword_release,&
-                                              keyword_type
-   USE input_section_types,             ONLY: section_add_keyword,&
-                                              section_add_subsection,&
-                                              section_create,&
-                                              section_release,&
-                                              section_type
-   USE input_val_types,                 ONLY: char_t,&
-                                              integer_t,&
-                                              lchar_t,&
-                                              real_t
-   USE kinds,                           ONLY: dp
-   USE string_utilities,                ONLY: s2a
+   USE bibliography, ONLY: BarducBus2008, &
+                           VandenCic2006
+   USE cp_output_handling, ONLY: add_last_numeric, &
+                                 cp_print_key_section_create, &
+                                 high_print_level, &
+                                 low_print_level
+   USE cp_units, ONLY: cp_unit_to_cp2k
+   USE input_constants, ONLY: &
+      do_fe_ac, do_fe_meta, do_fe_ui, do_wall_gaussian, do_wall_m, do_wall_none, do_wall_p, &
+      do_wall_quadratic, do_wall_quartic, do_wall_reflective, gaussian
+   USE input_keyword_types, ONLY: keyword_create, &
+                                  keyword_release, &
+                                  keyword_type
+   USE input_section_types, ONLY: section_add_keyword, &
+                                  section_add_subsection, &
+                                  section_create, &
+                                  section_release, &
+                                  section_type
+   USE input_val_types, ONLY: char_t, &
+                              integer_t, &
+                              lchar_t, &
+                              real_t
+   USE kinds, ONLY: dp
+   USE string_utilities, ONLY: s2a
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -184,24 +184,26 @@ CONTAINS
 
       !Hills tail damping
       CALL keyword_create(keyword, __LOCATION__, name="HILL_TAIL_CUTOFF", &
-                          description="By setting this variable larger than 0 the tail of the Gaussian hill"// &
-                          " is damped to zero faster. The Gaussian function is multiplied by a cutoff function"// &
-                          " that becomes active at |x-X0|>HILL_TAIL_CUTOFF*SCALE, where X0 is the location of "// &
-                          "the Gaussian and SCALE is the width of the Gaussian. For more than one METAVAR"// &
-                          " X0 and SCALE are METAVAR-dependent."// &
-                          " (1-(|x-X0|/HILL_TAIL_CUTOFF*SCALE)^P_EXP)/(1-(|x-X0|/HILL_TAIL_CUTOFF*SCALE)^Q_EXP)", &
+                          description="By setting this variable larger than 0 the tail of the Gaussian hill "// &
+                          "is damped to zero faster. Let $X_0$ be the location of the Gaussian and $\mathrm{SCALE}$ "// &
+                          "be the width of the Gaussian (for more than one METAVAR, $X_0$ and $\mathrm{SCALE}$ are "// &
+                          "METAVAR-dependent), and denote $S=\mathrm{HILL\_TAIL\_CUTOFF} \cdot \mathrm{SCALE}$. "// &
+                          "The Gaussian function is multiplied by a cutoff function that becomes active at "// &
+                          "$|x-X_0| \gt S$, namely $\dfrac{1-(|x-X_0|/S)^{P}}{1-(|x-X_0|/S)^{Q}}$", &
                           usage="HILL_TAIL_CUTOFF <REAL>", &
                           default_r_val=-1.0_dp)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="P_EXPONENT", &
-                          description="Exponent at the numerator of the cutoff function to damp the tail of the Gaussian.", &
+                          description="Exponent $P$ at the numerator of the cutoff function "// &
+                          "to damp the tail of the Gaussian.", &
                           usage="P_EXPONENT <INT>", &
                           default_i_val=8)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="Q_EXPONENT", &
-                          description="Exponent at the denominator of the cutoff function to damp the tail of the Gaussian.", &
+                          description="Exponent $Q$ at the denominator of the cutoff function "// &
+                          "to damp the tail of the Gaussian.", &
                           usage="Q_EXPONENT <INT>", &
                           default_i_val=20)
       CALL section_add_keyword(section, keyword)
@@ -439,19 +441,25 @@ CONTAINS
       NULLIFY (keyword)
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, name="ALCHEMICAL_CHANGE", &
-                          description="Controls the calculation of delta free energies"// &
-                          " with the alchemical change method.", &
+                          description="Controls the calculation of delta free energies with the "// &
+                          "alchemical change method. This requires setting up a generic mixed "// &
+                          "force env with the FORCE_EVAL/MIXED/MIXING_TYPE keyword set as GENMIX "// &
+                          "and the coupling function defined in the FORCE_EVAL/MIXED/GENERIC section.", &
                           n_keywords=0, n_subsections=0, repeats=.FALSE.)
 
       CALL keyword_create(keyword, __LOCATION__, name="PARAMETER", &
-                          description="Defines the perturbing parameter of the alchemical change transformation", &
-                          usage="PARAMETERS k", type_of_var=char_t, &
+                          description="Defines the symbol for the perturbing parameter of the "// &
+                          "alchemical change transformation. This must be one of the symbols "// &
+                          "for the corresponding FORCE_EVAL/MIXED/GENERIC/PARAMETERS keyword.", &
+                          usage="PARAMETER k", type_of_var=char_t, &
                           n_var=1)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="WEIGHTING_FUNCTION", &
-                          description="Specifies the weighting function (umbrella potential, part of the mixing function)", &
+                          description="Specifies the weighting function (umbrella potential, "// &
+                          "part of the mixing function) using the identical symbols for the "// &
+                          "parameters and variables in FORCE_EVAL/MIXED/GENERIC.", &
                           usage="WEIGHTING_FUNCTION (E1+E2-LOG(E1/E2))", type_of_var=lchar_t, &
                           n_var=1, default_lc_val="0")
       CALL section_add_keyword(section, keyword)
@@ -665,9 +673,9 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="SCALE", &
                           variants=["WIDTH"], &
                           description="Specifies the scale factor for the following collective variable. The history "// &
-                          "dependent term has the expression: WW * Sum_{j=1}^{nhills} Prod_{k=1}^{ncolvar} "// &
-                          "[EXP[-0.5*((ss-ss0(k,j))/SCALE(k))^2]], "// &
-                          "where ncolvar is the number of defined METAVAR and nhills is the number of spawned hills. ", &
+                          "dependent term has the expression: $\mathrm{WW} \sum_{j=1}^{n_{hills}} \prod_{k=1}^{n_{colvar}} "// &
+                          "\exp{[-0.5(\frac{\mathrm{ss}-\mathrm{ss0}(k,j)}{\mathrm{SCALE}(k)})^2]}$, "// &
+                          "where $n_{colvar}$ is the number of defined METAVAR and $n_{hills}$ is the number of spawned hills. ", &
                           usage="SCALE <REAL>", type_of_var=real_t, unit_str='internal_cp2k')
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -725,7 +733,8 @@ CONTAINS
 
       ! Quadratic wall
       CALL section_create(subsection, __LOCATION__, name="QUADRATIC", &
-                          description="Parameters controlling the quadratic wall", &
+                          description="Parameters controlling the quadratic wall "// &
+                          "$K (\mathrm{CV}-\mathrm{POS})^2$", &
                           n_keywords=0, n_subsections=1, repeats=.FALSE.)
 
       CALL keyword_create(keyword, __LOCATION__, name="DIRECTION", &
@@ -739,9 +748,8 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="K", &
-                          description="Specify the value of the quadratic potential constant: K*(CV-POS)^2", &
-                          usage="K <REAL>", unit_str='hartree', &
-                          type_of_var=real_t)
+                          description="Specify the value of the quadratic potential constant $K$.", &
+                          usage="K <REAL>", unit_str='hartree', type_of_var=real_t)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
 
@@ -750,7 +758,8 @@ CONTAINS
 
       ! Quartic wall
       CALL section_create(subsection, __LOCATION__, name="QUARTIC", &
-                          description="Parameters controlling the quartic wall", &
+                          description="Parameters controlling the quartic wall "// &
+                          "$K (\mathrm{CV}-(\mathrm{POS}\pm\frac{0.05}{K^{1/4}}))^4$", &
                           n_keywords=0, n_subsections=1, repeats=.FALSE.)
 
       CALL keyword_create(keyword, __LOCATION__, name="DIRECTION", &
@@ -764,8 +773,7 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="K", &
-                          description="Specify the value of the quartic potential constant: "// &
-                          "K*(CV-(POS+/-(0.05/K^(1/4))))^4", &
+                          description="Specify the value of the quartic potential constant $K$.", &
                           usage="K <REAL>", unit_str='hartree', &
                           type_of_var=real_t)
       CALL section_add_keyword(subsection, keyword)
@@ -776,18 +784,19 @@ CONTAINS
 
       ! Gaussian wall
       CALL section_create(subsection, __LOCATION__, name="GAUSSIAN", &
-                          description="Parameters controlling the gaussian wall.", &
+                          description="Parameters controlling the gaussian wall "// &
+                          "$\mathrm{WW} \exp{(-(\frac{\mathrm{CV}-\mathrm{POS}}{\sigma})^2)}$.", &
                           n_keywords=0, n_subsections=1, repeats=.FALSE.)
 
       CALL keyword_create(keyword, __LOCATION__, name="WW", &
-                          description="Specify the height of the gaussian: WW*e^(-((CV-POS)/sigma)^2)", &
+                          description="Specify the height $\mathrm{WW}$ of the gaussian.", &
                           usage="WW <REAL>", unit_str='hartree', &
                           type_of_var=real_t)
       CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="SIGMA", &
-                          description="Specify the width of the gaussian: WW*e^(-((CV-POS)/sigma)^2)", &
+                          description="Specify the width $\sigma$ of the gaussian.", &
                           usage="SIGMA <REAL>", unit_str='internal_cp2k', &
                           type_of_var=real_t)
       CALL section_add_keyword(subsection, keyword)
