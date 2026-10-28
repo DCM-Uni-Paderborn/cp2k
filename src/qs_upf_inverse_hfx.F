@@ -3185,14 +3185,14 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), delta(:, :), dl(:, :), dq(:, :), dr(:, :), &
          dwl(:, :), dwr(:, :), fcl(:, :), fcr(:, :), fdl(:, :), fdr(:, :), moment_left(:, :, :), &
-         moment_right(:, :, :), q(:, :), response_left(:, :, :), response_right(:, :, :), &
-         wl(:, :), work(:, :), wr(:, :)
+         moment_right(:, :, :), moments_work(:, :), q(:, :), response_left(:, :, :), &
+         response_right(:, :, :), weighted_fields(:, :), wl(:, :), work(:, :), wr(:, :)
       INTEGER                                            :: atom, aux, cache_row, cache_rows, ia, &
                                                             ir, j, kind, nang, nl, np, nr, &
                                                             zero(3, 1)
-      INTEGER(int_8)                                     :: field_words
-      LOGICAL :: cache_fields, cache_ready, cached_potentials, derivatives, factored, &
-         left_compute, left_needed, left_zero, right_compute, right_needed, right_zero, &
+      INTEGER(int_8)                                     :: batch_words, field_words
+      LOGICAL :: batch_moments, cache_fields, cache_ready, cached_potentials, derivatives, &
+         factored, left_compute, left_needed, left_zero, right_compute, right_needed, right_zero, &
          valid_moment
       REAL(dp)                                           :: dposition(3), position(3), radius, scale
       REAL(dp), ALLOCATABLE :: dpoints(:, :), local_points(:, :), points(:, :), &
@@ -3394,6 +3394,14 @@ CONTAINS
                   dpoints(:, ia) = dposition
                END DO
             END IF
+            ! Bound additional BLAS scratch independently of the retained per-pair field cache.
+            batch_words = 2_int_8*INT(np, int_8)*INT(fields%nfunction, int_8)* &
+                          (INT(nang, int_8) + INT(MAX(nl, nr), int_8))
+            batch_moments = .NOT. derivatives .AND. fields%nfunction > 1 .AND. np > 0 .AND. &
+                            batch_words <= INT(max_cached_lattice_field_words/8, int_8)
+            IF (batch_moments) THEN
+               ALLOCATE (weighted_fields(nang, np*fields%nfunction), moments_work(np*fields%nfunction, MAX(nl, nr)))
+            END IF
             zero = 0
             cache_row = 0
             DO ir = 1, SIZE(r)
@@ -3469,23 +3477,47 @@ CONTAINS
                END IF
                ! The local difference is -Delta W. Keep the small projector dimension
                ! through the quadrature and contract W only after the radial sum.
-               DO aux = 1, fields%nfunction
-                  weighted_potential(:) = weights*potentials(:, aux)
-                  DO j = 1, np
-                     work(:, j) = delta(:, j)*weighted_potential
+               IF (batch_moments) THEN
+                  ! Keep the same angular sum, with all auxiliary functions in one product per side.
+                  DO aux = 1, fields%nfunction
+                     weighted_potential(:) = weights*potentials(:, aux)
+                     DO j = 1, np
+                        weighted_fields(:, j + np*(aux - 1)) = delta(:, j)*weighted_potential
+                     END DO
                   END DO
-                  IF (left_compute) CALL field_product(work, cl, moment_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-                  IF (right_compute) CALL field_product(work, cr, moment_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
-                  IF (.NOT. derivatives) CYCLE
-                  IF (left_compute) CALL field_product(work, fcl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-                  IF (right_compute) CALL field_product(work, fcr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
-                  DO ia = 1, nang
-                     scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
-                     work(ia, :) = scale*delta(ia, :)
+                  IF (left_compute) THEN
+                     CALL field_product(weighted_fields, cl, moments_work(:, :nl), .FALSE., .TRUE., .FALSE.)
+                     DO aux = 1, fields%nfunction
+                        j = 1 + np*(aux - 1)
+                        moment_left(:, :, aux) = moment_left(:, :, aux) + moments_work(j:j + np - 1, :nl)
+                     END DO
+                  END IF
+                  IF (right_compute) THEN
+                     CALL field_product(weighted_fields, cr, moments_work(:, :nr), .FALSE., .TRUE., .FALSE.)
+                     DO aux = 1, fields%nfunction
+                        j = 1 + np*(aux - 1)
+                        moment_right(:, :, aux) = moment_right(:, :, aux) + moments_work(j:j + np - 1, :nr)
+                     END DO
+                  END IF
+               ELSE
+                  DO aux = 1, fields%nfunction
+                     weighted_potential(:) = weights*potentials(:, aux)
+                     DO j = 1, np
+                        work(:, j) = delta(:, j)*weighted_potential
+                     END DO
+                     IF (left_compute) CALL field_product(work, cl, moment_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                     IF (right_compute) CALL field_product(work, cr, moment_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                     IF (.NOT. derivatives) CYCLE
+                     IF (left_compute) CALL field_product(work, fcl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                     IF (right_compute) CALL field_product(work, fcr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                     DO ia = 1, nang
+                        scale = weights(ia)*DOT_PRODUCT(potential_gradient(:, aux, ia), dposition - auxiliary_response)
+                        work(ia, :) = scale*delta(ia, :)
+                     END DO
+                     IF (left_compute) CALL field_product(work, cl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
+                     IF (right_compute) CALL field_product(work, cr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
                   END DO
-                  IF (left_compute) CALL field_product(work, cl, response_left(:, :, aux), .TRUE., .TRUE., .FALSE.)
-                  IF (right_compute) CALL field_product(work, cr, response_right(:, :, aux), .TRUE., .TRUE., .FALSE.)
-               END DO
+               END IF
             END DO
          END IF
          IF (ASSOCIATED(left_integrals)) THEN
