@@ -391,7 +391,7 @@ CONTAINS
 !>        and original Q contributions. Keep the same point ownership and integration measure.
 !> \param frame Native grid coordinates, weights, full Gaussian bases and physical images.
 !> \param potential Scalar potential at the defining grid points.
-!> \param operator Optional new Gaussian matrix, without augmentation or reconstruction terms.
+!> \param OPERATOR Optional new Gaussian matrix, without augmentation or reconstruction terms.
 !> \param response Optional new joint geometry and Bloch response.
 !> \param potential_response Required with response, the potential derivative at moving grid points.
 !> \param atom_response Required with response, motion of the full Gaussian centers.
@@ -474,16 +474,16 @@ CONTAINS
          weighted(:m, :) = SPREAD(values(lo:hi), 2, nao)*gaussian(:m, :)
          IF (PRESENT(OPERATOR)) THEN
             CALL upf_inverse_pair(gaussian(:m, :), weighted(:m, :), frame%ao%weights(lo:hi), partial)
-            OPERATOR = OPERATOR + partial
+            OPERATOR(:, :) = OPERATOR + partial
          END IF
          IF (PRESENT(response)) THEN
             weighted_response(:m, :) = SPREAD(values(lo:hi), 2, nao)*gaussian_response(:m, :)
             CALL upf_inverse_pair_response(gaussian(:m, :), weighted(:m, :), frame%ao%weights(lo:hi), &
                                            gaussian_response(:m, :), weighted_response(:m, :), weights_response(:m), partial)
-            response = response + partial
+            response(:, :) = response + partial
             weighted_response(:m, :) = SPREAD(values_response(lo:hi), 2, nao)*gaussian(:m, :)
             CALL upf_inverse_pair(gaussian(:m, :), weighted_response(:m, :), frame%ao%weights(lo:hi), partial)
-            response = response + partial
+            response(:, :) = response + partial
          END IF
       END DO
       IF (PRESENT(OPERATOR)) CALL frame%ao%point_comm%sum(OPERATOR)
@@ -601,15 +601,14 @@ CONTAINS
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET :: known_coefficients_response(:, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL :: saved_coefficients_response(:, :)
 
-      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: known_coefficients_response(:, :)
-      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: saved_coefficients_response(:, :)
-
-      COMPLEX(dp), ALLOCATABLE, TARGET                  :: owned_dw(:, :)
-      COMPLEX(dp), POINTER                              :: dw(:, :)
-      COMPLEX(dp), ALLOCATABLE :: gradient(:, :, :), &
-                                  gradient_response(:, :, :), kinetic_operator(:, :), kinetic_response(:, :), &
-                                  partial(:, :), projected(:, :), projected_response(:, :), soft(:, :), soft_response(:, :)
+      COMPLEX(dp), ALLOCATABLE :: gradient(:, :, :), gradient_response(:, :, :), &
+         kinetic_operator(:, :), kinetic_response(:, :), partial(:, :), projected(:, :), &
+         projected_response(:, :), soft(:, :), soft_response(:, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
+      COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
                                                             nproj
       LOGICAL                                            :: use_orbitals

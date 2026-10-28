@@ -135,8 +135,8 @@ CONTAINS
          CALL neighbor_list_iterator_release(iterator)
          CPASSERT(ENTRY == map%plan%nentry)
          CALL kpoint_star_create(kpoints, sizes, star)
-         map%reduced_k = star%vectors
-         map%weights = star%weights
+         ALLOCATE (map%reduced_k, SOURCE=star%vectors)
+         ALLOCATE (map%weights, SOURCE=star%weights)
       ELSE
          CPASSERT(SIZE(overlap, 2) == 1)
          ALLOCATE (map%reduced_k(3, 1), map%weights(1))
@@ -171,8 +171,8 @@ CONTAINS
       map%soft_basis = source%soft_basis
       map%comm = source%comm
       map%plan = source%plan
-      map%weights = source%weights
-      map%reduced_k = source%reduced_k
+      ALLOCATE (map%weights, SOURCE=source%weights)
+      ALLOCATE (map%reduced_k, SOURCE=source%reduced_k)
       ALLOCATE (map%density(SIZE(source%density)), map%potential(SIZE(source%potential)))
       DO image = 1, SIZE(source%density)
          ALLOCATE (map%density(image)%matrix, map%potential(image)%matrix)

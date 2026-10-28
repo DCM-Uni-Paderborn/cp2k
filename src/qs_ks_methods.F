@@ -141,6 +141,7 @@ MODULE qs_ks_methods
                                               qs_rho_type
    USE qs_sccs,                         ONLY: sccs,&
                                               sccs_core_fill_coefficients
+   USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_force
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_update
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
@@ -1898,11 +1899,13 @@ CONTAINS
 
       INTEGER                                            :: handle
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
 
       CALL timeset(routineN, handle)
-      NULLIFY (dft_control)
+      NULLIFY (dft_control, scf_env)
 
-      CALL get_qs_env(qs_env, dft_control=dft_control)
+      CALL get_qs_env(qs_env, dft_control=dft_control, scf_env=scf_env)
+      IF (.NOT. just_energy .AND. ASSOCIATED(scf_env)) scf_env%ot_ks_valid = .FALSE.
 
       IF (dft_control%qs_control%semi_empirical) THEN
          CALL build_se_fock_matrix(qs_env, &

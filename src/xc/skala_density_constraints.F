@@ -151,8 +151,8 @@ CONTAINS
       owners = 0
       IF (state%collecting_jumps) THEN
          CPASSERT(SIZE(state%jump_values) == n)
-         values = state%jump_values
-         owners = state%jump_owners
+         values(:) = state%jump_values
+         owners(:) = state%jump_owners
       END IF
       CALL clear_jumps(state)
    END SUBROUTINE skala_density_jumps_finish

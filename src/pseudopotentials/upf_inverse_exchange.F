@@ -307,7 +307,7 @@ CONTAINS
          IF (derivatives) d_projected(:, :, :) = 0.0_dp
          IF (PRESENT(cell_derivative)) cell_projected(:, :, :, :) = 0.0_dp
          IF (.NOT. PRESENT(auxiliary_images)) THEN
-            angular_points = SPREAD(displacement, 2, SIZE(weights)) + augmentation%r(ir)*directions
+            angular_points(:, :) = SPREAD(displacement, 2, SIZE(weights)) + augmentation%r(ir)*directions
             IF (derivatives) THEN
                CALL gaussian_coulomb_fields_evaluate_batch(fields, angular_points, batch_potential, batch_gradient)
             ELSE

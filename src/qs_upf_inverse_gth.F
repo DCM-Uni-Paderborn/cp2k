@@ -175,11 +175,11 @@ CONTAINS
             IF (PRESENT(paw_projections)) physical_paw = kinds(kind)%sgp_potential%upf_data%is_paw
             IF (physical_paw) THEN
                ALLOCATE (projection_change, SOURCE=paw_projections(p:q, :))
-               IF (.NOT. frame%direct) projection_change = projection_change - frame%coefficients(p:q, :)
+               IF (.NOT. frame%direct) projection_change(:, :) = projection_change - frame%coefficients(p:q, :)
                skip = ALL(projection_change == CMPLX(0.0_dp, 0.0_dp, dp))
                IF (PRESENT(response)) THEN
                   ALLOCATE (projection_response, SOURCE=paw_projections_response(p:q, :))
-                  IF (.NOT. frame%direct) projection_response = projection_response - coefficients_response(p:q, :)
+                  IF (.NOT. frame%direct) projection_response(:, :) = projection_response - coefficients_response(p:q, :)
                   skip = skip .AND. ALL(projection_response == CMPLX(0.0_dp, 0.0_dp, dp))
                END IF
                IF (skip) THEN
@@ -197,11 +197,11 @@ CONTAINS
                                                   coupling, dcoupling, atom_response(:, basis_atom), atom_response(:, atom), &
                                                   cell_response, reduced_k_response)
                IF (physical_paw) THEN
-                  doverlap = doverlap + MATMUL(CONJG(TRANSPOSE(dcoupling)), projection_change) + &
-                             MATMUL(CONJG(TRANSPOSE(coupling)), projection_response)
+                  doverlap(:, :) = doverlap + MATMUL(CONJG(TRANSPOSE(dcoupling)), projection_change) + &
+                                   MATMUL(CONJG(TRANSPOSE(coupling)), projection_response)
                ELSE
-                  doverlap = doverlap - MATMUL(CONJG(TRANSPOSE(dcoupling)), frame%coefficients(p:q, :)) - &
-                             MATMUL(CONJG(TRANSPOSE(coupling)), coefficients_response(p:q, :))
+                  doverlap(:, :) = doverlap - MATMUL(CONJG(TRANSPOSE(dcoupling)), frame%coefficients(p:q, :)) - &
+                                   MATMUL(CONJG(TRANSPOSE(coupling)), coefficients_response(p:q, :))
                END IF
                DEALLOCATE (dcoupling)
             ELSE
@@ -209,15 +209,15 @@ CONTAINS
                                                   frame%positions(:, atom), frame%cell, -frame%images, frame%reduced_k, coupling)
             END IF
             IF (physical_paw) THEN
-               overlap = overlap + MATMUL(CONJG(TRANSPOSE(coupling)), projection_change)
+               overlap(:, :) = overlap + MATMUL(CONJG(TRANSPOSE(coupling)), projection_change)
                DEALLOCATE (projection_change)
                IF (ALLOCATED(projection_response)) DEALLOCATE (projection_response)
             ELSE
-               overlap = overlap - MATMUL(CONJG(TRANSPOSE(coupling)), frame%coefficients(p:q, :))
+               overlap(:, :) = overlap - MATMUL(CONJG(TRANSPOSE(coupling)), frame%coefficients(p:q, :))
             END IF
             DEALLOCATE (coupling)
          END DO
-         weighted = MATMUL(projectors(ikind)%coupling, overlap)
+         weighted(:, :) = MATMUL(projectors(ikind)%coupling, overlap)
          IF (PRESENT(OPERATOR)) OPERATOR = OPERATOR + MATMUL(CONJG(TRANSPOSE(overlap)), weighted)
          IF (PRESENT(response)) THEN
             response = response + MATMUL(CONJG(TRANSPOSE(doverlap)), weighted) + &
@@ -265,7 +265,7 @@ CONTAINS
       ALLOCATE (core%orbitals%r, SOURCE=pot%r)
       core%orbitals%radius = MAXVAL(pot%r)
       ALLOCATE (core%orbitals%weighted_beta(nr, nshell), core%occupations(core%orbitals%nproj))
-      weights = upf_radial_weights(pot)*pot%r
+      ALLOCATE (weights, SOURCE=upf_radial_weights(pot)*pot%r)
       DO j = 1, nshell
          i = shells(j)
          ! The original file stores u(r). The radial overlap measure for R=u/r is w*r*u.
@@ -359,7 +359,7 @@ CONTAINS
                                                      frame%positions(:, core_atom), frame%positions(:, atom), frame%cell, &
                                                      frame%images(:, image:image), [0.0_dp, 0.0_dp, 0.0_dp], overlap)
                END IF
-               weighted = MATMUL(overlap, projectors(kind)%coupling)
+               weighted(:, :) = MATMUL(overlap, projectors(kind)%coupling)
                energy = energy + SUM(cores(core_kind)%occupations*REAL(SUM(CONJG(overlap)*weighted, DIM=2), dp))
                IF (PRESENT(response)) THEN
                   response = response + 2.0_dp*SUM(cores(core_kind)%occupations* &

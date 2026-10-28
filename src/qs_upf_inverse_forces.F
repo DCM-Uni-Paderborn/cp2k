@@ -64,10 +64,8 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic_potential(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: coefficients_response(:, :, :), &
-                                                            spin_density(:, :, :, :), &
-                                                            total_density(:, :, :), &
-                                                            total_weighted(:, :, :)
+      COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :, :), spin_density(:, :, :, :), &
+         total_density(:, :, :), total_weighted(:, :, :)
       INTEGER                                            :: atom, axis, index, kind, nk, nspin, &
                                                             other, spin
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
@@ -293,6 +291,7 @@ CONTAINS
 !> \param reduced_k_response Fixed reduced k coordinates for force and stress.
 !> \param response Core plus complete Coulomb and signed normalization response.
 !> \param metric_response Signed complete Pulay contribution, already included in response.
+!> \param coefficients_response ...
 ! **************************************************************************************************
    SUBROUTINE complete_response(qs_env, ks_env, state, density, weighted, zeros, zero, atom_response, cell_response, &
                                 reduced_k_response, response, metric_response, coefficients_response)
@@ -305,7 +304,6 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response, metric_response
-
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: coefficients_response(:, :, :)
 
       REAL(dp)                                           :: coulomb_response, radial_metric

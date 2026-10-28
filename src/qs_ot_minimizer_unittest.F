@@ -51,12 +51,12 @@ PROGRAM qs_ot_minimizer_unittest
       CALL ot_three_point_interpolate([0.0_dp, 1.0_dp, 3.0_dp], &
                                       16.0_dp*REAL(trial, dp) + quadratic_scale*[0.0_dp, -1.0_dp, -1.0_dp], &
                                       next_position, interpolated_change)
-      IF (ABS(next_position - 2.0_dp) > 32.0_dp*EPSILON(1.0_dp)) then
-        ERROR STOP "Three-point search changed the quadratic minimum under an energy offset"
-      end if
-      IF (ABS(interpolated_change + 4.0_dp*quadratic_scale/3.0_dp) > 32.0_dp*EPSILON(1.0_dp)*quadratic_scale) then
-        ERROR STOP "Three-point interpolation lost the relative energy under an energy offset"
-      end if
+      IF (ABS(next_position - 2.0_dp) > 32.0_dp*EPSILON(1.0_dp)) THEN
+         ERROR STOP "Three-point search changed the quadratic minimum under an energy offset"
+      END IF
+      IF (ABS(interpolated_change + 4.0_dp*quadratic_scale/3.0_dp) > 32.0_dp*EPSILON(1.0_dp)*quadratic_scale) THEN
+         ERROR STOP "Three-point interpolation lost the relative energy under an energy offset"
+      END IF
    END DO
 
    ! The complete nonlinear energy rounds to one, while its derivative remains resolved.
@@ -75,14 +75,14 @@ PROGRAM qs_ot_minimizer_unittest
       IF (line_accepted) EXIT
    END DO
    IF (.NOT. line_accepted) ERROR STOP "Derivative search did not minimize the unresolved nonlinear energy"
-   IF (next_position /= line_positions(trial) .OR. ABS(line_derivatives(trial)) > 1.0E-21_dp) then
-     ERROR STOP "Derivative search accepted an unevaluated or nonstationary point"
-   end if
+   IF (next_position /= line_positions(trial) .OR. ABS(line_derivatives(trial)) > 1.0E-21_dp) THEN
+      ERROR STOP "Derivative search accepted an unevaluated or nonstationary point"
+   END IF
    CALL ot_derivative_search_step([0._dp, 1._dp], [-1.0E-20_dp, -1.0E-20_dp], [1._dp, 1.1_dp], &
                                   16._dp*EPSILON(1._dp), next_position, line_accepted)
-   IF (line_accepted .OR. next_position <= 0._dp .OR. next_position >= 1._dp) then
-     ERROR STOP "Derivative search did not reject a resolved energy increase"
-   end if
+   IF (line_accepted .OR. next_position <= 0._dp .OR. next_position >= 1._dp) THEN
+      ERROR STOP "Derivative search did not reject a resolved energy increase"
+   END IF
 
    ! Histories must restart when they cease to describe a usable descent step.
    IF (.NOT. broyden_history_restart_required(.TRUE., .FALSE., .TRUE.)) THEN

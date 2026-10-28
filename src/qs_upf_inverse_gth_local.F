@@ -61,7 +61,7 @@ CONTAINS
 !> \param kinds Original native scalar GTH datasets, without fitting or additional truncation.
 !> \param particles Original atom-to-kind mapping in the frame's atom order.
 !> \param paw Prepared original PAW density products and frozen AE-core densities by kind.
-!> \param operator Optional existing AO operator, incremented without spin or k-point weights.
+!> \param OPERATOR Optional existing AO operator, incremented without spin or k-point weights.
 !> \param core_energy Optional existing frozen-core constant, incremented once outside spin/k loops.
 !> \param response Optional existing AO operator response, including both responses of W.
 !> \param core_response Optional existing frozen-core response, independent of W and valence density.
@@ -185,6 +185,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Whether any physical GTH center has native local Gaussian terms.
+!> \param kinds ...
+!> \return ...
+! **************************************************************************************************
    FUNCTION qs_upf_inverse_gth_local_active(kinds) RESULT(active)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       LOGICAL                                            :: active
@@ -277,7 +280,7 @@ CONTAINS
 !> \param augmentation Original UPF Q kernels, with their native Fourier charge integration.
 !> \param potential Local GTH scalar field on the defining grid.
 !> \param orbital_fields Include explicit inverse orbitals. False is the native DIRECT base.
-!> \param operator Optional new residual matrix, without occupation or k weights.
+!> \param OPERATOR Optional new residual matrix, without occupation or k weights.
 !> \param response Optional joint residual derivative, without a duplicate metric derivative.
 !> \param potential_response Local field derivative at moving grid points.
 !> \param atom_response Motion of every atomic center.
@@ -379,6 +382,12 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Select native GTH potential centers while retaining all orbital centers and contractions.
+!> \param ks_env ...
+!> \param map ...
+!> \param operators ...
+!> \param matrix ...
+!> \param gradients ...
+!> \param local_virial ...
 ! **************************************************************************************************
    SUBROUTINE native_local(ks_env, map, operators, matrix, gradients, local_virial)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
@@ -397,10 +406,11 @@ CONTAINS
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(neighbor_list_set_p_type), POINTER            :: centers(:), overlap(:)
       TYPE(particle_type), POINTER                       :: atoms(:)
-      TYPE(qs_force_type), POINTER                       :: force(:) => NULL()
+      TYPE(qs_force_type), POINTER                       :: force(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
-      TYPE(virial_type), POINTER                         :: virial => NULL()
+      TYPE(virial_type), POINTER                         :: virial
 
+      NULLIFY (force, virial)
       CPASSERT(ASSOCIATED(map%potential))
       CALL get_ks_env(ks_env, atomic_kind_set=atomic_kinds, qs_kind_set=kinds, particle_set=atoms, &
                       sab_orb=overlap, sac_ppl=centers, kpoints=kpoints)

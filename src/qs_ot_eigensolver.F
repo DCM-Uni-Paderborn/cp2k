@@ -61,11 +61,11 @@ MODULE qs_ot_eigensolver
    USE qs_mo_methods,                   ONLY: make_basis_sv
    USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_ot,                           ONLY: qs_ot_get_orbitals,&
-                                              qs_ot_get_orbitals_complex,&
                                               qs_ot_get_orbitals_ref,&
-                                              qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_get_p,&
-                                              qs_ot_new_preconditioner,&
+                                              qs_ot_new_preconditioner
+   USE qs_ot_kp,                        ONLY: qs_ot_get_orbitals_complex,&
+                                              qs_ot_get_orbitals_ref_complex,&
                                               qs_ot_prepare_complex_tangent_metric
    USE qs_ot_minimizer,                 ONLY: ot_mini
    USE qs_ot_types,                     ONLY: qs_ot_allocate,&
@@ -527,12 +527,9 @@ CONTAINS
                      local_preconditioner, matrix_s, matrix_s_im, &
                      qs_ot_env(1)%settings%precond_solver_type)
                ELSE IF (qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all) THEN
-                  IF (.NOT. PRESENT(mo_set)) THEN
-                     CPABORT('Complex FULL_ALL eigensolver preconditioning requires MO energy labels')
-                  END IF
                   CALL make_preconditioner_complex_full_all( &
                      local_preconditioner, qs_ot_env(1)%matrix_c0, qs_ot_env(1)%matrix_c0_im, &
-                     matrix_h, matrix_h_im, matrix_s, matrix_s_im, mo_set, &
+                     matrix_h, matrix_h_im, matrix_s, matrix_s_im, &
                      qs_ot_env(1)%settings%energy_gap, qs_ot_env(1)%settings%precond_solver_type)
                ELSE
                   CALL make_preconditioner_complex_full_all_covariant( &

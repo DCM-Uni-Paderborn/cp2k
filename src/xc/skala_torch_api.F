@@ -110,7 +110,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: floors(:)
 
       CPASSERT(ALLOCATED(model%density_floors))
-      floors = model%density_floors
+      ALLOCATE (floors(SIZE(model%density_floors)))
+      floors(:) = model%density_floors
    END FUNCTION skala_torch_model_density_floors
 
 ! **************************************************************************************************

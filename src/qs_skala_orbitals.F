@@ -56,6 +56,7 @@ CONTAINS
 !> \param complex_orbitals Whether imaginary orbital variations are physical.
 !> \param weight Positive k-point weight, applied once to physical tangent derivatives.
 !> \param valid Whether the complete requested charge space is positive.
+!> \param variable_occupations ...
 ! **************************************************************************************************
    SUBROUTINE qs_skala_orbitals_create(state, native, metric, complex_orbitals, weight, valid, variable_occupations)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
@@ -157,6 +158,8 @@ CONTAINS
 !> \brief Evaluate the complete fixed-occupation orbital trial without changing native storage.
 !> \param state ...
 !> \param coordinate ...
+!> \param occupations ...
+!> \param energies ...
 ! **************************************************************************************************
    SUBROUTINE qs_skala_orbitals_evaluate(state, coordinate, occupations, energies)
       TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state

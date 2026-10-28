@@ -101,14 +101,14 @@ CONTAINS
       ASSOCIATE (map => coarse%real_interpolation, group => coarse%para%group)
          ALLOCATE (outgoing(SIZE(map%coarse_index)), incoming(SIZE(map%fine_index)))
          IF (prolongate) THEN
-            outgoing = map%weight*source%array(map%coarse_index)
+            outgoing(:) = map%weight*source%array(map%coarse_index)
             CALL group%alltoall(outgoing, map%send_count, map%send_offset, &
                                 incoming, map%receive_count, map%receive_offset)
             DO i = 1, SIZE(incoming)
                destination%array(map%fine_index(i)) = destination%array(map%fine_index(i)) + incoming(i)
             END DO
          ELSE
-            incoming = source%array(map%fine_index)
+            incoming(:) = source%array(map%fine_index)
             CALL group%alltoall(incoming, map%receive_count, map%receive_offset, &
                                 outgoing, map%send_count, map%send_offset)
             DO i = 1, SIZE(outgoing)
@@ -193,7 +193,7 @@ CONTAINS
                ALLOCATE (map%coarse_index(SUM(map%send_count)), map%weight(SUM(map%send_count)), &
                          coordinates(3*SUM(map%send_count)), received(3*SUM(map%receive_count)), &
                          map%fine_index(SUM(map%receive_count)))
-               cursor = map%send_offset
+               cursor(:) = map%send_offset
             END IF
          END DO
          CALL coarse%para%group%alltoall(coordinates, 3*map%send_count, 3*map%send_offset, &

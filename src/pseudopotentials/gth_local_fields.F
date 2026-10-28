@@ -192,6 +192,9 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief m! L_m^a(x), avoiding a factorial in the transform and its derivative.
+!> \param a ...
+!> \param x ...
+!> \param value ...
 ! **************************************************************************************************
    SUBROUTINE scaled_laguerre(a, x, value)
       REAL(dp), INTENT(IN)                               :: a, x
