@@ -3266,14 +3266,14 @@ CONTAINS
             IF (.NOT. derivatives .AND. ALLOCATED(qi%potential_fields)) THEN
                factored = qi%potential_fields%zero_values
             END IF
-            IF (.NOT. factored .AND. .NOT. derivatives .AND. .NOT. frame%atom_local .AND. PRESENT(moment_cache)) THEN
+            IF (.NOT. factored .AND. .NOT. derivatives .AND. PRESENT(moment_cache)) THEN
                factored = .TRUE.
                IF (left_compute) THEN
                   CALL lattice_factored_moment(frame, center, center_image, left_range, [0, 0, 0], fields, &
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
                                                coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
                                                moment_key, left_fields, overlaps%gaussian_left, overlaps%field_budget, &
-                                               moment_left, valid_moment, overlaps%support_left)
+                                               moment_left, valid_moment, overlaps%support_left, local_coefficients=wl)
                   factored = factored .AND. valid_moment
                END IF
                IF (right_compute) THEN
@@ -3281,7 +3281,7 @@ CONTAINS
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
                                                coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
                                                moment_key, right_fields, overlaps%gaussian_right, overlaps%field_budget, &
-                                               moment_right, valid_moment, overlaps%support_right)
+                                               moment_right, valid_moment, overlaps%support_right, local_coefficients=wr)
                   factored = factored .AND. valid_moment
                END IF
             END IF
@@ -3539,11 +3539,12 @@ CONTAINS
 !> \param moment Linear moment in original projector, Gaussian and auxiliary order.
 !> \param valid Whether the bounded scratch allocation permits this evaluation.
 !> \param support_indices Ordered coefficient images intersecting these fixed quadrature rows.
+!> \param local_coefficients Hard-projector overlaps for the atom-local inverse, instead of coupled image coefficients.
 ! **************************************************************************************************
    SUBROUTINE lattice_factored_moment(frame, center, center_image, ao_range, ao_image, fields, auxiliary_center, &
                                       r, radial_weights, directions, angular_weights, coefficient_images, coefficients, &
                                       own_fields, potentials, cache, key, workspace, gaussian_fields, field_budget, moment, valid, &
-                                      support_indices)
+                                      support_indices, local_coefficients)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, center_image(3), ao_range(2), &
                                                             ao_image(3)
@@ -3551,8 +3552,8 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: auxiliary_center(3), r(:), &
                                                             radial_weights(:), directions(:, :), &
                                                             angular_weights(:)
-      INTEGER, INTENT(IN)                                :: coefficient_images(:, :)
-      COMPLEX(dp), INTENT(IN)                            :: coefficients(:, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients(:, :, :)
       TYPE(radial_difference_fields_type), INTENT(IN), &
          POINTER                                         :: own_fields
       TYPE(transition_augmentation_type), INTENT(IN)     :: potentials
@@ -3565,6 +3566,7 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: moment(:, :, :)
       LOGICAL, INTENT(OUT)                               :: valid
       INTEGER, ALLOCATABLE, INTENT(INOUT)                :: support_indices(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: local_coefficients(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: batch_delta(:, :), delta(:, :), &
                                                             gaussian(:, :), phi(:, :), &
@@ -3574,7 +3576,7 @@ CONTAINS
       INTEGER(int_8)                                     :: gaussian_words, support_words, words
       INTEGER, ALLOCATABLE                               :: selected_images(:)
       LOGICAL                                            :: cached_gaussian, cached_support, &
-                                                            collect_support
+                                                            collect_support, compute_self_moment
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
       REAL(dp), ALLOCATABLE                              :: local_points(:, :), potential(:, :), &
                                                             weights(:)
@@ -3591,6 +3593,13 @@ CONTAINS
       np = SIZE(frame%coefficients, 1)
       nproj = frame%projector_last(center) - frame%projector_first(center) + 1
       nao = ao_range(2) - ao_range(1) + 1
+      IF (frame%atom_local) THEN
+         CPASSERT(PRESENT(local_coefficients))
+         CPASSERT(ALL(SHAPE(local_coefficients) == [nproj, nao]))
+         np = nproj
+      ELSE
+         CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coefficients))
+      END IF
       words = INT(nang, int_8)*INT(nrow, int_8)*(2_int_8*INT(nproj, int_8)*INT(fields%nfunction, int_8) + 3_int_8)
       words = words + 2_int_8*INT(nproj, int_8)*INT(np, int_8)*INT(fields%nfunction, int_8)
       words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(np, int_8)
@@ -3600,9 +3609,11 @@ CONTAINS
       IF (.NOT. cached_support) THEN
          IF (ASSOCIATED(field_budget)) collect_support = field_budget > 0
       END IF
-      support_words = (INT(SIZE(coefficient_images, 2), int_8)*STORAGE_SIZE(0) + &
-                       STORAGE_SIZE(0.0_dp) - 1)/STORAGE_SIZE(0.0_dp)
-      IF (words + support_words > INT(max_cached_lattice_field_words, int_8)) collect_support = .FALSE.
+      IF (.NOT. frame%atom_local) THEN
+         support_words = (INT(SIZE(coefficient_images, 2), int_8)*STORAGE_SIZE(0) + &
+                          STORAGE_SIZE(0.0_dp) - 1)/STORAGE_SIZE(0.0_dp)
+         IF (words + support_words > INT(max_cached_lattice_field_words, int_8)) collect_support = .FALSE.
+      END IF
       moment = CMPLX(0.0_dp, 0.0_dp, dp)
       valid = .TRUE.
       IF (nrow == 0 .OR. nproj == 0) RETURN
@@ -3679,6 +3690,18 @@ CONTAINS
       ALLOCATE (delta(nang, MAX(np, nproj)), &
                 gaussian(nang, MAXVAL(frame%ao_last - frame%ao_first + 1)), phi(nang, nao))
       IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
+      compute_self_moment = .FALSE.
+      IF (frame%atom_local) THEN
+         ! The local Delta*V*Delta integral does not depend on the Gaussian range or W.
+         CALL lattice_moment_entry(cache, [center, 0, 0, 0, 0, 0, key], &
+                                   nproj, nproj, fields%nfunction, retained)
+         ENTRY => temporary
+         IF (ASSOCIATED(retained)) ENTRY => retained
+         compute_self_moment = .NOT. ALLOCATED(entry%values)
+         IF (compute_self_moment) THEN
+            ALLOCATE (entry%values(nproj, nproj, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+         END IF
+      END IF
       row = 0
       zero = 0
       single_image(:, 1) = ao_image
@@ -3720,8 +3743,20 @@ CONTAINS
          END IF
          DO aux = 1, fields%nfunction
             CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
+            IF (compute_self_moment) THEN
+               CALL field_product(weighted(:, :, aux, row), delta(:, :nproj), entry%values(:, :, aux), &
+                                  .TRUE., .TRUE., .FALSE.)
+            END IF
          END DO
       END DO
+      IF (frame%atom_local) THEN
+         DO aux = 1, fields%nfunction
+            CALL field_product(entry%values(:, :, aux), local_coefficients, moment(:, :, aux), &
+                               .TRUE., .FALSE., .FALSE., -1.0_dp)
+         END DO
+         IF (.NOT. ASSOCIATED(retained)) DEALLOCATE (temporary%values)
+         RETURN
+      END IF
       nimage = SIZE(coefficient_images, 2)
       IF (cached_support) THEN
          nimage = SIZE(support_indices)
