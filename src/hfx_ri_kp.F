@@ -11,118 +11,118 @@
 ! **************************************************************************************************
 
 MODULE hfx_ri_kp
-   USE admm_types, ONLY: get_admm_env
-   USE atomic_kind_types, ONLY: atomic_kind_type, &
-                                get_atomic_kind_set
-   USE basis_set_types, ONLY: get_gto_basis_set, &
-                              gto_basis_set_p_type
-   USE bibliography, ONLY: Bussy2024, &
-                           cite_reference
-   USE cell_types, ONLY: cell_type, &
-                         pbc, &
-                         real_to_scaled, &
-                         scaled_to_real
-   USE cp_array_utils, ONLY: cp_1d_logical_p_type, &
-                             cp_2d_r_p_type, &
-                             cp_3d_r_p_type
-   USE cp_blacs_env, ONLY: cp_blacs_env_create, &
-                           cp_blacs_env_release, &
-                           cp_blacs_env_type
-   USE cp_control_types, ONLY: dft_control_type
-   USE cp_dbcsr_api, ONLY: &
-      dbcsr_add, dbcsr_clear, dbcsr_copy, dbcsr_create, dbcsr_distribution_get, &
-      dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, dbcsr_filter, &
-      dbcsr_finalize, dbcsr_get_block_p, dbcsr_get_info, dbcsr_iterator_blocks_left, &
-      dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
-      dbcsr_p_type, dbcsr_put_block, dbcsr_release, dbcsr_type, dbcsr_type_no_symmetry, &
-      dbcsr_type_symmetric
-   USE cp_dbcsr_cholesky, ONLY: cp_dbcsr_cholesky_decompose, &
-                                cp_dbcsr_cholesky_invert
-   USE cp_dbcsr_contrib, ONLY: dbcsr_dot
-   USE cp_dbcsr_cp2k_link, ONLY: cp_dbcsr_alloc_block_from_nbl
-   USE cp_dbcsr_diag, ONLY: cp_dbcsr_power
-   USE cp_dbcsr_operations, ONLY: cp_dbcsr_dist2d_to_dist
-   USE dbt_api, ONLY: &
-      dbt_batched_contract_finalize, dbt_batched_contract_init, dbt_clear, dbt_contract, &
-      dbt_copy, dbt_copy_indexed, dbt_copy_matrix_to_tensor, dbt_copy_tensor_to_matrix, &
-      dbt_create, dbt_destroy, dbt_distribution_destroy, dbt_distribution_new, &
-      dbt_distribution_type, dbt_filter, dbt_finalize, dbt_get_block, dbt_get_block_pattern, &
-      dbt_get_info, dbt_get_stored_coordinates, dbt_iterator_blocks_left, &
-      dbt_iterator_next_block, dbt_iterator_start, dbt_iterator_stop, dbt_iterator_type, &
-      dbt_mp_environ_pgrid, dbt_pgrid_create, dbt_pgrid_destroy, dbt_pgrid_type, dbt_put_block, &
-      dbt_reserve_blocks, dbt_scale, dbt_type
-   USE distribution_2d_types, ONLY: distribution_2d_release, &
-                                    distribution_2d_type
-   USE hfx_ri, ONLY: get_idx_to_atom, &
-                     hfx_ri_pre_scf_calc_tensors
-   USE hfx_types, ONLY: hfx_ri_type
-   USE input_constants, ONLY: do_potential_short, &
-                              hfx_ri_do_2c_cholesky, &
-                              hfx_ri_do_2c_diag, &
-                              hfx_ri_do_2c_iter
-   USE input_cp2k_hfx, ONLY: ri_pmat
-   USE input_section_types, ONLY: section_vals_get_subs_vals, &
-                                  section_vals_type, &
-                                  section_vals_val_get, &
-                                  section_vals_val_set
-   USE iterate_matrix, ONLY: invert_hotelling
-   USE kinds, ONLY: default_string_length, &
-                    dp, &
-                    int_8
-   USE kpoint_types, ONLY: get_kpoint_info, &
-                           kpoint_type
-   USE libint_2c_3c, ONLY: cutoff_screen_factor
-   USE machine, ONLY: m_flush, &
-                      m_memory, &
-                      m_walltime
-   USE mathlib, ONLY: erfc_cutoff
-   USE memory_utilities, ONLY: reallocate
-   USE message_passing, ONLY: mp_cart_type, &
-                              mp_para_env_type, &
-                              mp_request_type, &
-                              mp_waitall
-   USE particle_methods, ONLY: get_particle_set
-   USE particle_types, ONLY: particle_type
-   USE physcon, ONLY: angstrom
-   USE qs_environment_types, ONLY: get_qs_env, &
-                                   qs_environment_type
-   USE qs_force_types, ONLY: qs_force_type
-   USE qs_integral_utils, ONLY: basis_set_list_setup
-   USE qs_interactions, ONLY: init_interaction_radii_orb_basis
-   USE qs_kind_types, ONLY: qs_kind_type
-   USE qs_ks_types, ONLY: get_ks_env, &
-                          qs_ks_env_type
-   USE qs_neighbor_list_types, ONLY: get_iterator_info, &
-                                     neighbor_list_iterate, &
-                                     neighbor_list_iterator_create, &
-                                     neighbor_list_iterator_p_type, &
-                                     neighbor_list_iterator_release, &
-                                     neighbor_list_set_p_type, &
-                                     release_neighbor_list_sets
-   USE qs_scf_types, ONLY: qs_scf_env_type
-   USE qs_tensors, ONLY: &
-      build_2c_derivatives, build_2c_neighbor_lists, build_2c_neighbor_lists_in_range, &
-      build_3c_derivatives, build_3c_neighbor_lists_in_range, get_3c_iterator_info, &
-      get_tensor_occupancy, neighbor_list_3c_destroy, neighbor_list_3c_iterate, &
-      neighbor_list_3c_iterator_create, neighbor_list_3c_iterator_destroy
-   USE qs_tensors_types, ONLY: create_2c_tensor, &
-                               create_3c_tensor, &
-                               create_tensor_batches, &
-                               distribution_2d_create, &
-                               distribution_3d_create, &
-                               distribution_3d_type, &
-                               neighbor_list_3c_iterator_type, &
-                               neighbor_list_3c_type
-   USE qs_upf_inverse_hfx, ONLY: qs_upf_inverse_hfx_lattice_adjoint, &
-                                 qs_upf_inverse_hfx_lattice_centers, &
-                                 qs_upf_inverse_hfx_lattice_gradient
-   USE qs_upf_inverse_kpoints, ONLY: qs_upf_inverse_kpoints_image_operator, &
-                                     qs_upf_inverse_kpoints_images
-   USE qs_upf_inverse_lattice, ONLY: qs_upf_inverse_lattice_adjoint
-   USE qs_upf_inverse_types, ONLY: qs_upf_inverse_scf_type, &
-                                   qs_upf_inverse_type
-   USE uspp_augmentation, ONLY: uspp_augmentation_type
-   USE virial_types, ONLY: virial_type
+   USE admm_types,                      ONLY: get_admm_env
+   USE atomic_kind_types,               ONLY: atomic_kind_type,&
+                                              get_atomic_kind_set
+   USE basis_set_types,                 ONLY: get_gto_basis_set,&
+                                              gto_basis_set_p_type
+   USE bibliography,                    ONLY: Bussy2024,&
+                                              cite_reference
+   USE cell_types,                      ONLY: cell_type,&
+                                              pbc,&
+                                              real_to_scaled,&
+                                              scaled_to_real
+   USE cp_array_utils,                  ONLY: cp_1d_logical_p_type,&
+                                              cp_2d_r_p_type,&
+                                              cp_3d_r_p_type
+   USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
+                                              cp_blacs_env_release,&
+                                              cp_blacs_env_type
+   USE cp_control_types,                ONLY: dft_control_type
+   USE cp_dbcsr_api,                    ONLY: &
+        dbcsr_add, dbcsr_clear, dbcsr_copy, dbcsr_create, dbcsr_distribution_get, &
+        dbcsr_distribution_new, dbcsr_distribution_release, dbcsr_distribution_type, dbcsr_filter, &
+        dbcsr_finalize, dbcsr_get_block_p, dbcsr_get_info, dbcsr_iterator_blocks_left, &
+        dbcsr_iterator_next_block, dbcsr_iterator_start, dbcsr_iterator_stop, dbcsr_iterator_type, &
+        dbcsr_p_type, dbcsr_put_block, dbcsr_release, dbcsr_type, dbcsr_type_no_symmetry, &
+        dbcsr_type_symmetric
+   USE cp_dbcsr_cholesky,               ONLY: cp_dbcsr_cholesky_decompose,&
+                                              cp_dbcsr_cholesky_invert
+   USE cp_dbcsr_contrib,                ONLY: dbcsr_dot
+   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
+   USE cp_dbcsr_diag,                   ONLY: cp_dbcsr_power
+   USE cp_dbcsr_operations,             ONLY: cp_dbcsr_dist2d_to_dist
+   USE dbt_api,                         ONLY: &
+        dbt_batched_contract_finalize, dbt_batched_contract_init, dbt_clear, dbt_contract, &
+        dbt_copy, dbt_copy_indexed, dbt_copy_matrix_to_tensor, dbt_copy_tensor_to_matrix, &
+        dbt_create, dbt_destroy, dbt_distribution_destroy, dbt_distribution_new, &
+        dbt_distribution_type, dbt_filter, dbt_finalize, dbt_get_block, dbt_get_block_pattern, &
+        dbt_get_info, dbt_get_stored_coordinates, dbt_iterator_blocks_left, &
+        dbt_iterator_next_block, dbt_iterator_start, dbt_iterator_stop, dbt_iterator_type, &
+        dbt_mp_environ_pgrid, dbt_pgrid_create, dbt_pgrid_destroy, dbt_pgrid_type, dbt_put_block, &
+        dbt_reserve_blocks, dbt_scale, dbt_type
+   USE distribution_2d_types,           ONLY: distribution_2d_release,&
+                                              distribution_2d_type
+   USE hfx_ri,                          ONLY: get_idx_to_atom,&
+                                              hfx_ri_pre_scf_calc_tensors
+   USE hfx_types,                       ONLY: hfx_ri_type
+   USE input_constants,                 ONLY: do_potential_short,&
+                                              hfx_ri_do_2c_cholesky,&
+                                              hfx_ri_do_2c_diag,&
+                                              hfx_ri_do_2c_iter
+   USE input_cp2k_hfx,                  ONLY: ri_pmat
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type,&
+                                              section_vals_val_get,&
+                                              section_vals_val_set
+   USE iterate_matrix,                  ONLY: invert_hotelling
+   USE kinds,                           ONLY: default_string_length,&
+                                              dp,&
+                                              int_8
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_type
+   USE libint_2c_3c,                    ONLY: cutoff_screen_factor
+   USE machine,                         ONLY: m_flush,&
+                                              m_memory,&
+                                              m_walltime
+   USE mathlib,                         ONLY: erfc_cutoff
+   USE memory_utilities,                ONLY: reallocate
+   USE message_passing,                 ONLY: mp_cart_type,&
+                                              mp_para_env_type,&
+                                              mp_request_type,&
+                                              mp_waitall
+   USE particle_methods,                ONLY: get_particle_set
+   USE particle_types,                  ONLY: particle_type
+   USE physcon,                         ONLY: angstrom
+   USE qs_environment_types,            ONLY: get_qs_env,&
+                                              qs_environment_type
+   USE qs_force_types,                  ONLY: qs_force_type
+   USE qs_integral_utils,               ONLY: basis_set_list_setup
+   USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
+   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
+   USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
+                                              neighbor_list_iterate,&
+                                              neighbor_list_iterator_create,&
+                                              neighbor_list_iterator_p_type,&
+                                              neighbor_list_iterator_release,&
+                                              neighbor_list_set_p_type,&
+                                              release_neighbor_list_sets
+   USE qs_scf_types,                    ONLY: qs_scf_env_type
+   USE qs_tensors,                      ONLY: &
+        build_2c_derivatives, build_2c_neighbor_lists, build_2c_neighbor_lists_in_range, &
+        build_3c_derivatives, build_3c_neighbor_lists_in_range, get_3c_iterator_info, &
+        get_tensor_occupancy, neighbor_list_3c_destroy, neighbor_list_3c_iterate, &
+        neighbor_list_3c_iterator_create, neighbor_list_3c_iterator_destroy
+   USE qs_tensors_types,                ONLY: create_2c_tensor,&
+                                              create_3c_tensor,&
+                                              create_tensor_batches,&
+                                              distribution_2d_create,&
+                                              distribution_3d_create,&
+                                              distribution_3d_type,&
+                                              neighbor_list_3c_iterator_type,&
+                                              neighbor_list_3c_type
+   USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_adjoint,&
+                                              qs_upf_inverse_hfx_lattice_centers,&
+                                              qs_upf_inverse_hfx_lattice_gradient
+   USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_image_operator,&
+                                              qs_upf_inverse_kpoints_images
+   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_lattice_adjoint
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type,&
+                                              qs_upf_inverse_type
+   USE uspp_augmentation,               ONLY: uspp_augmentation_type
+   USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
 !$ USE OMP_LIB, ONLY: omp_get_num_threads
@@ -498,8 +498,8 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: exchange(:, :, :)
       INTEGER :: b_img, batch_size, block_owner, group_size, handle, handle2, i_batch, i_img, &
-                 i_spin, iatom, iblk, igroup, iprint, jatom, jblk, mb_img, n_batch_nze, n_nze, natom, &
-                 ngroups, nimg, nimg_nze
+         i_spin, iatom, iblk, igroup, iprint, jatom, jblk, mb_img, n_batch_nze, n_nze, natom, &
+         ngroups, nimg, nimg_nze
       INTEGER(int_8)                                     :: mem, nflop, nze
       INTEGER, ALLOCATABLE                               :: apc_stack_images(:)
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: batch_ranges_at, batch_ranges_nze, &
@@ -1025,7 +1025,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_update_forces_kp'
 
       INTEGER :: b_img, batch_size, group_size, handle, handle2, i_batch, i_img, i_loop, i_spin, &
-                 i_xyz, iatom, iblk, igroup, j_xyz, jatom, k_xyz, n_batch, natom, ngroups, nimg, nimg_nze
+         i_xyz, iatom, iblk, igroup, j_xyz, jatom, k_xyz, n_batch, natom, ngroups, nimg, nimg_nze
       INTEGER(int_8)                                     :: nflop, nze
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, batch_ranges_at, &
                                                             batch_ranges_nze, dist1, dist2, &
@@ -1050,8 +1050,8 @@ CONTAINS
                                                             t_3c_der_stack, t_3c_work_2, &
                                                             t_3c_work_3
       TYPE(dbt_type), ALLOCATABLE, DIMENSION(:, :) :: rho_ao_t, rho_ao_t_sub, t_2c_der_metric, &
-                                           t_2c_der_metric_sub, t_3c_apc, t_3c_apc_sub, t_3c_der_AO, t_3c_der_AO_sub, t_3c_der_RI, &
-                                                      t_3c_der_RI_sub
+         t_2c_der_metric_sub, t_3c_apc, t_3c_apc_sub, t_3c_der_AO, t_3c_der_AO_sub, t_3c_der_RI, &
+         t_3c_der_RI_sub
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_sub
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
@@ -1946,7 +1946,7 @@ CONTAINS
       REAL(dp), DIMENSION(3, 3), INTENT(INOUT)           :: work_virial
 
       INTEGER :: i, i_img, i_RI, i_xyz, iat_of_kind, iatom, ikind, ind(2), j_img, j_RI, j_xyz, &
-                 jat_of_kind, jatom, jkind, natom, nblks(2), nimg, nkind
+         jat_of_kind, jatom, jkind, natom, nblks(2), nimg, nkind
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: found
@@ -2479,7 +2479,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'get_ext_2c_int'
 
       INTEGER :: group, handle, handle2, i_img, i_RI, iatom, iblk, ikind, img_tot, j_img, j_RI, &
-                 jatom, jblk, jkind, n_dependent, natom, nblks_RI, nimg, nkind
+         jatom, jblk, jkind, n_dependent, natom, nblks_RI, nimg, nkind
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: dist1, dist2
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: present_atoms_i, present_atoms_j
       INTEGER, DIMENSION(3)                              :: cell_b, cell_i, cell_j, cell_tot
@@ -2812,14 +2812,14 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'build_kp_exchange_integrals'
 
       INTEGER :: b, batch_size, cell_p(3), cell_x(3), first, g, group, handle, hi(3), i, iatom, &
-                 img, j, jatom, k, last, lo(3), nAO, natom, nblocks, nG, nimg, nRI, p, p_atom, pcoord(3), &
-                 pdims(3), q, q_atom, slot
+         img, j, jatom, k, last, lo(3), nAO, natom, nblocks, nG, nimg, nRI, p, p_atom, pcoord(3), &
+         pdims(3), q, q_atom, slot
       INTEGER(int_8)                                     :: nflop
       INTEGER, ALLOCATABLE :: ao_pairs(:, :), cell_index(:, :, :), cells_G(:, :), dist1(:), &
-                              dist2(:), dist3(:), idx_to_atom(:), indices(:), pairs(:, :), sizes_G_split(:), &
-                              sizes_RI_split(:), sizes_stack(:), stack_dist(:)
+         dist2(:), dist3(:), idx_to_atom(:), indices(:), pairs(:, :), sizes_G_split(:), &
+         sizes_RI_split(:), sizes_stack(:), stack_dist(:)
       INTEGER, POINTER :: blocks(:, :), cell_to_index(:, :, :), col_dist(:), col_ext(:), &
-                          grid(:, :), index_to_cell(:, :), row_dist(:), row_ext(:), sizes_G(:), sizes_RI(:)
+         grid(:, :), index_to_cell(:, :), row_dist(:), row_ext(:), sizes_G(:), sizes_RI(:)
       LOGICAL                                            :: found
       LOGICAL, ALLOCATABLE                               :: needed(:, :), valid_images(:, :)
       REAL(dp), POINTER                                  :: block(:, :)
@@ -3459,7 +3459,7 @@ CONTAINS
                                                             nblks, nblks_3c(3), nimg
       INTEGER(int_8)                                     :: nflop
       INTEGER, ALLOCATABLE, DIMENSION(:) :: batch_ranges, bsizes_RI_ext, bsizes_RI_ext_split, &
-                                            bsizes_stack, dist1, dist2, dist3, dist_stack3, idx_to_at_AO, int_indices
+         bsizes_stack, dist1, dist2, dist3, dist_stack3, idx_to_at_AO, int_indices
       TYPE(dbt_distribution_type)                        :: t_dist
       TYPE(dbt_type)                                     :: t_2c_RI_tmp(2), t_3c_tmp(3)
 
@@ -4873,8 +4873,8 @@ CONTAINS
 
       CHARACTER(LEN=512)                                 :: warning_msg
       INTEGER :: cell_j(3), cell_k(3), handle, i_img, iatom, ikind, j_img, jatom, jcell, katom, &
-                 kcell, kp_index_lbounds(3), kp_index_ubounds(3), natom, ngroups, nimg, nkind, pcoord(3), &
-                 pdims(3)
+         kcell, kp_index_lbounds(3), kp_index_ubounds(3), natom, ngroups, nimg, nkind, pcoord(3), &
+         pdims(3)
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: dist_AO_1, dist_AO_2, dist_RI, &
                                                             nRI_per_atom, present_img, RI_cells
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
@@ -5475,7 +5475,7 @@ CONTAINS
                                                             ncell_RI, nimg, nkind, nthreads
       INTEGER(int_8)                                     :: nze
       INTEGER, ALLOCATABLE, DIMENSION(:) :: bsizes_RI_ext, bsizes_RI_ext_split, dist_AO_1, &
-                                            dist_AO_2, dist_RI, dist_RI_ext, dummy_end, dummy_start, end_blocks, start_blocks
+         dist_AO_2, dist_RI, dist_RI_ext, dummy_end, dummy_start, end_blocks, start_blocks
       INTEGER, DIMENSION(3)                              :: pcoord, pdims
       INTEGER, DIMENSION(:), POINTER                     :: col_bsize, row_bsize
       REAL(dp)                                           :: occ
@@ -5875,7 +5875,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'get_force_from_3c_trace'
 
       INTEGER :: handle, i_RI, i_xyz, iat, iat_of_kind, idx, ikind, j_xyz, jat, jat_of_kind, &
-                 jkind, kat, kat_of_kind, kkind, nblks_AO, nblks_RI, RI_img
+         jkind, kat, kat_of_kind, kkind, nblks_AO, nblks_RI, RI_img
       INTEGER, DIMENSION(3)                              :: ind
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell
       LOGICAL                                            :: found, found_1, found_2, use_virial
