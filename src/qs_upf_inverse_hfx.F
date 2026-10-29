@@ -3578,8 +3578,9 @@ CONTAINS
       INTEGER, ALLOCATABLE, INTENT(INOUT)                :: support_indices(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: local_coefficients(:, :)
 
-      COMPLEX(dp), ALLOCATABLE :: batch_delta(:, :), batch_orbitals(:, :), batch_weighted(:, :), &
-         delta(:, :), gaussian(:, :), phi(:, :), weighted(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE :: batch_delta(:, :), batch_moment(:, :), batch_orbitals(:, :), &
+         batch_self(:, :), batch_weighted(:, :), delta(:, :), gaussian(:, :), phi(:, :), &
+         weighted(:, :, :, :)
       INTEGER :: atom, aux, first, hi, ia, image, index, ir, j, kind, last, lo, max_ao, nang, nao, &
          nimage, np, nproj, nrow, nsupport, row, single_image(3, 1), zero(3, 1)
       INTEGER(int_8)                                     :: gaussian_words, support_words, words
@@ -3615,6 +3616,7 @@ CONTAINS
       IF (frame%atom_local) THEN
          words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)* &
                  (INT(nproj, int_8)*INT(fields%nfunction, int_8) + INT(nao, int_8))
+         words = words + 2_int_8*INT(nproj, int_8)*INT(fields%nfunction, int_8)*INT(nao + nproj, int_8)
       END IF
       IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
       cached_support = ALLOCATED(support_indices)
@@ -3714,7 +3716,8 @@ CONTAINS
          IF (compute_self_moment) THEN
             ALLOCATE (entry%values(nproj, nproj, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
          END IF
-         ALLOCATE (batch_weighted(nang*nrow, nproj*fields%nfunction), batch_orbitals(nang*nrow, nao))
+         ALLOCATE (batch_weighted(nang*nrow, nproj*fields%nfunction), batch_orbitals(nang*nrow, nao), &
+                   batch_moment(nproj*fields%nfunction, nao), batch_self(nproj*fields%nfunction, nproj))
          IF (compute_self_moment .AND. .NOT. ALLOCATED(batch_delta)) ALLOCATE (batch_delta(nang*nrow, nproj))
       END IF
       row = 0
@@ -3770,15 +3773,22 @@ CONTAINS
          END IF
       END DO
       IF (frame%atom_local) THEN
+         ! All auxiliary components share the same pointwise Gaussian and difference fields.
+         ! Contract their projector rows together, retaining the original cache and quadrature.
+         CALL field_product(batch_weighted, batch_orbitals, batch_moment, .FALSE., .TRUE., .FALSE.)
+         IF (compute_self_moment) THEN
+            CALL field_product(batch_weighted, batch_delta(:, :nproj), batch_self, .FALSE., .TRUE., .FALSE.)
+         END IF
          DO aux = 1, fields%nfunction
-            CALL field_product(batch_weighted(:, (aux - 1)*nproj + 1:aux*nproj), batch_orbitals, &
-                               moment(:, :, aux), .FALSE., .TRUE., .FALSE.)
             IF (compute_self_moment) THEN
-               CALL field_product(batch_weighted(:, (aux - 1)*nproj + 1:aux*nproj), batch_delta(:, :nproj), &
-                                  entry%values(:, :, aux), .FALSE., .TRUE., .FALSE.)
+               entry%values(:, :, aux) = batch_self((aux - 1)*nproj + 1:aux*nproj, :)
+            ELSE
+               batch_self((aux - 1)*nproj + 1:aux*nproj, :) = entry%values(:, :, aux)
             END IF
-            CALL field_product(entry%values(:, :, aux), local_coefficients, moment(:, :, aux), &
-                               .TRUE., .FALSE., .FALSE., -1.0_dp)
+         END DO
+         CALL field_product(batch_self, local_coefficients, batch_moment, .TRUE., .FALSE., .FALSE., -1.0_dp)
+         DO aux = 1, fields%nfunction
+            moment(:, :, aux) = batch_moment((aux - 1)*nproj + 1:aux*nproj, :)
          END DO
          IF (.NOT. ASSOCIATED(retained)) DEALLOCATE (temporary%values)
          RETURN
