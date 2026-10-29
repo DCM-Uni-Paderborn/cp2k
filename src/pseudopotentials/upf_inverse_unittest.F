@@ -3830,15 +3830,23 @@ CONTAINS
       IF (comm%mepos == 0) CALL close_file(unit)
       truncated = coulomb
       CALL gaussian_coulomb_fields_truncate(truncated, 2.3_dp)
-      DO kernel = 1, 3
+      xp = x
+      xp(:, nf) = [SQRT(24.0_dp/.4_dp), 0.0_dp, 0.0_dp]
+      DO kernel = 1, 4
          periodic_fields = coulomb
          IF (kernel == 2) periodic_fields = short_range
          IF (kernel == 3) periodic_fields = truncated
-         CALL gaussian_coulomb_fields_evaluate_batch(periodic_fields, x, batch_values, batch_gradient)
+         IF (kernel == 4) periodic_fields = long_range
+         CALL gaussian_coulomb_fields_evaluate_batch(periodic_fields, xp, batch_values, batch_gradient)
          DO point = 1, nf
-            CALL gaussian_coulomb_fields_evaluate(periodic_fields, x(:, point), cv, cg)
+            CALL gaussian_coulomb_fields_evaluate(periodic_fields, xp(:, point), cv, cg)
             CALL check(MAXVAL(ABS(batch_values(point, :) - cv)) + MAXVAL(ABS(batch_gradient(:, :, point) - cg)), &
                        'batched interaction fields and gradients')
+         END DO
+         CALL gaussian_coulomb_fields_evaluate_batch(periodic_fields, xp, batch_values)
+         DO point = 1, nf
+            CALL gaussian_coulomb_fields_evaluate(periodic_fields, xp(:, point), cv)
+            CALL check(MAXVAL(ABS(batch_values(point, :) - cv)), 'batched value-only interaction fields')
          END DO
       END DO
       DO point = 1, 4

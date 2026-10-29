@@ -456,8 +456,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Evaluate a point batch with the original native Gaussian potential and gradient conventions.
-!>        Overlap fields reuse radial exponentials and angular polynomials across the point batch.
-!>        Other kernels and higher angular orders retain the scalar evaluation.
+!>        Overlap and Coulomb fields share angular polynomials across the point batch.
+!>        Truncated kernels and higher angular orders retain the scalar evaluation.
 !> \param fields Prepared native shell-set cache.
 !> \param displacement Evaluation points minus the Gaussian center, indexed (axis,point).
 !> \param potential New potentials, indexed (point,function).
@@ -487,7 +487,7 @@ CONTAINS
       IF (PRESENT(gradient)) THEN
          CPASSERT(ALL(SHAPE(gradient) == [3, fields%nfunction, npoint]))
       END IF
-      IF (.NOT. fields%identity .OR. fields%cutoff_radius > 0.0_dp .OR. &
+      IF (fields%cutoff_radius > 0.0_dp .OR. &
           ANY(fields%primitives%l > max_cached_l)) THEN
          DO point = 1, npoint
             IF (PRESENT(gradient)) THEN
@@ -510,20 +510,26 @@ CONTAINS
          ASSOCIATE (primitive => fields%primitives(block))
             IF (.NOT. ANY(primitive%coefficients /= 0.0_dp)) CYCLE
             l = primitive%l
-            IF (primitive%alpha /= last_alpha) THEN
-               exponential(:) = EXP(-primitive%alpha*squared_radius)
-               last_alpha = primitive%alpha
-            END IF
-            IF (primitive%power == 0) THEN
-               ! Match the scalar evaluator when the complete exponential batch vanishes.
-               IF (ALL(exponential == 0.0_dp)) CYCLE
-               h(:) = exponential
+            IF (fields%identity) THEN
+               IF (primitive%alpha /= last_alpha) THEN
+                  exponential(:) = EXP(-primitive%alpha*squared_radius)
+                  last_alpha = primitive%alpha
+               END IF
+               IF (primitive%power == 0) THEN
+                  ! Match the scalar evaluator when the complete exponential batch vanishes.
+                  IF (ALL(exponential == 0.0_dp)) CYCLE
+                  h(:) = exponential
+               ELSE
+                  h(:) = squared_radius**primitive%power*exponential
+               END IF
+               IF (PRESENT(gradient)) THEN
+                  dh(:) = -primitive%alpha*h
+                  IF (primitive%power > 0) dh(:) = dh + primitive%power*squared_radius**(primitive%power - 1)*exponential
+               END IF
             ELSE
-               h(:) = squared_radius**primitive%power*exponential
-            END IF
-            IF (PRESENT(gradient)) THEN
-               dh(:) = -primitive%alpha*h
-               IF (primitive%power > 0) dh(:) = dh + primitive%power*squared_radius**(primitive%power - 1)*exponential
+               DO point = 1, npoint
+                  CALL radial_potential(primitive%alpha, primitive%power, l, squared_radius(point), h(point), dh(point))
+               END DO
             END IF
             IF (.NOT. angular_ready(l)) THEN
                CALL native_solid_harmonics_batch(l, displacement, PRESENT(gradient), &
