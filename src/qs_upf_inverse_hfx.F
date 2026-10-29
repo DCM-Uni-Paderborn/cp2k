@@ -2922,16 +2922,18 @@ CONTAINS
             local_points(:, :) = r(ir)*directions
             DO ia = 1, nang
                points(:, ia) = position + local_points(:, ia)
-               IF (cached_potentials) THEN
+            END DO
+            IF (cached_potentials) THEN
+               DO ia = 1, nang
                   CALL transition_potential_point(qi%potential_fields, ia, cache_row, potentials(ia, :))
                   IF (geometry) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
-               ELSE IF (geometry) THEN
-                  CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :), &
-                                                        potential_gradient(:, :, ia))
-               ELSE
-                  CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
-               END IF
-            END DO
+               END DO
+            ELSE IF (geometry) THEN
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), &
+                                                           potentials, potential_gradient)
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), potentials)
+            END IF
             ! Exact-zero potential rows have no field or geometry contribution. The
             ! independent original Q transition below still retains its full response.
             IF (ALL(potentials == 0.0_dp)) THEN
