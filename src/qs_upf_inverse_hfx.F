@@ -2005,19 +2005,23 @@ CONTAINS
 !> \param ngaussian Number of selected Gaussian functions.
 !> \param nauxiliary Complete auxiliary-shell size.
 !> \param ENTRY Cached moment or a null pointer when no entry can be retained.
+!> \param reserved_words Optional payload reserved for other moment types on a cache miss.
 ! **************************************************************************************************
-   SUBROUTINE lattice_moment_entry(cache, key, nprojector, ngaussian, nauxiliary, ENTRY)
+   SUBROUTINE lattice_moment_entry(cache, key, nprojector, ngaussian, nauxiliary, ENTRY, reserved_words)
       TYPE(lattice_moment_cache_type), INTENT(INOUT), &
          TARGET                                          :: cache
       INTEGER, INTENT(IN)                                :: key(11), nprojector, ngaussian, &
                                                             nauxiliary
       TYPE(linear_moment_type), INTENT(OUT), POINTER     :: entry
+      INTEGER, INTENT(IN), OPTIONAL                      :: reserved_words
 
-      INTEGER                                            :: attempt, i, slot
+      INTEGER                                            :: attempt, i, reserved, slot
       INTEGER(int_8)                                     :: hash
       REAL(dp)                                           :: words
 
       NULLIFY (ENTRY)
+      reserved = 0
+      IF (PRESENT(reserved_words)) reserved = MAX(0, reserved_words)
       IF (.NOT. ALLOCATED(cache%entries)) THEN
          IF (cache%remaining_words <= 0) RETURN
          ALLOCATE (cache%entries(max_cached_lattice_moments))
@@ -2038,7 +2042,7 @@ CONTAINS
          IF (ALL(cache%entries(slot)%key == 0)) THEN
             IF (cache%entry_count >= SIZE(cache%entries)/2) RETURN
             words = 2.0_dp*REAL(nprojector, dp)*REAL(ngaussian, dp)*REAL(nauxiliary, dp)
-            IF (words > REAL(cache%remaining_words, dp)) RETURN
+            IF (words > REAL(cache%remaining_words - reserved, dp)) RETURN
             cache%remaining_words = cache%remaining_words - INT(words)
             cache%entry_count = cache%entry_count + 1
             cache%entries(slot)%key = key
@@ -3232,9 +3236,12 @@ CONTAINS
          NULLIFY (left_integrals, right_integrals)
          IF (.NOT. derivatives .AND. PRESENT(moment_cache)) THEN
             CPASSERT(PRESENT(moment_key))
+            ! Reserve half the moment payload for local Delta*V*Delta integrals, which
+            ! are shared by all Gaussian blocks and translations. Existing entries remain usable.
             IF (left_needed) THEN
                CALL lattice_moment_entry(moment_cache, [center, left_range, -center_image, moment_key], &
-                                         np, nl, fields%nfunction, left_integrals)
+                                         np, nl, fields%nfunction, left_integrals, &
+                                         reserved_words=MERGE(max_cached_potential_words/4, 0, frame%atom_local))
                IF (ASSOCIATED(left_integrals)) THEN
                   IF (ALLOCATED(left_integrals%values)) THEN
                      moment_left(:, :, :) = left_integrals%values
@@ -3244,7 +3251,8 @@ CONTAINS
             END IF
             IF (right_needed) THEN
                CALL lattice_moment_entry(moment_cache, [center, right_range, ao_image - center_image, moment_key], &
-                                         np, nr, fields%nfunction, right_integrals)
+                                         np, nr, fields%nfunction, right_integrals, &
+                                         reserved_words=MERGE(max_cached_potential_words/4, 0, frame%atom_local))
                IF (ASSOCIATED(right_integrals)) THEN
                   IF (ALLOCATED(right_integrals%values)) THEN
                      moment_right(:, :, :) = right_integrals%values
