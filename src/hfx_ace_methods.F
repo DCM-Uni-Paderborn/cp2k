@@ -148,13 +148,13 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: section
 
       refresh = .FALSE.
-      IF (.NOT. ace_is_built) RETURN
-      IF (ace_step_counter <= 1) THEN
+      IF (ace_convergence_rebuild) THEN
          IF (qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf) THEN
             ace_convergence_rebuild = .FALSE.
          END IF
          RETURN
       END IF
+      IF (.NOT. ace_is_built) RETURN
       section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF%ACE")
       IF (.NOT. ASSOCIATED(section)) RETURN
       CALL section_vals_val_get(section, "ACTIVE", l_val=active)
@@ -283,10 +283,23 @@ CONTAINS
          RETURN
       END IF
 
+      ! Finish with the full operator and energy, without recompressing a freshly
+      ! evaluated matrix. Compression need only be accurate on its reference subspace.
+      IF (ace_convergence_rebuild) THEN
+         IF (DBG_ROUTING .AND. iw > 0) WRITE (iw, '(T2,A)') 'ACE | Finishing SCF with full exchange'
+         CALL hfx_call(qs_env, ks_matrix, rho, energy, &
+                       .FALSE., just_energy, &
+                       v_rspace_new, v_tau_rspace, ext_xc_section)
+         ace_is_built = .FALSE.
+         ace_step_counter = 0
+         CALL timestop(handle)
+         RETURN
+      END IF
+
       ! ------------------------------------------------------------------
       ! Rebuild decision
       ! ------------------------------------------------------------------
-      rebuild_ace = (.NOT. ace_is_built) .OR. ace_convergence_rebuild .OR. &
+      rebuild_ace = (.NOT. ace_is_built) .OR. &
                     (MOD(ace_step_counter, rebuild_freq) == 0)
 
       IF (DBG_ROUTING .AND. iw > 0) THEN
