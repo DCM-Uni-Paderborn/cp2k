@@ -71,7 +71,7 @@
       BASIS_SET COMPACT
       BASIS_SET RI_HFX DIFFUSE_RI
       LEBEDEV_GRID 14
-      POTENTIAL UPF UPF/H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf
+      POTENTIAL UPF H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf
       RADIAL_GRID 10
     &END KIND
   &END SUBSYS
