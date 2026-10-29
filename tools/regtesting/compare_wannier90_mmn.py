@@ -62,6 +62,10 @@ def read_mmn(filename: str) -> MmnData:
         nbands, nkpts, nneigh = [int(x) for x in lines[1].split()[:3]]
     except ValueError as exc:
         raise ValueError(f"{filename}: could not parse .mmn dimensions") from exc
+    if min(nbands, nkpts, nneigh) <= 0:
+        raise ValueError(f"{filename}: invalid .mmn dimensions")
+    if len(lines) < 2 + nkpts * nneigh * (1 + nbands * nbands):
+        raise ValueError(f"{filename}: truncated .mmn file")
 
     blocks: list[MmnBlock] = []
     idx = 2
@@ -79,12 +83,35 @@ def read_mmn(filename: str) -> MmnData:
                 idx += 1
                 matrix[jband, iband] = value
         blocks.append((header, matrix))
-    return nbands, nkpts, nneigh, blocks
+    if any(line.strip() for line in lines[idx:]):
+        raise ValueError(f"{filename}: unexpected trailing content")
+    data = nbands, nkpts, nneigh, blocks
+    validate_mmn(data)
+    return data
+
+
+def validate_mmn(data: MmnData) -> None:
+    nbands, nkpts, nneigh, blocks = data
+    if min(nbands, nkpts, nneigh) <= 0:
+        raise ValueError("Invalid overlap dimensions")
+    if len(blocks) != nkpts * nneigh or len(dict(blocks)) != len(blocks):
+        raise ValueError("Repeated or missing overlap block headers")
+    counts = [0] * nkpts
+    for (k, neighbor, _, _, _), matrix in blocks:
+        if not (1 <= k <= nkpts and 1 <= neighbor <= nkpts):
+            raise ValueError("Invalid overlap k-point index")
+        if matrix.shape != (nbands, nbands) or not np.all(np.isfinite(matrix)):
+            raise ValueError("Invalid overlap matrix")
+        counts[k - 1] += 1
+    if any(count != nneigh for count in counts):
+        raise ValueError("Missing neighbors for an overlap k-point")
 
 
 def compare_mmn(
     left: MmnData, right: MmnData
 ) -> tuple[float, float, WorstBlock, WorstBlock]:
+    validate_mmn(left)
+    validate_mmn(right)
     left_dims = left[:3]
     right_dims = right[:3]
     if left_dims != right_dims:
@@ -105,6 +132,8 @@ def compare_mmn(
         left_sv = np.linalg.svd(left_matrix, compute_uv=False)
         right_sv = np.linalg.svd(right_matrix, compute_uv=False)
         sv = float(np.max(np.abs(left_sv - right_sv)))
+        if not np.isfinite(raw) or not np.isfinite(sv):
+            raise ValueError("Nonfinite overlap comparison")
         if raw > raw_max:
             raw_max = raw
             worst_raw = (iblock, left_header)
@@ -116,17 +145,14 @@ def compare_mmn(
 
 def check_reciprocity(data: MmnData) -> float:
     """Check M(k,b) = M(k+b,-b)^H, independently of the MO gauge."""
-    nbands, nkpts, nneigh, blocks = data
+    validate_mmn(data)
+    _, _, _, blocks = data
     matrices = dict(blocks)
-    if len(matrices) != nkpts * nneigh:
-        raise ValueError("Repeated or missing overlap block headers")
     maximum = 0.0
     for (k, neighbor, gx, gy, gz), matrix in blocks:
         reverse = (neighbor, k, -gx, -gy, -gz)
         if reverse not in matrices:
             raise ValueError(f"Missing reverse overlap block: {reverse}")
-        if matrix.shape != (nbands, nbands) or not np.all(np.isfinite(matrix)):
-            raise ValueError("Invalid overlap matrix")
         maximum = max(
             maximum, float(np.max(np.abs(matrix - matrices[reverse].conj().T)))
         )
