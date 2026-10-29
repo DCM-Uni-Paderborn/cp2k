@@ -150,8 +150,9 @@ CONTAINS
       refresh = .FALSE.
       IF (.NOT. ace_is_built) RETURN
       IF (ace_step_counter <= 1) THEN
-         IF (qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf) &
+         IF (qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf) THEN
             ace_convergence_rebuild = .FALSE.
+         END IF
          RETURN
       END IF
       section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF%ACE")
