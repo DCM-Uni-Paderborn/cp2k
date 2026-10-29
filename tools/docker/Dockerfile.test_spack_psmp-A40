@@ -1,6 +1,6 @@
 #
 # This file was created by generate_dockerfiles.py.
-# Usage: ./spack_cache_start.sh; podman build --shm-size=1g -t spack_psmp-p100 -f ./Dockerfile.test_spack_psmp-P100 ../../
+# Usage: ./spack_cache_start.sh; podman build --shm-size=1g -t spack_psmp-a40 -f ./Dockerfile.test_spack_psmp-A40 ../../
 #
 
 ARG BASE_IMAGE="nvidia/cuda:12.9.1-devel-ubuntu24.04"
@@ -45,7 +45,7 @@ ENV LD_LIBRARY_PATH /usr/local/cuda/lib64
 ENV CUDA_CACHE_DISABLE 1
 
 ARG IMAGE_TAG
-ENV IMAGE_TAG=${IMAGE_TAG:-spack_psmp-P100}
+ENV IMAGE_TAG=${IMAGE_TAG:-spack_psmp-A40}
 
 ARG SPACK_CACHE
 ENV SPACK_CACHE="${SPACK_CACHE:-s3://spack-cache --s3-endpoint-url=http://host.containers.internal:9000}"
@@ -55,7 +55,7 @@ WORKDIR /opt/cp2k
 COPY ./tools/spack ./tools/spack
 COPY ./tools/docker ./tools/docker
 COPY ./make_cp2k.sh .
-RUN ./make_cp2k.sh -bd_only -cv psmp -gpu P100 -gv 13 -mpi mpich -ue 
+RUN ./make_cp2k.sh -bd_only -cv psmp -gpu A40 -gv 13 -mpi mpich -ue 
 
 ###### Stage 2: Build CP2K ######
 
@@ -69,7 +69,7 @@ COPY ./tests ./tests
 COPY ./tools/build_utils ./tools/build_utils
 COPY ./tools/conventions ./tools/conventions
 
-RUN ./make_cp2k.sh -cv psmp -gv 13 -gpu P100 -mpi mpich 
+RUN ./make_cp2k.sh -cv psmp -gv 13 -gpu A40 -mpi mpich 
 
 ###### Stage 3: Install CP2K ######
 
@@ -107,7 +107,7 @@ COPY --from=build_cp2k /etc/ld.so.conf.d/cp2k.conf /etc/ld.so.conf.d/cp2k.conf
 RUN ldconfig
 
 # Run CP2K regression test
-RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests --keepalive --maxtasks 4 --ompthreads 2 --smoketest --timeout 300 2>&1 | tee report.log; \
+RUN /opt/cp2k/install/bin/launch /opt/cp2k/install/bin/run_tests --keepalive --maxtasks 16 --ompthreads 1 --timeout 400 2>&1 | tee report.log; \
     grep -q '^Status:' report.log || printf "\nSummary: Regression test run failed\nStatus: FAILED\n" | tee -a report.log
 
 # Create entrypoint and finalise container build
