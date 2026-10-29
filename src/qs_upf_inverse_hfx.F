@@ -3568,9 +3568,8 @@ CONTAINS
       INTEGER, ALLOCATABLE, INTENT(INOUT)                :: support_indices(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: local_coefficients(:, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: batch_delta(:, :), delta(:, :), &
-                                                            gaussian(:, :), phi(:, :), &
-                                                            weighted(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE :: batch_delta(:, :), batch_orbitals(:, :), batch_weighted(:, :), &
+         delta(:, :), gaussian(:, :), phi(:, :), weighted(:, :, :, :)
       INTEGER :: atom, aux, first, hi, ia, image, index, ir, j, kind, last, lo, max_ao, nang, nao, &
          nimage, np, nproj, nrow, nsupport, row, single_image(3, 1), zero(3, 1)
       INTEGER(int_8)                                     :: gaussian_words, support_words, words
@@ -3603,6 +3602,10 @@ CONTAINS
       words = INT(nang, int_8)*INT(nrow, int_8)*(2_int_8*INT(nproj, int_8)*INT(fields%nfunction, int_8) + 3_int_8)
       words = words + 2_int_8*INT(nproj, int_8)*INT(np, int_8)*INT(fields%nfunction, int_8)
       words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(np, int_8)
+      IF (frame%atom_local) THEN
+         words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)* &
+                 (INT(nproj, int_8)*INT(fields%nfunction, int_8) + INT(nao, int_8))
+      END IF
       IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
       cached_support = ALLOCATED(support_indices)
       collect_support = .FALSE.
@@ -3701,6 +3704,8 @@ CONTAINS
          IF (compute_self_moment) THEN
             ALLOCATE (entry%values(nproj, nproj, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
          END IF
+         ALLOCATE (batch_weighted(nang*nrow, nproj*fields%nfunction), batch_orbitals(nang*nrow, nao))
+         IF (compute_self_moment .AND. .NOT. ALLOCATED(batch_delta)) ALLOCATE (batch_delta(nang*nrow, nproj))
       END IF
       row = 0
       zero = 0
@@ -3741,16 +3746,27 @@ CONTAINS
             END DO
             IF (ALLOCATED(gaussian_fields)) gaussian_fields(:, :, row) = phi
          END IF
-         DO aux = 1, fields%nfunction
-            CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
-            IF (compute_self_moment) THEN
-               CALL field_product(weighted(:, :, aux, row), delta(:, :nproj), entry%values(:, :, aux), &
-                                  .TRUE., .TRUE., .FALSE.)
-            END IF
-         END DO
+         IF (frame%atom_local) THEN
+            ! Keep every original quadrature point and contract the complete point set at once.
+            batch_orbitals((row - 1)*nang + 1:row*nang, :) = phi
+            IF (compute_self_moment) batch_delta((row - 1)*nang + 1:row*nang, :nproj) = delta(:, :nproj)
+            DO aux = 1, fields%nfunction
+               batch_weighted((row - 1)*nang + 1:row*nang, (aux - 1)*nproj + 1:aux*nproj) = weighted(:, :, aux, row)
+            END DO
+         ELSE
+            DO aux = 1, fields%nfunction
+               CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
+            END DO
+         END IF
       END DO
       IF (frame%atom_local) THEN
          DO aux = 1, fields%nfunction
+            CALL field_product(batch_weighted(:, (aux - 1)*nproj + 1:aux*nproj), batch_orbitals, &
+                               moment(:, :, aux), .FALSE., .TRUE., .FALSE.)
+            IF (compute_self_moment) THEN
+               CALL field_product(batch_weighted(:, (aux - 1)*nproj + 1:aux*nproj), batch_delta(:, :nproj), &
+                                  entry%values(:, :, aux), .FALSE., .TRUE., .FALSE.)
+            END IF
             CALL field_product(entry%values(:, :, aux), local_coefficients, moment(:, :, aux), &
                                .TRUE., .FALSE., .FALSE., -1.0_dp)
          END DO
