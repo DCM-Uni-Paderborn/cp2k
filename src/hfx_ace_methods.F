@@ -74,7 +74,9 @@ MODULE hfx_ace_methods
                                               cp_logger_type
    USE hfx_admm_utils,                  ONLY: hfx_ks_matrix
    USE hfx_types,                       ONLY: hfx_type
-   USE input_section_types,             ONLY: section_vals_type
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
@@ -104,6 +106,7 @@ MODULE hfx_ace_methods
    ! -----------------------------------------------------------------------
    TYPE(cp_fm_type), ALLOCATABLE, SAVE :: ace_W(:, :)
    LOGICAL, SAVE :: ace_is_built = .FALSE.
+   LOGICAL, SAVE :: ace_convergence_rebuild = .FALSE.
    INTEGER, SAVE :: ace_step_counter = 0
    REAL(dp), SAVE :: ace_W_ref_norm = 0.0_dp
    INTEGER, SAVE :: ace_geo_step = 0   ! NEW
@@ -128,8 +131,40 @@ MODULE hfx_ace_methods
    ! Stays .FALSE. for ENERGY/ENERGY_FORCE single-point runs.
 
    PUBLIC :: hfx_ace_ks_matrix, hfx_ace_release, hfx_ace_set_dynamic_mode
+   PUBLIC :: hfx_ace_requires_refresh
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Request a fresh exchange build before accepting convergence with a reused ACE projector.
+!> \param qs_env Current SCF environment and ACE input.
+!> \return Whether the next SCF step must rebuild the projector.
+! **************************************************************************************************
+   FUNCTION hfx_ace_requires_refresh(qs_env) RESULT(refresh)
+      TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
+      LOGICAL                                            :: refresh
+
+      LOGICAL                                            :: active
+      TYPE(section_vals_type), POINTER                   :: section
+
+      refresh = .FALSE.
+      IF (.NOT. ace_is_built) RETURN
+      IF (ace_step_counter <= 1) THEN
+         IF (qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf) &
+            ace_convergence_rebuild = .FALSE.
+         RETURN
+      END IF
+      section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF%ACE")
+      IF (.NOT. ASSOCIATED(section)) RETURN
+      CALL section_vals_val_get(section, "ACTIVE", l_val=active)
+      IF (.NOT. active) RETURN
+      ace_is_built = .FALSE.
+      ace_step_counter = 0
+      ! Once the frozen-operator iteration approaches convergence, finish with full exchange
+      ! at every step instead of starting another long frozen-operator iteration.
+      ace_convergence_rebuild = .TRUE.
+      refresh = .TRUE.
+   END FUNCTION hfx_ace_requires_refresh
 
 ! **************************************************************************************************
 !> \brief Main ACE entry point, replacing hfx_ks_matrix in qs_ks_methods.
@@ -222,6 +257,7 @@ CONTAINS
                        v_rspace_new, v_tau_rspace, ext_xc_section)
          ace_is_built = .FALSE.
          ace_step_counter = 0
+         ace_convergence_rebuild = .FALSE.
          ace_geo_step = ace_geo_step + 1   ! NEW: step 0 done, ACE active from now
          CALL timestop(handle)
          RETURN
@@ -249,7 +285,7 @@ CONTAINS
       ! ------------------------------------------------------------------
       ! Rebuild decision
       ! ------------------------------------------------------------------
-      rebuild_ace = (.NOT. ace_is_built) .OR. &
+      rebuild_ace = (.NOT. ace_is_built) .OR. ace_convergence_rebuild .OR. &
                     (MOD(ace_step_counter, rebuild_freq) == 0)
 
       IF (DBG_ROUTING .AND. iw > 0) THEN
@@ -865,6 +901,7 @@ CONTAINS
 
       ace_is_built = .FALSE.
       ace_step_counter = 0
+      ace_convergence_rebuild = .FALSE.
       ace_W_ref_norm = 0.0_dp
       ace_geo_step = 0
       ace_dynamic_mode = .FALSE.   ! ADDED: reset dynamic mode on release, so it must be explicitly re-enabled for GEO_OPT/MD runs

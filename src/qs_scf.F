@@ -93,6 +93,7 @@ MODULE qs_scf
    USE cp_result_types,                 ONLY: cp_result_type
    USE dft_plus_u,                      ONLY: lowdin_kp_apply
    USE ec_env_types,                    ONLY: energy_correction_type
+   USE hfx_ace_methods,                 ONLY: hfx_ace_requires_refresh
    USE input_constants,                 ONLY: &
         broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
         broyden_type_2, broyden_type_2_explicit, broyden_type_2_explicit_ls, broyden_type_2_ls, &
@@ -923,6 +924,17 @@ CONTAINS
                   density_full_step = .TRUE.
                   energy_only = .FALSE.
                   just_energy = .FALSE.
+               END IF
+            END IF
+            IF (.NOT. just_energy .AND. .NOT. should_stop .AND. &
+                scf_env%iter_delta < MAX(scf_control%eps_scf, SQRT(scf_control%eps_scf))) THEN
+               IF (hfx_ace_requires_refresh(qs_env)) THEN
+                  ! Finish a nearly stationary frozen-operator iteration with full exchange.
+                  ! The final SCF tolerance is unchanged.
+                  ! Keep the ordinary SCF iteration limit and external-stop handling below.
+                  scf_env%iter_delta = MAX(scf_env%iter_delta, scf_control%eps_scf)
+                  IF (output_unit > 0) WRITE (output_unit, '(T3,A)') &
+                     "ACE | A fresh exchange operator is required for SCF convergence"
                END IF
             END IF
             scf_env%step_norm = scf_env%iter_delta

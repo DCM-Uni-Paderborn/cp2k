@@ -885,8 +885,8 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, &
                           name="REBUILD_FREQUENCY", &
                           description="Rebuild the ACE projectors W every N SCF steps. "// &
-                          "N=1 means rebuild every step (identical to full HFX, "// &
-                          "use for testing only). N=10-20 is typical for production. "// &
+                          "N=1 rebuilds at every step. Final SCF convergence uses "// &
+                          "projectors rebuilt at every step. "// &
                           "Projectors are always rebuilt when the structure changes.", &
                           usage="REBUILD_FREQUENCY 20", &
                           default_i_val=20)
