@@ -162,11 +162,11 @@ selected using the standard CP2K data-directory lookup:
 &END KIND
 ```
 
-Calculation support depends on the CP2K build and Gaussian basis. `DIRECT` uses the original
-USPP data. Inverse representations additionally require complete projector-indexed reference
-waves and their density, metric, kinetic-energy and geometry corrections. Tau-dependent XC with
-NLCC also needs the declared model core kinetic density. NC, USPP and PAW datasets are not
-interchangeable. Installing data alone does not enable missing methods or properties.
+Calculation support depends on the CP2K build and Gaussian basis. `DIRECT` uses the original USPP
+data. Inverse representations additionally require complete projector-indexed reference waves and
+their density, metric, kinetic-energy and geometry corrections. Tau-dependent XC with NLCC also
+needs the declared model core kinetic density. NC, USPP and PAW datasets are not interchangeable.
+Installing data alone does not enable missing methods or properties.
 
 Choose and converge a compatible Gaussian basis, grid and response settings for the intended
 calculation. SSSP plane-wave cutoffs are not GPW multigrid or Gaussian-basis recommendations. The
