@@ -2928,6 +2928,12 @@ CONTAINS
                   CALL gaussian_coulomb_fields_evaluate(fields, points(:, ia) - auxiliary_center, potentials(ia, :))
                END IF
             END DO
+            ! Exact-zero potential rows have no field or geometry contribution. The
+            ! independent original Q transition below still retains its full response.
+            IF (ALL(potentials == 0.0_dp)) THEN
+               IF (.NOT. geometry) CYCLE
+               IF (ALL(potential_gradient == 0.0_dp)) CYCLE
+            END IF
             CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
                                             [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
                                             [0.0_dp, 0.0_dp, 0.0_dp], delta)
