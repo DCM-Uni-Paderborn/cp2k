@@ -3413,6 +3413,11 @@ CONTAINS
                ELSE
                   CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), potentials)
                END IF
+               ! Populate the shared orbital cache even when this auxiliary row vanishes.
+               IF (ALL(potentials == 0.0_dp)) THEN
+                  IF (.NOT. derivatives) CYCLE
+                  IF (ALL(potential_gradient == 0.0_dp)) CYCLE
+               END IF
                ! The local difference is -Delta W. Keep the small projector dimension
                ! through the quadrature and contract W only after the radial sum.
                IF (batch_moments) THEN
