@@ -465,10 +465,11 @@ CONTAINS
 !> \param atom_geometry New native Cartesian center covector, in (axis,atom) order.
 !> \param cell_geometry New lattice covector, in (axis,cell vector) order.
 !> \param gaussian_factor Optional fixed Gaussian multiplier, two for soft-plus-Gaussian fields.
+!> \param workspace Optional original per-atom Gaussian scratch fields.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, coefficients, &
                                                       ao_range, covector, point_geometry, atom_geometry, cell_geometry, &
-                                                      gaussian_factor)
+                                                      gaussian_factor, workspace)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), coefficient_images(:, :)
@@ -479,6 +480,8 @@ CONTAINS
                                                             atom_geometry(:, :), &
                                                             cell_geometry(3, 3)
       REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_factor
+      TYPE(gaussian_basis_workspace_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: workspace(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), delta_covector(:, :), &
                                                             delta_gradient(:, :, :)
@@ -505,7 +508,7 @@ CONTAINS
       atom_geometry = 0.0_dp
       cell_geometry = 0.0_dp
       CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, ao_range, covector, &
-                                                   point_geometry, atom_geometry, cell_geometry, gaussian_factor)
+                                                   point_geometry, atom_geometry, cell_geometry, gaussian_factor, workspace)
       ALLOCATE (point_component(n))
       ALLOCATE (delta(n, np), delta_gradient(n, np, 3), delta_covector(n, np))
       IF (n > 0) THEN
@@ -550,9 +553,10 @@ CONTAINS
 !> \param atom_geometry Derivative with respect to Gaussian centers at fixed points.
 !> \param cell_geometry Derivative of the physical Gaussian translation.
 !> \param gaussian_factor Optional multiplier of the Gaussian field.
+!> \param workspace Optional original per-atom Gaussian scratch fields.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, ao_range, covector, &
-                                                      point_geometry, atom_geometry, cell_geometry, gaussian_factor)
+                                                      point_geometry, atom_geometry, cell_geometry, gaussian_factor, workspace)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), ao_range(2)
@@ -561,6 +565,8 @@ CONTAINS
                                                             atom_geometry(:, :), &
                                                             cell_geometry(3, 3)
       REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_factor
+      TYPE(gaussian_basis_workspace_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: workspace(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), &
                                                             gaussian_gradient(:, :, :)
@@ -569,6 +575,8 @@ CONTAINS
                                                             source_last
       REAL(dp)                                           :: factor, total
       REAL(dp), ALLOCATABLE                              :: point_component(:)
+      TYPE(gaussian_basis_workspace_type), POINTER       :: scratch
+      TYPE(gaussian_basis_workspace_type), TARGET        :: local_workspace
 
       CPASSERT(SIZE(points, 1) == 3)
       CPASSERT(ALL(ao_image*frame%periodicity == ao_image))
@@ -579,6 +587,9 @@ CONTAINS
       CPASSERT(ALL(SHAPE(covector) == [n, nao]))
       CPASSERT(ALL(SHAPE(point_geometry) == SHAPE(points)))
       CPASSERT(ALL(SHAPE(atom_geometry) == SHAPE(frame%positions)))
+      IF (PRESENT(workspace)) THEN
+         CPASSERT(SIZE(workspace) == SIZE(frame%bases))
+      END IF
       point_geometry = 0.0_dp
       atom_geometry = 0.0_dp
       cell_geometry = 0.0_dp
@@ -592,8 +603,11 @@ CONTAINS
          IF (last < first) CYCLE
          ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf), &
                    gaussian_gradient(n, frame%bases(atom)%gto_basis_set%nsgf, 3))
+         scratch => local_workspace
+         IF (PRESENT(workspace)) scratch => workspace(atom)
          CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient)
+                                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient, &
+                                             workspace=scratch)
          source_first = first - frame%ao_first(atom) + 1
          source_last = last - frame%ao_first(atom) + 1
          first = first - ao_range(1) + 1

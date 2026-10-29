@@ -2989,22 +2989,22 @@ CONTAINS
             IF (geometry) THEN
                IF (frame%atom_local) THEN
                   CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, [0, 0, 0], left_range, gcl, &
-                                                               point_geometry, local_atoms, local_cell, 2.0_dp)
+                                                    point_geometry, local_atoms, local_cell, 2.0_dp, workspace=left_fields%gaussian)
                ELSE
                   CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, [0, 0, 0], coefficient_images, &
                                                                coupled_coefficients(:, left_range(1):left_range(2), :), &
-                                                               left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp)
+                                   left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp, workspace=left_fields%gaussian)
                END IF
                atom_geometry(:, :) = atom_geometry + local_atoms
                cell_geometry(:, :) = cell_geometry + local_cell
                sphere_geometry = SUM(point_geometry, DIM=2)
                IF (frame%atom_local) THEN
                   CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, right_range, gcr, &
-                                                               point_geometry, local_atoms, local_cell, 2.0_dp)
+                                                   point_geometry, local_atoms, local_cell, 2.0_dp, workspace=right_fields%gaussian)
                ELSE
                   CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, &
                                                                coupled_coefficients(:, right_range(1):right_range(2), :), &
-                                                               right_range, gcr, point_geometry, local_atoms, local_cell, 2.0_dp)
+                                 right_range, gcr, point_geometry, local_atoms, local_cell, 2.0_dp, workspace=right_fields%gaussian)
                END IF
                atom_geometry(:, :) = atom_geometry + local_atoms
                cell_geometry(:, :) = cell_geometry + local_cell
