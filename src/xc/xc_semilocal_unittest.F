@@ -265,7 +265,7 @@ CONTAINS
             trial_step = 0.0_dp
             IF (trial == 1) trial_step = step
             IF (trial == 2) trial_step = -step
-            grad = original
+            grad(:, :, :, :) = original
             grad(1:3, :, :, :) = grad(1:3, :, :, :) + trial_step*direction(1:3, :, :, :)
             IF (configuration == 5) THEN
                rho(1, 1, :) = iso_rho + trial_step*iso_drho
