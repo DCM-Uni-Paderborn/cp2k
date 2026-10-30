@@ -969,6 +969,7 @@ CONTAINS
       IF (state%bloch) THEN
          IF (ANY(state%inverse%bloch%star%operation /= 0)) THEN
             ALLOCATE (expanded(n, n, SIZE(state%inverse%bloch%weights), ns))
+            IF (PRESENT(orbital_direction)) ALLOCATE (expanded_occupations(SIZE(orbital_direction%occupations, 1), nk))
             DO spin = 1, ns
                CALL kpoint_star_density(state%inverse%bloch%star, density_direction(:, :, :, spin), block)
                expanded(:, :, :, spin) = block
@@ -976,7 +977,7 @@ CONTAINS
                   CALL kpoint_star_orbitals(state%inverse%bloch%star, &
                                             orbital_direction%coefficients(:, :, :nk, spin), block)
                   orbital_direction%coefficients(:, :, :, spin) = block
-                  expanded_occupations = orbital_direction%occupations(:, :nk, spin)
+                  expanded_occupations(:, :) = orbital_direction%occupations(:, :nk, spin)
                   orbital_direction%occupations(:, :, spin) = &
                      expanded_occupations(:, state%inverse%bloch%star%representative)
                END IF
@@ -4299,7 +4300,7 @@ CONTAINS
       DO i = 1, count
          state%multiplet_offsets(i + 1) = state%multiplet_offsets(i) + counts(i)
       END DO
-      counts = state%multiplet_offsets(:count)
+      counts(:) = state%multiplet_offsets(:count)
       DO i = 1, count
          state%multiplet_members(counts(multiplets(i))) = i
          counts(multiplets(i)) = counts(multiplets(i)) + 1
