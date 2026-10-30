@@ -325,11 +325,12 @@ CONTAINS
       rows = SIZE(coefficients, 1)
       n = SIZE(coefficients, 2)
       CPASSERT(ALL(SHAPE(metric) == [rows, rows]))
-      gram = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, coefficients))
+      ALLOCATE (gram(n, n))
+      gram(:, :) = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, coefficients))
       CALL zpotrf('L', n, gram, n, info)
       valid = info == 0
       IF (.NOT. valid) RETURN
-      chart%base = coefficients
+      chart%base(:, :) = coefficients
       CALL ztrsm('R', 'L', 'C', 'N', rows, n, CMPLX(1.0_dp, 0.0_dp, dp), gram, n, chart%base, rows)
       chart%coordinate = 0.0_dp
       chart%evaluated = .FALSE.
@@ -351,7 +352,9 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: real_generators
 
       INTEGER                                            :: i, nkeep
+      INTEGER, ALLOCATABLE                               :: component(:), pairs(:, :)
       LOGICAL, ALLOCATABLE                               :: keep(:)
+      REAL(dp), ALLOCATABLE                              :: coordinate_scale(:)
 
       CPASSERT(ALLOCATED(chart%base) .AND. ALLOCATED(chart%coordinate))
       CPASSERT(.NOT. ALLOCATED(chart%symmetry))
@@ -364,11 +367,14 @@ CONTAINS
          IF (real_generators) keep(i) = keep(i) .AND. chart%component(i) == 1
       END DO
       nkeep = COUNT(keep)
-      chart%pairs = RESHAPE(PACK(chart%pairs, SPREAD(keep, 1, 2)), [2, nkeep])
-      chart%component = PACK(chart%component, keep)
+      ALLOCATE (pairs, SOURCE=RESHAPE(PACK(chart%pairs, SPREAD(keep, 1, 2)), [2, nkeep]))
+      ALLOCATE (component, SOURCE=PACK(chart%component, keep))
+      ALLOCATE (coordinate_scale, SOURCE=PACK(chart%coordinate_scale, keep))
+      CALL MOVE_ALLOC(pairs, chart%pairs)
+      CALL MOVE_ALLOC(component, chart%component)
+      CALL MOVE_ALLOC(coordinate_scale, chart%coordinate_scale)
       DEALLOCATE (chart%coordinate)
       ALLOCATE (chart%coordinate(nkeep), SOURCE=0.0_dp)
-      chart%coordinate_scale = PACK(chart%coordinate_scale, keep)
    END SUBROUTINE skala_orbital_chart_restrict
 
 ! **************************************************************************************************
@@ -409,7 +415,8 @@ CONTAINS
       IF (SIZE(antiunitary) == 0) RETURN
       IF (.NOT. ALL(ieee_is_finite(REAL(actions, dp)))) RETURN
       IF (.NOT. ALL(ieee_is_finite(AIMAG(actions)))) RETURN
-      groups = [(i, i=1, n)]
+      ALLOCATE (groups(n))
+      groups(:) = [(i, i=1, n)]
       IF (PRESENT(occupation_groups)) THEN
          CPASSERT(SIZE(occupation_groups) == n)
          DO i = 1, n
@@ -421,7 +428,7 @@ CONTAINS
       END IF
       ALLOCATE (gram(n, n))
       DO op = 1, SIZE(antiunitary)
-         gram = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
+         gram(:, :) = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
          DO i = 1, n
             gram(i, i) = gram(i, i) - 1.0_dp
          END DO
@@ -436,9 +443,14 @@ CONTAINS
             END DO
          END DO
       END DO
-      chart%symmetry = actions
-      chart%antiunitary = antiunitary
-      IF (chart%variable_occupations) chart%occupation_groups = groups
+      IF (ALLOCATED(chart%symmetry)) DEALLOCATE (chart%symmetry)
+      IF (ALLOCATED(chart%antiunitary)) DEALLOCATE (chart%antiunitary)
+      ALLOCATE (chart%symmetry, SOURCE=actions)
+      ALLOCATE (chart%antiunitary, SOURCE=antiunitary)
+      IF (chart%variable_occupations) THEN
+         IF (ALLOCATED(chart%occupation_groups)) DEALLOCATE (chart%occupation_groups)
+         ALLOCATE (chart%occupation_groups, SOURCE=groups)
+      END IF
       chart%evaluated = .FALSE.
       valid = .TRUE.
    END SUBROUTINE skala_orbital_chart_symmetry
@@ -489,7 +501,7 @@ CONTAINS
       IF (SIZE(antiunitary) == 0) RETURN
       IF (.NOT. ALL(ieee_is_finite(occupations)) .OR. .NOT. ALL(ieee_is_finite(reference_energies))) RETURN
       IF (.NOT. ALL(ieee_is_finite(REAL(actions, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(actions)))) RETURN
-      ALLOCATE (groups(n), gauge(n, n))
+      ALLOCATE (groups(n), gauge(n, n), source(n, n))
       groups = 0
       gauge = 0.0_dp
       DO i = 1, n
@@ -506,7 +518,7 @@ CONTAINS
          END DO
       END DO
       DO op = 1, SIZE(antiunitary)
-         source = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
+         source(:, :) = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
          DO i = 1, n
             source(i, i) = source(i, i) - 1.0_dp
          END DO
@@ -522,10 +534,11 @@ CONTAINS
          DO first = 1, n
             IF (groups(first) /= first) CYCLE
             IF (first > nretained) CYCLE
-            indices = PACK([(i, i=1, n)], groups == first)
+            IF (ALLOCATED(indices)) DEALLOCATE (indices)
+            ALLOCATE (indices, SOURCE=PACK([(i, i=1, n)], groups == first))
             m = SIZE(indices)
             IF (m <= 1) CYCLE
-            ALLOCATE (basis(m, m), label(m, m), values(m), work(2*m), real_work(3*m))
+            ALLOCATE (action(m, m), basis(m, m), label(m, m), term(m, m), values(m), work(2*m), real_work(3*m))
             search: DO mode = 1, 3
                DO j = 1, m
                   DO i = 1, j
@@ -543,12 +556,12 @@ CONTAINS
                      END SELECT
                      label = 0.0_dp
                      DO op = 1, SIZE(antiunitary)
-                        action = actions(indices, indices, op)
-                        term = basis
+                        action(:, :) = actions(indices, indices, op)
+                        term(:, :) = basis
                         IF (antiunitary(op)) term = CONJG(term)
-                        label = label + MATMUL(action, MATMUL(term, CONJG(TRANSPOSE(action))))/REAL(SIZE(antiunitary), dp)
+                        label(:, :) = label + MATMUL(action, MATMUL(term, CONJG(TRANSPOSE(action))))/REAL(SIZE(antiunitary), dp)
                      END DO
-                     label = 0.5_dp*(label + CONJG(TRANSPOSE(label)))
+                     label(:, :) = 0.5_dp*(label + CONJG(TRANSPOSE(label)))
                      scale = SUM([(REAL(label(op, op), dp), op=1, m)])/REAL(m, dp)
                      DO op = 1, m
                         label(op, op) = label(op, op) - scale
@@ -559,9 +572,9 @@ CONTAINS
                      IF (MAXVAL(values(2:) - values(:m - 1)) <= tolerance) RETURN
                      gauge(:, indices) = MATMUL(gauge(:, indices), label)
                      DO op = 1, SIZE(antiunitary)
-                        basis = label
+                        basis(:, :) = label
                         IF (antiunitary(op)) basis = CONJG(basis)
-                        source = actions(:, :, op)
+                        source(:, :) = actions(:, :, op)
                         source(:, indices) = MATMUL(source(:, indices), basis)
                         source(indices, :) = MATMUL(CONJG(TRANSPOSE(label)), source(indices, :))
                         actions(:, :, op) = source
@@ -576,18 +589,20 @@ CONTAINS
                   END DO
                END DO
             END DO search
-            DEALLOCATE (basis, label, values, work, real_work)
+            DEALLOCATE (action, basis, label, term, values, work, real_work)
             IF (split) EXIT
          END DO
          IF (.NOT. split) EXIT
       END DO
-      energies = SUM(ABS(gauge)**2*SPREAD(reference_energies, 2, n), DIM=1)
+      ALLOCATE (energies(n))
+      energies(:) = SUM(ABS(gauge)**2*SPREAD(reference_energies, 2, n), DIM=1)
       DO first = 1, n
          IF (groups(first) /= first) CYCLE
-         indices = PACK([(i, i=1, n)], groups == first)
+         IF (ALLOCATED(indices)) DEALLOCATE (indices)
+         ALLOCATE (indices, SOURCE=PACK([(i, i=1, n)], groups == first))
          energies(indices) = SUM(energies(indices))/REAL(SIZE(indices), dp)
       END DO
-      source = MATMUL(gauge*SPREAD(energies, 1, n), CONJG(TRANSPOSE(gauge)))
+      source(:, :) = MATMUL(gauge*SPREAD(energies, 1, n), CONJG(TRANSPOSE(gauge)))
       DO i = 1, n
          source(i, i) = source(i, i) - reference_energies(i)
       END DO
@@ -612,18 +627,18 @@ CONTAINS
       INTEGER                                            :: op
 
       IF (.NOT. ALLOCATED(actions)) RETURN
-      ALLOCATE (projected, MOLD=matrix)
+      ALLOCATE (projected, source, term, MOLD=matrix)
       projected = 0.0_dp
       DO op = 1, SIZE(antiunitary)
          IF (adjoint) THEN
-            term = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), MATMUL(matrix, actions(:, :, op)))
+            term(:, :) = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), MATMUL(matrix, actions(:, :, op)))
             IF (antiunitary(op)) term = CONJG(term)
          ELSE
-            source = matrix
+            source(:, :) = matrix
             IF (antiunitary(op)) source = CONJG(source)
-            term = MATMUL(actions(:, :, op), MATMUL(source, CONJG(TRANSPOSE(actions(:, :, op)))))
+            term(:, :) = MATMUL(actions(:, :, op), MATMUL(source, CONJG(TRANSPOSE(actions(:, :, op)))))
          END IF
-         projected = projected + term/REAL(SIZE(antiunitary), dp)
+         projected(:, :) = projected + term/REAL(SIZE(antiunitary), dp)
       END DO
       matrix = projected
    END SUBROUTINE orbital_symmetry_project
@@ -857,7 +872,7 @@ CONTAINS
       END IF
       n = SIZE(chart%base, 2)
       CALL orbital_generator_direction(chart, coordinate, generator)
-      chart%work = -0.5_dp*generator
+      chart%work(:, :) = -0.5_dp*generator
       chart%inverse = CMPLX(0.0_dp, 0.0_dp, dp)
       DO i = 1, n
          chart%work(i, i) = chart%work(i, i) + 1.0_dp
@@ -927,7 +942,7 @@ CONTAINS
          END DO
          chart%transformed(:, :) = MATMUL(chart%inverse, MATMUL(chart%work, chart%inverse))
          ! The Hermitian part has zero contraction with every anti-Hermitian generator.
-         chart%transformed = 0.5_dp*(chart%transformed - CONJG(TRANSPOSE(chart%transformed)))
+         chart%transformed(:, :) = 0.5_dp*(chart%transformed - CONJG(TRANSPOSE(chart%transformed)))
       END IF
       CALL orbital_symmetry_project(chart%symmetry, chart%antiunitary, chart%transformed, .TRUE.)
       DO i = 1, SIZE(derivative)

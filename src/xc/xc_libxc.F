@@ -2057,7 +2057,7 @@ CONTAINS
       REAL(dp), INTENT(IN)::epsilon_rho, epsilon_tau, fields(:), direction(:)
       REAL(dp), INTENT(OUT)::result(:)
       TYPE(twofold_real_type), INTENT(IN) :: sigma_precise(3)
-      INTEGER::nvar, n, spin, off, r, s, t, i, j, axis
+      INTEGER::nvar, n, spin, off, r, s, t, i, axis
       REAL(dp)::gradient(9), hessian(9, 9)
       TYPE(twofold_real_type) :: jacobian(9, 10), map_regular(10, 10, 2), &
                                  lower_vectors(10, 2), final_vectors(10, 2), lower_factors(2), final_factors(2), &

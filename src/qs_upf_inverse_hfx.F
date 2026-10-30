@@ -398,6 +398,7 @@ CONTAINS
       LOGICAL, ALLOCATABLE, INTENT(OUT)                  :: masks(:, :)
 
       INTEGER                                            :: atom, group, ngroup
+      INTEGER, ALLOCATABLE                               :: retained_groups(:, :)
 
       CPASSERT(ALL(SHAPE(shifts) == SHAPE(frame%positions)))
       CPASSERT(SIZE(shifts, 2) > 0)
@@ -413,7 +414,8 @@ CONTAINS
             groups(:, group) = shifts(:, atom)
          END IF
       END DO
-      groups = groups(:, :ngroup)
+      ALLOCATE (retained_groups, SOURCE=groups(:, :ngroup))
+      CALL MOVE_ALLOC(retained_groups, groups)
       ALLOCATE (masks(SIZE(frame%coefficients, 2), ngroup), SOURCE=.FALSE.)
       DO atom = 1, SIZE(shifts, 2)
          DO group = 1, ngroup
@@ -4095,11 +4097,11 @@ CONTAINS
                   entry%values(:, :, 1) = full
                END IF
                CPASSERT(ALL(SHAPE(entry%values) == [nproj, last - first + 1, 4]))
-               full = entry%values(:, :, 1)
+               full(:, :) = entry%values(:, :, 1)
                direction = atom_response(:, b) - atom_response(:, atom) + MATMUL(cell_response, REAL(image, dp))
                dfull = CMPLX(0.0_dp, 0.0_dp, dp)
                DO axis = 1, 3
-                  dfull = dfull + direction(axis)*entry%values(:, :, axis + 1)
+                  dfull(:, :) = dfull + direction(axis)*entry%values(:, :, axis + 1)
                END DO
             ELSE
                CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
@@ -4118,7 +4120,7 @@ CONTAINS
                                                      [0.0_dp, 0.0_dp, 0.0_dp], full)
                   entry%values(:, :, 1) = full
                END IF
-               full = entry%values(:, :, 1)
+               full(:, :) = entry%values(:, :, 1)
             ELSE
                CALL qs_upf_inverse_atomic_overlap(frame%bases(b)%gto_basis_set, frame%atomic_cache(kind)%hard, &
                                                   frame%positions(:, atom), frame%positions(:, b), frame%cell, images, &

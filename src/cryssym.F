@@ -695,9 +695,10 @@ CONTAINS
 
       INTEGER                                            :: i, ihc, ihg, indpg, iou, isy, li, nat, &
                                                             ntvec
-      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: isc, retained, ty
-      INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: f0
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: rx, tvec, xkapa
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: isc, retained, selected_ibrot, ty
+      INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: f0, selected_f0
+      REAL(KIND=dp), ALLOCATABLE                         :: selected_rt(:, :, :)
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: rx, selected_vt, tvec, xkapa
       REAL(KIND=dp), DIMENSION(3)                        :: origin
       REAL(KIND=dp), DIMENSION(3, 48)                    :: vt
 
@@ -744,12 +745,16 @@ CONTAINS
       csym%ibrot(1:nc) = ib(1:nc)
 
       IF (csym%cartesian_half_turns) THEN
-         retained = PACK([(i, i=1, nc)], [(crys_sym_cartesian_halfturn(csym%rt(:, :, i)), i=1, nc)])
+         ALLOCATE (retained, SOURCE=PACK([(i, i=1, nc)], [(crys_sym_cartesian_halfturn(csym%rt(:, :, i)), i=1, nc)]))
          CPASSERT(SIZE(retained) > 0)
-         csym%rt = csym%rt(:, :, retained)
-         csym%vt = csym%vt(:, retained)
-         csym%f0 = csym%f0(:, retained)
-         csym%ibrot = csym%ibrot(retained)
+         ALLOCATE (selected_rt, SOURCE=csym%rt(:, :, retained))
+         ALLOCATE (selected_vt, SOURCE=csym%vt(:, retained))
+         ALLOCATE (selected_f0, SOURCE=csym%f0(:, retained))
+         ALLOCATE (selected_ibrot, SOURCE=csym%ibrot(retained))
+         CALL MOVE_ALLOC(selected_rt, csym%rt)
+         CALL MOVE_ALLOC(selected_vt, csym%vt)
+         CALL MOVE_ALLOC(selected_f0, csym%f0)
+         CALL MOVE_ALLOC(selected_ibrot, csym%ibrot)
          nc = SIZE(retained)
          csym%nrtot = nc
          ib(:nc) = csym%ibrot
