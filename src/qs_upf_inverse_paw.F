@@ -726,10 +726,12 @@ CONTAINS
 !> \param core_potential Optional kind-indexed core-valence operators, with one spin-independent matrix.
 !> \param samples Optional physical XC arguments, retained on the existing atomic owners.
 !> \param orbital_factors Optional original factors certified for the installed density.
+!> \param hartree Include the one-center Hartree contribution, by default true. XC-only consumers
+!>                use energies(2). The dataset reference constant remains separately in energies(3).
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_paw_evaluate(kinds, frames, density, kweights, functional, density_cutoff, &
                                           gradient_cutoff, energies, hamiltonian, potential, semilocal_xc, &
-                                          core_energy, core_potential, samples, orbital_factors)
+                                          core_energy, core_potential, samples, orbital_factors, hartree)
       TYPE(paw_kind_type), INTENT(IN)                    :: kinds(:)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frames(:)
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :, :)
@@ -746,11 +748,12 @@ CONTAINS
          INTENT(INOUT), OPTIONAL, POINTER                :: samples
       TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
          OPTIONAL                                        :: orbital_factors
+      LOGICAL, INTENT(IN), OPTIONAL                      :: hartree
 
       COMPLEX(dp), ALLOCATABLE                           :: atomic_operator(:, :)
       INTEGER                                            :: center, first, ik, ikind, last, n, nk, &
                                                             ns, p, q, spin
-      LOGICAL                                            :: use_semilocal
+      LOGICAL                                            :: use_hartree, use_semilocal
       REAL(dp)                                           :: eh, ex
       REAL(dp), ALLOCATABLE                              :: dm(:, :, :), vh(:, :), vxc(:, :, :)
       TYPE(twofold_real_type), ALLOCATABLE               :: density_components(:, :, :), &
@@ -758,6 +761,8 @@ CONTAINS
 
       use_semilocal = .TRUE.
       IF (PRESENT(semilocal_xc)) use_semilocal = semilocal_xc
+      use_hartree = .TRUE.
+      IF (PRESENT(hartree)) use_hartree = hartree
       nk = SIZE(frames)
       CPASSERT(PRESENT(core_energy) .EQV. PRESENT(core_potential))
       IF (PRESENT(core_energy)) THEN
@@ -792,7 +797,9 @@ CONTAINS
             CALL project_paw_density(frames, density, kweights, first, last, dm)
             ALLOCATE (potential_components(n, n, ns))
             potential_components = twofold_real_type()
-            CALL paw_onecenter_hartree(kinds(ikind)%onecenter, SUM(dm, DIM=3), eh, vh)
+            eh = 0.0_dp
+            vh = 0.0_dp
+            IF (use_hartree) CALL paw_onecenter_hartree(kinds(ikind)%onecenter, SUM(dm, DIM=3), eh, vh)
             ex = 0.0_dp
             vxc = 0.0_dp
             IF (use_semilocal) THEN
