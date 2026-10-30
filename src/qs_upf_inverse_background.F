@@ -159,7 +159,7 @@ CONTAINS
          END DO
          CALL neighbor_list_iterator_release(iterator)
          CPASSERT(ENTRY == map%plan%nentry)
-         CALL kpoint_star_create(kpoints, sizes, star)
+         CALL kpoint_star_create(kpoints, sizes, star, for_aux_fit=map%orbital_basis == "AUX_FIT")
          ALLOCATE (map%reduced_k, SOURCE=star%vectors)
          ALLOCATE (map%weights, SOURCE=star%weights)
       ELSE
