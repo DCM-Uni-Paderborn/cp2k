@@ -65,6 +65,7 @@ MODULE qs_upf_inverse_kpoints
    PUBLIC :: qs_upf_inverse_kpoints_images
    PUBLIC :: qs_upf_inverse_kpoints_image_operator
    PUBLIC :: qs_upf_inverse_kpoints_integrate, qs_upf_inverse_kpoints_metric, qs_upf_inverse_kpoints_distribute
+   PUBLIC :: qs_upf_inverse_kpoints_metric_dense
    PUBLIC :: qs_upf_inverse_kpoints_release_operators
 
 CONTAINS
@@ -462,25 +463,61 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: dense(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: supplied_q, orbital_fields
 
-      COMPLEX(dp), ALLOCATABLE                           :: all_k(:, :, :), matrix(:, :)
-      INTEGER                                            :: ik
-      LOGICAL                                            :: use_supplied
+      COMPLEX(dp), ALLOCATABLE                           :: all_k(:, :, :)
 
-      CALL check_live(frame)
-      use_supplied = .FALSE.
-      IF (PRESENT(supplied_q)) use_supplied = supplied_q
-      ALLOCATE (all_k(frame%nao, frame%nao, SIZE(frame%weights)))
-      DO ik = 1, SIZE(frame%weights)
-         IF (use_supplied) THEN
-            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), frame%frames(ik)%ao%q, matrix, orbital_fields)
-         ELSE
-            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), frame%frames(ik)%ao%radial_q, matrix, orbital_fields)
-         END IF
-         all_k(:, :, ik) = matrix
-      END DO
+      CALL qs_upf_inverse_kpoints_metric_dense(frame, all_k, supplied_q, orbital_fields)
       CALL qs_upf_inverse_kpoints_distribute(frame, all_k, operators)
       IF (PRESENT(dense)) CALL MOVE_ALLOC(all_k, dense)
    END SUBROUTINE qs_upf_inverse_kpoints_metric
+
+! **************************************************************************************************
+!> \brief Physical Bloch metrics between independent Gaussian bases with the same reconstruction.
+!>        Full contributions have no mesh weights. Mixed ADMM overlaps retain their distinct
+!>        column basis and can be reduced with the matching right_map of kpoint_star_operator.
+!> \param frame Native row basis and original projector ordering.
+!> \param dense New full-contribution matrices, including the original projector metric.
+!> \param supplied_q Select supplied PP_Q instead of the original Fourier-Q radial integral.
+!> \param orbital_fields Include the soft-orbital overlap, true by default.
+!> \param right_frame Optional independent column basis on the same live physical Bloch mesh.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_kpoints_metric_dense(frame, dense, supplied_q, orbital_fields, right_frame)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         TARGET                                          :: frame
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: dense(:, :, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: supplied_q, orbital_fields
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         OPTIONAL                                        :: right_frame
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      COMPLEX(dp), POINTER                               :: projector_metric(:, :)
+      INTEGER                                            :: ik, nr
+      LOGICAL                                            :: use_supplied
+
+      CALL check_live(frame)
+      nr = frame%nao
+      IF (PRESENT(right_frame)) THEN
+         CALL check_live(right_frame)
+         CPASSERT(ASSOCIATED(frame%kpoints, right_frame%kpoints))
+         CPASSERT(SIZE(frame%frames) == SIZE(right_frame%frames))
+         CPASSERT(ALL(frame%reduced_k == right_frame%reduced_k))
+         CPASSERT(ALL(frame%weights == right_frame%weights))
+         nr = right_frame%nao
+      END IF
+      use_supplied = .FALSE.
+      IF (PRESENT(supplied_q)) use_supplied = supplied_q
+      ALLOCATE (dense(frame%nao, nr, SIZE(frame%weights)))
+      DO ik = 1, SIZE(frame%weights)
+         projector_metric => frame%frames(ik)%ao%radial_q
+         IF (use_supplied) projector_metric => frame%frames(ik)%ao%q
+         IF (PRESENT(right_frame)) THEN
+            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), projector_metric, matrix, orbital_fields, &
+                                                  right_frame=right_frame%frames(ik))
+         ELSE
+            CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), projector_metric, matrix, orbital_fields)
+         END IF
+         dense(:, :, ik) = matrix
+      END DO
+   END SUBROUTINE qs_upf_inverse_kpoints_metric_dense
 
 ! **************************************************************************************************
 !> \brief Deliver full complex Bloch operators directly in the owning group's BLACS layout.
