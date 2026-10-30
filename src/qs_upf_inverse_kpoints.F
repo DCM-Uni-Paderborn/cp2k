@@ -39,6 +39,7 @@ MODULE qs_upf_inverse_kpoints
                                               kpoint_star_type,&
                                               kpoint_type
    USE mathconstants,                   ONLY: twopi
+   USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_type
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
@@ -479,19 +480,30 @@ CONTAINS
 !> \param supplied_q Select supplied PP_Q instead of the original Fourier-Q radial integral.
 !> \param orbital_fields Include the soft-orbital overlap, true by default.
 !> \param right_frame Optional independent column basis on the same live physical Bloch mesh.
+!> \param response Optional joint geometry response, in the same full-contribution order.
+!> \param atom_response Cartesian atom motion, required with response.
+!> \param cell_response Physical-cell motion. Grid fractions and image membership stay fixed.
+!> \param reduced_k_response Reduced-vector motion for every full contribution, required with response.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_metric_dense(frame, dense, supplied_q, orbital_fields, right_frame)
+   SUBROUTINE qs_upf_inverse_kpoints_metric_dense(frame, dense, supplied_q, orbital_fields, right_frame, response, &
+                                                  atom_response, cell_response, reduced_k_response)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
          TARGET                                          :: frame
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: dense(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: supplied_q, orbital_fields
       TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
          OPTIONAL                                        :: right_frame
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(:, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), matrix_response(:, :)
       COMPLEX(dp), POINTER                               :: projector_metric(:, :)
-      INTEGER                                            :: ik, nr
-      LOGICAL                                            :: use_supplied
+      INTEGER                                            :: ik, info, nr
+      LOGICAL                                            :: geometry, use_supplied, valid
+      REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: point_response(:, :), weights_response(:)
 
       CALL check_live(frame)
       nr = frame%nao
@@ -506,10 +518,42 @@ CONTAINS
       use_supplied = .FALSE.
       IF (PRESENT(supplied_q)) use_supplied = supplied_q
       ALLOCATE (dense(frame%nao, nr, SIZE(frame%weights)))
+      geometry = PRESENT(response) .OR. PRESENT(atom_response) .OR. &
+                 PRESENT(cell_response) .OR. PRESENT(reduced_k_response)
+      IF (geometry) THEN
+         valid = PRESENT(response) .AND. PRESENT(atom_response) .AND. &
+                 PRESENT(cell_response) .AND. PRESENT(reduced_k_response)
+         CPASSERT(valid)
+         valid = ALL(SHAPE(atom_response) == SHAPE(frame%frames(1)%ao%positions))
+         CPASSERT(valid)
+         valid = ALL(SHAPE(reduced_k_response) == SHAPE(frame%reduced_k))
+         CPASSERT(valid)
+         cell_inverse = frame%frames(1)%ao%cell
+         CALL invmat(cell_inverse, info)
+         CPASSERT(info == 0)
+         strain = MATMUL(cell_response, cell_inverse)
+         ALLOCATE (point_response(3, SIZE(frame%frames(1)%ao%weights)), &
+                   weights_response(SIZE(frame%frames(1)%ao%weights)), &
+                   response(frame%nao, nr, SIZE(frame%weights)))
+         point_response(:, :) = MATMUL(strain, frame%frames(1)%ao%points)
+         weights_response(:) = (strain(1, 1) + strain(2, 2) + strain(3, 3))*frame%frames(1)%ao%weights
+      END IF
       DO ik = 1, SIZE(frame%weights)
          projector_metric => frame%frames(ik)%ao%radial_q
          IF (use_supplied) projector_metric => frame%frames(ik)%ao%q
-         IF (PRESENT(right_frame)) THEN
+         IF (geometry) THEN
+            IF (PRESENT(right_frame)) THEN
+               CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), projector_metric, matrix, orbital_fields, &
+                                                     right_frame%frames(ik), matrix_response, atom_response, cell_response, &
+                                                     reduced_k_response(:, ik), point_response, weights_response)
+            ELSE
+               CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), projector_metric, matrix, orbital_fields, &
+                                                     response=matrix_response, atom_response=atom_response, &
+                                                     cell_response=cell_response, reduced_k_response=reduced_k_response(:, ik), &
+                                                     point_response=point_response, weights_response=weights_response)
+            END IF
+            response(:, :, ik) = matrix_response
+         ELSE IF (PRESENT(right_frame)) THEN
             CALL qs_upf_inverse_grid_metric_dense(frame%frames(ik), projector_metric, matrix, orbital_fields, &
                                                   right_frame=right_frame%frames(ik))
          ELSE
