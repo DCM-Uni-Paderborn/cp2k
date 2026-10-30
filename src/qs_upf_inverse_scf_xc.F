@@ -98,8 +98,14 @@ CONTAINS
 !> \param potential Optional native unweighted XC potentials to receive the background transpose.
 !> \param kinetic Optional native kinetic density, including the independently supplied core.
 !> \param kinetic_potential Optional unweighted kinetic XC potentials receiving the same transpose.
+!> \param context Optional independently owned basis state with prepared frames and original atomic data.
+!>        It need not be installed as native SCF state. Its cached fields borrow the supplied PW grid.
+!>        The caller maintains its density-evaluation stamp and any certified orbital factors.
+!> \param density_matrices Independent unweighted AO densities in context's full k and spin order.
+!>        Required with context. The native primary density and constraint caches are not used.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_scf_xc_evaluate(ks_env, density, xc_section, energy, potential, kinetic, kinetic_potential)
+   SUBROUTINE qs_upf_inverse_scf_xc_evaluate(ks_env, density, xc_section, energy, potential, kinetic, kinetic_potential, &
+                                             context, density_matrices)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
       TYPE(section_vals_type), POINTER                   :: xc_section
@@ -107,11 +113,15 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: potential(:)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic(:)
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: kinetic_potential(:)
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: context
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: density_matrices(:, :, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
       INTEGER                                            :: block, core_components, hi, ik, lo, nao, &
                                                             nk, np, ns, spin
       INTEGER(KIND=int_8)                                :: core_bytes, retained_bytes
+      LOGICAL                                            :: valid
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), core(:, :), &
                                                             core_gradient(:, :, :), core_tau(:, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -130,7 +140,14 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, cell=cell, para_env=para_env, &
                       skala_constraints=density_constraints)
       CALL comm%set_handle(para_env%get_handle())
-      CPASSERT(ASSOCIATED(state) .AND. state%enabled)
+      IF (PRESENT(context)) THEN
+         CPASSERT(PRESENT(density_matrices))
+         state => context
+         NULLIFY (density_constraints)
+      ELSE
+         CPASSERT(.NOT. PRESENT(density_matrices))
+         CPASSERT(ASSOCIATED(state) .AND. state%enabled)
+      END IF
       IF (ALLOCATED(state%paw_reconstruction)) THEN
          IF (.NOT. xc_section_uses_native_skala_evaluator(xc_section)) THEN
             CPABORT("Inverse PAW learned XC requires the native Skala evaluator")
@@ -177,16 +194,22 @@ CONTAINS
       END IF
       IF (ALLOCATED(state%xc_matrices)) DEALLOCATE (state%xc_matrices)
       ALLOCATE (state%xc_matrices(nao, nao, nk, ns))
-      IF (.NOT. ASSOCIATED(state%bloch%kpoints)) CALL qs_rho_get(rho, rho_ao_kp=density_ao)
-      DO spin = 1, ns
-         IF (ASSOCIATED(state%bloch%kpoints)) THEN
-            CALL qs_upf_inverse_kpoints_density(state%bloch, spin, matrix)
-            state%xc_matrices(:, :, :, spin) = matrix
-         ELSE
-            CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_ao(spin, 1)%matrix, gamma)
-            state%xc_matrices(:, :, 1, spin) = gamma
-         END IF
-      END DO
+      IF (PRESENT(density_matrices)) THEN
+         valid = ALL(SHAPE(density_matrices) == [nao, nao, nk, ns])
+         CPASSERT(valid)
+         state%xc_matrices(:, :, :, :) = density_matrices
+      ELSE
+         IF (.NOT. ASSOCIATED(state%bloch%kpoints)) CALL qs_rho_get(rho, rho_ao_kp=density_ao)
+         DO spin = 1, ns
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               CALL qs_upf_inverse_kpoints_density(state%bloch, spin, matrix)
+               state%xc_matrices(:, :, :, spin) = matrix
+            ELSE
+               CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_ao(spin, 1)%matrix, gamma)
+               state%xc_matrices(:, :, 1, spin) = gamma
+            END IF
+         END DO
+      END IF
       state%xc_grid => density(1)%pw_grid
       CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic)
       ALLOCATE (core(np, ns), core_gradient(np, 3, ns))
@@ -652,15 +675,18 @@ CONTAINS
 !> \param reduced_k_response ...
 !> \param response Globally reduced additional energy gradient.
 !> \param coefficients_response Optional defining-frame responses in global k order for this geometry variation.
+!> \param context Optional independent basis state previously evaluated with its own AO density.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_xc_response(ks_env, atom_response, cell_response, reduced_k_response, response, &
-                                             coefficients_response)
+                                             coefficients_response, context)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: context
 
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_coefficients(:, :, :)
       COMPLEX(dp), POINTER                               :: coefficients(:, :, :)
@@ -679,6 +705,7 @@ CONTAINS
 
       response = 0.0_dp
       CALL get_ks_env(ks_env, upf_inverse=state, cell=cell, para_env=para_env)
+      IF (PRESENT(context)) state => context
       CALL comm%set_handle(para_env%get_handle())
       CPASSERT(ASSOCIATED(state))
       IF (.NOT. ASSOCIATED(state%xc_grid)) RETURN
@@ -863,7 +890,8 @@ CONTAINS
       DO atom = 1, SIZE(atoms)
          ikind = atoms(atom)%atomic_kind%kind_number
          kind_of(atom) = ikind
-         CALL get_qs_kind(kinds(ikind), basis_set=basis, basis_type='ORB')
+         basis => frame%bases(atom)%gto_basis_set
+         CPASSERT(ASSOCIATED(basis))
          support(atom) = MAX(basis%kind_radius, frame%beta_cache(ikind)%radius, &
                              frame%delta_cache(ikind)%radius, state%core_cache(ikind)%radius, &
                              state%core_kinetic_cache(ikind)%radius, native_radius(ikind))
