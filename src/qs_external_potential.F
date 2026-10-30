@@ -265,13 +265,13 @@ CONTAINS
          ALLOCATE (background, MOLD=inverse%coulomb%metric)
          CALL qs_upf_inverse_background_integrate(inverse%coulomb%background, potential=potential, &
                                                   ao_operators=background, ks_env=ks_env)
-         operators = operators + background
+         operators(:, :, :) = operators + background
       ELSE
          IF (inverse%native_gaussian) THEN
             ALLOCATE (background, MOLD=inverse%gaussian_kinetic)
             CALL qs_upf_inverse_background_integrate(inverse%gaussian, potential=potential, &
                                                      ao_operators=background, ks_env=ks_env)
-            operators = operators + background
+            operators(:, :, :) = operators + background
          END IF
          CALL zero%create(potential%pw_grid)
          zero%array = 0.0_dp
