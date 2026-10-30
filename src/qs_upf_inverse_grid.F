@@ -20,7 +20,9 @@ MODULE qs_upf_inverse_grid
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE kinds,                           ONLY: dp
    USE mathlib,                         ONLY: invmat
-   USE message_passing,                 ONLY: mp_comm_self,&
+   USE message_passing,                 ONLY: mp_comm_congruent,&
+                                              mp_comm_ident,&
+                                              mp_comm_self,&
                                               mp_comm_type
    USE pw_grid_types,                   ONLY: PW_MODE_DISTRIBUTED,&
                                               PW_MODE_LOCAL,&
@@ -75,8 +77,10 @@ CONTAINS
 !> \param atom_local Optional one-center reconstruction with native Gaussian projector integrals.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
+!> \param basis_type Native basis role, ORB by default.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct, store_fields)
+   SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct, store_fields, &
+                                          basis_type)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -84,6 +88,7 @@ CONTAINS
       TYPE(qs_upf_inverse_grid_type), INTENT(OUT)        :: frame
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
 
       INTEGER                                            :: ix, iy, iz, n, point
       REAL(dp), ALLOCATABLE                              :: points(:, :), weights(:)
@@ -117,7 +122,8 @@ CONTAINS
             END DO
          END DO
       END DO
-     CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct, store_fields)
+      CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct, &
+                                  store_fields, basis_type)
    END SUBROUTINE qs_upf_inverse_grid_prepare
 
 ! **************************************************************************************************
@@ -520,41 +526,139 @@ CONTAINS
 !> \param projector_metric ...
 !> \param metric New owned dense metric; radial Q and supplied PP_Q remain distinct.
 !> \param orbital_fields ...
+!> \param right_frame Optional independent right basis in the same physical projector and point frame.
+!> \param response Optional joint geometry derivative of the rectangular metric.
+!> \param atom_response Cartesian motion of every atom, required with response.
+!> \param cell_response Lattice motion at fixed image membership, required with response.
+!> \param reduced_k_response Reduced Bloch-vector motion, required with response.
+!> \param point_response Motion of the shared defining quadrature, required with response.
+!> \param weights_response Response of its measure, required with response.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric, orbital_fields)
-      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+   SUBROUTINE qs_upf_inverse_grid_metric_dense(frame, projector_metric, metric, orbital_fields, right_frame, response, &
+                                               atom_response, cell_response, reduced_k_response, point_response, weights_response)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN), TARGET :: frame
       COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: metric(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN), &
+         OPTIONAL, TARGET                                :: right_frame
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL :: atom_response(:, :), cell_response(3, 3), &
+         reduced_k_response(3), point_response(:, :), weights_response(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: gradient(:, :, :), partial(:, :), &
-                                                            soft(:, :)
-      INTEGER                                            :: block, hi, lo, m, nao, nproj
+      COMPLEX(dp), ALLOCATABLE                           :: dr(:, :), ds(:, :), gradient(:, :, :), &
+                                                            partial(:, :), right_gradient(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: dw(:, :), right_dw(:, :), &
+                                                            right_soft(:, :), soft(:, :)
+      COMPLEX(dp), POINTER :: right_coefficients_response(:, :), right_values(:, :)
+      INTEGER                                            :: block, comparison, hi, lo, m, nao, &
+                                                            nproj, nr
       LOGICAL                                            :: use_orbitals
+      TYPE(qs_upf_inverse_grid_type), POINTER            :: right
 
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
+      right => frame
+      IF (PRESENT(right_frame)) THEN
+         right => right_frame
+         comparison = frame%ao%point_comm%compare(right%ao%point_comm)
+         CPASSERT(comparison == mp_comm_ident .OR. comparison == mp_comm_congruent)
+         CPASSERT(ALL(SHAPE(frame%ao%points) == SHAPE(right%ao%points)))
+         CPASSERT(ALL(SHAPE(frame%ao%positions) == SHAPE(right%ao%positions)))
+         CPASSERT(ALL(SHAPE(frame%ao%images) == SHAPE(right%ao%images)))
+         CPASSERT(ALL(frame%ao%points == right%ao%points))
+         CPASSERT(ALL(frame%ao%weights == right%ao%weights))
+         CPASSERT(ALL(frame%ao%positions == right%ao%positions))
+         CPASSERT(ALL(frame%ao%cell == right%ao%cell))
+         CPASSERT(ALL(frame%ao%images == right%ao%images))
+         CPASSERT(ALL(frame%ao%reduced_k == right%ao%reduced_k))
+         CPASSERT(SIZE(frame%ao%center_atoms) == SIZE(right%ao%center_atoms))
+         CPASSERT(ALL(frame%ao%center_atoms == right%ao%center_atoms))
+         CPASSERT(ALL(frame%ao%center_kinds == right%ao%center_kinds))
+         CPASSERT(ALL(frame%ao%projector_first == right%ao%projector_first))
+         CPASSERT(ALL(frame%ao%projector_last == right%ao%projector_last))
+         CPASSERT(frame%ao%atom_local .EQV. right%ao%atom_local)
+         CPASSERT(frame%ao%direct .EQV. right%ao%direct)
+      END IF
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
+      CPASSERT(right%ao%atom_local .OR. right%ao%inverse%ready)
       nao = SIZE(frame%ao%soft, 2)
+      nr = SIZE(right%ao%soft, 2)
       nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
-      block = qs_upf_inverse_block_size(frame%ao)
-      ALLOCATE (metric(nao, nao), partial(nao, nao))
+      CPASSERT(SIZE(right%ao%coefficients, 1) == nproj)
+      block = MIN(qs_upf_inverse_block_size(frame%ao), qs_upf_inverse_block_size(right%ao))
+      ALLOCATE (metric(nao, nr), partial(nao, nr))
       metric = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
+         CPASSERT(PRESENT(reduced_k_response))
+         CPASSERT(PRESENT(point_response) .AND. PRESENT(weights_response))
+         ALLOCATE (response(nao, nr), dw(nproj, nao))
+         response = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL qs_upf_inverse_response(frame%ao, point_response, atom_response, cell_response, reduced_k_response, &
+                                      weights_response, dw)
+         right_coefficients_response => dw
+         IF (PRESENT(right_frame)) THEN
+            ALLOCATE (right_dw(nproj, nr))
+            CALL qs_upf_inverse_response(right%ao, point_response, atom_response, cell_response, reduced_k_response, &
+                                         weights_response, right_dw)
+            right_coefficients_response => right_dw
+         END IF
+      END IF
       IF (use_orbitals) THEN
          ALLOCATE (soft(block, nao), gradient(block, nao, 3))
+         right_values => soft
+         IF (PRESENT(right_frame)) THEN
+            ALLOCATE (right_soft(block, nr), right_gradient(block, nr, 3))
+         END IF
+         IF (PRESENT(response)) ALLOCATE (ds(block, nao), dr(block, nr))
          DO lo = 1, SIZE(frame%ao%weights), block
             hi = MIN(SIZE(frame%ao%weights), lo + block - 1)
             m = hi - lo + 1
-            CALL point_fields(frame%ao, lo, hi, soft(:m, :), gradient(:m, :, :))
-            CALL upf_inverse_pair(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), partial)
+            IF (PRESENT(response)) THEN
+               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                            soft_response=ds(:m, :), point_response=point_response(:, lo:hi), &
+                                            atom_response=atom_response, cell_response=cell_response, &
+                                            reduced_k_response=reduced_k_response, coefficients_response=dw)
+            ELSE
+               CALL point_fields(frame%ao, lo, hi, soft(:m, :), gradient(:m, :, :))
+            END IF
+            IF (PRESENT(right_frame)) THEN
+               IF (PRESENT(response)) THEN
+                  CALL qs_upf_inverse_evaluate(right%ao, right%ao%points(:, lo:hi), right_soft(:m, :), &
+                                               right_gradient(:m, :, :), soft_response=dr(:m, :), &
+                                               point_response=point_response(:, lo:hi), atom_response=atom_response, &
+                                               cell_response=cell_response, reduced_k_response=reduced_k_response, &
+                                               coefficients_response=right_coefficients_response)
+               ELSE
+                  CALL point_fields(right%ao, lo, hi, right_soft(:m, :), right_gradient(:m, :, :))
+               END IF
+               right_values => right_soft
+            ELSE IF (PRESENT(response)) THEN
+               dr(:m, :) = ds(:m, :)
+            END IF
+            CALL upf_inverse_pair(soft(:m, :), right_values(:m, :), frame%ao%weights(lo:hi), partial)
             metric(:, :) = metric + partial
+            IF (PRESENT(response)) THEN
+               CALL upf_inverse_pair_response(soft(:m, :), right_values(:m, :), frame%ao%weights(lo:hi), &
+                                              ds(:m, :), dr(:m, :), weights_response(lo:hi), partial)
+               response(:, :) = response + partial
+            END IF
          END DO
       END IF
       CALL frame%ao%point_comm%sum(metric)
-      CALL upf_inverse_projector_pair(frame%ao%coefficients, projector_metric, frame%ao%coefficients, &
+      CALL upf_inverse_projector_pair(frame%ao%coefficients, projector_metric, right%ao%coefficients, &
                                       partial, frame%ao%point_comm)
       metric(:, :) = metric + partial
+      IF (PRESENT(response)) THEN
+         CALL frame%ao%point_comm%sum(response)
+         CALL upf_inverse_projector_pair(dw, projector_metric, right%ao%coefficients, partial, frame%ao%point_comm)
+         response(:, :) = response + partial
+         CALL upf_inverse_projector_pair(frame%ao%coefficients, projector_metric, right_coefficients_response, &
+                                         partial, frame%ao%point_comm)
+         response(:, :) = response + partial
+      END IF
    END SUBROUTINE qs_upf_inverse_grid_metric_dense
 
 ! **************************************************************************************************

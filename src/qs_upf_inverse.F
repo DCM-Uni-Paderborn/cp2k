@@ -359,9 +359,10 @@ CONTAINS
 !> \param atom_local Optional nonoverlapping one-center inverse; the general reference is the default.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
+!> \param basis_type Native basis role, ORB by default. Auxiliary bases retain independent AO columns.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame, info, atom_local, direct, &
-                                     store_fields)
+                                     store_fields, basis_type)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       REAL(dp), INTENT(IN)                               :: points(:, :), weights(:)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -370,6 +371,7 @@ CONTAINS
       TYPE(qs_upf_inverse_type), INTENT(OUT)             :: frame
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
 
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), POINTER                       :: particles(:)
@@ -380,7 +382,7 @@ CONTAINS
       CPASSERT(ASSOCIATED(kinds) .AND. ASSOCIATED(particles) .AND. ASSOCIATED(cell))
       CPASSERT(ASSOCIATED(uspp))
       CALL qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
-                                  comm, frame, info, atom_local, direct, store_fields)
+                                  comm, frame, info, atom_local, direct, store_fields, basis_type)
    END SUBROUTINE qs_upf_inverse_from_ks
 
 ! **************************************************************************************************
@@ -402,9 +404,10 @@ CONTAINS
 !> \param atom_local Optional nonoverlapping one-center inverse. Status -2 reports overlapping support.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
+!> \param basis_type Native basis role, ORB by default. Potential and projector data are unchanged.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
-                                     comm, frame, info, atom_local, direct, store_fields)
+                                     comm, frame, info, atom_local, direct, store_fields, basis_type)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
       TYPE(cell_type), INTENT(IN)                        :: cell
@@ -416,7 +419,9 @@ CONTAINS
       TYPE(qs_upf_inverse_type), INTENT(OUT)             :: frame
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
 
+      CHARACTER(LEN=16)                                  :: role
       COMPLEX(dp), ALLOCATABLE                           :: coupling(:, :), overlaps(:, :)
       INTEGER                                            :: atom, axis, center, degree, first, &
                                                             ikind, last, nao, ncenter, nfield, &
@@ -428,6 +433,8 @@ CONTAINS
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(points, 2) == SIZE(weights))
       CPASSERT(SIZE(images, 1) == 3 .AND. SIZE(images, 2) > 0)
       use_atomic = .FALSE.
+      role = 'ORB'
+      IF (PRESENT(basis_type)) role = basis_type
       IF (PRESENT(atom_local)) use_atomic = atom_local
       IF (PRESENT(direct)) frame%direct = direct
       IF (PRESENT(store_fields)) frame%fields_stored = store_fields
@@ -456,7 +463,7 @@ CONTAINS
          CPASSERT(ASSOCIATED(particles(atom)%atomic_kind))
          ikind = particles(atom)%atomic_kind%kind_number
          CPASSERT(ikind >= 1 .AND. ikind <= SIZE(kinds))
-         CALL get_qs_kind(kinds(ikind), basis_set=basis, basis_type='ORB')
+         CALL get_qs_kind(kinds(ikind), basis_set=basis, basis_type=TRIM(role))
          CPASSERT(ASSOCIATED(basis))
          degree = MAX(degree, MAXVAL(basis%lmax) + 3)
          frame%bases(atom)%gto_basis_set => basis
