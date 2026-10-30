@@ -69,11 +69,12 @@ CONTAINS
 !> \param rotation Cartesian spatial operation
 !> \param antiunitary Whether the source coefficients must be conjugated
 !> \param status Zero on success, negative for unavailable or inconsistent mappings
+!> \param for_aux_fit Use the auxiliary fitting basis rotations instead of primary AO rotations.
 !> \note An atom shifted to image L contributes exp(-i*k_target*L). No atomic-gauge
 !>       reciprocal-vector phase or legacy SCF phase calibration belongs in this cell gauge.
 ! **************************************************************************************************
    SUBROUTINE kpoint_cell_gauge_action(kpoints, representative, operation, TARGET, action, &
-                                       rotation, antiunitary, status)
+                                       rotation, antiunitary, status, for_aux_fit)
       TYPE(kpoint_type), POINTER                         :: kpoints
       INTEGER, INTENT(IN)                                :: representative, operation
       REAL(dp), INTENT(IN)                               :: target(3)
@@ -81,10 +82,12 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: rotation(3, 3)
       LOGICAL, INTENT(OUT)                               :: antiunitary
       INTEGER, INTENT(OUT)                               :: status
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit
 
       INTEGER                                            :: a, b, first, i, kind, n, na, nb, slot
       INTEGER, ALLOCATABLE                               :: offset(:), seen(:), width(:)
       REAL(dp)                                           :: angle
+      TYPE(kind_rotmat_type), POINTER                    :: kind_rot(:, :)
       TYPE(kpoint_sym_type), POINTER                     :: sym
 
       action = 0.0_dp
@@ -117,20 +120,25 @@ CONTAINS
       IF (.NOT. ASSOCIATED(sym%xkp) .OR. .NOT. ASSOCIATED(sym%rotp) .OR. &
           .NOT. ASSOCIATED(sym%rot) .OR. .NOT. ASSOCIATED(sym%f0)) RETURN
       IF (.NOT. kpoint_same_periodic(TARGET, sym%xkp(:, operation))) RETURN
-      IF (.NOT. ASSOCIATED(kpoints%atype) .OR. .NOT. ASSOCIATED(kpoints%kind_rotmat)) RETURN
+      IF (.NOT. ASSOCIATED(kpoints%atype)) RETURN
+      kind_rot => kpoints%kind_rotmat
+      IF (PRESENT(for_aux_fit)) THEN
+         IF (for_aux_fit) kind_rot => kpoints%kind_rotmat_aux
+      END IF
+      IF (.NOT. ASSOCIATED(kind_rot)) RETURN
       IF (.NOT. ASSOCIATED(sym%fcell_gauge)) RETURN
       slot = find_kpoint_rotation_slot(kpoints, sym%rotp(operation))
-      IF (slot == 0) RETURN
+      IF (slot < 1 .OR. slot > SIZE(kind_rot, 1)) RETURN
       na = SIZE(kpoints%atype)
       ALLOCATE (offset(na), width(na), seen(na))
       first = 1
       seen = 0
       DO a = 1, na
          kind = kpoints%atype(a)
-         IF (kind < 1 .OR. kind > SIZE(kpoints%kind_rotmat, 2)) RETURN
-         IF (.NOT. ASSOCIATED(kpoints%kind_rotmat(slot, kind)%rmat)) RETURN
+         IF (kind < 1 .OR. kind > SIZE(kind_rot, 2)) RETURN
+         IF (.NOT. ASSOCIATED(kind_rot(slot, kind)%rmat)) RETURN
          offset(a) = first
-         width(a) = SIZE(kpoints%kind_rotmat(slot, kind)%rmat, 2)
+         width(a) = SIZE(kind_rot(slot, kind)%rmat, 2)
          first = first + width(a)
       END DO
       IF (first /= n + 1) RETURN
@@ -141,10 +149,10 @@ CONTAINS
          IF (seen(b) /= 1 .OR. kpoints%atype(b) /= kpoints%atype(a)) RETURN
          kind = kpoints%atype(a)
          nb = width(b)
-         IF (SIZE(kpoints%kind_rotmat(slot, kind)%rmat, 1) /= nb) RETURN
+         IF (SIZE(kind_rot(slot, kind)%rmat, 1) /= nb) RETURN
          angle = -twopi*DOT_PRODUCT(TARGET, REAL(sym%fcell_gauge(:, a, operation), dp))
          action(offset(b):offset(b) + nb - 1, offset(a):offset(a) + width(a) - 1) = &
-            CMPLX(COS(angle), SIN(angle), dp)*kpoints%kind_rotmat(slot, kind)%rmat
+            CMPLX(COS(angle), SIN(angle), dp)*kind_rot(slot, kind)%rmat
       END DO
       rotation = sym%rot(:, :, operation)
       antiunitary = sym%rotp(operation) < 0

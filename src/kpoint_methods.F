@@ -183,11 +183,13 @@ CONTAINS
 !> \param kpoint Borrowed initialized native k-point metadata.
 !> \param ao_sizes AO block sizes for all atoms, including empty blocks.
 !> \param map Owned contribution indices and borrowed native symmetry data.
+!> \param for_aux_fit Use auxiliary fitting AO blocks and their native rotations.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_star_create(kpoint, ao_sizes, map)
+   SUBROUTINE kpoint_star_create(kpoint, ao_sizes, map, for_aux_fit)
       TYPE(kpoint_type), POINTER                         :: kpoint
       INTEGER, INTENT(IN)                                :: ao_sizes(:)
       TYPE(kpoint_star_type), INTENT(OUT)                :: map
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit
 
       INTEGER                                            :: a, ik, is, link, n, ncontrib, nlink
       INTEGER, ALLOCATABLE                               :: counts(:)
@@ -207,6 +209,7 @@ CONTAINS
       CPASSERT(n > 0 .AND. SUM(ao_sizes) > 0)
       CPASSERT(ALL(ao_sizes >= 0))
       map%kpoints => kpoint
+      IF (PRESENT(for_aux_fit)) map%for_aux_fit = for_aux_fit
       ALLOCATE (map%first(n), map%last(n), counts(n))
       link = 0
       DO a = 1, n
@@ -238,9 +241,14 @@ CONTAINS
             map%relative_weights(link) = 1.0_dp/REAL(ncontrib, dp)
             map%weights(link) = kpoint%wkp(ik)*map%relative_weights(link)
             IF (.NOT. sym%apply_symmetry) CYCLE
-            CPASSERT(ASSOCIATED(kpoint%atype) .AND. ASSOCIATED(kpoint%kind_rotmat))
+            CPASSERT(ASSOCIATED(kpoint%atype))
+            IF (map%for_aux_fit) THEN
+               CPASSERT(ASSOCIATED(kpoint%kind_rotmat_aux))
+            ELSE
+               CPASSERT(ASSOCIATED(kpoint%kind_rotmat))
+            END IF
             CPASSERT(SIZE(kpoint%atype) == n)
-            CALL kp_symmetry_op_init(op, kpoint, sym, is)
+            CALL kp_symmetry_op_init(op, kpoint, sym, is, for_aux_fit=map%for_aux_fit)
             CPASSERT(SIZE(op%atom_map) == n)
             CPASSERT(ALL(op%atom_map >= 1 .AND. op%atom_map <= n))
             CPASSERT(ALL(ao_sizes(op%atom_map) == ao_sizes))
@@ -364,7 +372,7 @@ CONTAINS
          DO op = 1, sym%nwred
             IF (.NOT. kpoint_same_periodic(sym%xkp(:, op), map%kpoints%xkp(:, representative))) CYCLE
             CALL kpoint_cell_gauge_action(map%kpoints, representative, op, map%kpoints%xkp(:, representative), &
-                                          action, rotation, antiunitary, status)
+                                          action, rotation, antiunitary, status, for_aux_fit=map%for_aux_fit)
             CPASSERT(status == 0)
             matrix = MATMUL(CONJG(TRANSPOSE(action)), MATMUL(reduced(:, :, representative), action))
             IF (antiunitary) matrix = CONJG(matrix)
@@ -404,7 +412,7 @@ CONTAINS
             CYCLE
          END IF
          sym => map%kpoints%kp_sym(ik)%kpoint_sym
-         CALL kp_symmetry_op_init(op, map%kpoints, sym, is)
+         CALL kp_symmetry_op_init(op, map%kpoints, sym, is, for_aux_fit=map%for_aux_fit)
          DO a = 1, SIZE(map%first)
             IF (map%last(a) < map%first(a)) CYCLE
             target_atom = op%atom_map(a)
@@ -451,7 +459,7 @@ CONTAINS
          RETURN
       END IF
       sym => map%kpoints%kp_sym(ik)%kpoint_sym
-      CALL kp_symmetry_op_init(op, map%kpoints, sym, is)
+      CALL kp_symmetry_op_init(op, map%kpoints, sym, is, for_aux_fit=map%for_aux_fit)
       transformed = z_zero
       DO b = 1, SIZE(map%first)
          nb = map%last(b) - map%first(b) + 1

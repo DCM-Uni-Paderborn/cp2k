@@ -277,6 +277,7 @@ CONTAINS
             END IF
          END IF
       END DO
+      CALL check_auxiliary_star(kpoint, .FALSE.)
       ! A fixed-point operation is usable independently of Brillouin-zone reduction.
       sym%apply_symmetry = .FALSE.
       sym%nwght = 1
@@ -323,14 +324,116 @@ CONTAINS
       kpoint%full_grid = .TRUE.
       CALL kpoint_star_operator_defect(map, covariant(:, :, :2), defect, scale, little_group=.TRUE.)
       IF (.NOT. defect <= 1.e-12_dp) ERROR STOP 'The full physical mesh acquired a fixed-point restriction'
+      CALL check_auxiliary_star(kpoint, .TRUE.)
       map = kpoint_star_type()
       DEALLOCATE (sym%rot, sym%rotp, sym%f0, sym%fcell_gauge, sym%phase_mode, sym%xkp)
       DO i = 1, 2
          DEALLOCATE (kpoint%kp_sym(i)%kpoint_sym, kpoint%kind_rotmat(i, 1)%rmat)
+         DEALLOCATE (kpoint%kind_rotmat_aux(i, 1)%rmat)
       END DO
-      DEALLOCATE (kpoint%xkp, kpoint%wkp, kpoint%kp_sym, kpoint%atype, kpoint%ibrot, kpoint%kind_rotmat)
+      DEALLOCATE (kpoint%xkp, kpoint%wkp, kpoint%kp_sym, kpoint%atype, kpoint%ibrot, &
+                  kpoint%kind_rotmat, kpoint%kind_rotmat_aux)
       DEALLOCATE (kpoint)
    END SUBROUTINE check_star_adjoint
+
+! **************************************************************************************************
+!> \brief Auxiliary s+p blocks must not use the primary scaled p rotation matrices.
+!> \param kpoint Existing two-atom spatial and time-reversal metadata.
+!> \param little_group Test fixed-point operator covariance instead of star expansion.
+! **************************************************************************************************
+   SUBROUTINE check_auxiliary_star(kpoint, little_group)
+      TYPE(kpoint_type), POINTER                         :: kpoint
+      LOGICAL, INTENT(IN)                                :: little_group
+
+      COMPLEX(dp) :: action(8, 8), coefficients(8, 2, 2), density(8, 8, 2), expected(8, 2), &
+         missing_action(6, 6), operators(8, 8, 4)
+      COMPLEX(dp), ALLOCATABLE                           :: expanded(:, :, :), orbitals(:, :, :), &
+                                                            reduced(:, :, :)
+      INTEGER                                            :: i, ik, j, link, status
+      LOGICAL                                            :: antiunitary, full_grid
+      REAL(dp)                                           :: defect, lhs, rhs, rotation(3, 3), scale, &
+                                                            weights(2)
+      TYPE(kpoint_star_type)                             :: map
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      sym => kpoint%kp_sym(1)%kpoint_sym
+      IF (.NOT. ASSOCIATED(kpoint%kind_rotmat_aux)) THEN
+         CALL kpoint_cell_gauge_action(kpoint, 1, 2, sym%xkp(:, 2), missing_action, &
+                                       rotation, antiunitary, status, for_aux_fit=.TRUE.)
+         IF (status == 0) ERROR STOP 'Missing auxiliary rotations used primary AO metadata'
+         ALLOCATE (kpoint%kind_rotmat_aux(2, 1))
+         DO i = 1, 2
+            ALLOCATE (kpoint%kind_rotmat_aux(i, 1)%rmat(4, 4))
+         END DO
+      END IF
+      DO i = 1, 2
+         kpoint%kind_rotmat_aux(i, 1)%rmat = 0.0_dp
+         kpoint%kind_rotmat_aux(i, 1)%rmat(1, 1) = 1.0_dp
+         kpoint%kind_rotmat_aux(i, 1)%rmat(2:4, 2:4) = sym%rot(:, :, i)
+      END DO
+      full_grid = kpoint%full_grid
+      weights = kpoint%wkp
+      kpoint%full_grid = .FALSE.
+      kpoint%wkp = [.37_dp, .63_dp]
+      CALL kpoint_star_create(kpoint, [4, 4], map, for_aux_fit=.TRUE.)
+      IF (little_group) THEN
+         operators = 0.0_dp
+         DO link = 1, SIZE(map%weights)
+            DO i = 1, 8
+               operators(i, i, link) = 1.0_dp
+            END DO
+         END DO
+         CALL kpoint_star_operator_defect(map, operators(:, :, :SIZE(map%weights)), &
+                                          defect, scale, little_group=.TRUE.)
+         IF (defect > 1.e-12_dp) ERROR STOP 'Auxiliary fixed-point operator used primary AO rotations'
+         operators(2, 2, 1) = 1.1_dp
+         CALL kpoint_star_operator_defect(map, operators(:, :, :SIZE(map%weights)), &
+                                          defect, scale, little_group=.TRUE.)
+         IF (defect < 1.e-4_dp) ERROR STOP 'Broken auxiliary fixed-point covariance was hidden'
+      ELSE
+         DO ik = 1, 2
+            DO j = 1, 2
+               DO i = 1, 8
+                  coefficients(i, j, ik) = CMPLX(SIN(.17_dp*REAL(i + 2*j + 3*ik, dp)), &
+                                                 COS(.23_dp*REAL(2*i - j + 4*ik, dp)), dp)
+               END DO
+            END DO
+            density(:, :, ik) = MATMUL(coefficients(:, :, ik), CONJG(TRANSPOSE(coefficients(:, :, ik))))
+         END DO
+         CALL kpoint_star_density(map, density, expanded)
+         CALL kpoint_star_orbitals(map, coefficients, orbitals)
+         DO link = 1, SIZE(map%weights)
+            ik = map%representative(link)
+            CALL kpoint_cell_gauge_action(kpoint, ik, map%operation(link), map%vectors(:, link), &
+                                          action, rotation, antiunitary, status, for_aux_fit=.TRUE.)
+            IF (status /= 0) ERROR STOP 'Auxiliary cell-gauge action unavailable'
+            expected = coefficients(:, :, ik)
+            IF (antiunitary) expected = CONJG(expected)
+            expected = MATMUL(action, expected)
+            IF (MAXVAL(ABS(orbitals(:, :, link) - expected)) > 1.e-12_dp) THEN
+               ERROR STOP 'Auxiliary orbital expansion used primary AO rotations'
+            END IF
+            IF (MAXVAL(ABS(expanded(:, :, link) - MATMUL(expected, CONJG(TRANSPOSE(expected))))) > 1.e-12_dp) THEN
+               ERROR STOP 'Auxiliary density differs from transformed orbital factors'
+            END IF
+            operators(:, :, link) = expanded(:, :, link)
+         END DO
+         CALL kpoint_star_operator(map, operators(:, :, :SIZE(map%weights)), reduced)
+         lhs = 0.0_dp
+         rhs = 0.0_dp
+         DO link = 1, SIZE(map%weights)
+            lhs = lhs + map%weights(link)*REAL(SUM(CONJG(operators(:, :, link))*expanded(:, :, link)), dp)
+         END DO
+         DO ik = 1, 2
+            rhs = rhs + kpoint%wkp(ik)*REAL(SUM(CONJG(reduced(:, :, ik))*density(:, :, ik)), dp)
+         END DO
+         IF (ABS(lhs - rhs) > 1.e-12_dp*MAX(1.0_dp, ABS(lhs), ABS(rhs))) THEN
+            ERROR STOP 'Auxiliary symmetry operator is not the weighted density adjoint'
+         END IF
+      END IF
+      kpoint%full_grid = full_grid
+      kpoint%wkp = weights
+   END SUBROUTINE check_auxiliary_star
 
 ! **************************************************************************************************
 !> \brief Check mesh reduction and atomic operation consistency without an SCF calculation.
