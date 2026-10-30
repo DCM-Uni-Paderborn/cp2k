@@ -197,43 +197,29 @@ def main() -> None:
             )
         )
 
-    with OutputFile(f"Dockerfile.test_spack_ssmp-P100", args.check) as f:
+    with OutputFile(f"Dockerfile.test_spack_ssmp-A40", args.check) as f:
         f.write(
             install_cp2k_spack(
                 version="ssmp",
                 mpi_mode="no",
                 base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
                 gcc_version=13,
-                gpu_model="P100",
-                testopts=f"{testopts} --maxtasks 2 --ompthreads 2 --smoketest --timeout 300",
+                gpu_model="A40",
+                testopts=f"{testopts} --maxtasks 12 --ompthreads 1 --timeout 400",
                 image_tag=f.image_tag,
             )
         )
 
-    with OutputFile(f"Dockerfile.test_spack_psmp-P100", args.check) as f:
+    with OutputFile(f"Dockerfile.test_spack_psmp-A40", args.check) as f:
         f.write(
             install_cp2k_spack(
                 version="psmp",
                 mpi_mode="mpich",
                 base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
                 gcc_version=13,
-                gpu_model="P100",
+                gpu_model="A40",
                 feature_flags="",
-                testopts=f"{testopts} --maxtasks 4 --ompthreads 2 --smoketest --timeout 300",
-                image_tag=f.image_tag,
-            )
-        )
-
-    with OutputFile(f"Dockerfile.test_spack_pdbg-P100", args.check) as f:
-        f.write(
-            install_cp2k_spack(
-                version="pdbg",
-                mpi_mode="mpich",
-                base_image="nvidia/cuda:12.9.1-devel-ubuntu24.04",
-                gcc_version=13,
-                gpu_model="P100",
-                feature_flags="",
-                testopts=f"{testopts} --maxtasks 2 --ompthreads 1 --smoketest --timeout 300",
+                testopts=f"{testopts} --maxtasks 16 --ompthreads 1 --timeout 400",
                 image_tag=f.image_tag,
             )
         )
@@ -323,18 +309,17 @@ def main() -> None:
         f.write(install_deps_toolchain())
         f.write(performance("toolchain"))
 
-    for gpu_ver in "P100", "V100", "A100":
-        with OutputFile(f"Dockerfile.test_cuda_{gpu_ver}", args.check) as f:
-            f.write(install_deps_toolchain_cuda(gpu_ver=gpu_ver))
-            f.write(regtest(f"toolchain_cuda_{gpu_ver}", "psmp"))
-        with OutputFile(f"Dockerfile.test_performance_cuda_{gpu_ver}", args.check) as f:
-            f.write(install_deps_toolchain_cuda(gpu_ver=gpu_ver))
-            f.write(performance(f"toolchain_cuda_{gpu_ver}"))
+    with OutputFile(f"Dockerfile.test_cuda_A40", args.check) as f:
+        f.write(install_deps_toolchain_cuda(gpu_ver="A40"))
+        f.write(regtest(f"toolchain_cuda_A40", "psmp"))
 
-    for gpu_ver in "Mi50", "Mi100":
-        with OutputFile(f"Dockerfile.build_hip_rocm_{gpu_ver}", args.check) as f:
-            f.write(install_deps_toolchain_hip_rocm(gpu_ver=gpu_ver))
-            f.write(test_build(f"toolchain_hip_{gpu_ver}", "psmp"))
+    with OutputFile(f"Dockerfile.test_performance_cuda_A40", args.check) as f:
+        f.write(install_deps_toolchain_cuda(gpu_ver="A40"))
+        f.write(performance(f"toolchain_cuda_A40"))
+
+    with OutputFile(f"Dockerfile.build_hip_rocm_Mi100", args.check) as f:
+        f.write(install_deps_toolchain_hip_rocm(gpu_ver="Mi100"))
+        f.write(test_build(f"toolchain_hip_Mi100", "psmp"))
 
     with OutputFile(f"Dockerfile.test_conventions", args.check) as f:
         f.write(install_deps_toolchain())
