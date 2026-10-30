@@ -60,8 +60,8 @@ MODULE admm_methods
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: &
         copy_info_type, cp_fm_cleanup_copy_general, cp_fm_create, cp_fm_finish_copy_general, &
-        cp_fm_get_info, cp_fm_release, cp_fm_set_all, cp_fm_set_element, cp_fm_start_copy_general, &
-        cp_fm_to_fm, cp_fm_type
+        cp_fm_get_info, cp_fm_release, cp_fm_set_all, cp_fm_set_element, cp_fm_set_submatrix, &
+        cp_fm_start_copy_general, cp_fm_to_fm, cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type,&
                                               cp_to_string
@@ -3778,17 +3778,25 @@ CONTAINS
 !> \brief Store the ADMM auxiliary overlap and projection A = S^-1 Q in their native scalar type.
 !> \param qs_env ...
 !> \param calculate_forces ...
+!> \param overlap_aux Optional replicated physical auxiliary metric in irreducible k order.
+!> \param overlap_aux_orb Matching physical auxiliary-orbital overlap in the same cell gauge.
+!>        Supplied together, these replace the Gaussian image overlaps before native factorization.
+!>        The caller must also provide their geometry derivatives to the force evaluation.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_calc_admm_matrices(qs_env, calculate_forces)
+   SUBROUTINE kpoint_calc_admm_matrices(qs_env, calculate_forces, overlap_aux, overlap_aux_orb)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL                                            :: calculate_forces
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: overlap_aux(:, :, :), &
+                                                            overlap_aux_orb(:, :, :)
 
       INTEGER                                            :: igroup, ik, ikp, indx, kplocal, kpmax, &
                                                             nao_aux_fit, nao_orb, nkp, nkp_groups
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: my_kpgrp, store_overlap, use_real_wfn
+      LOGICAL                                            :: custom_metric, my_kpgrp, store_overlap, &
+                                                            use_real_wfn, valid
+      REAL(dp)                                           :: defect, tolerance
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(copy_info_type), ALLOCATABLE, DIMENSION(:, :) :: info
@@ -3813,6 +3821,8 @@ CONTAINS
                para_env_global, matrix_struct_aux_fit, matrix_struct_aux_fit_vs_orb)
 
       CALL get_qs_env(qs_env, kpoints=kpoints, admm_env=admm_env)
+      CPASSERT(PRESENT(overlap_aux) .EQV. PRESENT(overlap_aux_orb))
+      custom_metric = PRESENT(overlap_aux)
 
       CALL get_admm_env(admm_env, matrix_s_aux_fit_kp=matrix_s_aux_fit, &
                         matrix_s_aux_fit_vs_orb_kp=matrix_s_aux_fit_vs_orb, &
@@ -3825,20 +3835,43 @@ CONTAINS
       kplocal = kp_range(2) - kp_range(1) + 1
       kpmax = MAXVAL(kp_dist(2, :) - kp_dist(1, :) + 1)
 
-      ALLOCATE (dbcsr_aux_fit(3))
-      CALL dbcsr_create(dbcsr_aux_fit(1), template=matrix_s_aux_fit(1, 1)%matrix, matrix_type=dbcsr_type_symmetric)
-      CALL dbcsr_create(dbcsr_aux_fit(2), template=matrix_s_aux_fit(1, 1)%matrix, matrix_type=dbcsr_type_antisymmetric)
-      CALL dbcsr_create(dbcsr_aux_fit(3), template=matrix_s_aux_fit(1, 1)%matrix, matrix_type=dbcsr_type_no_symmetry)
-      CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit(1), sab_aux_fit)
-      CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit(2), sab_aux_fit)
+      IF (custom_metric) THEN
+         nao_aux_fit = admm_env%nao_aux_fit
+         nao_orb = admm_env%nao_orb
+         valid = ALL(SHAPE(overlap_aux) == [nao_aux_fit, nao_aux_fit, nkp])
+         CPASSERT(valid)
+         valid = ALL(SHAPE(overlap_aux_orb) == [nao_aux_fit, nao_orb, nkp])
+         CPASSERT(valid)
+         DO ik = 1, nkp
+            tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(overlap_aux(:, :, ik))))
+            defect = MAXVAL(ABS(overlap_aux(:, :, ik) - CONJG(TRANSPOSE(overlap_aux(:, :, ik)))))
+            CPASSERT(defect <= tolerance)
+            IF (use_real_wfn) THEN
+               defect = MAXVAL(ABS(AIMAG(overlap_aux(:, :, ik))))
+               CPASSERT(defect <= tolerance)
+               tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(overlap_aux_orb(:, :, ik))))
+               defect = MAXVAL(ABS(AIMAG(overlap_aux_orb(:, :, ik))))
+               CPASSERT(defect <= tolerance)
+            END IF
+         END DO
+      END IF
 
-      ALLOCATE (dbcsr_aux_fit_vs_orb(2))
-      CALL dbcsr_create(dbcsr_aux_fit_vs_orb(1), template=matrix_s_aux_fit_vs_orb(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_no_symmetry)
-      CALL dbcsr_create(dbcsr_aux_fit_vs_orb(2), template=matrix_s_aux_fit_vs_orb(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_no_symmetry)
-      CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit_vs_orb(1), sab_aux_fit_vs_orb)
-      CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit_vs_orb(2), sab_aux_fit_vs_orb)
+      IF (.NOT. custom_metric) THEN
+         ALLOCATE (dbcsr_aux_fit(3))
+         CALL dbcsr_create(dbcsr_aux_fit(1), template=matrix_s_aux_fit(1, 1)%matrix, matrix_type=dbcsr_type_symmetric)
+         CALL dbcsr_create(dbcsr_aux_fit(2), template=matrix_s_aux_fit(1, 1)%matrix, matrix_type=dbcsr_type_antisymmetric)
+         CALL dbcsr_create(dbcsr_aux_fit(3), template=matrix_s_aux_fit(1, 1)%matrix, matrix_type=dbcsr_type_no_symmetry)
+         CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit(1), sab_aux_fit)
+         CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit(2), sab_aux_fit)
+
+         ALLOCATE (dbcsr_aux_fit_vs_orb(2))
+         CALL dbcsr_create(dbcsr_aux_fit_vs_orb(1), template=matrix_s_aux_fit_vs_orb(1, 1)%matrix, &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL dbcsr_create(dbcsr_aux_fit_vs_orb(2), template=matrix_s_aux_fit_vs_orb(1, 1)%matrix, &
+                           matrix_type=dbcsr_type_no_symmetry)
+         CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit_vs_orb(1), sab_aux_fit_vs_orb)
+         CALL cp_dbcsr_alloc_block_from_nbl(dbcsr_aux_fit_vs_orb(2), sab_aux_fit_vs_orb)
+      END IF
 
       !Create global work fm
       nao_aux_fit = admm_env%nao_aux_fit
@@ -3893,7 +3926,14 @@ CONTAINS
             my_kpgrp = (ik >= kpoints%kp_range(1) .AND. ik <= kpoints%kp_range(2))
             indx = indx + 1
 
-            IF (use_real_wfn) THEN
+            IF (custom_metric) THEN
+               CALL cp_fm_set_submatrix(fmwork(1), REAL(overlap_aux(:, :, ik), dp))
+               CALL cp_fm_set_submatrix(fmwork(3), REAL(overlap_aux_orb(:, :, ik), dp))
+               IF (.NOT. use_real_wfn) THEN
+                  CALL cp_fm_set_submatrix(fmwork(2), AIMAG(overlap_aux(:, :, ik)))
+                  CALL cp_fm_set_submatrix(fmwork(4), AIMAG(overlap_aux_orb(:, :, ik)))
+               END IF
+            ELSE IF (use_real_wfn) THEN
                !AUX-AUX overlap
                CALL dbcsr_set(dbcsr_aux_fit(1), 0.0_dp)
                CALL rskp_transform(rmatrix=dbcsr_aux_fit(1), rsmat=matrix_s_aux_fit, ispin=1, &
@@ -4039,11 +4079,13 @@ CONTAINS
       CALL cp_fm_release(fmwork(3))
       CALL cp_fm_release(fmwork(4))
 
-      CALL dbcsr_release(dbcsr_aux_fit(1))
-      CALL dbcsr_release(dbcsr_aux_fit(2))
-      CALL dbcsr_release(dbcsr_aux_fit(3))
-      CALL dbcsr_release(dbcsr_aux_fit_vs_orb(1))
-      CALL dbcsr_release(dbcsr_aux_fit_vs_orb(2))
+      IF (.NOT. custom_metric) THEN
+         CALL dbcsr_release(dbcsr_aux_fit(1))
+         CALL dbcsr_release(dbcsr_aux_fit(2))
+         CALL dbcsr_release(dbcsr_aux_fit(3))
+         CALL dbcsr_release(dbcsr_aux_fit_vs_orb(1))
+         CALL dbcsr_release(dbcsr_aux_fit_vs_orb(2))
+      END IF
 
    END SUBROUTINE kpoint_calc_admm_matrices
 
