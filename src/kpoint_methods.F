@@ -374,7 +374,7 @@ CONTAINS
             CALL kpoint_cell_gauge_action(map%kpoints, representative, op, map%kpoints%xkp(:, representative), &
                                           action, rotation, antiunitary, status, for_aux_fit=map%for_aux_fit)
             CPASSERT(status == 0)
-            matrix = MATMUL(CONJG(TRANSPOSE(action)), MATMUL(reduced(:, :, representative), action))
+            matrix(:, :) = MATMUL(CONJG(TRANSPOSE(action)), MATMUL(reduced(:, :, representative), action))
             IF (antiunitary) matrix = CONJG(matrix)
             defect = MAX(defect, MAXVAL(ABS(matrix - reduced(:, :, representative))))
             scale = MAX(scale, MAXVAL(ABS(matrix)))

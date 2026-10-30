@@ -82,8 +82,8 @@ CONTAINS
       sym => kpoints%kp_sym(representative)%kpoint_sym
       IF (.NOT. ASSOCIATED(sym)) RETURN
       IF (.NOT. ASSOCIATED(sym%rotp)) RETURN
-      operations = PACK([(op, op=1, sym%nwred)], &
-                        [(kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative)), op=1, sym%nwred)])
+      ALLOCATE (operations, SOURCE=PACK([(op, op=1, sym%nwred)], &
+                                        [(kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative)), op=1, sym%nwred)]))
       IF (SIZE(operations) == 0) RETURN
       CALL adapt_little_group(state, metric, kpoints, representative, operations, info)
    END SUBROUTINE qs_skala_orbitals_adapt_symmetry
@@ -125,25 +125,25 @@ CONTAINS
       sym => kpoints%kp_sym(representative)%kpoint_sym
       IF (.NOT. ASSOCIATED(sym)) RETURN
       IF (.NOT. ASSOCIATED(sym%rotp)) RETURN
-      ALLOCATE (coefficients(n, nr), action(n, n))
+      ALLOCATE (coefficients(n, nr), action(n, n), residual(n, nr), projection(nr, nr))
       IF (ASSOCIATED(native%cmo_coeff)) THEN
          CALL cp_cfm_get_submatrix(native%cmo_coeff, coefficients)
       ELSE
          IF (native%use_mo_coeff_b) CALL copy_dbcsr_to_fm(native%mo_coeff_b, native%mo_coeff)
          ALLOCATE (real_part(n, nr))
          CALL cp_fm_get_submatrix(native%mo_coeff, real_part)
-         coefficients = CMPLX(real_part, 0.0_dp, dp)
+         coefficients(:, :) = CMPLX(real_part, 0.0_dp, dp)
       END IF
       DO op = 1, sym%nwred
          IF (.NOT. kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative))) CYCLE
          CALL kpoint_cell_gauge_action(kpoints, representative, op, kpoints%xkp(:, representative), &
                                        action, rotation, anti, status)
          IF (status /= 0) CPABORT("Cannot apply thermal orbital symmetry.")
-         residual = coefficients
+         residual(:, :) = coefficients
          IF (anti) residual = CONJG(residual)
-         residual = MATMUL(action, residual)
-         projection = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, residual))
-         residual = residual - MATMUL(coefficients, projection)
+         residual(:, :) = MATMUL(action, residual)
+         projection(:, :) = MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(metric, residual))
+         residual(:, :) = residual - MATMUL(coefficients, projection)
          IF (MAXVAL(ABS(SUM(CONJG(residual)*MATMUL(metric, residual), DIM=1))) > tolerance**2) THEN
             closed = .FALSE.
             RETURN
@@ -195,8 +195,8 @@ CONTAINS
          info = 0
          RETURN
       END IF
-      operations = PACK([(op, op=1, sym%nwred)], &
-                        [(kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative)), op=1, sym%nwred)])
+      ALLOCATE (operations, SOURCE=PACK([(op, op=1, sym%nwred)], &
+                                        [(kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, representative)), op=1, sym%nwred)]))
       nop = SIZE(operations)
       IF (nop == 0) THEN
          info = 0
@@ -215,13 +215,13 @@ CONTAINS
       IF (has_anti .AND. kpoint_same_periodic(kpoints%xkp(:, representative), -kpoints%xkp(:, representative))) THEN
          anti_operation = -1
       END IF
-      ALLOCATE (a(n, n), done(n), sector(n), groups(n))
-      adapted = state%coefficients
+      ALLOCATE (a(n, n), adapted(n, n), done(n), sector(n), groups(n))
+      adapted(:, :) = state%coefficients
       CALL orbital_density(state, original)
       done = .FALSE.
       DO i = 1, n
          IF (done(i)) CYCLE
-         sector = state%occupations == state%occupations(i)
+         sector(:) = state%occupations == state%occupations(i)
          IF (state%variable_occupations) THEN
             ! Keep retained thermal bands distinct from the permanently empty completion.
             DO j = 1, n
@@ -231,39 +231,40 @@ CONTAINS
                END IF
             END DO
          END IF
-         indices = PACK([(j, j=1, n)], sector)
+         ALLOCATE (indices, SOURCE=PACK([(j, j=1, n)], sector))
          done(indices) = .TRUE.
          m = SIZE(indices)
-         c = state%coefficients(:, indices)
+         ALLOCATE (c(n, m), source(n, m), b(n, m), block(m, m))
+         c(:, :) = state%coefficients(:, indices)
          IF (has_anti) THEN
             CALL kpoint_cell_gauge_action(kpoints, representative, anti_operation, &
                                           kpoints%xkp(:, representative), a, rotation, anti, status)
             IF (status /= 0 .OR. .NOT. anti) RETURN
-            source = MATMUL(a, CONJG(c))
-            b = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, source))
+            source(:, :) = MATMUL(a, CONJG(c))
+            b(:, :) = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, source))
             info = -1
             DO j = 1, n
                IF (sector(j)) CYCLE
                IF (MAXVAL(ABS(b(j, :))) > tolerance) RETURN
             END DO
-            block = b(indices, :)
+            block(:, :) = b(indices, :)
             info = -2
             IF (MAXVAL(ABS(block - TRANSPOSE(block))) > tolerance) RETURN
-            ALLOCATE (real_basis(2*m, 2*m), values(2*m), real_work(6*m))
+            ALLOCATE (real_basis(2*m, 2*m), values(2*m), real_work(6*m), q(m, m), gram(m, m))
             real_basis(:m, :m) = REAL(block, dp)
             real_basis(:m, m + 1:) = AIMAG(block)
             real_basis(m + 1:, :m) = AIMAG(block)
             real_basis(m + 1:, m + 1:) = -REAL(block, dp)
             CALL dsyev('V', 'U', 2*m, real_basis, 2*m, values, real_work, SIZE(real_work), status)
             IF (status /= 0 .OR. COUNT(values > 0.5_dp) /= m) RETURN
-            q = CMPLX(real_basis(:m, m + 1:), real_basis(m + 1:, m + 1:), dp)
-            gram = MATMUL(CONJG(TRANSPOSE(q)), q)
+            q(:, :) = CMPLX(real_basis(:m, m + 1:), real_basis(m + 1:, m + 1:), dp)
+            gram(:, :) = MATMUL(CONJG(TRANSPOSE(q)), q)
             CALL zpotrf('L', m, gram, m, status)
             IF (status /= 0) RETURN
             CALL ztrsm('R', 'L', 'C', 'N', m, m, CMPLX(1.0_dp, 0.0_dp, dp), gram, m, q, m)
-            c = MATMUL(c, q)
+            c(:, :) = MATMUL(c, q)
             IF (MAXVAL(ABS(MATMUL(a, CONJG(c)) - c)) > tolerance) RETURN
-            DEALLOCATE (real_basis, values, real_work)
+            DEALLOCATE (real_basis, values, real_work, q, gram)
          END IF
          ALLOCATE (label(m, m)); label = 0.0_dp
          unitary_count = 0
@@ -275,43 +276,45 @@ CONTAINS
             CALL kpoint_cell_gauge_action(kpoints, representative, op, kpoints%xkp(:, representative), &
                                           a, rotation, anti, status)
             IF (status /= 0 .OR. anti) RETURN
-            source = MATMUL(a, c)
-            b = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, source))
+            source(:, :) = MATMUL(a, c)
+            b(:, :) = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, source))
             info = -1
             DO row = 1, n
                IF (sector(row)) CYCLE
                IF (MAXVAL(ABS(b(row, :))) > tolerance) RETURN
             END DO
-            block = MATMUL(CONJG(TRANSPOSE(c)), MATMUL(metric, source))
+            block(:, :) = MATMUL(CONJG(TRANSPOSE(c)), MATMUL(metric, source))
             info = -2
             IF (MAXVAL(ABS(block - CONJG(TRANSPOSE(block)))) > tolerance) RETURN
             IF (has_anti) THEN
                IF (MAXVAL(ABS(AIMAG(block))) > tolerance) RETURN
             END IF
-            label = label + REAL(2**(unitary_count - 1), dp)*block
+            label(:, :) = label + REAL(2**(unitary_count - 1), dp)*block
          END DO
          ALLOCATE (values(m), work(2*m), real_work(3*m))
          IF (has_anti) THEN
-            real_basis = REAL(label, dp)
+            ALLOCATE (real_basis(m, m))
+            real_basis(:, :) = REAL(label, dp)
             CALL dsyev('V', 'U', m, real_basis, m, values, real_work, SIZE(real_work), status)
-            label = CMPLX(real_basis, 0.0_dp, dp)
+            label(:, :) = CMPLX(real_basis, 0.0_dp, dp)
             DEALLOCATE (real_basis)
          ELSE
             CALL zheev('V', 'U', m, label, m, values, work, SIZE(work), real_work, status)
          END IF
          IF (status /= 0) RETURN
          adapted(:, indices) = MATMUL(c, label)
-         DEALLOCATE (label, values, work, real_work, indices)
+         DEALLOCATE (label, values, work, real_work, indices, c, source, b, block)
       END DO
+      ALLOCATE (source(n, n), b(n, n))
       groups = 1
       DO j = 1, nop
          op = operations(j)
          CALL kpoint_cell_gauge_action(kpoints, representative, op, kpoints%xkp(:, representative), &
                                        a, rotation, anti, status)
          IF (status /= 0) RETURN
-         source = adapted
+         source(:, :) = adapted
          IF (anti) source = CONJG(source)
-         b = MATMUL(CONJG(TRANSPOSE(adapted)), MATMUL(metric, MATMUL(a, source)))
+         b(:, :) = MATMUL(CONJG(TRANSPOSE(adapted)), MATMUL(metric, MATMUL(a, source)))
          DO i = 1, n
             IF (ABS(AIMAG(b(i, i))) > tolerance .OR. ABS(ABS(REAL(b(i, i), dp)) - 1.0_dp) > tolerance) RETURN
             IF (REAL(b(i, i), dp) < 0.0_dp) groups(i) = groups(i) + 2**(j - 1)
@@ -325,16 +328,16 @@ CONTAINS
       CALL skala_orbital_chart_restrict(chart, groups, has_anti)
       ALLOCATE (zero(skala_orbital_chart_size(chart)), final(n, n)); zero = 0.0_dp
       CALL skala_orbital_chart_evaluate(chart, zero, final)
-      source = final
+      source(:, :) = final
       DO i = 1, n
          source(:, i) = source(:, i)*state%occupations(i)
       END DO
-      b = MATMUL(source, CONJG(TRANSPOSE(final)))
+      b(:, :) = MATMUL(source, CONJG(TRANSPOSE(final)))
       info = -1
       IF (MAXVAL(ABS(b - original)) > tolerance) RETURN
       CALL skala_orbital_chart_release(state%chart)
       state%chart = chart
-      state%coefficients = final
+      state%coefficients(:, :) = final
       info = 0
    END SUBROUTINE adapt_real_characters
 
@@ -366,12 +369,13 @@ CONTAINS
 
       info = -1
       n = SIZE(state%coefficients, 2)
-      ALLOCATE (action(n, n), actions(n, n, SIZE(operations)), antiunitary(SIZE(operations)))
+      ALLOCATE (action(n, n), actions(n, n, SIZE(operations)), antiunitary(SIZE(operations)), &
+                coefficients(n, n), source(n, n), weighted(n, n))
       DO op = 1, SIZE(operations)
          CALL kpoint_cell_gauge_action(kpoints, representative, operations(op), &
                                        kpoints%xkp(:, representative), action, rotation, antiunitary(op), status)
          IF (status /= 0) RETURN
-         source = state%coefficients
+         source(:, :) = state%coefficients
          IF (antiunitary(op)) source = CONJG(source)
          actions(:, :, op) = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(metric, MATMUL(action, source)))
       END DO
@@ -380,7 +384,7 @@ CONTAINS
          CALL skala_orbital_multiplets(actions, antiunitary, state%occupations, state%eigenvalues, &
                                        state%native%nmo, gauge, groups, energies, valid)
          IF (.NOT. valid) RETURN
-         coefficients = MATMUL(state%coefficients, gauge)
+         coefficients(:, :) = MATMUL(state%coefficients, gauge)
          CALL skala_orbital_chart_set_reference(chart, coefficients, metric, valid)
          IF (.NOT. valid) RETURN
          CALL skala_orbital_chart_symmetry(chart, actions, antiunitary, valid, occupation_groups=groups)
@@ -390,21 +394,21 @@ CONTAINS
       IF (.NOT. valid) RETURN
       CALL orbital_density(state, original)
       ALLOCATE (zero(skala_orbital_chart_size(chart)))
-      IF (.NOT. ALLOCATED(coefficients)) ALLOCATE (coefficients(n, n))
       zero = 0.0_dp
       CALL skala_orbital_chart_evaluate(chart, zero, coefficients)
-      weighted = coefficients
+      weighted(:, :) = coefficients
       DO i = 1, n
          weighted(:, i) = weighted(:, i)*state%occupations(i)
       END DO
-      source = MATMUL(weighted, CONJG(TRANSPOSE(coefficients)))
+      source(:, :) = MATMUL(weighted, CONJG(TRANSPOSE(coefficients)))
       IF (MAXVAL(ABS(source - original)) > 3.e-11_dp) RETURN
       CALL skala_orbital_chart_release(state%chart)
       state%chart = chart
-      state%coefficients = coefficients
+      state%coefficients(:, :) = coefficients
       IF (state%variable_occupations) THEN
-         state%occupation_groups = groups
-         state%eigenvalues = energies
+         IF (ALLOCATED(state%occupation_groups)) DEALLOCATE (state%occupation_groups)
+         ALLOCATE (state%occupation_groups, SOURCE=groups)
+         state%eigenvalues(:) = energies
       END IF
       info = 0
    END SUBROUTINE adapt_little_group
