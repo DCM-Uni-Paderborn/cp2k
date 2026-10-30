@@ -37,8 +37,6 @@ MODULE qs_upf_inverse_scf
    USE kpoint_transitional,             ONLY: set_1d_pointer,&
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: kpoint_native_operator_clear
-   USE lebedev,                         ONLY: deallocate_lebedev_grids,&
-                                              init_lebedev_grids
    USE mathlib,                         ONLY: invmat
    USE particle_types,                  ONLY: particle_type
    USE paw_types,                       ONLY: paw_potential_type
@@ -100,8 +98,8 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_kpoints_release_operators
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_core_prepare,&
                                               qs_upf_inverse_paw_evaluate,&
-                                              qs_upf_inverse_paw_init,&
                                               qs_upf_inverse_paw_response
+   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_reference
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_orbitals_type,&
@@ -111,13 +109,11 @@ MODULE qs_upf_inverse_scf
                                               qs_uspp_release,&
                                               qs_uspp_type
    USE skala_density_constraints,       ONLY: skala_density_constraints_type
-   USE upf_inverse,                     ONLY: upf_inverse_fields_init,&
-                                              upf_inverse_kinetic_init
+   USE upf_inverse,                     ONLY: upf_inverse_fields_init
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init,&
                                               upf_local_prepare_fourier
    USE upf_radial_fields,               ONLY: upf_radial_fields_type
-   USE upf_types,                       ONLY: upf_nlcc_kinetic
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -153,13 +149,10 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
 
-      CHARACTER(LEN=256)                                 :: core_reason
       COMPLEX(dp), ALLOCATABLE                           :: gaussian_metric(:, :, :), &
                                                             metric_part(:, :)
       INTEGER                                            :: degree, ikind, img
-      LOGICAL                                            :: core_available, do_kpoints, has_gth, &
-                                                            use_atomic
-      REAL(dp), ALLOCATABLE                              :: core_tau(:)
+      LOGICAL                                            :: do_kpoints, has_gth, use_atomic
       TYPE(cp_cfm_type), ALLOCATABLE                     :: native_metric(:)
       TYPE(dbcsr_p_type), POINTER                        :: kinetic_k(:, :), metric(:), &
                                                             metric_k(:, :), overlap(:), &
@@ -187,8 +180,6 @@ CONTAINS
          CPABORT("Unsupported inverse SCF density consumer")
       END IF
       ALLOCATE (state)
-      ALLOCATE (state%paw(SIZE(kinds)))
-      CALL init_lebedev_grids()
       state%native_gth_local = qs_upf_inverse_gth_local_active(kinds)
       has_gth = .FALSE.
       DO ikind = 1, SIZE(kinds)
@@ -202,27 +193,13 @@ CONTAINS
          END IF
          CPASSERT(ASSOCIATED(kinds(ikind)%sgp_potential))
          CPASSERT(ALLOCATED(kinds(ikind)%sgp_potential%upf_data))
-         IF (kinds(ikind)%sgp_potential%upf_data%is_paw) THEN
-            CALL qs_upf_inverse_paw_init(kinds(ikind)%sgp_potential%upf_data, &
-                                         kinds(ikind)%sgp_potential%upf_projectors, kinds(ikind)%ngrid_ang, state%paw(ikind))
-         END IF
          IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft .AND. &
              .NOT. kinds(ikind)%sgp_potential%upf_data%is_paw .AND. &
              TRIM(kinds(ikind)%sgp_potential%upf_data%pseudo_type) /= "NC") THEN
             CPABORT("Unsupported inverse UPF type")
          END IF
-         IF (control%use_kinetic_energy_density) THEN
-            IF (state%paw(ikind)%active) THEN
-               IF (.NOT. state%paw(ikind)%xcgrid%core_kinetic%available) THEN
-                  CPABORT(TRIM(state%paw(ikind)%xcgrid%core_kinetic%failure_reason))
-               END IF
-            ELSE IF (kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) THEN
-               CALL upf_nlcc_kinetic(kinds(ikind)%sgp_potential%upf_data, core_tau, core_available, core_reason)
-               IF (.NOT. core_available) CPABORT(TRIM(core_reason))
-            END IF
-         END IF
       END DO
-      CALL deallocate_lebedev_grids()
+      CALL qs_upf_inverse_scf_xc_reference(kinds, control%use_kinetic_energy_density, control%use_gauxc, state)
       IF (has_gth .AND. ANY(state%paw%active)) THEN
          ALLOCATE (state%gth_paw_core(SIZE(kinds)))
          degree = -1
@@ -242,16 +219,6 @@ CONTAINS
                END IF
             END DO
          END IF
-      END IF
-      IF (control%use_gauxc .AND. ANY(state%paw%active)) THEN
-         IF (.NOT. control%use_kinetic_energy_density) THEN
-            CPABORT("Inverse PAW learned XC requires the native kinetic-density evaluator")
-         END IF
-         ALLOCATE (state%paw_reconstruction(SIZE(kinds)))
-         DO ikind = 1, SIZE(kinds)
-            IF (.NOT. state%paw(ikind)%active) CYCLE
-            CALL upf_inverse_kinetic_init(kinds(ikind)%sgp_potential%upf_data, state%paw_reconstruction(ikind))
-         END DO
       END IF
       use_atomic = .FALSE.
       IF (PRESENT(atom_local)) use_atomic = atom_local
@@ -275,17 +242,6 @@ CONTAINS
          CALL qs_upf_inverse_background_integrate(state%gaussian, potential=one, &
                                                   ao_operators=gaussian_metric, ks_env=ks_env)
          CALL one%release()
-      END IF
-      IF (control%use_kinetic_energy_density) THEN
-         ALLOCATE (state%kinetic_cache(SIZE(kinds)))
-         DO ikind = 1, SIZE(kinds)
-            IF (kinds(ikind)%ghost) CYCLE
-            ! PAW uses smooth PS tau and a separate AE-minus-PS one-center functional.
-            IF (state%paw(ikind)%active) CYCLE
-            IF (ASSOCIATED(kinds(ikind)%gth_potential)) CYCLE
-            IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) CYCLE
-            CALL upf_inverse_kinetic_init(kinds(ikind)%sgp_potential%upf_data, state%kinetic_cache(ikind))
-         END DO
       END IF
       IF (do_kpoints) THEN
          IF (state%native_gaussian) THEN

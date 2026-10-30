@@ -55,6 +55,7 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_init
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_background_type,&
                                               qs_upf_inverse_grid_type,&
@@ -72,6 +73,7 @@ MODULE qs_upf_inverse_scf_xc
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator
+   USE upf_inverse,                     ONLY: upf_inverse_kinetic_init
    USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
                                               upf_radial_fields_periodic
    USE upf_types,                       ONLY: upf_nlcc_kinetic
@@ -82,12 +84,76 @@ MODULE qs_upf_inverse_scf_xc
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_scf_xc_evaluate, qs_upf_inverse_scf_xc_response
+   PUBLIC :: qs_upf_inverse_scf_xc_reference
    PUBLIC :: qs_upf_inverse_scf_xc_model_response
    PUBLIC :: qs_upf_inverse_scf_xc_source_direction, qs_upf_inverse_scf_xc_source_adjoint
 
    INTEGER(KIND=int_8), PARAMETER :: max_xc_field_bytes = 64_int_8*1024*1024
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Prepare original kind-indexed XC reference data independently of the orbital basis.
+!>        Primary and auxiliary states share the same data requirements, selected by their functional.
+!> \param kinds Native kinds with original potentials and projector ordering.
+!> \param kinetic Require valence kinetic kernels and the specified core kinetic-density convention.
+!> \param composite_paw Use the original PAW AE valence fields for a composite learned functional.
+!> \param state Owned basis state with unallocated reference caches. Native SCF state is not installed.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_xc_reference(kinds, kinetic, composite_paw, state)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      LOGICAL, INTENT(IN)                                :: kinetic, composite_paw
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
+
+      CHARACTER(LEN=256)                                 :: core_reason
+      INTEGER                                            :: ikind
+      LOGICAL                                            :: core_available
+      REAL(dp), ALLOCATABLE                              :: core_tau(:)
+
+      CPASSERT(.NOT. ALLOCATED(state%paw))
+      CPASSERT(.NOT. ALLOCATED(state%kinetic_cache))
+      CPASSERT(.NOT. ALLOCATED(state%paw_reconstruction))
+      ALLOCATE (state%paw(SIZE(kinds)))
+      CALL init_lebedev_grids()
+      DO ikind = 1, SIZE(kinds)
+         IF (kinds(ikind)%ghost) CYCLE
+         IF (ASSOCIATED(kinds(ikind)%gth_potential)) CYCLE
+         CPASSERT(ASSOCIATED(kinds(ikind)%sgp_potential))
+         CPASSERT(ALLOCATED(kinds(ikind)%sgp_potential%upf_data))
+         IF (kinds(ikind)%sgp_potential%upf_data%is_paw) THEN
+            CALL qs_upf_inverse_paw_init(kinds(ikind)%sgp_potential%upf_data, &
+                                         kinds(ikind)%sgp_potential%upf_projectors, kinds(ikind)%ngrid_ang, state%paw(ikind))
+         END IF
+         IF (.NOT. kinetic) CYCLE
+         IF (state%paw(ikind)%active) THEN
+            IF (.NOT. state%paw(ikind)%xcgrid%core_kinetic%available) THEN
+               CPABORT(TRIM(state%paw(ikind)%xcgrid%core_kinetic%failure_reason))
+            END IF
+         ELSE IF (kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) THEN
+            CALL upf_nlcc_kinetic(kinds(ikind)%sgp_potential%upf_data, core_tau, core_available, core_reason)
+            IF (.NOT. core_available) CPABORT(TRIM(core_reason))
+         END IF
+      END DO
+      CALL deallocate_lebedev_grids()
+      IF (composite_paw .AND. ANY(state%paw%active)) THEN
+         IF (.NOT. kinetic) CPABORT("Inverse PAW learned XC requires the native kinetic-density evaluator")
+         ALLOCATE (state%paw_reconstruction(SIZE(kinds)))
+         DO ikind = 1, SIZE(kinds)
+            IF (.NOT. state%paw(ikind)%active) CYCLE
+            CALL upf_inverse_kinetic_init(kinds(ikind)%sgp_potential%upf_data, state%paw_reconstruction(ikind))
+         END DO
+      END IF
+      IF (kinetic) THEN
+         ALLOCATE (state%kinetic_cache(SIZE(kinds)))
+         DO ikind = 1, SIZE(kinds)
+            IF (kinds(ikind)%ghost) CYCLE
+            IF (state%paw(ikind)%active) CYCLE
+            IF (ASSOCIATED(kinds(ikind)%gth_potential)) CYCLE
+            IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) CYCLE
+            CALL upf_inverse_kinetic_init(kinds(ikind)%sgp_potential%upf_data, state%kinetic_cache(ikind))
+         END DO
+      END IF
+   END SUBROUTINE qs_upf_inverse_scf_xc_reference
 
 ! **************************************************************************************************
 !> \brief Evaluate the same atom residual for native energy, direct AO and background operators.
