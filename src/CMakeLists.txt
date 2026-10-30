@@ -89,6 +89,7 @@ list(
   qs_upf_inverse_gaussian.F
   qs_upf_inverse_gaussian_pairs.F
   qs_upf_inverse_background.F
+  qs_upf_inverse_basis.F
   qs_upf_inverse_coulomb.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_grid.F

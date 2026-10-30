@@ -68,19 +68,21 @@ MODULE qs_upf_inverse_scf
                                               qs_rho_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_operators,&
                                               qs_upf_inverse_soft_projectors
-   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_gaussian_geometry,&
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
-                                              qs_upf_inverse_background_operator,&
-                                              qs_upf_inverse_background_prepare
+                                              qs_upf_inverse_background_operator
+   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_prepare
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_collocate
-   USE qs_upf_inverse_grid,             ONLY: &
-        qs_upf_inverse_grid_collocate, qs_upf_inverse_grid_integrate, &
-        qs_upf_inverse_grid_integrate_dense, qs_upf_inverse_grid_metric, &
-        qs_upf_inverse_grid_metric_dense, qs_upf_inverse_grid_prepare, &
-        qs_upf_inverse_grid_response, qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate,&
+                                              qs_upf_inverse_grid_integrate,&
+                                              qs_upf_inverse_grid_integrate_dense,&
+                                              qs_upf_inverse_grid_metric,&
+                                              qs_upf_inverse_grid_metric_dense,&
+                                              qs_upf_inverse_grid_response,&
+                                              qs_upf_inverse_matrix_gather,&
+                                              qs_upf_inverse_matrix_scatter
    USE qs_upf_inverse_gth,              ONLY: qs_upf_inverse_gth_core_init,&
                                               qs_upf_inverse_gth_core_nonlocal,&
                                               qs_upf_inverse_gth_nonlocal
@@ -94,12 +96,10 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_integrate,&
                                               qs_upf_inverse_kpoints_metric,&
-                                              qs_upf_inverse_kpoints_prepare,&
                                               qs_upf_inverse_kpoints_release_operators
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_core_prepare,&
                                               qs_upf_inverse_paw_evaluate,&
                                               qs_upf_inverse_paw_response
-   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_reference
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_orbitals_type,&
@@ -152,10 +152,9 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: gaussian_metric(:, :, :), &
                                                             metric_part(:, :)
       INTEGER                                            :: degree, ikind, img
-      LOGICAL                                            :: do_kpoints, has_gth, use_atomic
+      LOGICAL                                            :: do_kpoints, has_gth
       TYPE(cp_cfm_type), ALLOCATABLE                     :: native_metric(:)
-      TYPE(dbcsr_p_type), POINTER                        :: kinetic_k(:, :), metric(:), &
-                                                            metric_k(:, :), overlap(:), &
+      TYPE(dbcsr_p_type), POINTER                        :: metric(:), metric_k(:, :), overlap(:), &
                                                             overlap_k(:, :)
       TYPE(dbcsr_type)                                   :: imaginary
       TYPE(dft_control_type), POINTER                    :: control
@@ -164,7 +163,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), POINTER             :: previous, state
       TYPE(qs_uspp_type), POINTER                        :: uspp
 
-      NULLIFY (metric, metric_k)
+      NULLIFY (metric, metric_k, state)
       CALL get_ks_env(ks_env, upf_inverse=previous, matrix_s_kp=overlap_k, uspp=uspp, &
                       dft_control=control, do_kpoints=do_kpoints, qs_kind_set=kinds)
       CPASSERT(.NOT. ASSOCIATED(previous))
@@ -179,27 +178,13 @@ CONTAINS
         control%qs_control%rigpw .OR. control%qs_control%lrigpw .OR. control%dft_plus_u .OR. control%sic_method_id /= sic_none) THEN
          CPABORT("Unsupported inverse SCF density consumer")
       END IF
-      ALLOCATE (state)
-      state%native_gth_local = qs_upf_inverse_gth_local_active(kinds)
+      CALL qs_upf_inverse_basis_prepare(ks_env, grid, images, state, info, atom_local, direct)
+      IF (info /= 0) RETURN
       has_gth = .FALSE.
       DO ikind = 1, SIZE(kinds)
          IF (kinds(ikind)%ghost) CYCLE
-         IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
-            has_gth = .TRUE.
-            IF (kinds(ikind)%gth_potential%soc .OR. kinds(ikind)%gth_potential%lsdpot) THEN
-               CPABORT("Mixed GTH needs scalar spin-independent data")
-            END IF
-            CYCLE
-         END IF
-         CPASSERT(ASSOCIATED(kinds(ikind)%sgp_potential))
-         CPASSERT(ALLOCATED(kinds(ikind)%sgp_potential%upf_data))
-         IF (.NOT. kinds(ikind)%sgp_potential%upf_data%is_ultrasoft .AND. &
-             .NOT. kinds(ikind)%sgp_potential%upf_data%is_paw .AND. &
-             TRIM(kinds(ikind)%sgp_potential%upf_data%pseudo_type) /= "NC") THEN
-            CPABORT("Unsupported inverse UPF type")
-         END IF
+         IF (ASSOCIATED(kinds(ikind)%gth_potential)) has_gth = .TRUE.
       END DO
-      CALL qs_upf_inverse_scf_xc_reference(kinds, control%use_kinetic_energy_density, control%use_gauxc, state)
       IF (has_gth .AND. ANY(state%paw%active)) THEN
          ALLOCATE (state%gth_paw_core(SIZE(kinds)))
          degree = -1
@@ -220,21 +205,6 @@ CONTAINS
             END DO
          END IF
       END IF
-      use_atomic = .FALSE.
-      IF (PRESENT(atom_local)) use_atomic = atom_local
-      IF (PRESENT(direct)) THEN
-         IF (direct) use_atomic = .TRUE.
-         state%native_gaussian = direct .AND. .NOT. control%qs_control%gapw
-      END IF
-      IF (use_atomic .OR. state%native_gth_local) THEN
-         CALL qs_upf_inverse_background_prepare(ks_env, state%gaussian, soft_basis=control%qs_control%gapw)
-      END IF
-      IF (use_atomic) THEN
-         CALL get_ks_env(ks_env, kinetic_kp=kinetic_k)
-         CPASSERT(ASSOCIATED(kinetic_k))
-         ALLOCATE (state%gaussian_kinetic(state%gaussian%nao, state%gaussian%nao, SIZE(state%gaussian%weights)))
-         CALL qs_upf_inverse_background_operator(state%gaussian, kinetic_k(1, :), state%gaussian_kinetic)
-      END IF
       IF (state%native_gaussian) THEN
          CALL one%create(grid)
          one%array = 1.0_dp
@@ -244,16 +214,6 @@ CONTAINS
          CALL one%release()
       END IF
       IF (do_kpoints) THEN
-         IF (state%native_gaussian) THEN
-            CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info, use_atomic, direct, &
-                                                store_fields=.FALSE.)
-         ELSE
-            CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info, use_atomic, direct)
-         END IF
-         IF (info /= 0) THEN
-            CALL qs_upf_inverse_scf_release(state)
-            RETURN
-         END IF
          CALL qs_upf_inverse_kpoints_metric(state%bloch, native_metric, dense=state%metric_k, &
                                             orbital_fields=.NOT. state%native_gaussian)
          CALL qs_upf_inverse_kpoints_release_operators(native_metric)
@@ -278,17 +238,6 @@ CONTAINS
       END IF
       CPASSERT(control%nimages == 1)
       CALL get_ks_env(ks_env, matrix_s=overlap)
-      IF (state%native_gaussian) THEN
-         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, [0.0_dp, 0.0_dp, 0.0_dp], state%frame, info, &
-                                          use_atomic, direct, store_fields=.FALSE.)
-      ELSE
-         CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, [0.0_dp, 0.0_dp, 0.0_dp], state%frame, info, use_atomic, direct)
-      END IF
-      IF (info /= 0) THEN
-         CALL qs_upf_inverse_scf_release(state)
-         RETURN
-      END IF
-      CALL qs_upf_inverse_augmentation_prepare(ks_env, state%frame%ao, state%augmentation)
       ALLOCATE (metric(1))
       ALLOCATE (metric(1)%matrix)
       IF (state%native_gaussian) THEN

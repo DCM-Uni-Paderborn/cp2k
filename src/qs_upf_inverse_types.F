@@ -164,6 +164,7 @@ MODULE qs_upf_inverse_types
 
    TYPE qs_upf_inverse_scf_type
       LOGICAL :: enabled = .FALSE.
+      CHARACTER(LEN=16) :: basis_type = "ORB"
       LOGICAL :: gaussian_background = .FALSE.
       LOGICAL :: native_gaussian = .FALSE.
       LOGICAL :: native_gth_local = .FALSE.
@@ -194,6 +195,8 @@ MODULE qs_upf_inverse_types
       TYPE(qs_upf_inverse_atom_grid_type) :: atom_grid
       TYPE(qs_upf_inverse_xc_type) :: xc
       TYPE(qs_upf_inverse_coulomb_type), POINTER :: coulomb => NULL()
+      ! Physical source grid borrowed independently of any installed SCF or Hartree owner.
+      TYPE(pw_grid_type), POINTER :: source_grid => NULL()
       COMPLEX(dp), ALLOCATABLE :: hartree_k(:, :, :)
       INTEGER :: coulomb_density_evaluation = -1, coulomb_operator_evaluation = -1
       TYPE(pw_grid_type), POINTER :: xc_grid => NULL()
