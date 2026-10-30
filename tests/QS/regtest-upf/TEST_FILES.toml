@@ -61,3 +61,9 @@
 "H2_inverse_RI_images.inp"         = [
   {matcher = "M011", tol = 1e-10, ref = 13.892551841738308},
 ]
+# Native Gamma ACE retains the complete inverse USPP energy and geometry derivatives.
+"H_USPP_ACE.inp"                   = [
+  {matcher = "M011", tol = 1e-10, ref = 3.218400413680527},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 2.78743420},
+  {matcher = "M031", tol = 1e-10, ref = -24626.9095050},
+]

@@ -1172,7 +1172,7 @@ CONTAINS
       END IF
 
       IF (do_hfx .AND. qs_upf_inverse_scf_active(ks_env)) THEN
-         CALL check_inverse_exchange(qs_env, ace_active)
+         CALL check_inverse_exchange(qs_env)
       END IF
 
       IF (do_hfx) THEN
@@ -2044,11 +2044,9 @@ CONTAINS
 !> \brief Require the native RI contraction of the complete original inverse transition charges.
 !>        Unsupported exchange variants must not use ordinary Gaussian products alone.
 !> \param qs_env Native inverse fields and exchange contributions.
-!> \param ace_active Whether exchange compression is selected.
 ! **************************************************************************************************
-   SUBROUTINE check_inverse_exchange(qs_env, ace_active)
+   SUBROUTINE check_inverse_exchange(qs_env)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      LOGICAL, INTENT(IN)                                :: ace_active
 
       INTEGER                                            :: contribution
       TYPE(dft_control_type), POINTER                    :: control
@@ -2059,8 +2057,8 @@ CONTAINS
       CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=control, x_data=exchange)
       CALL get_ks_env(ks_env, upf_inverse=inverse)
       CPASSERT(ASSOCIATED(inverse))
-      IF (control%do_admm .OR. ace_active) THEN
-         CPABORT("Inverse UPF ADMM and ACE exchange are not implemented yet")
+      IF (control%do_admm) THEN
+         CPABORT("Inverse UPF ADMM exchange is not implemented yet")
       END IF
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
