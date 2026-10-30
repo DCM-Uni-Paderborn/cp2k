@@ -96,7 +96,7 @@ CONTAINS
       INTEGER                                            :: atom, ik, kind
       INTEGER, ALLOCATABLE                               :: sizes(:)
       INTEGER, POINTER                                   :: primary_sizes(:)
-      LOGICAL                                            :: auxiliary
+      LOGICAL                                            :: auxiliary, sizes_match
       REAL(dp)                                           :: folding_error
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
@@ -163,7 +163,8 @@ CONTAINS
             RETURN
          END IF
          CPASSERT(SIZE(frame%frames(ik)%ao%ao_first) == SIZE(sizes))
-         CPASSERT(ALL(frame%frames(ik)%ao%ao_last - frame%frames(ik)%ao%ao_first + 1 == sizes))
+         sizes_match = ALL(frame%frames(ik)%ao%ao_last - frame%frames(ik)%ao%ao_first + 1 == sizes)
+         CPASSERT(sizes_match)
       END DO
       frame%nao = SIZE(frame%frames(1)%ao%soft, 2)
       CALL qs_upf_inverse_augmentation_prepare(ks_env, frame%frames(1)%ao, frame%augmentation)
