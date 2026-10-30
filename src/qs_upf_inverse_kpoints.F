@@ -12,6 +12,7 @@
 !>        It does not select a representation or replace the SCF operator provider.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_kpoints
+   USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type,&
                                               pbc
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
@@ -33,7 +34,8 @@ MODULE qs_upf_inverse_kpoints
                                               kpoint_star_density,&
                                               kpoint_star_operator
    USE kpoint_mo_symmetry_methods,      ONLY: kpoint_halfturn_symmetry
-   USE kpoint_types,                    ONLY: kpoint_env_type,&
+   USE kpoint_types,                    ONLY: kpoint_env_p_type,&
+                                              kpoint_env_type,&
                                               kpoint_star_type,&
                                               kpoint_type
    USE mathconstants,                   ONLY: twopi
@@ -41,6 +43,8 @@ MODULE qs_upf_inverse_kpoints
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
+   USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
@@ -77,27 +81,60 @@ CONTAINS
 !> \param atom_local Optional one-center reconstruction for every native Bloch vector.
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
+!> \param basis_type Native basis role, ORB by default. Auxiliary fields use the auxiliary group matrices.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info, atom_local, direct, store_fields)
+   SUBROUTINE qs_upf_inverse_kpoints_prepare(ks_env, grid, images, frame, info, atom_local, direct, store_fields, basis_type)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(OUT)     :: frame
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
 
-      INTEGER                                            :: atom, ik
-      INTEGER, POINTER                                   :: sizes(:)
+      CHARACTER(LEN=16)                                  :: role
+      INTEGER                                            :: atom, ik, kind
+      INTEGER, ALLOCATABLE                               :: sizes(:)
+      INTEGER, POINTER                                   :: primary_sizes(:)
+      LOGICAL                                            :: auxiliary
       REAL(dp)                                           :: folding_error
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
       TYPE(dft_control_type), POINTER                    :: control
+      TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
       CALL get_ks_env(ks_env, kpoints=kpoints, matrix_s_kp=overlap, dft_control=control)
       CPASSERT(ASSOCIATED(kpoints))
       CALL get_ks_env(ks_env, cell=cell, particle_set=atoms)
+      role = 'ORB'
+      IF (PRESENT(basis_type)) role = basis_type
+      SELECT CASE (TRIM(role))
+      CASE ('ORB')
+         auxiliary = .FALSE.
+         CPASSERT(ASSOCIATED(kpoints%kp_env))
+         CPASSERT(ASSOCIATED(overlap))
+         CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=primary_sizes)
+         ALLOCATE (sizes(SIZE(primary_sizes)))
+         sizes(:) = primary_sizes
+      CASE ('AUX_FIT', 'AUX_FIT_SOFT')
+         auxiliary = .TRUE.
+         CPASSERT(ASSOCIATED(kpoints%kp_aux_env))
+         CALL get_ks_env(ks_env, qs_kind_set=kinds)
+         ALLOCATE (sizes(SIZE(atoms)))
+         DO atom = 1, SIZE(atoms)
+            CPASSERT(ASSOCIATED(atoms(atom)%atomic_kind))
+            kind = atoms(atom)%atomic_kind%kind_number
+            CPASSERT(kind >= 1 .AND. kind <= SIZE(kinds))
+            CALL get_qs_kind(kinds(kind), basis_set=basis, basis_type=TRIM(role))
+            CPASSERT(ASSOCIATED(basis))
+            sizes(atom) = basis%nsgf
+         END DO
+      CASE DEFAULT
+         CPABORT('Invalid native basis role for inverse Bloch fields')
+      END SELECT
       ALLOCATE (frame%native_cell_shifts(3, SIZE(atoms)))
       DO atom = 1, SIZE(atoms)
          frame%native_cell_shifts(:, atom) = NINT(MATMUL(cell%h_inv, atoms(atom)%r - pbc(atoms(atom)%r, cell)))
@@ -109,25 +146,24 @@ CONTAINS
       IF (control%use_gauxc .AND. .NOT. kpoint_halfturn_symmetry(kpoints)) THEN
          CPABORT("Use CARTESIAN_HALF_TURNS for learned XC spatial symmetry")
       END IF
-      CPASSERT(ASSOCIATED(kpoints%kp_env))
       CPASSERT(ASSOCIATED(kpoints%para_env_kp))
       CPASSERT(ALL(kpoints%wkp >= 0.0_dp))
       CPASSERT(ABS(SUM(kpoints%wkp) - 1.0_dp) <= 128.0_dp*EPSILON(1.0_dp)*kpoints%nkp)
       frame%kpoints => kpoints
       frame%kp_range = kpoints%kp_range
-      CPASSERT(ASSOCIATED(overlap))
-      CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes)
-      CALL kpoint_star_create(kpoints, sizes, frame%star)
+      CALL kpoint_star_create(kpoints, sizes, frame%star, for_aux_fit=auxiliary)
       ALLOCATE (frame%reduced_k, SOURCE=frame%star%vectors)
       ALLOCATE (frame%weights, SOURCE=frame%star%weights)
       ALLOCATE (frame%frames(SIZE(frame%weights)))
       DO ik = 1, SIZE(frame%weights)
          CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, frame%reduced_k(:, ik), frame%frames(ik), info, &
-                                          atom_local, direct, store_fields)
+                                          atom_local, direct, store_fields, basis_type=role)
          IF (info /= 0) THEN
             CALL qs_upf_inverse_kpoints_release(frame)
             RETURN
          END IF
+         CPASSERT(SIZE(frame%frames(ik)%ao%ao_first) == SIZE(sizes))
+         CPASSERT(ALL(frame%frames(ik)%ao%ao_last - frame%frames(ik)%ao%ao_first + 1 == sizes))
       END DO
       frame%nao = SIZE(frame%frames(1)%ao%soft, 2)
       CALL qs_upf_inverse_augmentation_prepare(ks_env, frame%frames(1)%ao, frame%augmentation)
@@ -172,18 +208,22 @@ CONTAINS
       LOGICAL                                            :: use_energy_weighted
       REAL(dp)                                           :: defect, tolerance
       REAL(dp), ALLOCATABLE                              :: imaginary(:, :), real_part(:, :)
+      TYPE(kpoint_env_p_type), POINTER                   :: environments(:)
       TYPE(kpoint_env_type), POINTER                     :: kp
 
       CALL check_live(frame)
+      CALL native_environments(frame, environments)
       use_energy_weighted = .FALSE.
       IF (PRESENT(energy_weighted)) use_energy_weighted = energy_weighted
       ALLOCATE (density(frame%nao, frame%nao, frame%kpoints%nkp), &
                 real_part(frame%nao, frame%nao), imaginary(frame%nao, frame%nao))
       density = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO local = 1, SIZE(frame%kpoints%kp_env)
-         kp => frame%kpoints%kp_env(local)%kpoint_env
+      DO local = 1, SIZE(environments)
+         CPASSERT(ASSOCIATED(environments(local)%kpoint_env))
+         kp => environments(local)%kpoint_env
          ik = frame%kp_range(1) + local - 1
          CPASSERT(kp%nkpoint == ik)
+         CPASSERT(ASSOCIATED(kp%pmat))
          CPASSERT(spin >= 1 .AND. spin <= SIZE(kp%pmat, 2))
          CPASSERT(kp%pmat(1, spin)%matrix_struct%nrow_global == frame%nao)
          CPASSERT(kp%pmat(1, spin)%matrix_struct%ncol_global == frame%nao)
@@ -194,7 +234,7 @@ CONTAINS
             imaginary = 0.0_dp
             IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%wmat(2, spin), imaginary)
             IF (frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(real_part, imaginary, dp)
-         ELSE IF (ALLOCATED(frame%kpoints%native_density)) THEN
+         ELSE IF (.NOT. frame%star%for_aux_fit .AND. ALLOCATED(frame%kpoints%native_density)) THEN
             CALL cp_cfm_get_submatrix(frame%kpoints%native_density(local, spin), density(:, :, ik))
             IF (.NOT. frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(0.0_dp, 0.0_dp, dp)
          ELSE
@@ -456,14 +496,19 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
       INTEGER                                            :: col, ik, local, row
       TYPE(cp_fm_struct_type), POINTER                   :: layout
+      TYPE(kpoint_env_p_type), POINTER                   :: environments(:)
 
       CALL check_live(frame)
+      CALL native_environments(frame, environments)
       CPASSERT(ALL(SHAPE(dense) == [frame%nao, frame%nao, SIZE(frame%weights)]))
       CALL kpoint_star_operator(frame%star, dense, reduced)
-      ALLOCATE (operators(SIZE(frame%kpoints%kp_env)))
+      ALLOCATE (operators(SIZE(environments)))
       DO local = 1, SIZE(operators)
          ik = frame%kp_range(1) + local - 1
-         layout => frame%kpoints%kp_env(local)%kpoint_env%pmat(1, 1)%matrix_struct
+         CPASSERT(ASSOCIATED(environments(local)%kpoint_env))
+         CPASSERT(ASSOCIATED(environments(local)%kpoint_env%pmat))
+         layout => environments(local)%kpoint_env%pmat(1, 1)%matrix_struct
+         CPASSERT(layout%nrow_global == frame%nao .AND. layout%ncol_global == frame%nao)
          CPASSERT(ASSOCIATED(layout%para_env, frame%kpoints%para_env_kp))
          CALL cp_cfm_create(operators(local), layout)
          operators(local)%local_data = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -492,6 +537,24 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_kpoints_release_operators
 
 ! **************************************************************************************************
+!> \brief Borrow the native group matrices for the selected Gaussian basis role.
+!> \param frame Prepared primary or auxiliary inverse fields.
+!> \param environments Native owners, without allocation or a primary-basis fallback.
+! **************************************************************************************************
+   SUBROUTINE native_environments(frame, environments)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
+      TYPE(kpoint_env_p_type), INTENT(OUT), POINTER      :: environments(:)
+
+      CPASSERT(ASSOCIATED(frame%kpoints))
+      IF (frame%star%for_aux_fit) THEN
+         environments => frame%kpoints%kp_aux_env
+      ELSE
+         environments => frame%kpoints%kp_env
+      END IF
+      CPASSERT(ASSOCIATED(environments))
+   END SUBROUTINE native_environments
+
+! **************************************************************************************************
 !> \brief Verify the borrowed native group distribution and fixed Bloch mesh.
 !> \param frame ...
 ! **************************************************************************************************
@@ -500,6 +563,7 @@ CONTAINS
 
       INTEGER                                            :: ik, is, link, nlocal
       LOGICAL                                            :: valid
+      TYPE(kpoint_env_p_type), POINTER                   :: environments(:)
 
       CPASSERT(ASSOCIATED(frame%kpoints))
       CPASSERT(ALLOCATED(frame%frames))
@@ -523,6 +587,7 @@ CONTAINS
          END IF
       END DO
       nlocal = MAX(0, frame%kp_range(2) - frame%kp_range(1) + 1)
-      CPASSERT(SIZE(frame%kpoints%kp_env) == nlocal)
+      CALL native_environments(frame, environments)
+      CPASSERT(SIZE(environments) == nlocal)
    END SUBROUTINE check_live
 END MODULE qs_upf_inverse_kpoints
