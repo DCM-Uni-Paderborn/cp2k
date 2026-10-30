@@ -136,7 +136,9 @@ CONTAINS
       END DO
       CALL deallocate_lebedev_grids()
       IF (composite_paw .AND. ANY(state%paw%active)) THEN
-         IF (.NOT. kinetic) CPABORT("Inverse PAW learned XC requires the native kinetic-density evaluator")
+         IF (.NOT. kinetic) THEN
+            CPABORT("Inverse PAW learned XC requires the native kinetic-density evaluator")
+         END IF
          ALLOCATE (state%paw_reconstruction(SIZE(kinds)))
          DO ikind = 1, SIZE(kinds)
             IF (.NOT. state%paw(ikind)%active) CYCLE
