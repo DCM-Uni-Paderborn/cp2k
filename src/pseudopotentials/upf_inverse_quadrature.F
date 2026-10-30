@@ -327,7 +327,8 @@ CONTAINS
          CPASSERT(valid)
          valid = ALL(ieee_is_finite(occupations)) .AND. ALL(occupations >= 0.0_dp)
          CPASSERT(valid)
-         selected = occupations > 0.0_dp
+         ALLOCATE (selected(SIZE(occupations)))
+         selected(:) = occupations > 0.0_dp
          IF (PRESENT(coefficients_direction)) THEN
             valid = ALL(SHAPE(coefficients_direction) == SHAPE(coefficients))
             CPASSERT(valid)
@@ -337,32 +338,34 @@ CONTAINS
             CPASSERT(valid)
             CPASSERT(SIZE(occupations_direction) == SIZE(occupations))
             CPASSERT(ALL(ieee_is_finite(occupations_direction)))
-            selected = selected .OR. occupations_direction /= 0.0_dp
+            selected(:) = selected .OR. occupations_direction /= 0.0_dp
          END IF
          noccupied = COUNT(selected)
          density = 0.0_dp
          gradient = 0.0_dp
          tau = 0.0_dp
          IF (noccupied == 0) RETURN
-         occupied = PACK([(i, i=1, SIZE(occupations))], selected)
-         ALLOCATE (work(npoint, noccupied), derivative(npoint, noccupied), weighted(npoint, noccupied))
+         ALLOCATE (occupied(noccupied), work(npoint, noccupied), derivative(npoint, noccupied), &
+                   weighted(npoint, noccupied))
+         occupied(:) = PACK([(i, i=1, SIZE(occupations))], selected)
          ! Form all three descriptors from the same orbitals. Contracting a rounded C f C^dagger
          ! independently can lose their one-orbital identities near a node.
-         work = MATMUL(soft, coefficients(:, occupied))
+         work(:, :) = MATMUL(soft, coefficients(:, occupied))
          DO i = 1, noccupied
             weighted(:, i) = occupations(occupied(i))*work(:, i)
          END DO
          IF (PRESENT(coefficients_direction)) THEN
-            work_direction = MATMUL(soft, coefficients_direction(:, occupied))
-            ALLOCATE (weighted_direction(npoint, noccupied), derivative_direction(npoint, noccupied))
+            ALLOCATE (work_direction(npoint, noccupied), weighted_direction(npoint, noccupied), &
+                      derivative_direction(npoint, noccupied))
+            work_direction(:, :) = MATMUL(soft, coefficients_direction(:, occupied))
             DO i = 1, noccupied
                weighted_direction(:, i) = occupations(occupied(i))*work_direction(:, i) + &
                                           occupations_direction(occupied(i))*work(:, i)
             END DO
             density = REAL(SUM(CONJG(work_direction)*weighted + CONJG(work)*weighted_direction, DIM=2), dp)
             DO axis = 1, 3
-               derivative = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
-               derivative_direction = MATMUL(soft_gradient(:, :, axis), coefficients_direction(:, occupied))
+               derivative(:, :) = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
+               derivative_direction(:, :) = MATMUL(soft_gradient(:, :, axis), coefficients_direction(:, occupied))
                gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative_direction)*weighted + &
                                                    CONJG(derivative)*weighted_direction, DIM=2), dp)
                DO i = 1, noccupied
@@ -374,7 +377,7 @@ CONTAINS
          END IF
          density = REAL(SUM(CONJG(work)*weighted, DIM=2), dp)
          DO axis = 1, 3
-            derivative = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
+            derivative(:, :) = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
             gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative)*weighted, DIM=2), dp)
             DO i = 1, noccupied
                tau = tau + 0.5_dp*occupations(occupied(i))*REAL(CONJG(derivative(:, i))*derivative(:, i), dp)
