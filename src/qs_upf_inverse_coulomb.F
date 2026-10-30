@@ -175,12 +175,12 @@ CONTAINS
       IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
       ALLOCATE (matrix(nao, nao, nk), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
       ALLOCATE (weights(nk), SOURCE=1.0_dp)
-      IF (ASSOCIATED(state%bloch%kpoints)) weights = state%bloch%weights
+      IF (ASSOCIATED(state%bloch%kpoints)) weights(:) = state%bloch%weights
       CALL qs_rho_get(rho, rho_ao_kp=ao_density)
       DO spin = 1, SIZE(ao_density, 1)
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_kpoints_density(state%bloch, spin, component)
-            matrix = matrix + component
+            matrix(:, :, :) = matrix + component
          ELSE
             CALL qs_upf_inverse_matrix_gather(state%frame%ao, ao_density(spin, 1)%matrix, gamma)
             matrix(:, :, 1) = matrix(:, :, 1) + gamma
@@ -227,7 +227,7 @@ CONTAINS
                   CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), &
                                                    map%pairs(a), matrix(:, :, k), radial, &
                                                    atom_index=map%center_atoms(a), cache=map%fields(a, k))
-                  centers(a)%density = centers(a)%density + weights(k)*radial
+                  centers(a)%density(:, :) = centers(a)%density + weights(k)*radial
                END DO
                DEALLOCATE (radial)
             END DO
@@ -290,14 +290,14 @@ CONTAINS
                                      frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, paw_density, paw_response, &
                      projected_response, g_response, atom_response(:, frame%center_atoms(center)), trace_strain*field%pw_grid%vol, &
                                                     pw_grid=field%pw_grid, cell_response=cell_response)
-            derivative = derivative + paw_response(:, 1)
+            derivative(:) = derivative + paw_response(:, 1)
             DEALLOCATE (projected_response)
          ELSE
             CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, field%pw_grid%g, &
                                                    frame%positions(:, frame%center_atoms(center)), field%pw_grid%vol, paw_density, &
                                                     pw_grid=field%pw_grid)
          END IF
-         correction = correction + paw_density(:, 1)
+         correction(:) = correction + paw_density(:, 1)
          IF (PRESENT(operators)) THEN
             ALLOCATE (paw_operator(last - first + 1, last - first + 1))
             IF (field%pw_grid%para%mode == PW_MODE_LOCAL) THEN
