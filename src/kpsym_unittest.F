@@ -345,15 +345,17 @@ CONTAINS
       TYPE(kpoint_type), POINTER                         :: kpoint
       LOGICAL, INTENT(IN)                                :: little_group
 
-      COMPLEX(dp) :: action(8, 8), coefficients(8, 2, 2), density(8, 8, 2), expected(8, 2), &
-         missing_action(6, 6), operators(8, 8, 4)
+      COMPLEX(dp) :: action(8, 8), coefficients(8, 2, 2), cross(8, 6, 2), &
+         cross_operators(8, 6, 4), density(8, 8, 2), expected(8, 2), missing_action(6, 6), &
+         operators(8, 8, 4), primary_coefficients(6, 2, 2)
       COMPLEX(dp), ALLOCATABLE                           :: expanded(:, :, :), orbitals(:, :, :), &
+                                                            primary_orbitals(:, :, :), &
                                                             reduced(:, :, :)
       INTEGER                                            :: i, ik, j, link, status
       LOGICAL                                            :: antiunitary, full_grid
       REAL(dp)                                           :: defect, lhs, rhs, rotation(3, 3), scale, &
                                                             weights(2)
-      TYPE(kpoint_star_type)                             :: map
+      TYPE(kpoint_star_type)                             :: map, primary_map
       TYPE(kpoint_sym_type), POINTER                     :: sym
 
       sym => kpoint%kp_sym(1)%kpoint_sym
@@ -429,6 +431,42 @@ CONTAINS
          END DO
          IF (ABS(lhs - rhs) > 1.e-12_dp*MAX(1.0_dp, ABS(lhs), ABS(rhs))) THEN
             ERROR STOP 'Auxiliary symmetry operator is not the weighted density adjoint'
+         END IF
+         ! Mixed ADMM matrices need distinct rotations on their auxiliary and orbital indices.
+         CALL kpoint_star_create(kpoint, [3, 3], primary_map)
+         DO ik = 1, 2
+            DO j = 1, 2
+               DO i = 1, 6
+                  primary_coefficients(i, j, ik) = CMPLX(COS(.31_dp*REAL(i + j + 2*ik, dp)), &
+                                                         SIN(.37_dp*REAL(i - 2*j + ik, dp)), dp)
+               END DO
+            END DO
+            cross(:, :, ik) = MATMUL(coefficients(:, :, ik), CONJG(TRANSPOSE(primary_coefficients(:, :, ik))))
+         END DO
+         CALL kpoint_star_orbitals(primary_map, primary_coefficients, primary_orbitals)
+         CALL kpoint_star_density(map, cross, expanded, right_map=primary_map)
+         DO link = 1, SIZE(map%weights)
+            defect = MAXVAL(ABS(expanded(:, :, link) - &
+                                MATMUL(orbitals(:, :, link), CONJG(TRANSPOSE(primary_orbitals(:, :, link))))))
+            IF (defect > 1.e-12_dp) ERROR STOP 'Mixed symmetry map disagrees with its independent orbital factors'
+            DO j = 1, 6
+               DO i = 1, 8
+                  cross_operators(i, j, link) = CMPLX(SIN(.19_dp*REAL(i + 2*j + link, dp)), &
+                                                      COS(.29_dp*REAL(2*i - j + 3*link, dp)), dp)
+               END DO
+            END DO
+         END DO
+         CALL kpoint_star_operator(map, cross_operators(:, :, :SIZE(map%weights)), reduced, right_map=primary_map)
+         lhs = 0.0_dp
+         rhs = 0.0_dp
+         DO link = 1, SIZE(map%weights)
+            lhs = lhs + map%weights(link)*REAL(SUM(CONJG(cross_operators(:, :, link))*expanded(:, :, link)), dp)
+         END DO
+         DO ik = 1, 2
+            rhs = rhs + kpoint%wkp(ik)*REAL(SUM(CONJG(reduced(:, :, ik))*cross(:, :, ik)), dp)
+         END DO
+         IF (ABS(lhs - rhs) > 1.e-12_dp*MAX(1.0_dp, ABS(lhs), ABS(rhs))) THEN
+            ERROR STOP 'Mixed symmetry operator is not the weighted rectangular density adjoint'
          END IF
       END IF
       kpoint%full_grid = full_grid

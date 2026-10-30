@@ -272,20 +272,27 @@ CONTAINS
 !> \param map Native contribution map.
 !> \param density Replicated AO matrices indexed by irreducible representative.
 !> \param expanded New matrices indexed by explicit contribution, without mesh weights.
+!> \param right_map Optional independent column basis on the same physical contribution map.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_star_density(map, density, expanded)
+   SUBROUTINE kpoint_star_density(map, density, expanded, right_map)
       TYPE(kpoint_star_type), INTENT(IN)                 :: map
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: expanded(:, :, :)
+      TYPE(kpoint_star_type), INTENT(IN), OPTIONAL       :: right_map
 
-      INTEGER                                            :: link, n
+      INTEGER                                            :: link, n, nr
 
       CPASSERT(ASSOCIATED(map%kpoints))
       n = SUM(map%last - map%first + 1)
-      CPASSERT(ALL(SHAPE(density) == [n, n, map%kpoints%nkp]))
-      ALLOCATE (expanded(n, n, SIZE(map%weights)))
+      nr = n
+      IF (PRESENT(right_map)) THEN
+         CALL check_star_pair(map, right_map)
+         nr = SUM(right_map%last - right_map%first + 1)
+      END IF
+      CPASSERT(ALL(SHAPE(density) == [n, nr, map%kpoints%nkp]))
+      ALLOCATE (expanded(n, nr, SIZE(map%weights)))
       DO link = 1, SIZE(map%weights)
-         CALL kpoint_star_matrix(map, link, density(:, :, map%representative(link)), expanded(:, :, link), .FALSE.)
+         CALL kpoint_star_matrix(map, link, density(:, :, map%representative(link)), expanded(:, :, link), .FALSE., right_map)
       END DO
    END SUBROUTINE kpoint_star_density
 
@@ -297,25 +304,32 @@ CONTAINS
 !> \param operators Unweighted operators indexed by explicit contribution.
 !> \param reduced New unweighted operators indexed by irreducible representative.
 !> \param representative Optional single representative. The output then has one third-index slice.
+!> \param right_map Optional independent column basis for a rectangular operator.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_star_operator(map, operators, reduced, representative)
+   SUBROUTINE kpoint_star_operator(map, operators, reduced, representative, right_map)
       TYPE(kpoint_star_type), INTENT(IN)                 :: map
       COMPLEX(dp), INTENT(IN)                            :: operators(:, :, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: reduced(:, :, :)
       INTEGER, INTENT(IN), OPTIONAL                      :: representative
+      TYPE(kpoint_star_type), INTENT(IN), OPTIONAL       :: right_map
 
       COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
-      INTEGER                                            :: ik, link, n, nk
+      INTEGER                                            :: ik, link, n, nk, nr
 
       CPASSERT(ASSOCIATED(map%kpoints))
       n = SUM(map%last - map%first + 1)
-      CPASSERT(ALL(SHAPE(operators) == [n, n, SIZE(map%weights)]))
+      nr = n
+      IF (PRESENT(right_map)) THEN
+         CALL check_star_pair(map, right_map)
+         nr = SUM(right_map%last - right_map%first + 1)
+      END IF
+      CPASSERT(ALL(SHAPE(operators) == [n, nr, SIZE(map%weights)]))
       nk = map%kpoints%nkp
       IF (PRESENT(representative)) THEN
          CPASSERT(representative >= 1 .AND. representative <= nk)
          nk = 1
       END IF
-      ALLOCATE (reduced(n, n, nk), matrix(n, n))
+      ALLOCATE (reduced(n, nr, nk), matrix(n, nr))
       reduced = z_zero
       DO link = 1, SIZE(map%weights)
          ik = map%representative(link)
@@ -323,7 +337,7 @@ CONTAINS
             IF (ik /= representative) CYCLE
             ik = 1
          END IF
-         CALL kpoint_star_matrix(map, link, operators(:, :, link), matrix, .TRUE.)
+         CALL kpoint_star_matrix(map, link, operators(:, :, link), matrix, .TRUE., right_map)
          reduced(:, :, ik) = reduced(:, :, ik) + map%relative_weights(link)*matrix
       END DO
    END SUBROUTINE kpoint_star_operator
@@ -436,36 +450,46 @@ CONTAINS
 !> \param matrix Input AO matrix.
 !> \param transformed New AO matrix.
 !> \param adjoint Apply the transpose of the real-linear map, including time reversal.
+!> \param right_map Optional independent column basis with its own native AO rotations.
 ! **************************************************************************************************
-   SUBROUTINE kpoint_star_matrix(map, link, matrix, transformed, adjoint)
-      TYPE(kpoint_star_type), INTENT(IN)                 :: map
+   SUBROUTINE kpoint_star_matrix(map, link, matrix, transformed, adjoint, right_map)
+      TYPE(kpoint_star_type), INTENT(IN), TARGET         :: map
       INTEGER, INTENT(IN)                                :: link
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: transformed(:, :)
       LOGICAL, INTENT(IN)                                :: adjoint
+      TYPE(kpoint_star_type), INTENT(IN), OPTIONAL, &
+         TARGET                                          :: right_map
 
       INTEGER                                            :: a, b, ia, ib, ik, is, na, nb, shift(3)
       REAL(dp)                                           :: phase(2, 2)
       REAL(dp), ALLOCATABLE                              :: cpart(:, :), cwork(:, :), rpart(:, :), &
                                                             rwork(:, :), work(:, :)
       REAL(dp), POINTER                                  :: left(:, :), right(:, :)
-      TYPE(kp_symmetry_op_type)                          :: op
+      TYPE(kp_symmetry_op_type)                          :: op, right_op
+      TYPE(kpoint_star_type), POINTER                    :: columns
       TYPE(kpoint_sym_type), POINTER                     :: sym
 
       ik = map%representative(link)
       is = map%operation(link)
+      columns => map
+      IF (PRESENT(right_map)) columns => right_map
       IF (is == 0) THEN
          transformed = matrix
          RETURN
       END IF
       sym => map%kpoints%kp_sym(ik)%kpoint_sym
       CALL kp_symmetry_op_init(op, map%kpoints, sym, is, for_aux_fit=map%for_aux_fit)
+      right_op = op
+      IF (columns%for_aux_fit .NEQV. map%for_aux_fit) THEN
+         CALL kp_symmetry_op_init(right_op, columns%kpoints, sym, is, for_aux_fit=columns%for_aux_fit)
+      END IF
       transformed = z_zero
-      DO b = 1, SIZE(map%first)
-         nb = map%last(b) - map%first(b) + 1
+      DO b = 1, SIZE(columns%first)
+         nb = columns%last(b) - columns%first(b) + 1
          IF (nb == 0) CYCLE
-         ib = op%atom_map(b)
-         right => op%kind_rot(op%atom_kind(b))%rmat
+         ib = right_op%atom_map(b)
+         right => right_op%kind_rot(right_op%atom_kind(b))%rmat
          DO a = 1, SIZE(map%first)
             na = map%last(a) - map%first(a) + 1
             IF (na == 0) CYCLE
@@ -475,26 +499,46 @@ CONTAINS
             CALL ensure_work_matrix(cpart, na, nb)
             rpart = 0.0_dp
             cpart = 0.0_dp
-            shift = op%cell_shift(:, a) - op%cell_shift(:, b)
+            shift = op%cell_shift(:, a) - right_op%cell_shift(:, b)
             IF (adjoint) THEN
-               CALL kp_symmetry_rotate_block(REAL(matrix(map%first(ia):map%last(ia), map%first(ib):map%last(ib)), dp), &
+               CALL kp_symmetry_rotate_block(REAL(matrix(map%first(ia):map%last(ia), columns%first(ib):columns%last(ib)), dp), &
                                              TRANSPOSE(left), TRANSPOSE(right), .FALSE., 1.0_dp, rpart, work)
-               CALL kp_symmetry_rotate_block(AIMAG(matrix(map%first(ia):map%last(ia), map%first(ib):map%last(ib))), &
+               CALL kp_symmetry_rotate_block(AIMAG(matrix(map%first(ia):map%last(ia), columns%first(ib):columns%last(ib))), &
                                              TRANSPOSE(left), TRANSPOSE(right), .FALSE., 1.0_dp, cpart, work)
                CALL kp_symmetry_phase_factors(shift, op%xkp, op%time_reversal, .FALSE., phase)
-               transformed(map%first(a):map%last(a), map%first(b):map%last(b)) = &
+               transformed(map%first(a):map%last(a), columns%first(b):columns%last(b)) = &
                   CMPLX(phase(1, 1)*rpart + phase(2, 1)*cpart, phase(1, 2)*rpart + phase(2, 2)*cpart, dp)
             ELSE
-               CALL kp_symmetry_phase_block(REAL(matrix(map%first(a):map%last(a), map%first(b):map%last(b)), dp), &
+               CALL kp_symmetry_phase_block(REAL(matrix(map%first(a):map%last(a), columns%first(b):columns%last(b)), dp), &
                                             shift, op%xkp, op%time_reversal, rwork, cwork, &
-                                            AIMAG(matrix(map%first(a):map%last(a), map%first(b):map%last(b))))
+                                            AIMAG(matrix(map%first(a):map%last(a), columns%first(b):columns%last(b))))
                CALL kp_symmetry_rotate_block(rwork, left, right, .FALSE., 1.0_dp, rpart, work)
                CALL kp_symmetry_rotate_block(cwork, left, right, .FALSE., 1.0_dp, cpart, work)
-               transformed(map%first(ia):map%last(ia), map%first(ib):map%last(ib)) = CMPLX(rpart, cpart, dp)
+               transformed(map%first(ia):map%last(ia), columns%first(ib):columns%last(ib)) = CMPLX(rpart, cpart, dp)
             END IF
          END DO
       END DO
    END SUBROUTINE kpoint_star_matrix
+
+! **************************************************************************************************
+!> \brief Match the physical mesh and operations before combining distinct AO bases.
+!> \param rows Native row basis contribution map.
+!> \param columns Native column basis contribution map.
+! **************************************************************************************************
+   SUBROUTINE check_star_pair(rows, columns)
+      TYPE(kpoint_star_type), INTENT(IN)                 :: rows, columns
+
+      CPASSERT(ASSOCIATED(rows%kpoints))
+      CPASSERT(ASSOCIATED(columns%kpoints))
+      CPASSERT(ASSOCIATED(rows%kpoints, columns%kpoints))
+      CPASSERT(SIZE(rows%first) == SIZE(columns%first))
+      CPASSERT(SIZE(rows%weights) == SIZE(columns%weights))
+      CPASSERT(ALL(rows%representative == columns%representative))
+      CPASSERT(ALL(rows%operation == columns%operation))
+      CPASSERT(ALL(rows%vectors == columns%vectors))
+      CPASSERT(ALL(rows%weights == columns%weights))
+      CPASSERT(ALL(rows%relative_weights == columns%relative_weights))
+   END SUBROUTINE check_star_pair
 
 ! **************************************************************************************************
 !> \brief Index full-grid links by irreducible k-point without rescanning the complete mesh.
