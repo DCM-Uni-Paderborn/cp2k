@@ -377,10 +377,15 @@ CONTAINS
       TYPE(particle_type), POINTER                       :: particles(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_uspp_type), POINTER                        :: uspp
+      TYPE(qs_uspp_type), TARGET                         :: nc_context
 
       CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=particles, cell=cell, uspp=uspp)
       CPASSERT(ASSOCIATED(kinds) .AND. ASSOCIATED(particles) .AND. ASSOCIATED(cell))
-      CPASSERT(ASSOCIATED(uspp))
+      IF (.NOT. ASSOCIATED(uspp)) THEN
+         ! Pure NC-UPF has no native ultrasoft environment and has identity reconstruction.
+         ALLOCATE (nc_context%center_atoms(0), nc_context%center_kinds(0))
+         uspp => nc_context
+      END IF
       CALL qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
                                   comm, frame, info, atom_local, direct, store_fields, basis_type)
    END SUBROUTINE qs_upf_inverse_from_ks
@@ -447,7 +452,6 @@ CONTAINS
             CPASSERT(reduced_k(axis) == 0.0_dp)
          END IF
       END DO
-      CPASSERT(SIZE(uspp%center_atoms) > 0)
       npoint = SIZE(weights)
       frame%point_comm = comm
       frame%cell = cell%hmat
@@ -487,6 +491,7 @@ CONTAINS
       DO atom = 1, SIZE(particles)
          IF (nc_kind(particles(atom)%atomic_kind%kind_number)) ncenter = ncenter + 1
       END DO
+      ! Local NC potentials have no projector centers and retain identity reconstruction.
       ALLOCATE (frame%center_atoms(ncenter), frame%center_kinds(ncenter))
       frame%center_atoms(:SIZE(uspp%center_atoms)) = uspp%center_atoms
       frame%center_kinds(:SIZE(uspp%center_atoms)) = uspp%center_kinds
