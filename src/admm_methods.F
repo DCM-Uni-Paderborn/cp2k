@@ -134,6 +134,7 @@ MODULE admm_methods
              calc_admm_ovlp_forces, &
              calc_admm_ovlp_forces_kp, &
              admm_projection_derivative, &
+             admm_operator_pullback, &
              kpoint_calc_admm_matrices
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'admm_methods'
@@ -2189,11 +2190,7 @@ CONTAINS
                   CALL cp_cfm_scale_and_add(fac2, cK, fac, kp%csmat)
                END IF
 
-               CALL parallel_gemm('N', 'N', nao_aux_fit, nao_orb, nao_aux_fit, &
-                                  z_one, cK, kp%camat, z_zero, cwork_aux_orb)
-
-               CALL parallel_gemm('C', 'N', nao_orb, nao_orb, nao_aux_fit, &
-                                  z_one, kp%camat, cwork_aux_orb, z_zero, cwork_orb_orb)
+               CALL admm_operator_pullback(kp%camat, cK, cwork_orb_orb, cwork_aux_orb)
 
                CALL cp_cfm_to_fm(cwork_orb_orb, mtargetr=fm_ks(ikp, 1, ispin), mtargeti=fm_ks(ikp, 2, ispin))
             END IF
@@ -4088,5 +4085,75 @@ CONTAINS
       END IF
 
    END SUBROUTINE kpoint_calc_admm_matrices
+
+! **************************************************************************************************
+!> \brief Pull an auxiliary operator back through the physical basis projection.
+!>        For A=M_AA^-1 M_AO, return H_O=A^dagger H_A A. Optional geometry covectors
+!>        satisfy dE=Re Tr(W_AO^dagger dM_AO)+Re Tr(W_AA^dagger dM_AA) at fixed H_A,P_O.
+!>        H_A and P_O must be Hermitian. Fractions, occupations and any spin scaling
+!>        belong to these inputs. Mesh weights are applied by the scalar contraction.
+!> \param projection Native rectangular projection A, auxiliary rows and orbital columns.
+!> \param auxiliary_operator Complete covariant auxiliary operator H_A.
+!> \param orbital_operator Preallocated primary operator, overwritten without an image transform.
+!> \param workspace Preallocated auxiliary-orbital workspace, overwritten.
+!> \param density Primary density P_O, required with geometry outputs.
+!> \param metric_inverse Inverse of the same M_AA that defines A, required with geometry outputs.
+!> \param mixed_covector Preallocated rectangular W_AO=2Z with Z=M_AA^-1 H_A A P_O.
+!> \param metric_covector Preallocated Hermitian W_AA=-(Z A^dagger+A Z^dagger).
+! **************************************************************************************************
+   SUBROUTINE admm_operator_pullback(projection, auxiliary_operator, orbital_operator, workspace, density, &
+                                     metric_inverse, mixed_covector, metric_covector)
+      TYPE(cp_cfm_type), INTENT(IN)                      :: projection, auxiliary_operator
+      TYPE(cp_cfm_type), INTENT(INOUT)                   :: orbital_operator, workspace
+      TYPE(cp_cfm_type), INTENT(IN), OPTIONAL            :: density, metric_inverse
+      TYPE(cp_cfm_type), INTENT(INOUT), OPTIONAL         :: mixed_covector, metric_covector
+
+      INTEGER                                            :: na, no
+      LOGICAL                                            :: geometry, valid
+      TYPE(cp_cfm_type)                                  :: rhs
+
+      CPASSERT(ASSOCIATED(projection%matrix_struct))
+      CPASSERT(ASSOCIATED(auxiliary_operator%matrix_struct))
+      CPASSERT(ASSOCIATED(orbital_operator%matrix_struct))
+      CPASSERT(ASSOCIATED(workspace%matrix_struct))
+      na = projection%matrix_struct%nrow_global
+      no = projection%matrix_struct%ncol_global
+      valid = auxiliary_operator%matrix_struct%nrow_global == na .AND. &
+              auxiliary_operator%matrix_struct%ncol_global == na
+      CPASSERT(valid)
+      valid = orbital_operator%matrix_struct%nrow_global == no .AND. &
+              orbital_operator%matrix_struct%ncol_global == no
+      CPASSERT(valid)
+      valid = workspace%matrix_struct%nrow_global == na .AND. workspace%matrix_struct%ncol_global == no
+      CPASSERT(valid)
+      CALL parallel_gemm('N', 'N', na, no, na, z_one, auxiliary_operator, projection, z_zero, workspace)
+      CALL parallel_gemm('C', 'N', no, no, na, z_one, projection, workspace, z_zero, orbital_operator)
+
+      geometry = PRESENT(density) .OR. PRESENT(metric_inverse) .OR. &
+                 PRESENT(mixed_covector) .OR. PRESENT(metric_covector)
+      IF (.NOT. geometry) RETURN
+      valid = PRESENT(density) .AND. PRESENT(metric_inverse) .AND. &
+              PRESENT(mixed_covector) .AND. PRESENT(metric_covector)
+      CPASSERT(valid)
+      CPASSERT(ASSOCIATED(density%matrix_struct))
+      CPASSERT(ASSOCIATED(metric_inverse%matrix_struct))
+      CPASSERT(ASSOCIATED(mixed_covector%matrix_struct))
+      CPASSERT(ASSOCIATED(metric_covector%matrix_struct))
+      valid = density%matrix_struct%nrow_global == no .AND. density%matrix_struct%ncol_global == no
+      CPASSERT(valid)
+      valid = metric_inverse%matrix_struct%nrow_global == na .AND. metric_inverse%matrix_struct%ncol_global == na
+      CPASSERT(valid)
+      valid = mixed_covector%matrix_struct%nrow_global == na .AND. mixed_covector%matrix_struct%ncol_global == no
+      CPASSERT(valid)
+      valid = metric_covector%matrix_struct%nrow_global == na .AND. metric_covector%matrix_struct%ncol_global == na
+      CPASSERT(valid)
+      CALL cp_cfm_create(rhs, projection%matrix_struct)
+      CALL parallel_gemm('N', 'N', na, no, no, z_one, workspace, density, z_zero, rhs)
+      CALL parallel_gemm('N', 'N', na, no, na, z_one, metric_inverse, rhs, z_zero, mixed_covector)
+      CALL parallel_gemm('N', 'C', na, na, no, -z_one, mixed_covector, projection, z_zero, metric_covector)
+      CALL parallel_gemm('N', 'C', na, na, no, -z_one, projection, mixed_covector, z_one, metric_covector)
+      mixed_covector%local_data(:, :) = 2.0_dp*mixed_covector%local_data
+      CALL cp_cfm_release(rhs)
+   END SUBROUTINE admm_operator_pullback
 
 END MODULE admm_methods
