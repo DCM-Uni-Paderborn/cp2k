@@ -6,6 +6,8 @@
 !--------------------------------------------------------------------------------------------------!
 !> \brief Native Gaussian grid source and its complex Bloch AO and geometry transposes.
 MODULE qs_upf_inverse_background
+   USE admm_types,                      ONLY: admm_type,&
+                                              get_admm_env
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
@@ -27,7 +29,8 @@ MODULE qs_upf_inverse_background
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_collocate_density,            ONLY: calculate_rho_elec
-   USE qs_environment_types,            ONLY: qs_environment_type
+   USE qs_environment_types,            ONLY: get_qs_env,&
+                                              qs_environment_type
    USE qs_integrate_potential_product,  ONLY: integrate_v_rspace
    USE qs_kinetic,                      ONLY: build_kinetic_matrix
    USE qs_ks_types,                     ONLY: get_ks_env,&
@@ -66,17 +69,23 @@ CONTAINS
 !> \param ks_env Live native KS environment with overlap images and Gaussian task lists.
 !> \param map New owned background map. The native matrices and density state are unchanged.
 !> \param soft_basis Select the GAPW soft basis. False uses the full native Gaussian basis.
+!> \param qs_env Matching native owner, required with AUX_FIT. Its auxiliary lists must remain live.
+!> \param basis_type ORB by default, or AUX_FIT with its own overlaps, neighbors and grid tasks.
+!>        Release and rebuild the map when the native auxiliary lists change.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_background_prepare(ks_env, map, soft_basis)
-      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+   SUBROUTINE qs_upf_inverse_background_prepare(ks_env, map, soft_basis, qs_env, basis_type)
+      TYPE(qs_ks_env_type), INTENT(IN), TARGET           :: ks_env
       TYPE(qs_upf_inverse_background_type), INTENT(OUT)  :: map
       LOGICAL, INTENT(IN), OPTIONAL                      :: soft_basis
+      TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
 
       CHARACTER(LEN=1)                                   :: symmetry
       INTEGER                                            :: a, b, ENTRY, image, info, native_cell(3)
       INTEGER, POINTER                                   :: sizes(:)
       REAL(dp)                                           :: image_error, inverse_lattice(3, 3), &
                                                             rab(3), tolerance
+      TYPE(admm_type), POINTER                           :: admm
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
       TYPE(dft_control_type), POINTER                    :: control
@@ -85,9 +94,28 @@ CONTAINS
       TYPE(neighbor_list_iterator_p_type), POINTER       :: iterator(:)
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
       TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(qs_ks_env_type), POINTER                      :: owner
 
       IF (PRESENT(soft_basis)) map%soft_basis = soft_basis
+      IF (PRESENT(basis_type)) map%orbital_basis = basis_type
+      CPASSERT(map%orbital_basis == "ORB" .OR. map%orbital_basis == "AUX_FIT")
       CALL get_ks_env(ks_env, matrix_s_kp=overlap, kpoints=kpoints, do_kpoints=map%bloch, sab_orb=sab, dft_control=control)
+      IF (map%orbital_basis == "AUX_FIT") THEN
+         CPASSERT(PRESENT(qs_env))
+         CPASSERT(ASSOCIATED(qs_env))
+         CALL get_qs_env(qs_env, admm_env=admm, ks_env=owner)
+         CPASSERT(ASSOCIATED(owner, ks_env) .AND. ASSOCIATED(admm))
+         CALL get_admm_env(admm, matrix_s_aux_fit_kp=overlap, sab_aux_fit=sab)
+         map%neighbors => sab
+         map%grid_basis = "AUX_FIT"
+         map%task_list => admm%task_list_aux_fit
+         IF (map%soft_basis) THEN
+            CPASSERT(ASSOCIATED(admm%admm_gapw_env))
+            map%grid_basis = "AUX_FIT_SOFT"
+            map%task_list => admm%admm_gapw_env%task_list
+         END IF
+         CPASSERT(ASSOCIATED(map%task_list))
+      END IF
       CPASSERT(ASSOCIATED(overlap) .AND. ASSOCIATED(sab))
       CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes, group=map%comm)
       map%nao = SUM(sizes)
@@ -166,6 +194,10 @@ CONTAINS
       map%nao = source%nao
       map%bloch = source%bloch
       map%soft_basis = source%soft_basis
+      map%orbital_basis = source%orbital_basis
+      map%grid_basis = source%grid_basis
+      map%task_list => source%task_list
+      map%neighbors => source%neighbors
       map%comm = source%comm
       map%plan = source%plan
       ALLOCATE (map%weights, SOURCE=source%weights)
@@ -206,15 +238,27 @@ CONTAINS
 
       CPASSERT(PRESENT(kinetic) .EQV. PRESENT(kinetic_gspace))
       CALL background_images(map, matrix)
-      CALL calculate_rho_elec(matrix_p_kp=map%density, rho=rho, rho_gspace=rho_gspace, &
-                              total_rho=total_rho, ks_env=ks_env, soft_valid=map%soft_basis)
+      IF (ASSOCIATED(map%task_list)) THEN
+         CALL calculate_rho_elec(matrix_p_kp=map%density, rho=rho, rho_gspace=rho_gspace, &
+                                 total_rho=total_rho, ks_env=ks_env, basis_type=map%grid_basis, &
+                                 task_list_external=map%task_list)
+      ELSE
+         CALL calculate_rho_elec(matrix_p_kp=map%density, rho=rho, rho_gspace=rho_gspace, &
+                                 total_rho=total_rho, ks_env=ks_env, soft_valid=map%soft_basis)
+      END IF
       ! Multigrid remapping can leave unpaired Fourier components on even grids.
       ! Coulomb and XC must use the same returned real Gaussian density.
       CALL pw_transfer(rho, rho_gspace)
       IF (PRESENT(kinetic)) THEN
          CPASSERT(ASSOCIATED(kinetic%pw_grid, rho%pw_grid))
-         CALL calculate_rho_elec(matrix_p_kp=map%density, rho=kinetic, rho_gspace=kinetic_gspace, &
-                                 ks_env=ks_env, soft_valid=map%soft_basis, compute_tau=.TRUE.)
+         IF (ASSOCIATED(map%task_list)) THEN
+            CALL calculate_rho_elec(matrix_p_kp=map%density, rho=kinetic, rho_gspace=kinetic_gspace, &
+                                    ks_env=ks_env, basis_type=map%grid_basis, compute_tau=.TRUE., &
+                                    task_list_external=map%task_list)
+         ELSE
+            CALL calculate_rho_elec(matrix_p_kp=map%density, rho=kinetic, rho_gspace=kinetic_gspace, &
+                                    ks_env=ks_env, soft_valid=map%soft_basis, compute_tau=.TRUE.)
+         END IF
          CALL pw_transfer(kinetic, kinetic_gspace)
       END IF
    END SUBROUTINE qs_upf_inverse_background_collocate
@@ -245,8 +289,14 @@ CONTAINS
       DO image = 1, SIZE(map%potential)
          CALL dbcsr_set(map%potential(image)%matrix, 0.0_dp)
       END DO
-      CALL integrate_v_rspace(potential, hmat_kp=map%potential, qs_env=qs_env, &
-                              calculate_forces=.FALSE., gapw=map%soft_basis, compute_tau=kinetic, ks_env_external=ks_env)
+      IF (ASSOCIATED(map%task_list)) THEN
+         CALL integrate_v_rspace(potential, hmat_kp=map%potential, qs_env=qs_env, &
+                                 calculate_forces=.FALSE., gapw=map%soft_basis, compute_tau=kinetic, &
+                                 ks_env_external=ks_env, basis_type=map%grid_basis, task_list_external=map%task_list)
+      ELSE
+         CALL integrate_v_rspace(potential, hmat_kp=map%potential, qs_env=qs_env, &
+                                 calculate_forces=.FALSE., gapw=map%soft_basis, compute_tau=kinetic, ks_env_external=ks_env)
+      END IF
       ! Native integration leaves the auxiliary PW volume element to its caller.
       DO image = 1, SIZE(map%potential)
          CALL dbcsr_scale(map%potential(image)%matrix, potential%pw_grid%dvol)
@@ -330,7 +380,11 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
 
       CALL background_images(map, matrix)
-      CALL get_ks_env(ks_env, sab_orb=sab)
+      IF (ASSOCIATED(map%neighbors)) THEN
+         sab => map%neighbors
+      ELSE
+         CALL get_ks_env(ks_env, sab_orb=sab)
+      END IF
       CPASSERT(ASSOCIATED(sab))
       NULLIFY (operators)
       ALLOCATE (occupations(1, SIZE(map%density)))
@@ -338,11 +392,12 @@ CONTAINS
          occupations(1, image)%matrix => map%density(image)%matrix
       END DO
       IF (kinetic) THEN
-         CALL build_kinetic_matrix(ks_env, matrixkp_t=operators, basis_type="ORB", sab_nl=sab, &
+         CALL build_kinetic_matrix(ks_env, matrixkp_t=operators, basis_type=map%orbital_basis, sab_nl=sab, &
                                    calculate_forces=.TRUE., matrixkp_p=occupations, &
                                    force_response=gradients, virial_response=virial)
       ELSE
-         CALL build_overlap_matrix(ks_env, matrixkp_s=operators, basis_type_a="ORB", basis_type_b="ORB", &
+         CALL build_overlap_matrix(ks_env, matrixkp_s=operators, &
+                                   basis_type_a=map%orbital_basis, basis_type_b=map%orbital_basis, &
                                    sab_nl=sab, calculate_forces=.TRUE., matrixkp_p=occupations, &
                                    force_response=gradients, virial_response=virial)
       END IF
@@ -386,9 +441,16 @@ CONTAINS
       END DO
       CALL weighted%create(potential%pw_grid)
       weighted%array = potential%pw_grid%dvol*potential%array
-      CALL integrate_v_rspace(weighted, hmat_kp=map%potential, pmat_kp=map%density, qs_env=qs_env, &
-                              calculate_forces=.TRUE., gapw=map%soft_basis, force_response=forces, virial_response=virial, &
-                              compute_tau=kinetic, ks_env_external=ks_env)
+      IF (ASSOCIATED(map%task_list)) THEN
+         CALL integrate_v_rspace(weighted, hmat_kp=map%potential, pmat_kp=map%density, qs_env=qs_env, &
+                                 calculate_forces=.TRUE., gapw=map%soft_basis, force_response=forces, &
+                                 virial_response=virial, compute_tau=kinetic, ks_env_external=ks_env, &
+                                 basis_type=map%grid_basis, task_list_external=map%task_list)
+      ELSE
+         CALL integrate_v_rspace(weighted, hmat_kp=map%potential, pmat_kp=map%density, qs_env=qs_env, &
+                                 calculate_forces=.TRUE., gapw=map%soft_basis, force_response=forces, virial_response=virial, &
+                                 compute_tau=kinetic, ks_env_external=ks_env)
+      END IF
       CALL map%comm%sum(forces)
       CALL map%comm%sum(virial)
       ! Native rho_elec stores the energy gradient; return physical forces from this isolated map.

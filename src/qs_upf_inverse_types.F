@@ -30,8 +30,10 @@ MODULE qs_upf_inverse_types
                                               pw_grid_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
+   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_type
+   USE task_list_types,                 ONLY: task_list_type
    USE upf_inverse,                     ONLY: upf_inverse_atomic_type,&
                                               upf_inverse_kinetic_type,&
                                               upf_inverse_type
@@ -115,6 +117,10 @@ MODULE qs_upf_inverse_types
    TYPE qs_upf_inverse_background_type
       INTEGER :: nao = 0
       LOGICAL :: bloch = .FALSE., soft_basis = .TRUE.
+      CHARACTER(LEN=16) :: orbital_basis = "ORB", grid_basis = "ORB"
+      ! Auxiliary lists are borrowed from their native ADMM geometry owner.
+      TYPE(task_list_type), POINTER :: task_list => NULL()
+      TYPE(neighbor_list_set_p_type), POINTER :: neighbors(:) => NULL()
       TYPE(mp_comm_type) :: comm
       TYPE(kp_transform_plan_type) :: plan
       TYPE(dbcsr_p_type), POINTER :: density(:) => NULL(), potential(:) => NULL()
