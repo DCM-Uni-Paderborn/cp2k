@@ -1095,6 +1095,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
 
+      MARK_USED(curve)
       segment_queries = segment_queries + 1
       SELECT TYPE (context)
       TYPE IS (REAL(dp))
@@ -1826,7 +1827,7 @@ CONTAINS
       DEALLOCATE (matrix_kind%onecenter%pair_index, matrix_kind%onecenter%gaunt, matrix_kind%xcgrid%radial)
       ALLOCATE (matrix_kind%onecenter%pair_index(2, 2), matrix_kind%onecenter%gaunt(2, 2, 1))
       ALLOCATE (matrix_kind%xcgrid%radial(4, 3, 0:0, 2))
-      matrix_kind%onecenter%pair_index = RESHAPE([1, 2, 2, 3], [2, 2])
+      matrix_kind%onecenter%pair_index(:, :) = RESHAPE([1, 2, 2, 3], [2, 2])
       matrix_kind%onecenter%gaunt = 1.0_dp/SQRT(fourpi)
       DO pair = 1, 3
          matrix_kind%xcgrid%radial(:, pair, 0, :) = REAL(pair, dp)*kind%xcgrid%radial(:, 1, 0, :)
