@@ -830,7 +830,7 @@ CONTAINS
          IF (.NOT. ALLOCATED(potential_components)) ALLOCATE (potential_components(n, n, ns), SOURCE=twofold_real_type())
          CALL frames(1)%ao%point_comm%sum(potential_components%hi)
          CALL frames(1)%ao%point_comm%sum(potential_components%lo)
-         potential(center)%matrix = twofold_value(potential_components)
+         potential(center)%matrix(:, :, :) = twofold_value(potential_components)
          ALLOCATE (potential(center)%components, SOURCE=potential_components)
          ALLOCATE (atomic_operator(SIZE(density, 1), SIZE(density, 2)))
          DO spin = 1, ns
@@ -1031,7 +1031,7 @@ CONTAINS
             CALL project_paw_density(frames, direction, kweights, first, last, delta)
             ALLOCATE (density_components(n, n, ns), direction_components(n, n, ns))
             CALL retained_projector_density(frames, kweights, first, last, dm, density_components, orbital_factors)
-            direction_components%hi = delta
+            direction_components(:, :, :)%hi = delta
             direction_components%lo = 0.0_dp
             IF (PRESENT(orbital_direction)) THEN
      CALL retained_projector_density(frames, kweights, first, last, delta, direction_components, orbital_factors, orbital_direction)
