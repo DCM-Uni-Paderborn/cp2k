@@ -134,9 +134,9 @@ MODULE qs_scf_diagonalization
    USE qs_kpoint_operators,             ONLY: &
         kpoint_operator_context_create, kpoint_operator_context_release, &
         kpoint_operator_context_type, kpoint_operator_evaluate, kpoint_operator_finish, &
-        kpoint_operator_get, kpoint_operator_get_local, kpoint_operator_has_native, &
-        kpoint_operator_prepare, kpoint_operator_start, kpoint_operator_store, &
-        kpoint_operator_work_size, kpoint_slot_ks, kpoint_slot_s, kpoint_slot_t, kpoint_spin_free
+        kpoint_operator_get, kpoint_operator_get_local, kpoint_operator_prepare, &
+        kpoint_operator_start, kpoint_operator_store, kpoint_operator_work_size, kpoint_slot_ks, &
+        kpoint_slot_s, kpoint_slot_t, kpoint_spin_free
    USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: qs_ks_did_change,&
                                               qs_ks_env_type
@@ -725,7 +725,7 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: coeffs
       REAL(dp), POINTER :: effective_u(:, :), adiis_u(:, :)
       INTEGER :: cdiis_ncall, handle, ib, ikp, ispin, kplocal, kpmax, &
-                 lattice_fft, nb, nkp, nspin, omp_threads, nworkers, nentry
+                 lattice_fft, nb, nkp, nspin, omp_threads, nworkers, nentry, fft_ready
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(3)                              :: nkp_grid
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
@@ -822,11 +822,6 @@ CONTAINS
       ! One-rank groups use the same worker path for MPI, OpenMP and hybrid jobs.
       use_local_kpoints = kpoints%para_env_kp%num_pe == 1 .AND. .NOT. use_real_wfn
       IF (diag_check_requested()) use_local_kpoints = .FALSE.
-      IF (para_env%num_pe == 1 .AND. omp_threads == 1) THEN
-         IF (lattice_fft == lattice_fft_on .OR. (lattice_fft == lattice_fft_auto .AND. nkp >= 27)) THEN
-            use_local_kpoints = .FALSE.
-         END IF
-      END IF
       ib = 0
       nb = 0
       NULLIFY (scf_section)
@@ -866,13 +861,10 @@ CONTAINS
       ! Prepare H/S before starting any round. ADIIS can replace only the idle KS slot.
       prepared_ops = .FALSE.
       ! A single distributed group can also assemble its prepared local tiles.
-      IF (para_env%num_pe > 1 .OR. use_local_kpoints .OR. &
-          kpoint_operator_has_native(kpoints, effective_ks) .OR. kpoint_operator_has_native(kpoints, matrix_s)) THEN
-         CALL kpoint_operator_prepare(op_ctx, effective_ks, kpoint_slot_ks, prepared_ops)
-         IF (.NOT. reuse_smat) THEN
-            CALL kpoint_operator_prepare(op_ctx, matrix_s, kpoint_slot_s, prepared_part, matrix_row=kpoint_spin_free)
-            prepared_ops = prepared_ops .AND. prepared_part
-         END IF
+      CALL kpoint_operator_prepare(op_ctx, effective_ks, kpoint_slot_ks, prepared_ops)
+      IF (.NOT. reuse_smat) THEN
+         CALL kpoint_operator_prepare(op_ctx, matrix_s, kpoint_slot_s, prepared_part, matrix_row=kpoint_spin_free)
+         prepared_ops = prepared_ops .AND. prepared_part
       END IF
 
       use_local_kpoints = use_local_kpoints .AND. prepared_ops
@@ -898,9 +890,9 @@ CONTAINS
          cmos => workspace(1)%cmos
       END IF
 
-      ! For a complete Monkhorst-Pack grid, transform every MPI-local DBCSR block over all k points
-      ! in one lattice FFT. The established per-k phase sum remains the exact memory/irregular-grid
-      ! fallback. Divide the conservative memory budget between H spins and S.
+      ! Prepared operators select FFT or direct assembly inside their common route.
+      ! Only an unprepared operator needs the sparse-grid/transfer fallback below.
+      ! Divide its conservative memory budget between H spins and S.
       ALLOCATE (ks_grid(nspin))
       SELECT CASE (lattice_fft)
       CASE (lattice_fft_auto)
@@ -912,7 +904,7 @@ CONTAINS
       CASE DEFAULT
          CPABORT("Unknown lattice FFT selection mode")
       END SELECT
-      IF (prepared_ops) use_grid_fft = .FALSE.
+      use_grid_fft = use_grid_fft .AND. .NOT. prepared_ops
       ! The driver needs sparse scratch only for forward lattice-FFT preparation.
       IF (use_grid_fft) THEN
          ALLOCATE (rmatrix)
@@ -923,6 +915,9 @@ CONTAINS
          CALL rskp_transform_grid_prepare(s_grid, rmatrix, matrix_s, 1, xkp, nkp_grid, &
                                           cell_to_index, sab_nl, use_grid_fft, &
                                           max_storage_bytes=512_int_8*1024_int_8**2/INT(nspin + 1, int_8))
+         fft_ready = MERGE(1, 0, use_grid_fft)
+         CALL para_env%min(fft_ready)
+         use_grid_fft = fft_ready == 1
       END IF
       IF (use_grid_fft) THEN
          DO ispin = 1, nspin
@@ -931,6 +926,9 @@ CONTAINS
                                              max_storage_bytes=512_int_8*1024_int_8**2/INT(nspin + 1, int_8))
             use_grid_fft = use_grid_fft .AND. spin_grid_fft
          END DO
+         fft_ready = MERGE(1, 0, use_grid_fft)
+         CALL para_env%min(fft_ready)
+         use_grid_fft = fft_ready == 1
       END IF
       IF (.NOT. use_grid_fft) THEN
          CALL rskp_transform_grid_release(s_grid)
