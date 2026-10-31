@@ -16,7 +16,8 @@ MODULE task_list_types
                                               grid_free_basis_set,&
                                               grid_free_task_list,&
                                               grid_task_list_type
-   USE kinds,                           ONLY: dp,&
+   USE kinds,                           ONLY: default_string_length,&
+                                              dp,&
                                               int_8
    USE offload_api,                     ONLY: offload_buffer_type,&
                                               offload_free_buffer
@@ -77,6 +78,7 @@ MODULE task_list_types
       INTEGER, ALLOCATABLE                          :: unpack_block_starts(:), unpack_pair_indices(:)
 
       TYPE(grid_basis_set_type), DIMENSION(:), POINTER :: grid_basis_sets => Null()
+      CHARACTER(LEN=default_string_length)           :: grid_left_basis = '', grid_right_basis = ''
       TYPE(grid_task_list_type)                     :: grid_task_list = grid_task_list_type()
       TYPE(offload_buffer_type)                     :: pab_buffer = offload_buffer_type()
       TYPE(offload_buffer_type)                     :: hab_buffer = offload_buffer_type()

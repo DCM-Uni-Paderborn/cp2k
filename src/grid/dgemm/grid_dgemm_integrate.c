@@ -298,7 +298,7 @@ static void rotate_and_store_coefficients(grid_context *const ctx,
     // phi[b][ncob]
     // work[b][ncoa] = phi[b][ncob] * hab[ncob][ncoa]
 
-    if (iatom <= jatom) {
+    if (!ctx->matrix_symmetric || iatom <= jatom) {
       // I need to have the final result in the form
 
       // block[b][a] = work[b][ncoa] transpose(phi[a][ncoa])
@@ -941,7 +941,8 @@ void integrate_one_grid_level_dgemm(
           &hab);
 
       if (calculate_forces) {
-        const double scaling = (task->iatom == task->jatom) ? 1.0 : 2.0;
+        const double scaling =
+            (!ctx->matrix_symmetric || task->iatom == task->jatom) ? 1.0 : 2.0;
         idx2(forces_local_, task->iatom, 0) +=
             scaling * idx2(forces_local_pair_, 0, 0);
         idx2(forces_local_, task->iatom, 1) +=

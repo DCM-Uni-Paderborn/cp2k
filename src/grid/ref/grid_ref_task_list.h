@@ -21,8 +21,8 @@ typedef void grid_ref_task_list;
  * \author Ole Schuett
  ******************************************************************************/
 void grid_ref_create_task_list(
-    const bool orthorhombic, const int ntasks, const int nlevels,
-    const int natoms, const int nkinds, const int nblocks,
+    const bool orthorhombic, const bool matrix_symmetric, const int ntasks,
+    const int nlevels, const int natoms, const int nkinds, const int nblocks,
     const int block_offsets[nblocks], const double atom_positions[natoms][3],
     const int atom_kinds[natoms], const grid_basis_set *basis_sets[nkinds],
     const int level_list[ntasks], const int iatom_list[ntasks],

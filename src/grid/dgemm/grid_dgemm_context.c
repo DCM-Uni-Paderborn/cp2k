@@ -550,8 +550,8 @@ void set_grid_parameters(
  *        See grid_task_list.h for details.
  ******************************************************************************/
 void grid_dgemm_create_task_list(
-    const bool orthorhombic, const int ntasks, const int nlevels,
-    const int natoms, const int nkinds, const int nblocks,
+    const bool orthorhombic, const bool matrix_symmetric, const int ntasks,
+    const int nlevels, const int natoms, const int nkinds, const int nblocks,
     const int block_offsets[nblocks], const double atom_positions[natoms][3],
     const int atom_kinds[natoms], const grid_basis_set *basis_sets[nkinds],
     const int level_list[ntasks], const int iatom_list[ntasks],
@@ -579,6 +579,8 @@ void grid_dgemm_create_task_list(
         border_mask_list, block_num_list, radius_list, rab_list, npts_global,
         npts_local, shift_local, border_width, dh, dh_inv, *task_list);
   }
+
+  ((grid_context *)*task_list)->matrix_symmetric = matrix_symmetric;
 
   const grid_library_config config = grid_library_get_config();
   if (config.apply_cutoff) {

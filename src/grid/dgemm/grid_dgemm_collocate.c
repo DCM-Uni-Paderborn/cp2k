@@ -33,10 +33,10 @@ void collocate_l0(double *scratch, const double alpha, const bool orthogonal,
 
 void rotate_to_cartesian_harmonics(const grid_basis_set *ibasis,
                                    const grid_basis_set *jbasis,
-                                   const int iatom, const int jatom,
-                                   const int iset, const int jset,
-                                   double *const block, tensor *work,
-                                   tensor *pab) {
+                                   const bool matrix_symmetric, const int iatom,
+                                   const int jatom, const int iset,
+                                   const int jset, double *const block,
+                                   tensor *work, tensor *pab) {
   dgemm_params m1, m2;
   memset(&m1, 0, sizeof(dgemm_params));
   memset(&m2, 0, sizeof(dgemm_params));
@@ -62,7 +62,7 @@ void rotate_to_cartesian_harmonics(const grid_basis_set *ibasis,
   realloc_tensor(pab);
 
   // the rotations happen here.
-  if (iatom <= jatom) {
+  if (!matrix_symmetric || iatom <= jatom) {
     m1.op1 = 'N';
     m1.op2 = 'N';
     m1.m = work->size[0];
@@ -999,8 +999,8 @@ void extract_blocks(grid_context *const ctx, const _task *const task,
   const int block_offset = ctx->block_offsets[block_num]; // zero based
   double *const block = &pab_blocks->host_buffer[block_offset];
 
-  rotate_to_cartesian_harmonics(ibasis, jbasis, iatom, jatom, iset, jset, block,
-                                work, pab);
+  rotate_to_cartesian_harmonics(ibasis, jbasis, ctx->matrix_symmetric, iatom,
+                                jatom, iset, jset, block, work, pab);
 }
 
 void compute_coefficients(grid_context *const ctx,
@@ -1073,7 +1073,8 @@ void compute_coefficients(grid_context *const ctx,
   // coef[x][z][y]
   grid_compute_coefficients_dgemm(
       lmin_prep, lmax_prep, lp,
-      task->prefactor * ((task->iatom == task->jatom) ? 1.0 : 2.0),
+      task->prefactor *
+          ((!ctx->matrix_symmetric || task->iatom == task->jatom) ? 1.0 : 2.0),
       &handler->alpha, pab_prep, &handler->coef);
 }
 

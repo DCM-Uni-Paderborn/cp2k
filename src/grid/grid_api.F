@@ -82,6 +82,8 @@ MODULE grid_api
    TYPE grid_task_list_type
       PRIVATE
       TYPE(C_PTR) :: c_ptr = C_NULL_PTR
+      INTEGER :: natoms = 0
+      INTEGER, ALLOCATABLE :: force_atom_map(:)
    END TYPE grid_task_list_type
 
 CONTAINS
@@ -710,6 +712,8 @@ CONTAINS
 !> \param rab_list ...
 !> \param rs_grids ...
 !> \param task_list ...
+!> \param matrix_symmetric False selects ordered bilinear products without transposition or pair doubling.
+!> \param force_atom_map Optional map from basis-family centers to physical atoms for force accumulation.
 !> \author Ole Schuett
 ! **************************************************************************************************
    SUBROUTINE grid_create_task_list(ntasks, natoms, nkinds, nblocks, &
@@ -717,7 +721,7 @@ CONTAINS
                                     level_list, iatom_list, jatom_list, &
                                     iset_list, jset_list, ipgf_list, jpgf_list, &
                                     border_mask_list, block_num_list, &
-                                    radius_list, rab_list, rs_grids, task_list)
+                                    radius_list, rab_list, rs_grids, task_list, matrix_symmetric, force_atom_map)
 
       INTEGER, INTENT(IN)                                :: ntasks, natoms, nkinds, nblocks
       INTEGER, DIMENSION(:), INTENT(IN), TARGET          :: block_offsets
@@ -734,13 +738,15 @@ CONTAINS
       TYPE(realspace_grid_type), DIMENSION(:), &
          INTENT(IN)                                      :: rs_grids
       TYPE(grid_task_list_type), INTENT(INOUT)           :: task_list
+      LOGICAL, INTENT(IN), OPTIONAL                      :: matrix_symmetric
+      INTEGER, INTENT(IN), OPTIONAL                      :: force_atom_map(:)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'grid_create_task_list'
 
       INTEGER                                            :: handle, ikind, ilevel, nlevels
       INTEGER, ALLOCATABLE, DIMENSION(:, :), TARGET      :: border_width, npts_global, npts_local, &
                                                             shift_local
-      LOGICAL(KIND=C_BOOL)                               :: orthorhombic
+      LOGICAL(KIND=C_BOOL)                               :: orthorhombic, symmetric
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :), &
          TARGET                                          :: dh, dh_inv
       TYPE(C_PTR) :: block_num_list_c, block_offsets_c, border_mask_list_c, iatom_list_c, &
@@ -748,7 +754,7 @@ CONTAINS
          rab_list_c, radius_list_c
       TYPE(C_PTR), ALLOCATABLE, DIMENSION(:), TARGET     :: basis_sets_c
       INTERFACE
-         SUBROUTINE grid_create_task_list_c(orthorhombic, &
+         SUBROUTINE grid_create_task_list_c(orthorhombic, matrix_symmetric, &
                                             ntasks, nlevels, natoms, nkinds, nblocks, &
                                             block_offsets, atom_positions, atom_kinds, basis_sets, &
                                             level_list, iatom_list, jatom_list, &
@@ -757,9 +763,10 @@ CONTAINS
                                             radius_list, rab_list, &
                                             npts_global, npts_local, shift_local, &
                                             border_width, dh, dh_inv, task_list) &
-            BIND(C, name="grid_create_task_list")
+            BIND(C, name="grid_create_task_list_ex")
             IMPORT :: C_PTR, C_INT, C_BOOL
             LOGICAL(KIND=C_BOOL), VALUE               :: orthorhombic
+            LOGICAL(KIND=C_BOOL), VALUE               :: matrix_symmetric
             INTEGER(KIND=C_INT), VALUE                :: ntasks
             INTEGER(KIND=C_INT), VALUE                :: nlevels
             INTEGER(KIND=C_INT), VALUE                :: natoms
@@ -793,6 +800,16 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       CPASSERT(SIZE(block_offsets) == nblocks)
+      task_list%natoms = natoms
+      IF (ALLOCATED(task_list%force_atom_map)) DEALLOCATE (task_list%force_atom_map)
+      IF (PRESENT(force_atom_map)) THEN
+         CPASSERT(SIZE(force_atom_map) == natoms)
+         CPASSERT(ALL(force_atom_map >= 1))
+         ALLOCATE (task_list%force_atom_map(natoms))
+         task_list%force_atom_map(:) = force_atom_map
+      END IF
+      symmetric = .TRUE._C_BOOL
+      IF (PRESENT(matrix_symmetric)) symmetric = LOGICAL(matrix_symmetric, C_BOOL)
       CPASSERT(SIZE(atom_positions, 1) == 3 .AND. SIZE(atom_positions, 2) == natoms)
       CPASSERT(SIZE(atom_kinds) == natoms)
       CPASSERT(SIZE(basis_sets) == nkinds)
@@ -886,6 +903,7 @@ CONTAINS
 
       !If task_list%c_ptr is already allocated, then its memory will be reused or freed.
       CALL grid_create_task_list_c(orthorhombic=orthorhombic, &
+                                   matrix_symmetric=symmetric, &
                                    ntasks=ntasks, &
                                    nlevels=nlevels, &
                                    natoms=natoms, &
@@ -945,6 +963,8 @@ CONTAINS
       END IF
 
       task_list%c_ptr = C_NULL_PTR
+      task_list%natoms = 0
+      IF (ALLOCATED(task_list%force_atom_map)) DEALLOCATE (task_list%force_atom_map)
 
       CALL timestop(handle)
    END SUBROUTINE grid_free_task_list
@@ -1042,8 +1062,9 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'grid_integrate_task_list'
 
-      INTEGER                                            :: handle, ilevel, nlevels
+      INTEGER                                            :: handle, iatom, ilevel, nlevels
       INTEGER, ALLOCATABLE, DIMENSION(:, :), TARGET      :: npts_local
+      REAL(KIND=dp), ALLOCATABLE, TARGET                 :: basis_forces(:, :)
       TYPE(C_PTR)                                        :: forces_c, virial_c
       TYPE(C_PTR), ALLOCATABLE, DIMENSION(:), TARGET     :: grids_c
       INTERFACE
@@ -1080,7 +1101,15 @@ CONTAINS
       END DO
 
       IF (calculate_forces) THEN
-         forces_c = C_LOC(forces(1, 1))
+         IF (ALLOCATED(task_list%force_atom_map)) THEN
+            CPASSERT(ALL(task_list%force_atom_map <= SIZE(forces, 2)))
+            ALLOCATE (basis_forces(3, task_list%natoms))
+            basis_forces = 0.0_dp
+            forces_c = C_LOC(basis_forces(1, 1))
+         ELSE
+            CPASSERT(SIZE(forces, 2) == task_list%natoms)
+            forces_c = C_LOC(forces(1, 1))
+         END IF
       ELSE
          forces_c = C_NULL_PTR
       END IF
@@ -1104,7 +1133,7 @@ CONTAINS
 
       CALL grid_integrate_task_list_c(task_list=task_list%c_ptr, &
                                       compute_tau=LOGICAL(compute_tau, C_BOOL), &
-                                      natoms=SIZE(forces, 2), &
+                                      natoms=task_list%natoms, &
                                       nlevels=nlevels, &
                                       npts_local=C_LOC(npts_local(1, 1)), &
                                       pab_blocks=pab_blocks%c_ptr, &
@@ -1112,6 +1141,14 @@ CONTAINS
                                       hab_blocks=hab_blocks%c_ptr, &
                                       forces=forces_c, &
                                       virial=virial_c)
+
+      IF (ALLOCATED(basis_forces)) THEN
+         forces = 0.0_dp
+         DO iatom = 1, task_list%natoms
+            forces(:, task_list%force_atom_map(iatom)) = forces(:, task_list%force_atom_map(iatom)) + &
+                                                         basis_forces(:, iatom)
+         END DO
+      END IF
 
       CALL timestop(handle)
    END SUBROUTINE grid_integrate_task_list

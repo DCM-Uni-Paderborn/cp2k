@@ -50,6 +50,7 @@ typedef struct {
  ******************************************************************************/
 typedef struct {
   bool orthorhombic;
+  bool matrix_symmetric;
   int ntasks;
   int nlevels;
   int natoms;

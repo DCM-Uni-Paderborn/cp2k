@@ -72,6 +72,27 @@ void grid_create_task_list(
     const double dh_inv[nlevels][3][3], grid_task_list **task_list);
 
 /*******************************************************************************
+ * \brief Creates symmetric density tasks or ordered bilinear matrix tasks.
+ *        For matrix_symmetric=false every block stores the row basis of iatom
+ *        and column basis of jatom, without transposition or pair doubling.
+ *        All other arguments have the meaning documented above.
+ ******************************************************************************/
+void grid_create_task_list_ex(
+    const bool orthorhombic, const bool matrix_symmetric, const int ntasks,
+    const int nlevels, const int natoms, const int nkinds, const int nblocks,
+    const int block_offsets[nblocks], const double atom_positions[natoms][3],
+    const int atom_kinds[natoms], const grid_basis_set *basis_sets[nkinds],
+    const int level_list[ntasks], const int iatom_list[ntasks],
+    const int jatom_list[ntasks], const int iset_list[ntasks],
+    const int jset_list[ntasks], const int ipgf_list[ntasks],
+    const int jpgf_list[ntasks], const int border_mask_list[ntasks],
+    const int block_num_list[ntasks], const double radius_list[ntasks],
+    const double rab_list[ntasks][3], const int npts_global[nlevels][3],
+    const int npts_local[nlevels][3], const int shift_local[nlevels][3],
+    const int border_width[nlevels][3], const double dh[nlevels][3][3],
+    const double dh_inv[nlevels][3][3], grid_task_list **task_list);
+
+/*******************************************************************************
  * \brief Deallocates given task list, basis_sets have to be freed separately.
  * \author Ole Schuett
  ******************************************************************************/

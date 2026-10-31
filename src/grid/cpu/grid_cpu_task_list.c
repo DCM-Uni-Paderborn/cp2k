@@ -41,8 +41,8 @@ static int compare_tasks(const void *a, const void *b) {
  * \author Ole Schuett
  ******************************************************************************/
 void grid_cpu_create_task_list(
-    const bool orthorhombic, const int ntasks, const int nlevels,
-    const int natoms, const int nkinds, const int nblocks,
+    const bool orthorhombic, const bool matrix_symmetric, const int ntasks,
+    const int nlevels, const int natoms, const int nkinds, const int nblocks,
     const int block_offsets[nblocks], const double atom_positions[natoms][3],
     const int atom_kinds[natoms], const grid_basis_set *basis_sets[nkinds],
     const int level_list[ntasks], const int iatom_list[ntasks],
@@ -65,6 +65,7 @@ void grid_cpu_create_task_list(
   assert(task_list != NULL);
 
   task_list->orthorhombic = orthorhombic;
+  task_list->matrix_symmetric = matrix_symmetric;
   task_list->ntasks = ntasks;
   task_list->nlevels = nlevels;
   task_list->natoms = natoms;
@@ -343,7 +344,7 @@ static void collocate_one_grid_level(
         const int block_num = task->block_num - 1;
         const int block_offset = task_list->block_offsets[block_num];
         const double *block = &pab_blocks[block_offset];
-        const bool transpose = (iatom <= jatom);
+        const bool transpose = (!task_list->matrix_symmetric || iatom <= jatom);
 
         // Load subblock from buffer and decontract into Cartesian sublock pab.
         // The previous pab can be reused when only ipgf or jpgf has changed.
@@ -365,7 +366,7 @@ static void collocate_one_grid_level(
             /*lb_min=*/jbasis->lmin[jset],
             /*zeta=*/zeta,
             /*zetb=*/zetb,
-            /*rscale=*/(iatom == jatom) ? 1 : 2,
+            /*rscale=*/(!task_list->matrix_symmetric || iatom == jatom) ? 1 : 2,
             /*dh=*/dh,
             /*dh_inv=*/dh_inv,
             /*ra=*/&task_list->atom_positions[3 * iatom],
@@ -562,7 +563,7 @@ static void integrate_one_grid_level(
         const int ncoa = ibasis->npgf[iset] * ncoseta; // size of carthesian set
         const int ncob = jbasis->npgf[jset] * ncosetb;
         const int block_offset = task_list->block_offsets[block_num];
-        const bool transpose = (iatom <= jatom);
+        const bool transpose = (!task_list->matrix_symmetric || iatom <= jatom);
         const bool pab_required = (forces != NULL || virial != NULL);
 
         // Load pab and store hab subblocks when needed.
@@ -622,7 +623,8 @@ static void integrate_one_grid_level(
 
       // Merge thread-local forces and virial into shared ones.
       // It does not seem worth the trouble to accumulate them thread-locally.
-      const double scalef = (iatom == jatom) ? 1.0 : 2.0;
+      const double scalef =
+          (!task_list->matrix_symmetric || iatom == jatom) ? 1.0 : 2.0;
       if (forces != NULL) {
 #pragma omp critical(forces)
         for (int i = 0; i < 3; i++) {

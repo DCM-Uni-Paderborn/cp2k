@@ -92,16 +92,17 @@ context_info::set_kernel_parameters(const int level,
  *        See grid_ctx.h for details.
  ******************************************************************************/
 extern "C" void grid_gpu_create_task_list(
-    const bool ortho, const int ntasks, const int nlevels, const int natoms,
-    const int nkinds, const int nblocks, const int *block_offsets,
-    const double *atom_positions, const int *atom_kinds,
-    const grid_basis_set **basis_sets, const int *level_list,
-    const int *iatom_list, const int *jatom_list, const int *iset_list,
-    const int *jset_list, const int *ipgf_list, const int *jpgf_list,
-    const int *border_mask_list, const int *block_num_list,
-    const double *radius_list, const double *rab_list, const int *npts_global,
-    const int *npts_local, const int *shift_local, const int *border_width,
-    const double *dh, const double *dh_inv, grid_gpu_task_list **ptr) {
+    const bool ortho, const bool matrix_symmetric, const int ntasks,
+    const int nlevels, const int natoms, const int nkinds, const int nblocks,
+    const int *block_offsets, const double *atom_positions,
+    const int *atom_kinds, const grid_basis_set **basis_sets,
+    const int *level_list, const int *iatom_list, const int *jatom_list,
+    const int *iset_list, const int *jset_list, const int *ipgf_list,
+    const int *jpgf_list, const int *border_mask_list,
+    const int *block_num_list, const double *radius_list,
+    const double *rab_list, const int *npts_global, const int *npts_local,
+    const int *shift_local, const int *border_width, const double *dh,
+    const double *dh_inv, grid_gpu_task_list **ptr) {
 
   rocm_backend::context_info **ctx_out = (rocm_backend::context_info **)ptr;
 
@@ -213,7 +214,8 @@ extern "C" void grid_gpu_create_task_list(
     tasks_host[i].skip_task = (2 * tasks_host[i].radius < dh_max[level]);
     tasks_host[i].prefactor = exp(-tasks_host[i].zeta * f * tasks_host[i].rab2);
 
-    tasks_host[i].off_diag_twice = (iatom == jatom) ? 1.0 : 2.0;
+    tasks_host[i].off_diag_twice =
+        (!matrix_symmetric || iatom == jatom) ? 1.0 : 2.0;
     // angular momentum range of basis set
     const int la_max_basis = ibasis->lmax[iset];
     const int lb_max_basis = jbasis->lmax[jset];
@@ -260,7 +262,7 @@ extern "C" void grid_gpu_create_task_list(
     tasks_host[i].sgfa = ibasis->first_sgf[iset] - 1;
     tasks_host[i].sgfb = jbasis->first_sgf[jset] - 1;
 
-    tasks_host[i].block_transposed = (iatom > jatom);
+    tasks_host[i].block_transposed = (matrix_symmetric && iatom > jatom);
     tasks_host[i].subblock_offset =
         (tasks_host[i].block_transposed)
             ? (tasks_host[i].sgfa * tasks_host[i].nsgfb + tasks_host[i].sgfb)

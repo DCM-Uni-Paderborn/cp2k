@@ -23,16 +23,17 @@ typedef void grid_gpu_task_list;
  *        See grid_task_list.h for details.
  ******************************************************************************/
 void grid_gpu_create_task_list(
-    const bool ortho, const int ntasks, const int nlevels, const int natoms,
-    const int nkinds, const int nblocks, const int *block_offsets,
-    const double *atom_positions, const int *atom_kinds,
-    const grid_basis_set **basis_sets, const int *level_list,
-    const int *iatom_list, const int *jatom_list, const int *iset_list,
-    const int *jset_list, const int *ipgf_list, const int *jpgf_list,
-    const int *border_mask_list, const int *block_num_list,
-    const double *radius_list, const double *rab_list, const int *npts_global,
-    const int *npts_local, const int *shift_local, const int *border_width,
-    const double *dh, const double *dh_inv, grid_gpu_task_list **ptr);
+    const bool ortho, const bool matrix_symmetric, const int ntasks,
+    const int nlevels, const int natoms, const int nkinds, const int nblocks,
+    const int *block_offsets, const double *atom_positions,
+    const int *atom_kinds, const grid_basis_set **basis_sets,
+    const int *level_list, const int *iatom_list, const int *jatom_list,
+    const int *iset_list, const int *jset_list, const int *ipgf_list,
+    const int *jpgf_list, const int *border_mask_list,
+    const int *block_num_list, const double *radius_list,
+    const double *rab_list, const int *npts_global, const int *npts_local,
+    const int *shift_local, const int *border_width, const double *dh,
+    const double *dh_inv, grid_gpu_task_list **ptr);
 /*******************************************************************************
  * \brief Deallocates given task list, basis_sets have to be freed separately.
  ******************************************************************************/

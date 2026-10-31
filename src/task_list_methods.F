@@ -13,7 +13,7 @@
 ! **************************************************************************************************
 MODULE task_list_methods
    USE offload_api, ONLY: offload_create_buffer, offload_buffer_type
-   USE grid_api, ONLY: grid_create_basis_set, grid_create_task_list
+   USE grid_api, ONLY: grid_create_basis_set, grid_create_task_list, grid_free_basis_set
    USE ao_util, ONLY: exp_radius_very_extended
    USE basis_set_types, ONLY: get_gto_basis_set, &
                               gto_basis_set_p_type, &
@@ -104,6 +104,7 @@ CONTAINS
 !> \param sab_orb_external ...
 !> \param ext_kpoints ...
 !> \param eps_rho_rspace Optional primitive-product tail tolerance for this task list.
+!> \param right_basis_type Optional column basis for an ordered bilinear task list. Requires a complete cross-basis neighbor list.
 !> \par History
 !>      01.2008 factored out of calculate_rho_elec [Joost VandeVondele]
 !>      04.2010 divides tasks into grid levels and atom pairs for integrate/collocate [Iain Bethune]
@@ -117,7 +118,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE generate_qs_task_list(ks_env, task_list, basis_type, &
                                     reorder_rs_grid_ranks, skip_load_balance_distributed, &
-                                    pw_env_external, sab_orb_external, ext_kpoints, eps_rho_rspace)
+                                    pw_env_external, sab_orb_external, ext_kpoints, eps_rho_rspace, right_basis_type)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(task_list_type), POINTER                      :: task_list
@@ -129,6 +130,7 @@ CONTAINS
          OPTIONAL, POINTER                               :: sab_orb_external
       TYPE(kpoint_type), OPTIONAL, POINTER               :: ext_kpoints
       REAL(dp), INTENT(IN), OPTIONAL                     :: eps_rho_rspace
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: right_basis_type
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'generate_qs_task_list'
       INTEGER, PARAMETER                                 :: max_tasks = 2000
@@ -139,7 +141,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: blocks
       INTEGER, DIMENSION(3)                              :: cellind
       INTEGER, DIMENSION(:), POINTER                     :: la_max, la_min, lb_max, lb_min, npgfa, &
-                                                            npgfb, nsgf
+                                                            npgfb, nsgf, nsgf_col
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: dokp
       REAL(KIND=dp)                                      :: kind_radius_a, kind_radius_b
@@ -151,6 +153,7 @@ CONTAINS
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gridlevel_info_type), POINTER                 :: gridlevel_info
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_list
+      TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: right_basis_set_list
       TYPE(gto_basis_set_type), POINTER                  :: basis_set_a, basis_set_b, orb_basis_set
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
@@ -173,6 +176,10 @@ CONTAINS
                       dft_control=dft_control)
 
       CALL get_ks_env(ks_env, sab_orb=sab_orb)
+      ! A symmetric half list does not enumerate a rectangular product space.
+      IF (PRESENT(right_basis_type)) THEN
+         CPASSERT(PRESENT(sab_orb_external))
+      END IF
       IF (PRESENT(sab_orb_external)) sab_orb => sab_orb_external
 
       CALL get_ks_env(ks_env, pw_env=pw_env)
@@ -193,11 +200,18 @@ CONTAINS
          CALL get_qs_kind(qs_kind=qs_kind, &
                           basis_set=orb_basis_set, basis_type=basis_type)
 
-         IF (.NOT. ASSOCIATED(orb_basis_set)) CYCLE
-         CALL get_gto_basis_set(gto_basis_set=orb_basis_set, npgf=npgfa, nset=nseta)
-
-         maxset = MAX(nseta, maxset)
-         maxpgf = MAX(MAXVAL(npgfa), maxpgf)
+         IF (ASSOCIATED(orb_basis_set)) THEN
+            CALL get_gto_basis_set(gto_basis_set=orb_basis_set, npgf=npgfa, nset=nseta)
+            maxset = MAX(nseta, maxset)
+            maxpgf = MAX(MAXVAL(npgfa), maxpgf)
+         END IF
+         IF (PRESENT(right_basis_type)) THEN
+            CALL get_qs_kind(qs_kind=qs_kind, basis_set=orb_basis_set, basis_type=right_basis_type)
+            IF (.NOT. ASSOCIATED(orb_basis_set)) CYCLE
+            CALL get_gto_basis_set(gto_basis_set=orb_basis_set, npgf=npgfa, nset=nseta)
+            maxset = MAX(nseta, maxset)
+            maxpgf = MAX(MAXVAL(npgfa), maxpgf)
+         END IF
       END DO
 
       ! kpoint related
@@ -229,7 +243,7 @@ CONTAINS
       task_list%ntasks = 0
       curr_tasks = SIZE(task_list%tasks)
 
-      ALLOCATE (basis_set_list(nkind))
+      ALLOCATE (basis_set_list(nkind), right_basis_set_list(nkind))
       DO ikind = 1, nkind
          qs_kind => qs_kind_set(ikind)
          CALL get_qs_kind(qs_kind=qs_kind, basis_set=basis_set_a, &
@@ -238,6 +252,11 @@ CONTAINS
             basis_set_list(ikind)%gto_basis_set => basis_set_a
          ELSE
             NULLIFY (basis_set_list(ikind)%gto_basis_set)
+         END IF
+         right_basis_set_list(ikind)%gto_basis_set => basis_set_list(ikind)%gto_basis_set
+         IF (PRESENT(right_basis_type)) THEN
+            CALL get_qs_kind(qs_kind=qs_kind, basis_set=basis_set_b, basis_type=right_basis_type)
+            right_basis_set_list(ikind)%gto_basis_set => basis_set_b
          END IF
       END DO
 !!$OMP PARALLEL DEFAULT(NONE) &
@@ -259,7 +278,7 @@ CONTAINS
 
          basis_set_a => basis_set_list(ikind)%gto_basis_set
          IF (.NOT. ASSOCIATED(basis_set_a)) CYCLE
-         basis_set_b => basis_set_list(jkind)%gto_basis_set
+         basis_set_b => right_basis_set_list(jkind)%gto_basis_set
          IF (.NOT. ASSOCIATED(basis_set_b)) CYCLE
          ra(:) = pbc(particle_set(iatom)%r, cell)
          ! basis ikind
@@ -300,17 +319,18 @@ CONTAINS
       CALL distribute_tasks( &
          rs_descs=rs_descs, ntasks=task_list%ntasks, natoms=natoms, &
          tasks=task_list%tasks, atom_pair_send=task_list%atom_pair_send, &
-         atom_pair_recv=task_list%atom_pair_recv, symmetric=.TRUE., &
+         atom_pair_recv=task_list%atom_pair_recv, symmetric=.NOT. PRESENT(right_basis_type), &
          reorder_rs_grid_ranks=reorder_rs_grid_ranks, &
          skip_load_balance_distributed=skip_load_balance_distributed)
 
       ! compute offsets for rs_scatter_matrix / rs_copy_matrix
-      ALLOCATE (nsgf(natoms))
+      ALLOCATE (nsgf(natoms), nsgf_col(natoms))
       CALL get_particle_set(particle_set, qs_kind_set, basis=basis_set_list, nsgf=nsgf)
+      CALL get_particle_set(particle_set, qs_kind_set, basis=right_basis_set_list, nsgf=nsgf_col)
       IF (ASSOCIATED(task_list%atom_pair_send)) THEN
          ! only needed when there is a distributed grid
          CALL rs_calc_offsets(pairs=task_list%atom_pair_send, &
-                              nsgf=nsgf, &
+                              nsgf=nsgf, nsgf_col=nsgf_col, &
                               group_size=rs_descs(1)%rs_desc%group_size, &
                               pair_offsets=task_list%pair_offsets_send, &
                               rank_offsets=task_list%rank_offsets_send, &
@@ -318,7 +338,7 @@ CONTAINS
                               buffer_size=task_list%buffer_size_send)
       END IF
       CALL rs_calc_offsets(pairs=task_list%atom_pair_recv, &
-                           nsgf=nsgf, &
+                           nsgf=nsgf, nsgf_col=nsgf_col, &
                            group_size=rs_descs(1)%rs_desc%group_size, &
                            pair_offsets=task_list%pair_offsets_recv, &
                            rank_offsets=task_list%rank_offsets_recv, &
@@ -331,7 +351,7 @@ CONTAINS
          CALL rs_group_atom_pairs(task_list%atom_pair_recv, &
                                   task_list%unpack_block_starts, task_list%unpack_pair_indices)
       END IF
-      DEALLOCATE (basis_set_list, nsgf)
+      DEALLOCATE (basis_set_list, right_basis_set_list, nsgf, nsgf_col)
 
       ! If the rank order has changed, reallocate any of the distributed rs_grids
       IF (reorder_rs_grid_ranks) THEN
@@ -348,7 +368,7 @@ CONTAINS
                                  particle_set=particle_set, &
                                  cell=cell, &
                                  basis_type=basis_type, &
-                                 rs_grids=rs_grids)
+                                 rs_grids=rs_grids, right_basis_type=right_basis_type)
 
       ! Now we have the final list of tasks, setup the task_list with the
       ! data needed for the loops in integrate_v/calculate_rho
@@ -471,9 +491,9 @@ CONTAINS
                jset = task_list%tasks(itask)%jset
                ipgf = task_list%tasks(itask)%ipgf
                jpgf = task_list%tasks(itask)%jpgf
-               IF (blocks(iatom, jatom, img) == -1 .AND. blocks(jatom, iatom, img) == -1) THEN
+               IF (blocks(iatom, jatom, img) == -1) THEN
                   blocks(iatom, jatom, img) = 1
-                  blocks(jatom, iatom, img) = 1
+                  IF (.NOT. PRESENT(right_basis_type)) blocks(jatom, iatom, img) = 1
                ELSE
                   WRITE (6, *) "TASK LIST CONFLICT IN PAIR       ", ipair
                   WRITE (6, *) "Reuse of iatom, jatom, image     ", iatom, jatom, img
@@ -513,17 +533,22 @@ CONTAINS
 !> \brief Sends the task list data to the grid API.
 !> \author Ole Schuett
 ! **************************************************************************************************
-   SUBROUTINE create_grid_task_list(task_list, qs_kind_set, particle_set, cell, basis_type, rs_grids)
+   SUBROUTINE create_grid_task_list(task_list, qs_kind_set, particle_set, cell, basis_type, rs_grids, right_basis_type)
       TYPE(task_list_type), POINTER                      :: task_list
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(cell_type), POINTER                           :: cell
       CHARACTER(LEN=*)                                   :: basis_type
       TYPE(realspace_grid_type), DIMENSION(:), POINTER :: rs_grids
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: right_basis_type
+
+      CHARACTER(LEN=default_string_length)               :: column_basis
 
       TYPE(gto_basis_set_type), POINTER                  :: orb_basis_set
       INTEGER                                            :: nset, natoms, nkinds, ntasks, &
-                                                            ikind, iatom, itask, nsgf
+                                                            ikind, iatom, itask, nsgf, family, &
+                                                            families, backend_kind
+      INTEGER, ALLOCATABLE                              :: force_atom_map(:)
       INTEGER, DIMENSION(:), ALLOCATABLE                 :: atom_kinds, level_list, iatom_list, jatom_list, &
                                                             iset_list, jset_list, ipgf_list, jpgf_list, &
                                                             border_mask_list, block_num_list
@@ -539,11 +564,31 @@ CONTAINS
       ntasks = task_list%ntasks
       tasks => task_list%tasks
 
+      families = 1
+      column_basis = basis_type
+      IF (PRESENT(right_basis_type)) THEN
+         families = 2
+         column_basis = right_basis_type
+      END IF
+      IF (ASSOCIATED(task_list%grid_basis_sets)) THEN
+         IF (SIZE(task_list%grid_basis_sets) /= families*nkinds .OR. &
+             task_list%grid_left_basis /= basis_type .OR. task_list%grid_right_basis /= column_basis) THEN
+            DO ikind = 1, SIZE(task_list%grid_basis_sets)
+               CALL grid_free_basis_set(task_list%grid_basis_sets(ikind))
+            END DO
+            DEALLOCATE (task_list%grid_basis_sets)
+         END IF
+      END IF
       IF (.NOT. ASSOCIATED(task_list%grid_basis_sets)) THEN
          ! Basis sets do not change during simulation - only need to create them once.
-         ALLOCATE (task_list%grid_basis_sets(nkinds))
+         ALLOCATE (task_list%grid_basis_sets(families*nkinds))
+         DO family = 1, families
          DO ikind = 1, nkinds
             CALL get_qs_kind(qs_kind_set(ikind), basis_type=basis_type, basis_set=orb_basis_set)
+            IF (family == 2) THEN
+               CALL get_qs_kind(qs_kind_set(ikind), basis_type=column_basis, basis_set=orb_basis_set)
+            END IF
+            backend_kind = (family - 1)*nkinds + ikind
             CALL get_gto_basis_set(gto_basis_set=orb_basis_set, &
                                    nset=nset, &
                                    nsgf=nsgf, &
@@ -565,15 +610,24 @@ CONTAINS
                                        first_sgf=first_sgf, &
                                        sphi=sphi, &
                                        zet=zet, &
-                                       basis_set=task_list%grid_basis_sets(ikind))
+                                       basis_set=task_list%grid_basis_sets(backend_kind))
          END DO
+         END DO
+         task_list%grid_left_basis = basis_type
+         task_list%grid_right_basis = column_basis
       END IF
 
       ! Pack task list infos
-      ALLOCATE (atom_kinds(natoms), atom_positions(3, natoms))
+      ! Basis-family copies share physical positions and map both force contributions back to the same atoms.
+      ALLOCATE (atom_kinds(families*natoms), atom_positions(3, families*natoms))
+      IF (families == 2) ALLOCATE (force_atom_map(families*natoms))
+      DO family = 1, families
       DO iatom = 1, natoms
-         atom_kinds(iatom) = particle_set(iatom)%atomic_kind%kind_number
-         atom_positions(:, iatom) = pbc(particle_set(iatom)%r, cell)
+         backend_kind = (family - 1)*natoms + iatom
+         atom_kinds(backend_kind) = (family - 1)*nkinds + particle_set(iatom)%atomic_kind%kind_number
+         atom_positions(:, backend_kind) = pbc(particle_set(iatom)%r, cell)
+         IF (ALLOCATED(force_atom_map)) force_atom_map(backend_kind) = iatom
+      END DO
       END DO
 
       ALLOCATE (level_list(ntasks), iatom_list(ntasks), jatom_list(ntasks))
@@ -585,6 +639,7 @@ CONTAINS
          level_list(itask) = tasks(itask)%grid_level
          iatom_list(itask) = tasks(itask)%iatom
          jatom_list(itask) = tasks(itask)%jatom
+         IF (families == 2) jatom_list(itask) = jatom_list(itask) + natoms
          iset_list(itask) = tasks(itask)%iset
          jset_list(itask) = tasks(itask)%jset
          ipgf_list(itask) = tasks(itask)%ipgf
@@ -600,8 +655,8 @@ CONTAINS
       END DO
 
       CALL grid_create_task_list(ntasks=ntasks, &
-                                 natoms=natoms, &
-                                 nkinds=nkinds, &
+                                 natoms=families*natoms, &
+                                 nkinds=families*nkinds, &
                                  nblocks=SIZE(task_list%pair_offsets_recv), &
                                  block_offsets=task_list%pair_offsets_recv, &
                                  atom_positions=atom_positions, &
@@ -619,7 +674,8 @@ CONTAINS
                                  radius_list=radius_list, &
                                  rab_list=rab_list, &
                                  rs_grids=rs_grids, &
-                                 task_list=task_list%grid_task_list)
+                                 task_list=task_list%grid_task_list, &
+                                 matrix_symmetric=families == 1, force_atom_map=force_atom_map)
 
       CALL offload_create_buffer(task_list%buffer_size_recv, task_list%pab_buffer)
       CALL offload_create_buffer(task_list%buffer_size_recv, task_list%hab_buffer)
@@ -2453,9 +2509,10 @@ CONTAINS
 !> \author Ole Schuett
 ! **************************************************************************************************
    SUBROUTINE rs_calc_offsets(pairs, nsgf, group_size, &
-                              pair_offsets, rank_offsets, rank_sizes, buffer_size)
+                              pair_offsets, rank_offsets, rank_sizes, buffer_size, nsgf_col)
       TYPE(atom_pair_type), DIMENSION(:), INTENT(IN)     :: pairs
       INTEGER, DIMENSION(:), INTENT(IN)                  :: nsgf
+      INTEGER, DIMENSION(:), INTENT(IN), OPTIONAL        :: nsgf_col
       INTEGER, INTENT(IN)                                :: group_size
       INTEGER, DIMENSION(:), POINTER                     :: pair_offsets, rank_offsets, rank_sizes
       INTEGER, INTENT(INOUT)                             :: buffer_size
@@ -2474,6 +2531,7 @@ CONTAINS
          arow = pairs(i)%row
          acol = pairs(i)%col
          block_size = nsgf(arow)*nsgf(acol)
+         IF (PRESENT(nsgf_col)) block_size = nsgf(arow)*nsgf_col(acol)
          total_size = total_size + block_size
       END DO
       buffer_size = total_size

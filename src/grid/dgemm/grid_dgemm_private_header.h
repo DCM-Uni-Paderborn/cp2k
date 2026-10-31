@@ -85,6 +85,7 @@ typedef struct grid_context_ {
   tensor *grid;
   void *scratch;
   bool orthorhombic;
+  bool matrix_symmetric;
   enum checksum_ checksum;
 } grid_context;
 
