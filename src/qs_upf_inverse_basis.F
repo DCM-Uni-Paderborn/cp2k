@@ -171,7 +171,9 @@ CONTAINS
       CALL qs_upf_inverse_basis_prepare(ks_env, grids(1)%pw_grid, images, admm%upf_inverse, info, &
                                         atom_local=frame%atom_local, direct=frame%direct, basis_type='AUX_FIT', &
                                         qs_env=qs_env, kinetic=kinetic, composite_paw=.FALSE.)
-      IF (info /= 0) CPABORT('The original-UPF auxiliary reconstruction is singular or ill-conditioned')
+      IF (info /= 0) THEN
+         CPABORT('Singular or ill-conditioned auxiliary reconstruction')
+      END IF
    END SUBROUTINE qs_upf_inverse_basis_admm
 
 ! **************************************************************************************************
