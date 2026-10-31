@@ -67,6 +67,7 @@ MODULE qs_upf_inverse_kpoints
    PUBLIC :: qs_upf_inverse_kpoints_image_operator
    PUBLIC :: qs_upf_inverse_kpoints_integrate, qs_upf_inverse_kpoints_metric, qs_upf_inverse_kpoints_distribute
    PUBLIC :: qs_upf_inverse_kpoints_metric_dense
+   PUBLIC :: qs_upf_inverse_kpoints_native_operator
    PUBLIC :: qs_upf_inverse_kpoints_release_operators
 
 CONTAINS
@@ -195,6 +196,9 @@ CONTAINS
 !> \brief Gather native unweighted P(k) with occupations and its actual imaginary sign.
 !>        FM gathering is collective within each owning group. Only its source rank
 !>        contributes to the following world reduction, independently of BLACS layout.
+!>        Auxiliary group matrices retain native folded-atom coordinates. Convert them once
+!>        to the physical AO coordinates before expanding the star. Explicit matrices supplied
+!>        to the image interface already use physical coordinates and bypass this conversion.
 !> \param frame ...
 !> \param spin Native spin index.
 !> \param density New replicated AO matrices, indexed by global k; no k weights applied.
@@ -249,6 +253,7 @@ CONTAINS
       END DO
       DO ik = 1, frame%kpoints%nkp
          CALL frame%kpoints%para_env%sum(density(:, :, ik))
+         IF (frame%star%for_aux_fit) CALL unfold_auxiliary_density(frame, ik, density(:, :, ik))
          defect = MAXVAL(ABS(density(:, :, ik) - CONJG(TRANSPOSE(density(:, :, ik)))))
          tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(density(:, :, ik))))
          CPASSERT(defect <= tolerance)
@@ -256,6 +261,102 @@ CONTAINS
       CALL MOVE_ALLOC(density, representatives)
       CALL kpoint_star_density(frame%star, representatives, density)
    END SUBROUTINE qs_upf_inverse_kpoints_density
+
+! **************************************************************************************************
+!> \brief Express a native auxiliary density in the original unwrapped-atom Gaussian coordinates.
+!>        Multiply P_ab by exp(+i k (L_a-L_b)) before using the physical-coordinate fields.
+!>        This changes only the gathered copy. The auxiliary FM owner keeps its native convention.
+!> \param frame Auxiliary physical-cell fields and original atom folding shifts L.
+!> \param ik Global representative k point, before the physical star expansion.
+!> \param density Unweighted gathered native P, overwritten in physical AO coordinates.
+! **************************************************************************************************
+   SUBROUTINE unfold_auxiliary_density(frame, ik, density)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
+      INTEGER, INTENT(IN)                                :: ik
+      COMPLEX(dp), INTENT(INOUT)                         :: density(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: phase(:)
+      INTEGER                                            :: column
+
+      CPASSERT(frame%star%for_aux_fit)
+      CPASSERT(ALL(SHAPE(density) == [frame%nao, frame%nao]))
+      CPASSERT(ALLOCATED(frame%native_cell_shifts))
+      IF (ALL(frame%native_cell_shifts == 0)) RETURN
+      CALL native_basis_phase(frame, ik, phase)
+      DO column = 1, frame%nao
+         density(:, column) = CONJG(phase)*density(:, column)*phase(column)
+      END DO
+   END SUBROUTINE unfold_auxiliary_density
+
+! **************************************************************************************************
+!> \brief Convert an original-coordinate operator to its native coefficient coordinates.
+!>        Auxiliary coefficients use folded atoms. Installed primary inverse coefficients already
+!>        use original coordinates. Reduce physical symmetry partners before calling this map.
+!>        The rectangular case supplies the mixed metric required by the native ADMM projection.
+!> \param frame Row basis with live native k-point owners.
+!> \param original Operators in irreducible representative order, without k-point weights.
+!> \param native New operators in the native row and column coefficient conventions.
+!> \param right_frame Optional distinct column basis on the same native mesh.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_kpoints_native_operator(frame, original, native, right_frame)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         TARGET                                          :: frame
+      COMPLEX(dp), INTENT(IN)                            :: original(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: native(:, :, :)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         OPTIONAL, TARGET                                :: right_frame
+
+      COMPLEX(dp), ALLOCATABLE                           :: left_phase(:), right_phase(:)
+      INTEGER                                            :: column, ik
+      TYPE(qs_upf_inverse_kpoints_type), POINTER         :: right
+
+      CALL check_live(frame)
+      right => frame
+      IF (PRESENT(right_frame)) THEN
+         right => right_frame
+         CALL check_live(right)
+         CPASSERT(ASSOCIATED(frame%kpoints, right%kpoints))
+      END IF
+      CPASSERT(ALL(SHAPE(original) == [frame%nao, right%nao, frame%kpoints%nkp]))
+      ALLOCATE (native, MOLD=original)
+      DO ik = 1, frame%kpoints%nkp
+         CALL native_basis_phase(frame, ik, left_phase)
+         CALL native_basis_phase(right, ik, right_phase)
+         DO column = 1, right%nao
+            native(:, column, ik) = left_phase*original(:, column, ik)*CONJG(right_phase(column))
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_kpoints_native_operator
+
+! **************************************************************************************************
+!> \brief Diagonal phase taking original-coordinate coefficients to the native basis convention.
+!> \param frame Installed inverse ORB coordinates or folded native AUX_FIT coordinates.
+!> \param ik Global irreducible k-point index.
+!> \param phase New diagonal entries of the unitary coefficient map.
+! **************************************************************************************************
+   SUBROUTINE native_basis_phase(frame, ik, phase)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
+      INTEGER, INTENT(IN)                                :: ik
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: phase(:)
+
+      INTEGER                                            :: atom, first, last
+
+      CPASSERT(ik >= 1 .AND. ik <= frame%kpoints%nkp)
+      ALLOCATE (phase(frame%nao), SOURCE=CMPLX(1.0_dp, 0.0_dp, dp))
+      IF (.NOT. frame%star%for_aux_fit) RETURN
+      CPASSERT(ALLOCATED(frame%native_cell_shifts))
+      IF (ALL(frame%native_cell_shifts == 0)) RETURN
+      CPASSERT(ALLOCATED(frame%frames))
+      CPASSERT(SIZE(frame%frames) > 0)
+      CPASSERT(SIZE(frame%native_cell_shifts, 2) == SIZE(frame%frames(1)%ao%ao_first))
+      DO atom = 1, SIZE(frame%native_cell_shifts, 2)
+         first = frame%frames(1)%ao%ao_first(atom)
+         last = frame%frames(1)%ao%ao_last(atom)
+         IF (last < first) CYCLE
+         phase(first:last) = EXP(CMPLX(0.0_dp, -twopi*DOT_PRODUCT(frame%kpoints%xkp(:, ik), &
+                                                                  REAL(frame%native_cell_shifts(:, atom), dp)), dp))
+      END DO
+   END SUBROUTINE native_basis_phase
 
 ! **************************************************************************************************
 !> \brief Construct current real image densities for native RI exchange in the physical-cell gauge.
@@ -566,6 +667,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Deliver full complex Bloch operators directly in the owning group's BLACS layout.
 !>        No phase sum over truncated real-space images or imaginary-part projection occurs.
+!>        Auxiliary matrices use folded-atom coordinates, adjoint to the native density gather.
 !> \param frame ...
 !> \param dense Replicated global-k operators, unchanged.
 !> \param operators New owned local group matrices.
@@ -575,7 +677,7 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: dense(:, :, :)
       TYPE(cp_cfm_type), ALLOCATABLE, INTENT(OUT)        :: operators(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: reduced(:, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: native(:, :, :), reduced(:, :, :)
       INTEGER                                            :: col, ik, local, row
       TYPE(cp_fm_struct_type), POINTER                   :: layout
       TYPE(kpoint_env_p_type), POINTER                   :: environments(:)
@@ -584,6 +686,10 @@ CONTAINS
       CALL native_environments(frame, environments)
       CPASSERT(ALL(SHAPE(dense) == [frame%nao, frame%nao, SIZE(frame%weights)]))
       CALL kpoint_star_operator(frame%star, dense, reduced)
+      IF (frame%star%for_aux_fit) THEN
+         CALL qs_upf_inverse_kpoints_native_operator(frame, reduced, native)
+         CALL MOVE_ALLOC(native, reduced)
+      END IF
       ALLOCATE (operators(SIZE(environments)))
       DO local = 1, SIZE(operators)
          ik = frame%kp_range(1) + local - 1
