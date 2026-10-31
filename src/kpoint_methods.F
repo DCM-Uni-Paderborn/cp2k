@@ -151,6 +151,7 @@ MODULE kpoint_methods
    END TYPE kp_density_group_type
 
    PUBLIC :: kpoint_initialize, kpoint_env_initialize, kpoint_initialize_mos, kpoint_initialize_mo_set
+   PUBLIC :: kpoint_aux_env_initialize
    PUBLIC :: kpoint_init_cell_index, kpoint_set_mo_occupation
    PUBLIC :: kpoint_smearing_edge_status
    PUBLIC :: kpoint_density_matrices, kpoint_density_transform, calibrate_symmetry_phases
@@ -1041,8 +1042,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_env_initialize'
 
-      INTEGER                                            :: handle, igr, ngr, niogrp, nkp, &
-                                                            nkp_grp, nkp_loc, npe, unit_nr
+      INTEGER                                            :: handle, igr, ngr, niogrp, nkp, nkp_grp, &
+                                                            nkp_loc, npe, unit_nr
       INTEGER, DIMENSION(2)                              :: dims, pos
       LOGICAL                                            :: aux_fit
       TYPE(mp_cart_type)                                 :: comm_cart
@@ -1157,37 +1158,50 @@ CONTAINS
 
       END IF
 
-      nkp_loc = kpoint%kp_range(2) - kpoint%kp_range(1) + 1
-      CALL create_local_environments(kpoint%kp_env)
-      IF (aux_fit) CALL create_local_environments(kpoint%kp_aux_env)
+      kpoint%kp_env => create_local_environments(kpoint)
+      IF (aux_fit) CALL kpoint_aux_env_initialize(kpoint)
 
       CALL timestop(handle)
 
-   CONTAINS
+   END SUBROUTINE kpoint_env_initialize
 
 ! **************************************************************************************************
-!> \brief ...
-!> \param env ...
+!> \brief Add the auxiliary owner on the existing native k-point groups without replacing primary state.
+!> \param kpoint Initialized native k-point environment. Its mesh and group ownership remain unchanged.
 ! **************************************************************************************************
-      SUBROUTINE create_local_environments(env)
-      TYPE(kpoint_env_p_type), INTENT(OUT), POINTER      :: env(:)
+   SUBROUTINE kpoint_aux_env_initialize(kpoint)
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoint
 
-      INTEGER                                            :: ik, ikk
+      IF (ASSOCIATED(kpoint%kp_aux_env)) RETURN
+      CPASSERT(ASSOCIATED(kpoint%kp_env))
+      CPASSERT(ASSOCIATED(kpoint%para_env_kp))
+      kpoint%kp_aux_env => create_local_environments(kpoint)
+   END SUBROUTINE kpoint_aux_env_initialize
+
+! **************************************************************************************************
+!> \brief Construct owned local k-point records from the native group range, weights and vectors.
+!> \param kpoint Initialized native mesh and group distribution.
+!> \return New local environments, released by their primary or auxiliary native owner.
+! **************************************************************************************************
+   FUNCTION create_local_environments(kpoint) RESULT(env)
+      TYPE(kpoint_type), INTENT(IN)                      :: kpoint
+      TYPE(kpoint_env_p_type), POINTER                   :: env(:)
+
+      INTEGER                                            :: ik, ikk, nkp_loc
       TYPE(kpoint_env_type), POINTER                     :: kp
 
-         ALLOCATE (env(nkp_loc))
-         DO ik = 1, nkp_loc
-            ikk = kpoint%kp_range(1) + ik - 1
-            CALL kpoint_env_create(env(ik)%kpoint_env)
-            kp => env(ik)%kpoint_env
-            kp%nkpoint = ikk
-            kp%wkp = kpoint%wkp(ikk)
-            kp%xkp(1:3) = kpoint%xkp(1:3, ikk)
-            kp%is_local = (kpoint%para_env_kp%num_pe == 1)
-         END DO
-      END SUBROUTINE create_local_environments
-
-   END SUBROUTINE kpoint_env_initialize
+      nkp_loc = kpoint%kp_range(2) - kpoint%kp_range(1) + 1
+      ALLOCATE (env(nkp_loc))
+      DO ik = 1, nkp_loc
+         ikk = kpoint%kp_range(1) + ik - 1
+         CALL kpoint_env_create(env(ik)%kpoint_env)
+         kp => env(ik)%kpoint_env
+         kp%nkpoint = ikk
+         kp%wkp = kpoint%wkp(ikk)
+         kp%xkp(1:3) = kpoint%xkp(1:3, ikk)
+         kp%is_local = (kpoint%para_env_kp%num_pe == 1)
+      END DO
+   END FUNCTION create_local_environments
 
 ! **************************************************************************************************
 !> \brief Initialize a set of MOs and density matrix for each kpoint (kpoint group)
@@ -1211,7 +1225,7 @@ CONTAINS
       LOGICAL                                            :: aux_fit
       REAL(KIND=dp)                                      :: flexible_electron_count, maxocc, n_el_f
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_fm_pool_type), POINTER     :: ao_ao_fm_pool
+      TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(cp_fm_type), POINTER                          :: fmlocal
       TYPE(kpoint_env_type), POINTER                     :: kp

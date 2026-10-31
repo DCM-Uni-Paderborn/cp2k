@@ -84,7 +84,8 @@ MODULE hfx_admm_utils
                                               section_vals_val_get,&
                                               section_vals_val_set
    USE kinds,                           ONLY: dp
-   USE kpoint_methods,                  ONLY: kpoint_initialize_mos
+   USE kpoint_methods,                  ONLY: kpoint_aux_env_initialize,&
+                                              kpoint_initialize_mos
    USE kpoint_transitional,             ONLY: kpoint_transitional_release,&
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: get_kpoint_info,&
@@ -321,6 +322,7 @@ CONTAINS
                   IF (use_real_wfn) CPABORT("Only KP-HFX ADMM2 is implemented with REAL wavefunctions")
                END IF
 
+               CALL kpoint_aux_env_initialize(kpoints)
                CALL kpoint_initialize_mos(kpoints, admm_env%mos_aux_fit, for_aux_fit=.TRUE.)
 
                CALL mpools_get(kpoints%mpools_aux_fit, ao_mo_fm_pools=ao_mo_fm_pools_aux_fit)
