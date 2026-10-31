@@ -527,6 +527,7 @@ CONTAINS
 !> \param metric New owned dense metric; radial Q and supplied PP_Q remain distinct.
 !> \param orbital_fields ...
 !> \param right_frame Optional independent right basis in the same physical projector and point frame.
+!>        Each basis retains its own fixed Gaussian image set, including its geometry response.
 !> \param response Optional joint geometry derivative of the rectangular metric.
 !> \param atom_response Cartesian motion of every atom, required with response.
 !> \param cell_response Lattice motion at fixed image membership, required with response.
@@ -565,12 +566,10 @@ CONTAINS
          CPASSERT(comparison == mp_comm_ident .OR. comparison == mp_comm_congruent)
          CPASSERT(ALL(SHAPE(frame%ao%points) == SHAPE(right%ao%points)))
          CPASSERT(ALL(SHAPE(frame%ao%positions) == SHAPE(right%ao%positions)))
-         CPASSERT(ALL(SHAPE(frame%ao%images) == SHAPE(right%ao%images)))
          CPASSERT(ALL(frame%ao%points == right%ao%points))
          CPASSERT(ALL(frame%ao%weights == right%ao%weights))
          CPASSERT(ALL(frame%ao%positions == right%ao%positions))
          CPASSERT(ALL(frame%ao%cell == right%ao%cell))
-         CPASSERT(ALL(frame%ao%images == right%ao%images))
          CPASSERT(ALL(frame%ao%reduced_k == right%ao%reduced_k))
          CPASSERT(SIZE(frame%ao%center_atoms) == SIZE(right%ao%center_atoms))
          CPASSERT(ALL(frame%ao%center_atoms == right%ao%center_atoms))
