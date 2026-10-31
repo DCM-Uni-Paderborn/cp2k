@@ -138,7 +138,8 @@ MODULE hfx_admm_utils
                                               qs_rho_get,&
                                               qs_rho_type
    USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_admm
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_release,&
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_charge_metric_release,&
+                                              qs_upf_inverse_scf_release,&
                                               qs_upf_inverse_scf_type
    USE rt_propagation_types,            ONLY: rt_prop_type
    USE task_list_methods,               ONLY: generate_qs_task_list
@@ -177,7 +178,8 @@ CONTAINS
       INTEGER                                            :: handle, ispin, n_rep_hf, nao_aux_fit, &
                                                             natoms, nelectron, nmo
       LOGICAL                                            :: calc_forces, do_kpoints, &
-                                                            s_mstruct_changed, use_virial
+                                                            projection_changed, s_mstruct_changed, &
+                                                            use_virial
       REAL(dp)                                           :: maxocc
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -213,6 +215,7 @@ CONTAINS
 
       calc_forces = .FALSE.
       IF (PRESENT(calculate_forces)) calc_forces = .TRUE.
+      projection_changed = .NOT. ASSOCIATED(admm_env) .OR. s_mstruct_changed
 
       hfx_sections => section_vals_get_subs_vals(input, "DFT%XC%HF")
       IF (PRESENT(ext_xc_section)) hfx_sections => section_vals_get_subs_vals(ext_xc_section, "HF")
@@ -356,9 +359,6 @@ CONTAINS
                END DO
                CALL cp_fm_struct_release(ao_ao_fm_struct)
 
-               ! Create and populate the internal ADMM overlap matrices at each KP
-               CALL kpoint_calc_admm_matrices(qs_env, calc_forces)
-
             END BLOCK
          END IF
 
@@ -367,10 +367,11 @@ CONTAINS
          CALL admm_update_s_mstruct(admm_env, qs_env, "AUX_FIT")
          CALL admm_alloc_ks_matrices(admm_env, qs_env)
          IF (admm_env%do_gapw) CALL update_admm_gapw(qs_env)
-         IF (do_kpoints) CALL kpoint_calc_admm_matrices(qs_env, calc_forces)
       END IF
 
       CALL qs_upf_inverse_basis_admm(qs_env)
+      ! The inverse auxiliary and mixed metrics must exist before fitting the native projection.
+      IF (do_kpoints .AND. projection_changed) CALL kpoint_calc_admm_matrices(qs_env, calc_forces)
 
       IF (admm_env%do_gapw .AND. dft_control%do_admm_dm) THEN
          CPABORT("GAPW ADMM not implemented for MCWEENY or NONE_DM purification.")
@@ -632,6 +633,8 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
+      CALL qs_upf_inverse_charge_metric_release(admm_env%upf_aux_metric)
+      CALL qs_upf_inverse_charge_metric_release(admm_env%upf_mixed_metric)
       CALL qs_upf_inverse_scf_release(admm_env%upf_inverse)
 
       CALL get_qs_env(qs_env, nkind=nkind, particle_set=particle_set, cell=cell, kpoints=kpoints, &

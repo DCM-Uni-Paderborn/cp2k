@@ -15,7 +15,8 @@ MODULE qs_upf_inverse_density
    USE qs_harmonics_atom,               ONLY: harmonics_atom_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
-   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_center_fields,&
+   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
+                                              qs_upf_inverse_center_fields,&
                                               qs_upf_inverse_evaluate
    USE qs_upf_inverse_gaussian,         ONLY: qs_upf_inverse_gaussian_integrate,&
                                               qs_upf_inverse_gaussian_radial
@@ -28,6 +29,8 @@ MODULE qs_upf_inverse_density
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_evaluate,&
                                               upf_inverse_kinetic_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
+                                              upf_inverse_pair,&
+                                              upf_inverse_pair_response,&
                                               upf_inverse_projector_density,&
                                               upf_inverse_semilocal_pair
    USE uspp_augmentation,               ONLY: uspp_augmentation_collocate_atom,&
@@ -37,6 +40,7 @@ MODULE qs_upf_inverse_density
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_density_center, qs_upf_inverse_density_integrate
+   PUBLIC :: qs_upf_inverse_density_pair_integrate
    PUBLIC :: qs_upf_inverse_density_radial, qs_upf_inverse_density_radial_adjoint
    PUBLIC :: qs_upf_inverse_density_gapw, qs_upf_inverse_density_gapw_integrate
    PUBLIC :: qs_upf_inverse_density_cache_prepare
@@ -794,6 +798,216 @@ CONTAINS
       END IF
       IF (PRESENT(comm)) CALL comm%sum(ao_operator)
    END SUBROUTINE qs_upf_inverse_density_integrate
+
+! **************************************************************************************************
+!> \brief Independent-basis home-center charge residual and its complete geometry response.
+!>        For each basis d_a is its home reconstruction difference and e=s+chi.
+!>        The rectangular operator is (d_X^dagger e_Y+e_X^dagger d_Y)/2+W_X^dagger Q_a W_Y.
+!>        Summing home centers gives the inverse-minus-Gaussian charge metric, including original Q.
+!> \param frame Row basis with its original defining inverse and image domain.
+!> \param right_frame Independent column basis for the same original atoms and UPF datasets.
+!> \param augmentation Original home-center charge kernels shared by both bases.
+!> \param center Same original center index and magnetic-projector order in both frames.
+!> \param points Common Cartesian evaluation rows, without image folding or a new inverse fit.
+!> \param weights Common point measure, applied once. Replicated atom grids omit comm.
+!> \param potential Real point covector, without a measure or mesh weight.
+!> \param ao_operator Rectangular row/column operator, with no Hermitian completion or mesh weight.
+!> \param ao_response Optional joint response, requiring every remaining response argument.
+!> \param point_response Motion of the common evaluation rows.
+!> \param atom_response Motion of all original atoms.
+!> \param cell_response Physical lattice response.
+!> \param reduced_k_response Reduced Bloch-vector response.
+!> \param coefficients_response Complete row dW from its original defining quadrature.
+!> \param right_coefficients_response Complete independent column dW.
+!> \param weights_response Response of the same point measure.
+!> \param potential_response Response of the unweighted point covector.
+!> \param comm Optional communicator distributing the common point rows.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_density_pair_integrate(frame, right_frame, augmentation, center, points, weights, &
+                                                    potential, ao_operator, ao_response, point_response, atom_response, &
+                                                    cell_response, reduced_k_response, coefficients_response, &
+                                                    right_coefficients_response, weights_response, potential_response, comm)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame, right_frame
+      TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
+      INTEGER, INTENT(IN)                                :: center
+      REAL(dp), INTENT(IN)                               :: points(:, :), weights(:), potential(:)
+      COMPLEX(dp), INTENT(OUT)                           :: ao_operator(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: ao_response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
+                                                            atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL :: coefficients_response(:, :), &
+         right_coefficients_response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: weights_response(:), &
+                                                            potential_response(:)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      COMPLEX(dp), ALLOCATABLE :: ddx(:, :), ddy(:, :), dex(:, :), dey(:, :), dx(:, :), dy(:, :), &
+         ex(:, :), ey(:, :), gdx(:, :, :), gdy(:, :, :), gex(:, :, :), gey(:, :, :), partial(:, :)
+      INTEGER                                            :: atom, block, first, hi, kind, last, lo, &
+                                                            m, nl, np, nr
+      LOGICAL                                            :: derive
+      REAL(dp), ALLOCATABLE :: dq(:, :), measure(:), measure_response(:), one(:), q(:, :), &
+         qpart(:, :), translated(:, :), vg(:, :), zero(:), zeros(:, :)
+
+      CALL check_center(frame, augmentation, center, points)
+      CALL check_center(right_frame, augmentation, center, points)
+      CPASSERT(ALL(SHAPE(frame%positions) == SHAPE(right_frame%positions)))
+      CPASSERT(ALL(frame%positions == right_frame%positions))
+      CPASSERT(ALL(frame%cell == right_frame%cell))
+      CPASSERT(ALL(frame%reduced_k == right_frame%reduced_k))
+      CPASSERT(SIZE(frame%center_atoms) == SIZE(right_frame%center_atoms))
+      CPASSERT(ALL(frame%center_atoms == right_frame%center_atoms))
+      CPASSERT(ALL(frame%center_kinds == right_frame%center_kinds))
+      CPASSERT(ALL(frame%projector_first == right_frame%projector_first))
+      CPASSERT(ALL(frame%projector_last == right_frame%projector_last))
+      nl = SIZE(frame%coefficients, 2)
+      nr = SIZE(right_frame%coefficients, 2)
+      np = SIZE(points, 2)
+      CPASSERT(SIZE(weights) == np .AND. SIZE(potential) == np)
+      CPASSERT(ALL(SHAPE(ao_operator) == [nl, nr]))
+      derive = PRESENT(ao_response)
+      CPASSERT(derive .EQV. PRESENT(point_response))
+      CPASSERT(derive .EQV. PRESENT(atom_response))
+      CPASSERT(derive .EQV. PRESENT(cell_response))
+      CPASSERT(derive .EQV. PRESENT(reduced_k_response))
+      CPASSERT(derive .EQV. PRESENT(coefficients_response))
+      CPASSERT(derive .EQV. PRESENT(right_coefficients_response))
+      CPASSERT(derive .EQV. PRESENT(weights_response))
+      CPASSERT(derive .EQV. PRESENT(potential_response))
+      ao_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (derive) THEN
+         CPASSERT(ALL(SHAPE(ao_response) == [nl, nr]))
+         CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
+         CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
+         CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
+         IF (.NOT. ALL(SHAPE(right_coefficients_response) == SHAPE(right_frame%coefficients))) THEN
+            CPABORT("Invalid column inverse coefficient response")
+         END IF
+         CPASSERT(SIZE(weights_response) == np .AND. SIZE(potential_response) == np)
+         ao_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      block = MIN(qs_upf_inverse_block_size(frame), qs_upf_inverse_block_size(right_frame))
+      ALLOCATE (partial(nl, nr), measure(block))
+      IF (.NOT. frame%direct .OR. .NOT. right_frame%direct) THEN
+         ALLOCATE (dx(block, nl), ex(block, nl), gdx(block, nl, 3), gex(block, nl, 3), &
+                   dy(block, nr), ey(block, nr), gdy(block, nr, 3), gey(block, nr, 3))
+         IF (derive) ALLOCATE (ddx(block, nl), dex(block, nl), ddy(block, nr), dey(block, nr), &
+                               measure_response(block))
+         DO lo = 1, np, block
+            hi = MIN(np, lo + block - 1)
+            m = hi - lo + 1
+            measure(:m) = weights(lo:hi)*potential(lo:hi)
+            IF (derive) THEN
+               measure_response(:m) = weights_response(lo:hi)*potential(lo:hi) + &
+                                      weights(lo:hi)*potential_response(lo:hi)
+               CALL pair_fields(frame, center, points(:, lo:hi), dx(:m, :), ex(:m, :), gdx(:m, :, :), gex(:m, :, :), &
+                                ddx(:m, :), dex(:m, :), point_response(:, lo:hi), atom_response, cell_response, &
+                                reduced_k_response, coefficients_response)
+               CALL pair_fields(right_frame, center, points(:, lo:hi), dy(:m, :), ey(:m, :), gdy(:m, :, :), gey(:m, :, :), &
+                                ddy(:m, :), dey(:m, :), point_response(:, lo:hi), atom_response, cell_response, &
+                                reduced_k_response, right_coefficients_response)
+               CALL upf_inverse_pair_response(dx(:m, :), ey(:m, :), measure(:m), ddx(:m, :), dey(:m, :), &
+                                              measure_response(:m), partial)
+               ao_response(:, :) = ao_response + 0.5_dp*partial
+               CALL upf_inverse_pair_response(ex(:m, :), dy(:m, :), measure(:m), dex(:m, :), ddy(:m, :), &
+                                              measure_response(:m), partial)
+               ao_response(:, :) = ao_response + 0.5_dp*partial
+            ELSE
+               CALL pair_fields(frame, center, points(:, lo:hi), dx(:m, :), ex(:m, :), gdx(:m, :, :), gex(:m, :, :))
+               CALL pair_fields(right_frame, center, points(:, lo:hi), dy(:m, :), ey(:m, :), gdy(:m, :, :), gey(:m, :, :))
+            END IF
+            CALL upf_inverse_pair(dx(:m, :), ey(:m, :), measure(:m), partial)
+            ao_operator(:, :) = ao_operator + 0.5_dp*partial
+            CALL upf_inverse_pair(ex(:m, :), dy(:m, :), measure(:m), partial)
+            ao_operator(:, :) = ao_operator + 0.5_dp*partial
+         END DO
+      END IF
+      atom = frame%center_atoms(center)
+      kind = frame%center_kinds(center)
+      IF (augmentation%kinds(kind)%nproj /= 0) THEN
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         ALLOCATE (q(last - first + 1, last - first + 1), translated(3, np), zeros(3, np))
+         translated(:, :) = points - SPREAD(frame%positions(:, atom), 2, np)
+         zeros = 0.0_dp
+         CALL uspp_augmentation_integrate_atom(augmentation%kinds(kind), translated, weights, potential, zeros, q)
+         ao_operator(:, :) = ao_operator + MATMUL(CONJG(TRANSPOSE(frame%coefficients(first:last, :))), &
+                                                  MATMUL(CMPLX(q, 0.0_dp, dp), right_frame%coefficients(first:last, :)))
+         IF (derive) THEN
+            ALLOCATE (dq, MOLD=q)
+            ALLOCATE (qpart, MOLD=q)
+            ALLOCATE (one(np), zero(np), vg(3, np))
+            one = 1.0_dp
+            zero = 0.0_dp
+            vg(:, :) = SPREAD(potential, 1, 3)*(point_response - SPREAD(atom_response(:, atom), 2, np))
+            CALL uspp_augmentation_integrate_atom(augmentation%kinds(kind), translated, weights, zero, vg, dq)
+            CALL uspp_augmentation_integrate_atom(augmentation%kinds(kind), translated, &
+                                                  weights_response*potential + weights*potential_response, one, zeros, qpart)
+            dq(:, :) = dq + qpart
+            ao_response(:, :) = ao_response + &
+                                MATMUL(CONJG(TRANSPOSE(coefficients_response(first:last, :))), &
+                                       MATMUL(CMPLX(q, 0.0_dp, dp), right_frame%coefficients(first:last, :))) + &
+                                MATMUL(CONJG(TRANSPOSE(frame%coefficients(first:last, :))), &
+                                       MATMUL(CMPLX(q, 0.0_dp, dp), right_coefficients_response(first:last, :))) + &
+                                MATMUL(CONJG(TRANSPOSE(frame%coefficients(first:last, :))), &
+                                       MATMUL(CMPLX(dq, 0.0_dp, dp), right_frame%coefficients(first:last, :)))
+         END IF
+      END IF
+      IF (PRESENT(comm)) THEN
+         CALL comm%sum(ao_operator)
+         IF (derive) CALL comm%sum(ao_response)
+      END IF
+   END SUBROUTINE qs_upf_inverse_density_pair_integrate
+
+! **************************************************************************************************
+!> \brief Home difference and s+chi for independent bases, including an unchanged DIRECT basis.
+!> \param frame ...
+!> \param center ...
+!> \param points ...
+!> \param d ...
+!> \param e ...
+!> \param gd ...
+!> \param ge ...
+!> \param dd ...
+!> \param de ...
+!> \param point_response ...
+!> \param atom_response ...
+!> \param cell_response ...
+!> \param reduced_k_response ...
+!> \param coefficients_response ...
+! **************************************************************************************************
+   SUBROUTINE pair_fields(frame, center, points, d, e, gd, ge, dd, de, point_response, atom_response, &
+                          cell_response, reduced_k_response, coefficients_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: center
+      REAL(dp), INTENT(IN)                               :: points(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: d(:, :), e(:, :), gd(:, :, :), &
+                                                            ge(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dd(:, :), de(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
+                                                            atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+
+      IF (frame%direct) THEN
+         d = CMPLX(0.0_dp, 0.0_dp, dp)
+         gd = CMPLX(0.0_dp, 0.0_dp, dp)
+         IF (PRESENT(dd)) dd = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL qs_upf_inverse_evaluate(frame, points, e, ge, soft_response=de, point_response=point_response, &
+                                      atom_response=atom_response, cell_response=cell_response, &
+                                      reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
+         e = 2.0_dp*e
+         ge = 2.0_dp*ge
+         IF (PRESENT(de)) de = 2.0_dp*de
+      ELSE
+         CALL center_fields(frame, center, points, d, e, gd, ge, dd, de, point_response=point_response, &
+                            atom_response=atom_response, cell_response=cell_response, &
+                            reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
+      END IF
+   END SUBROUTINE pair_fields
 
 ! **************************************************************************************************
 !> \brief Native angular projection of nR + Q and optional Gaussian hard-minus-soft density.

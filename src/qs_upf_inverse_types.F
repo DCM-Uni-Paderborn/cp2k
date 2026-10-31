@@ -30,6 +30,7 @@ MODULE qs_upf_inverse_types
                                               pw_grid_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_type
@@ -128,6 +129,17 @@ MODULE qs_upf_inverse_types
       REAL(dp), ALLOCATABLE :: reduced_k(:, :), weights(:)
    END TYPE qs_upf_inverse_background_type
 
+   TYPE qs_upf_inverse_charge_metric_type
+      LOGICAL :: ready = .FALSE., atomic = .FALSE., ordered = .FALSE., native_gaussian = .FALSE.
+      TYPE(qs_upf_inverse_background_type) :: gaussian
+      TYPE(qs_upf_inverse_gaussian_pairs_type), ALLOCATABLE :: pairs(:)
+      TYPE(qs_kind_type), POINTER :: row_kinds(:) => NULL(), column_kinds(:) => NULL()
+      TYPE(pw_grid_type), POINTER :: grid => NULL()
+      INTEGER, ALLOCATABLE :: center_atoms(:), center_kinds(:), inverse_centers(:)
+      REAL(dp), ALLOCATABLE :: weights(:), reduced_k(:, :)
+      COMPLEX(dp), ALLOCATABLE :: values(:, :, :)
+   END TYPE qs_upf_inverse_charge_metric_type
+
    ! Owned fields of one immutable Coulomb center and Bloch frame. Geometry responses
    ! are evaluated independently. Releasing the Coulomb map also releases these fields.
    TYPE qs_upf_inverse_density_cache_type
@@ -220,6 +232,7 @@ MODULE qs_upf_inverse_types
    PUBLIC :: qs_upf_inverse_orbitals_type
    PUBLIC :: qs_upf_inverse_xc_type
    PUBLIC :: qs_upf_inverse_background_type, qs_upf_inverse_background_release
+   PUBLIC :: qs_upf_inverse_charge_metric_type, qs_upf_inverse_charge_metric_release
    PUBLIC :: qs_upf_inverse_coulomb_type, qs_upf_inverse_coulomb_release
    PUBLIC :: qs_upf_inverse_density_cache_type
 
@@ -276,6 +289,18 @@ CONTAINS
       IF (map%owns_tasks) CALL deallocate_task_list(map%task_list)
       map = qs_upf_inverse_background_type()
    END SUBROUTINE qs_upf_inverse_background_release
+
+! **************************************************************************************************
+!> \brief Release the auxiliary or mixed metric before its borrowed native bases and grids change.
+!> \param map ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_charge_metric_release(map)
+      TYPE(qs_upf_inverse_charge_metric_type), &
+         INTENT(INOUT)                                   :: map
+
+      CALL qs_upf_inverse_background_release(map%gaussian)
+      map = qs_upf_inverse_charge_metric_type()
+   END SUBROUTINE qs_upf_inverse_charge_metric_release
 
 ! **************************************************************************************************
 !> \brief Release owned native PW workspaces and image matrices before the environment is destroyed.

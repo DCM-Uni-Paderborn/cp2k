@@ -173,10 +173,11 @@ CONTAINS
 !> \param qs_control ...
 !> \param max_rad_local_type ...
 !> \param force_env_section ...
+!> \param unsplit Retain all Gaussian primitives in both expansions for a borrowed unsplit basis.
 !> \version 1.0
 ! **************************************************************************************************
    SUBROUTINE projectors(paw_proj, basis_1c, orb_basis, rc, qs_control, max_rad_local_type, &
-                         force_env_section)
+                         force_env_section, unsplit)
 
       TYPE(paw_proj_set_type), POINTER                   :: paw_proj
       TYPE(gto_basis_set_type), POINTER                  :: basis_1c, orb_basis
@@ -184,6 +185,7 @@ CONTAINS
       TYPE(qs_control_type), INTENT(IN)                  :: qs_control
       REAL(KIND=dp), INTENT(IN)                          :: max_rad_local_type
       TYPE(section_vals_type), POINTER                   :: force_env_section
+      LOGICAL, INTENT(IN), OPTIONAL                      :: unsplit
 
       REAL(KIND=dp)                                      :: eps_fit, eps_iso, eps_orb, eps_svd, &
                                                             max_rad_local
@@ -198,7 +200,7 @@ CONTAINS
       eps_orb = qs_control%eps_pgf_orb
 
       CALL build_projector(paw_proj, basis_1c, orb_basis, eps_fit, eps_iso, eps_svd, &
-                           rc, eps_orb, max_rad_local, force_env_section)
+                           rc, eps_orb, max_rad_local, force_env_section, unsplit)
 
    END SUBROUTINE projectors
 
@@ -214,16 +216,18 @@ CONTAINS
 !> \param eps_orb ...
 !> \param max_rad_local To eliminate very smooth functions from the 1c basis
 !> \param force_env_section ...
+!> \param unsplit Disable the hard/soft primitive split without changing the projector radius.
 !> \version 1.0
 ! **************************************************************************************************
    SUBROUTINE build_projector(paw_proj, basis_1c, orb_basis, eps_fit, eps_iso, eps_svd, &
-                              rc, eps_orb, max_rad_local, force_env_section)
+                              rc, eps_orb, max_rad_local, force_env_section, unsplit)
 
       TYPE(paw_proj_set_type), POINTER                   :: paw_proj
       TYPE(gto_basis_set_type), POINTER                  :: basis_1c, orb_basis
       REAL(KIND=dp), INTENT(IN)                          :: eps_fit, eps_iso, eps_svd, rc, eps_orb, &
                                                             max_rad_local
       TYPE(section_vals_type), POINTER                   :: force_env_section
+      LOGICAL, INTENT(IN), OPTIONAL                      :: unsplit
 
       CHARACTER(LEN=default_string_length)               :: bsname
       INTEGER :: ic, ico, icomax, icomin, il, info, ip, ipgf, ipp, iprjfirst, iprjs, is, iset, &
@@ -234,6 +238,7 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: lmax, lmin, npgf, nshell
       INTEGER, DIMENSION(:, :), POINTER                  :: first_cgf, first_sgf, l, last_cgf, &
                                                             last_sgf
+      LOGICAL                                            :: split_basis
       LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: isoprj
       REAL(KIND=dp)                                      :: expzet, my_error, prefac, radius, x, &
                                                             zetmin, zetval
@@ -255,6 +260,8 @@ CONTAINS
       CPASSERT(ASSOCIATED(paw_proj))
       CPASSERT(ASSOCIATED(orb_basis))
       CPASSERT(ASSOCIATED(basis_1c))
+      split_basis = .TRUE.
+      IF (PRESENT(unsplit)) split_basis = .NOT. unsplit
 
       CALL get_gto_basis_set(gto_basis_set=basis_1c, name=bsname, &
                              ncgf=ncgf, nset=nset, nsgf=nsgf, &
@@ -367,7 +374,8 @@ CONTAINS
          END DO ! iset
 
          !     *** Smallest exp. due to eps_iso: concerned as an isolated projector ***
-         paw_proj%zisomin(lshell) = gauss_exponent(lshell, rc, eps_iso, 1.0_dp)
+         paw_proj%zisomin(lshell) = HUGE(0.0_dp)
+         IF (split_basis) paw_proj%zisomin(lshell) = gauss_exponent(lshell, rc, eps_iso, 1.0_dp)
 
          ! maybe order the exponents here?
          ! zet(1) > zet(2) ...
@@ -626,7 +634,7 @@ CONTAINS
                DO isgf = isgfmin, isgfmax
                   paw_proj%sphi_h(icomin:icomax, isgf) = &
                      sphi(icomin:icomax, isgf)
-                  IF (radius < rc) THEN
+                  IF (split_basis .AND. radius < rc) THEN
                      paw_proj%sphi_s(icomin:icomax, isgf) = 0.0_dp
                   ELSE
                      paw_proj%sphi_s(icomin:icomax, isgf) = &

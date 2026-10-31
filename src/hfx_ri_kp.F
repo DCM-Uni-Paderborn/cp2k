@@ -90,8 +90,6 @@ MODULE hfx_ri_kp
    USE qs_integral_utils,               ONLY: basis_set_list_setup
    USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: qs_kind_type
-   USE qs_ks_types,                     ONLY: get_ks_env,&
-                                              qs_ks_env_type
    USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
                                               neighbor_list_iterate,&
                                               neighbor_list_iterator_create,&
@@ -113,6 +111,7 @@ MODULE hfx_ri_kp
                                               distribution_3d_type,&
                                               neighbor_list_3c_iterator_type,&
                                               neighbor_list_3c_type
+   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_select
    USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_lattice_adjoint,&
                                               qs_upf_inverse_hfx_lattice_centers,&
                                               qs_upf_inverse_hfx_lattice_gradient
@@ -526,7 +525,6 @@ CONTAINS
                                                             exchange_history(:, :)
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_sub
-      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_section, print_section
 
@@ -541,21 +539,19 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      CALL get_qs_env(qs_env, para_env=para_env, natom=natom, ks_env=ks_env, kpoints=kpoints)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      inverse_operator = .FALSE.
-      IF (ASSOCIATED(inverse)) inverse_operator = inverse%enabled
+      CALL get_qs_env(qs_env, para_env=para_env, natom=natom, kpoints=kpoints)
+      inverse_operator = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       IF (response) THEN
          CPASSERT(inverse_operator)
-         CPASSERT(ALLOCATED(inverse%ks_k))
-         ALLOCATE (operators_response, MOLD=inverse%ks_k)
+         CPASSERT(ASSOCIATED(inverse%bloch%kpoints))
+         ALLOCATE (operators_response(inverse%bloch%nao, inverse%bloch%nao, SIZE(inverse%bloch%weights), nspins))
          operators_response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       IF (inverse_operator) THEN
          CPASSERT(ASSOCIATED(inverse%bloch%kpoints))
          CALL get_kpoint_info(kpoints, index_to_cell=image_cells)
          IF (.NOT. response .AND. .NOT. ALLOCATED(inverse%exchange_k)) THEN
-            ALLOCATE (inverse%exchange_k, MOLD=inverse%ks_k)
+            ALLOCATE (inverse%exchange_k(inverse%bloch%nao, inverse%bloch%nao, SIZE(inverse%bloch%weights), nspins))
             inverse%exchange_k = CMPLX(0.0_dp, 0.0_dp, dp)
          END IF
       END IF
@@ -1055,7 +1051,6 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_sub
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
-      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_section
       TYPE(virial_type), POINTER                         :: virial
@@ -1075,10 +1070,8 @@ CONTAINS
       END IF
 
       CALL get_qs_env(qs_env, natom=natom, para_env=para_env, force=force, cell=cell, virial=virial, &
-                      atomic_kind_set=atomic_kind_set, particle_set=particle_set, ks_env=ks_env)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      inverse_transition = .FALSE.
-      IF (ASSOCIATED(inverse)) inverse_transition = inverse%enabled
+                      atomic_kind_set=atomic_kind_set, particle_set=particle_set)
+      inverse_transition = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       CALL get_atomic_kind_set(atomic_kind_set, kind_of=kind_of, atom_of_kind=atom_of_kind)
 
       ALLOCATE (idx_to_at_AO(SIZE(ri_data%bsizes_AO_split)))
@@ -1725,17 +1718,18 @@ CONTAINS
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(qs_force_type), POINTER                       :: force(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
-      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
       TYPE(uspp_augmentation_type), POINTER              :: augmentation(:)
       TYPE(virial_type), POINTER                         :: virial
 
-      CALL get_qs_env(qs_env, ks_env=ks_env, kpoints=kpoints, qs_kind_set=kinds, particle_set=atoms, &
+      CALL get_qs_env(qs_env, kpoints=kpoints, qs_kind_set=kinds, particle_set=atoms, &
                       atomic_kind_set=atomic_kinds, force=force, virial=virial, para_env=para_env)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      CPASSERT(ASSOCIATED(inverse))
-      CPASSERT(inverse%enabled .AND. ASSOCIATED(kpoints))
+      BLOCK
+         LOGICAL :: active
+         active = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
+         CPASSERT(active .AND. ASSOCIATED(kpoints))
+      END BLOCK
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          frame => inverse%bloch%frames(1)%ao
          augmentation => inverse%bloch%augmentation%kinds
@@ -2323,7 +2317,6 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_aux_fit, sab_aux_fit_asymm, sab_nl, &
                                                             sab_nl_nosym
-      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
@@ -2332,14 +2325,13 @@ CONTAINS
                index_to_cell, pblock, pblock_desymm)
 
       CALL get_qs_env(qs_env, kpoints=kpoints, scf_env=scf_env, matrix_ks_kp=matrix_ks, &
-                      dft_control=dft_control, ks_env=ks_env)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      inverse_density = .FALSE.
-      IF (ASSOCIATED(inverse)) inverse_density = inverse%enabled
+                      dft_control=dft_control)
+      inverse_density = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       CALL get_kpoint_info(kpoints, sab_nl_nosym=sab_nl_nosym, cell_to_index=cell_to_index, &
                            index_to_cell=index_to_cell, sab_nl=sab_nl)
 
-      IF (dft_control%do_admm) THEN
+      IF (TRIM(ri_data%orb_basis_type) == 'AUX_FIT') THEN
+         CPASSERT(ASSOCIATED(qs_env%admm_env))
          CALL get_admm_env(qs_env%admm_env, matrix_ks_aux_fit_kp=matrix_ks, &
                            sab_aux_fit=sab_aux_fit, sab_aux_fit_asymm=sab_aux_fit_asymm)
          IF (ASSOCIATED(sab_aux_fit) .AND. ASSOCIATED(sab_aux_fit_asymm)) THEN
@@ -4590,7 +4582,7 @@ CONTAINS
    END SUBROUTINE reorder_3c_derivs
 
 ! **************************************************************************************************
-!> \brief Get the sparsity pattern related to the non-symmetric AO basis overlap neighbor list
+!> \brief Native Gaussian basis sparsity or complete original-data inverse exchange pairs.
 !> \param pattern ...
 !> \param ri_data ...
 !> \param qs_env ...
@@ -4614,63 +4606,21 @@ CONTAINS
          DIMENSION(:), POINTER                           :: nl_iterator
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: nl_2c
-      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
       NULLIFY (nl_2c, nl_iterator, kpoints, cell_to_index, dft_control, index_to_cell, para_env)
 
-      CALL get_qs_env(qs_env, kpoints=kpoints, dft_control=dft_control, para_env=para_env, natom=natom, ks_env=ks_env)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      inverse_transition = .FALSE.
-      IF (ASSOCIATED(inverse)) inverse_transition = inverse%enabled
+      CALL get_qs_env(qs_env, kpoints=kpoints, dft_control=dft_control, para_env=para_env, natom=natom)
+      inverse_transition = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       CALL get_kpoint_info(kpoints, cell_to_index=cell_to_index, index_to_cell=index_to_cell, sab_nl=nl_2c)
 
       nimg = ri_data%nimg
       pattern(:, :, :) = 0
 
-      !We use the symmetric nl for all images that have an opposite cell
-      CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
-      DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
-         CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, cell=cell_j)
-
-         j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
-         IF (j_img > nimg .OR. j_img < 1) CYCLE
-
-         mj_img = get_opp_index(j_img, qs_env)
-         IF (mj_img > nimg .OR. mj_img < 1) CYCLE
-
-         IF (ri_data%present_images(j_img) == 0) CYCLE
-
-         pattern(iatom, jatom, j_img) = 1
-      END DO
-      CALL neighbor_list_iterator_release(nl_iterator)
-
-      !If there is no opposite cell present, then we take into account the non-symmetric nl
-      CALL get_kpoint_info(kpoints, sab_nl_nosym=nl_2c)
-
-      CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
-      DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
-         CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, cell=cell_j)
-
-         j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
-         IF (j_img > nimg .OR. j_img < 1) CYCLE
-
-         mj_img = get_opp_index(j_img, qs_env)
-         IF (mj_img <= nimg .AND. mj_img > 0) CYCLE
-
-         IF (ri_data%present_images(j_img) == 0) CYCLE
-
-         pattern(iatom, jatom, j_img) = 1
-      END DO
-      CALL neighbor_list_iterator_release(nl_iterator)
-
-      CALL para_env%sum(pattern)
-
       IF (inverse_transition) THEN
          ! Original transition corrections can couple AO atoms absent from the
          ! Gaussian overlap list. Keep the complete physical AO pairs in the
          ! selected exchange-image domain, with each conjugate pair counted once.
-         pattern = 0
          DO j_img = 1, nimg
             IF (ri_data%present_images(j_img) == 0) CYCLE
             mj_img = get_opp_index(j_img, qs_env)
@@ -4684,6 +4634,55 @@ CONTAINS
                END DO
             END DO
          END DO
+      ELSE
+         ! The native Gaussian sparsity follows the actual orbital basis owner.
+         IF (TRIM(ri_data%orb_basis_type) == 'AUX_FIT') THEN
+            CPASSERT(ASSOCIATED(qs_env%admm_env))
+            CALL get_admm_env(qs_env%admm_env, sab_aux_fit=nl_2c)
+         END IF
+         CPASSERT(ASSOCIATED(nl_2c))
+         !We use the symmetric nl for all images that have an opposite cell
+         CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
+         DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+            CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, cell=cell_j)
+
+            j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
+            IF (j_img > nimg .OR. j_img < 1) CYCLE
+
+            mj_img = get_opp_index(j_img, qs_env)
+            IF (mj_img > nimg .OR. mj_img < 1) CYCLE
+
+            IF (ri_data%present_images(j_img) == 0) CYCLE
+
+            pattern(iatom, jatom, j_img) = 1
+         END DO
+         CALL neighbor_list_iterator_release(nl_iterator)
+
+         !If there is no opposite cell present, then we take into account the non-symmetric nl
+         IF (TRIM(ri_data%orb_basis_type) == 'AUX_FIT') THEN
+            CALL get_admm_env(qs_env%admm_env, sab_aux_fit_asymm=nl_2c)
+         ELSE
+            CALL get_kpoint_info(kpoints, sab_nl_nosym=nl_2c)
+         END IF
+         CPASSERT(ASSOCIATED(nl_2c))
+
+         CALL neighbor_list_iterator_create(nl_iterator, nl_2c)
+         DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+            CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, cell=cell_j)
+
+            j_img = cell_to_index(cell_j(1), cell_j(2), cell_j(3))
+            IF (j_img > nimg .OR. j_img < 1) CYCLE
+
+            mj_img = get_opp_index(j_img, qs_env)
+            IF (mj_img <= nimg .AND. mj_img > 0) CYCLE
+
+            IF (ri_data%present_images(j_img) == 0) CYCLE
+
+            pattern(iatom, jatom, j_img) = 1
+         END DO
+         CALL neighbor_list_iterator_release(nl_iterator)
+
+         CALL para_env%sum(pattern)
       END IF
 
       !If the opposite image is considered, then there is no need to compute diagonal twice
@@ -4898,7 +4897,6 @@ CONTAINS
          POINTER                                         :: nl_2c
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
-      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_section
 
@@ -4909,10 +4907,8 @@ CONTAINS
 
       CALL get_qs_env(qs_env, nkind=nkind, qs_kind_set=qs_kind_set, distribution_2d=dist_2d, &
                       dft_control=dft_control, particle_set=particle_set, kpoints=kpoints, &
-                      para_env=para_env, natom=natom, ks_env=ks_env)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      inverse_transition = .FALSE.
-      IF (ASSOCIATED(inverse)) inverse_transition = inverse%enabled
+                      para_env=para_env, natom=natom)
+      inverse_transition = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       nimg = dft_control%nimages
       CALL get_kpoint_info(kpoints, cell_to_index=cell_to_index)
       kp_index_lbounds = LBOUND(cell_to_index)

@@ -80,7 +80,9 @@ MODULE admm_methods
                                               dp
    USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
                                               kpoint_density_transform,&
+                                              kpoint_star_operator,&
                                               rskp_transform
+   USE kpoint_transitional,             ONLY: get_1d_pointer
    USE kpoint_types,                    ONLY: get_kpoint_env,&
                                               get_kpoint_info,&
                                               kpoint_env_type,&
@@ -99,7 +101,8 @@ MODULE admm_methods
                                               qs_force_type
    USE qs_gapw_densities,               ONLY: prepare_gapw_den
    USE qs_ks_atom,                      ONLY: update_ks_atom
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_local_rho_types,              ONLY: local_rho_set_create,&
                                               local_rho_set_release,&
                                               local_rho_type
@@ -113,6 +116,10 @@ MODULE admm_methods
                                               qs_rho_set,&
                                               qs_rho_type
    USE qs_scf_types,                    ONLY: qs_scf_env_type
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density,&
+                                              qs_upf_inverse_kpoints_native_operator
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE qs_vxc_atom,                     ONLY: calculate_vxc_atom
    USE task_list_types,                 ONLY: task_list_type
@@ -216,7 +223,7 @@ CONTAINS
          ELSE
 
             ! Here, the auxiliary DM gets calculated and is written into rho_aux_fit%...
-            CALL calculate_dm_mo_no_diag(admm_env, &
+            CALL calculate_dm_mo_no_diag(ks_env, admm_env, &
                                          mo_set=mos(ispin), &
                                          overlap_matrix=matrix_s_aux_fit(1)%matrix, &
                                          density_matrix=rho_ao_aux(ispin)%matrix, &
@@ -591,20 +598,29 @@ CONTAINS
          nelec_orb = 0.0_dp
          nelec_aux = 0.0_dp
          admm_env%n_large_basis = 0.0_dp
-         !Note: we can take the trace of the symmetric-typed matrices as P_mu^0,nu^b = P_nu^0,mu^-b
-         !      and because of the sum over all images, all atomic blocks are accounted for
-         DO img = 1, dft_control%nimages
+         IF (admm_env%upf_aux_metric%ready) THEN
             DO ispin = 1, dft_control%nspins
-               CALL dbcsr_dot(rho_ao_orb(ispin, img)%matrix, matrix_s(1, img)%matrix, tmp)
-               nelec_orb(ispin) = nelec_orb(ispin) + tmp
-               CALL dbcsr_dot(rho_ao_aux(ispin, img)%matrix, matrix_s_aux_fit(1, img)%matrix, tmp)
-               nelec_aux(ispin) = nelec_aux(ispin) + tmp
+               CALL admm_upf_electron_count(ks_env, admm_env, ispin, nelec_orb(ispin), nelec_aux(ispin))
             END DO
-         END DO
+         ELSE
+            ! The ordinary Gaussian image matrices include both symmetric partners.
+            DO img = 1, dft_control%nimages
+               DO ispin = 1, dft_control%nspins
+                  CALL dbcsr_dot(rho_ao_orb(ispin, img)%matrix, matrix_s(1, img)%matrix, tmp)
+                  nelec_orb(ispin) = nelec_orb(ispin) + tmp
+                  CALL dbcsr_dot(rho_ao_aux(ispin, img)%matrix, matrix_s_aux_fit(1, img)%matrix, tmp)
+                  nelec_aux(ispin) = nelec_aux(ispin) + tmp
+               END DO
+            END DO
+         END IF
 
          DO ispin = 1, dft_control%nspins
             admm_env%n_large_basis(ispin) = nelec_orb(ispin)
-            admm_env%gsi(ispin) = nelec_orb(ispin)/nelec_aux(ispin)
+            IF (admm_env%upf_aux_metric%ready) THEN
+               admm_env%gsi(ispin) = admm_upf_charge_ratio(nelec_orb(ispin), nelec_aux(ispin))
+            ELSE
+               admm_env%gsi(ispin) = nelec_orb(ispin)/nelec_aux(ispin)
+            END IF
          END DO
 
          IF (admm_env%charge_constrain) THEN
@@ -613,6 +629,16 @@ CONTAINS
                   CALL dbcsr_scale(rho_ao_aux(ispin, img)%matrix, admm_env%gsi(ispin))
                END DO
             END DO
+            IF (admm_env%upf_aux_metric%ready) THEN
+               ! Original-UPF consumers read these native Bloch matrices, not the image copies.
+               DO ikp = 1, SIZE(kpoints%kp_aux_env)
+                  kp => kpoints%kp_aux_env(ikp)%kpoint_env
+                  DO ispin = 1, dft_control%nspins
+                     CALL cp_fm_scale(admm_env%gsi(ispin), kp%pmat(1, ispin))
+                     IF (.NOT. use_real_wfn) CALL cp_fm_scale(admm_env%gsi(ispin), kp%pmat(2, ispin))
+                  END DO
+               END DO
+            END IF
          END IF
 
          IF (dft_control%nspins == 1) THEN
@@ -864,6 +890,9 @@ CONTAINS
 
       INTEGER                                            :: handle, iatom, jatom, nao_aux_fit, &
                                                             nao_orb
+      LOGICAL                                            :: physical_metric
+      REAL(dp)                                           :: tolerance
+      REAL(dp), ALLOCATABLE                              :: complete_metric(:, :)
       REAL(dp), DIMENSION(:, :), POINTER                 :: sparse_block
       TYPE(dbcsr_iterator_type)                          :: iter
       TYPE(dbcsr_type), POINTER                          :: matrix_s_tilde
@@ -872,10 +901,34 @@ CONTAINS
 
       nao_aux_fit = admm_env%nao_aux_fit
       nao_orb = admm_env%nao_orb
+      physical_metric = admm_env%upf_aux_metric%ready
+      IF (physical_metric) THEN
+         CPASSERT(admm_env%upf_mixed_metric%ready)
+         CPASSERT(ASSOCIATED(admm_env%upf_inverse))
+         CPASSERT(.NOT. ASSOCIATED(admm_env%upf_inverse%bloch%kpoints))
+         tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(admm_env%upf_aux_metric%values)))
+         IF (MAXVAL(ABS(AIMAG(admm_env%upf_aux_metric%values))) > tolerance) THEN
+            CPABORT("Complex auxiliary metric in real Gamma projection")
+         END IF
+         ALLOCATE (complete_metric, SOURCE=REAL(admm_env%upf_aux_metric%values(:, :, 1), dp))
+         IF (admm_env%block_fit) THEN
+            ASSOCIATE (ao => admm_env%upf_inverse%frame%ao)
+               DO jatom = 1, SIZE(ao%ao_first)
+                  DO iatom = 1, SIZE(ao%ao_first)
+                     IF (admm_env%block_map(iatom, jatom) /= 0) CYCLE
+                     complete_metric(ao%ao_first(iatom):ao%ao_last(iatom), &
+                                     ao%ao_first(jatom):ao%ao_last(jatom)) = 0.0_dp
+                  END DO
+               END DO
+            END ASSOCIATE
+         END IF
+      END IF
 
       ! *** This part only depends on overlap matrices ==> needs only to be calculated if the geometry changed
 
-      IF (.NOT. admm_env%block_fit) THEN
+      IF (physical_metric) THEN
+         CALL cp_fm_set_submatrix(admm_env%S_inv, complete_metric)
+      ELSE IF (.NOT. admm_env%block_fit) THEN
          CALL copy_dbcsr_to_fm(matrix_s_aux_fit(1)%matrix, admm_env%S_inv)
       ELSE
          NULLIFY (matrix_s_tilde)
@@ -901,7 +954,15 @@ CONTAINS
       CALL cp_fm_uplo_to_full(admm_env%S_inv, admm_env%work_aux_aux)
       CALL cp_fm_to_fm(admm_env%S_inv, admm_env%S)
 
-      CALL copy_dbcsr_to_fm(matrix_s_mixed(1)%matrix, admm_env%Q)
+      IF (physical_metric) THEN
+         tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(admm_env%upf_mixed_metric%values)))
+         IF (MAXVAL(ABS(AIMAG(admm_env%upf_mixed_metric%values))) > tolerance) THEN
+            CPABORT("Complex mixed metric in real Gamma projection")
+         END IF
+         CALL cp_fm_set_submatrix(admm_env%Q, REAL(admm_env%upf_mixed_metric%values(:, :, 1), dp))
+      ELSE
+         CALL copy_dbcsr_to_fm(matrix_s_mixed(1)%matrix, admm_env%Q)
+      END IF
 
       !! Calculate S'_inverse
       CALL cp_fm_cholesky_decompose(admm_env%S_inv)
@@ -3561,6 +3622,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief ...
+!> \param ks_env Native primary representation and its complete normalization metric.
 !> \param admm_env environment of auxiliary DM
 !> \param mo_set ...
 !> \param density_matrix auxiliary DM
@@ -3569,8 +3631,9 @@ CONTAINS
 !> \param overlap_matrix_large overlap matrix of original basis
 !> \param ispin ...
 ! **************************************************************************************************
-   SUBROUTINE calculate_dm_mo_no_diag(admm_env, mo_set, density_matrix, overlap_matrix, &
+   SUBROUTINE calculate_dm_mo_no_diag(ks_env, admm_env, mo_set, density_matrix, overlap_matrix, &
                                       density_matrix_large, overlap_matrix_large, ispin)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(mo_set_type), INTENT(IN)                      :: mo_set
       TYPE(dbcsr_type), POINTER                          :: density_matrix, overlap_matrix, &
@@ -3624,13 +3687,19 @@ CONTAINS
 
          admm_env%n_large_basis(3) = 0.0_dp
 
-         ! Calculate number of electrons in the original density matrix, transposing doesn't matter
-         ! since both matrices are symmetric
-         CALL dbcsr_dot(density_matrix_large, overlap_matrix_large, admm_env%n_large_basis(ispin))
+         IF (admm_env%upf_aux_metric%ready) THEN
+            CALL admm_upf_electron_count(ks_env, admm_env, ispin, admm_env%n_large_basis(ispin), nel_tmp_aux, &
+                                         density_matrix_large, density_matrix)
+         ELSE
+            CALL dbcsr_dot(density_matrix_large, overlap_matrix_large, admm_env%n_large_basis(ispin))
+            CALL dbcsr_dot(density_matrix, overlap_matrix, nel_tmp_aux)
+         END IF
          admm_env%n_large_basis(3) = admm_env%n_large_basis(3) + admm_env%n_large_basis(ispin)
-         ! Calculate number of electrons in the auxiliary density matrix
-         CALL dbcsr_dot(density_matrix, overlap_matrix, nel_tmp_aux)
-         admm_env%gsi(ispin) = admm_env%n_large_basis(ispin)/nel_tmp_aux
+         IF (admm_env%upf_aux_metric%ready) THEN
+            admm_env%gsi(ispin) = admm_upf_charge_ratio(admm_env%n_large_basis(ispin), nel_tmp_aux)
+         ELSE
+            admm_env%gsi(ispin) = admm_env%n_large_basis(ispin)/nel_tmp_aux
+         END IF
 
          IF (admm_env%do_admmq .OR. admm_env%do_admms) THEN
             ! multiply aux. DM with gsi to get the scaled DM (Merlot, Eq. 21)
@@ -3642,6 +3711,90 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE calculate_dm_mo_no_diag
+
+! **************************************************************************************************
+!> \brief Count valence electrons in the primary and auxiliary physical normalization metrics.
+!>        Bloch densities are unfolded from their own native basis coordinates and expanded to
+!>        physical stars before contraction. Apply the mesh weights once, with no further MPI sum.
+!>        Frozen core charge is not part of either orbital normalization.
+!> \param ks_env Native primary representation.
+!> \param admm_env Prepared independent auxiliary representation and charge metric.
+!> \param spin Native spin index.
+!> \param primary_count Valence trace in the primary normalization metric.
+!> \param auxiliary_count Valence trace in the complete auxiliary charge metric.
+!> \param primary_matrix Native real Gamma density, required without explicit k points.
+!> \param auxiliary_matrix Native real Gamma auxiliary density.
+! **************************************************************************************************
+   SUBROUTINE admm_upf_electron_count(ks_env, admm_env, spin, primary_count, auxiliary_count, &
+                                      primary_matrix, auxiliary_matrix)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(admm_type), INTENT(IN)                        :: admm_env
+      INTEGER, INTENT(IN)                                :: spin
+      REAL(dp), INTENT(OUT)                              :: primary_count, auxiliary_count
+      TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: primary_matrix, auxiliary_matrix
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :), gamma(:, :)
+      INTEGER                                            :: ik
+      LOGICAL                                            :: valid
+      TYPE(dbcsr_p_type), POINTER                        :: metric(:)
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: primary
+
+      CALL get_ks_env(ks_env, upf_inverse=primary)
+      CPASSERT(ASSOCIATED(primary))
+      CPASSERT(primary%enabled)
+      CPASSERT(ASSOCIATED(admm_env%upf_inverse))
+      CPASSERT(admm_env%upf_aux_metric%ready)
+      IF (ASSOCIATED(primary%bloch%kpoints)) THEN
+         CALL qs_upf_inverse_kpoints_density(primary%bloch, spin, density)
+         valid = ALL(SHAPE(density) == SHAPE(primary%metric_k))
+         CPASSERT(valid)
+         primary_count = 0.0_dp
+         DO ik = 1, SIZE(density, 3)
+            primary_count = primary_count + primary%bloch%weights(ik)* &
+                            REAL(SUM(CONJG(primary%metric_k(:, :, ik))*density(:, :, ik)), dp)
+         END DO
+         CALL qs_upf_inverse_kpoints_density(admm_env%upf_inverse%bloch, spin, density)
+         valid = ALL(SHAPE(density) == SHAPE(admm_env%upf_aux_metric%values))
+         CPASSERT(valid)
+         auxiliary_count = 0.0_dp
+         DO ik = 1, SIZE(density, 3)
+            auxiliary_count = auxiliary_count + admm_env%upf_aux_metric%weights(ik)* &
+                              REAL(SUM(CONJG(admm_env%upf_aux_metric%values(:, :, ik))*density(:, :, ik)), dp)
+         END DO
+      ELSE
+         CPASSERT(PRESENT(primary_matrix) .AND. PRESENT(auxiliary_matrix))
+         metric => get_1d_pointer(primary%metric)
+         CPASSERT(ASSOCIATED(metric))
+         CALL dbcsr_dot(primary_matrix, metric(1)%matrix, primary_count)
+         CALL qs_upf_inverse_matrix_gather(admm_env%upf_inverse%frame%ao, auxiliary_matrix, gamma)
+         valid = ALL(SHAPE(gamma) == SHAPE(admm_env%upf_aux_metric%values(:, :, 1)))
+         CPASSERT(valid)
+         auxiliary_count = REAL(SUM(CONJG(admm_env%upf_aux_metric%values(:, :, 1))*gamma), dp)
+      END IF
+   END SUBROUTINE admm_upf_electron_count
+
+! **************************************************************************************************
+!> \brief Normalize physical auxiliary charge, retaining a jointly empty spin channel.
+!> \param primary_count Primary valence trace.
+!> \param auxiliary_count Auxiliary valence trace before rescaling.
+!> \return Charge scaling factor, unity for a jointly empty spin channel.
+! **************************************************************************************************
+   FUNCTION admm_upf_charge_ratio(primary_count, auxiliary_count) RESULT(ratio)
+      REAL(dp), INTENT(IN)                               :: primary_count, auxiliary_count
+      REAL(dp)                                           :: ratio
+
+      REAL(dp)                                           :: tolerance
+
+      tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(primary_count), ABS(auxiliary_count))
+      IF (ABS(primary_count) <= tolerance .AND. ABS(auxiliary_count) <= tolerance) THEN
+         ratio = 1.0_dp
+      ELSE
+         IF (primary_count < 0.0_dp .OR. auxiliary_count <= 0.0_dp) THEN
+            CPABORT('Invalid valence charge in original-UPF ADMM normalization')
+         END IF
+         ratio = primary_count/auxiliary_count
+      END IF
+   END FUNCTION admm_upf_charge_ratio
 
 ! **************************************************************************************************
 !> \brief ...
@@ -3786,6 +3939,9 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: overlap_aux(:, :, :), &
                                                             overlap_aux_orb(:, :, :)
 
+      COMPLEX(dp), ALLOCATABLE                           :: effective_aux(:, :, :), &
+                                                            effective_mixed(:, :, :), &
+                                                            reduced(:, :, :)
       INTEGER                                            :: igroup, ik, ikp, indx, kplocal, kpmax, &
                                                             nao_aux_fit, nao_orb, nkp, nkp_groups
       INTEGER, DIMENSION(2)                              :: kp_range
@@ -3812,6 +3968,8 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env_global, para_env_local
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_aux_fit, sab_aux_fit_vs_orb
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: primary
 
       NULLIFY (xkp, kp_dist, para_env_local, cell_to_index, admm_env, kp, &
                kpoints, matrix_s_aux_fit, matrix_s_aux_fit_vs_orb, sab_aux_fit, sab_aux_fit_vs_orb, &
@@ -3820,6 +3978,24 @@ CONTAINS
       CALL get_qs_env(qs_env, kpoints=kpoints, admm_env=admm_env)
       CPASSERT(PRESENT(overlap_aux) .EQV. PRESENT(overlap_aux_orb))
       custom_metric = PRESENT(overlap_aux)
+      IF (custom_metric) THEN
+         ALLOCATE (effective_aux, SOURCE=overlap_aux)
+         ALLOCATE (effective_mixed, SOURCE=overlap_aux_orb)
+      ELSE IF (admm_env%upf_aux_metric%ready) THEN
+         CPASSERT(admm_env%upf_mixed_metric%ready)
+         CPASSERT(ASSOCIATED(admm_env%upf_inverse))
+         CALL get_qs_env(qs_env, ks_env=ks_env)
+         CALL get_ks_env(ks_env, upf_inverse=primary)
+         CPASSERT(ASSOCIATED(primary))
+         ! Reduce each physical symmetry contribution with the rotations of its own basis.
+         CALL kpoint_star_operator(admm_env%upf_inverse%bloch%star, admm_env%upf_aux_metric%values, reduced)
+         CALL qs_upf_inverse_kpoints_native_operator(admm_env%upf_inverse%bloch, reduced, effective_aux)
+         CALL kpoint_star_operator(admm_env%upf_inverse%bloch%star, admm_env%upf_mixed_metric%values, reduced, &
+                                   right_map=primary%bloch%star)
+         CALL qs_upf_inverse_kpoints_native_operator(admm_env%upf_inverse%bloch, reduced, effective_mixed, &
+                                                     right_frame=primary%bloch)
+         custom_metric = .TRUE.
+      END IF
 
       CALL get_admm_env(admm_env, matrix_s_aux_fit_kp=matrix_s_aux_fit, &
                         matrix_s_aux_fit_vs_orb_kp=matrix_s_aux_fit_vs_orb, &
@@ -3835,19 +4011,19 @@ CONTAINS
       IF (custom_metric) THEN
          nao_aux_fit = admm_env%nao_aux_fit
          nao_orb = admm_env%nao_orb
-         valid = ALL(SHAPE(overlap_aux) == [nao_aux_fit, nao_aux_fit, nkp])
+         valid = ALL(SHAPE(effective_aux) == [nao_aux_fit, nao_aux_fit, nkp])
          CPASSERT(valid)
-         valid = ALL(SHAPE(overlap_aux_orb) == [nao_aux_fit, nao_orb, nkp])
+         valid = ALL(SHAPE(effective_mixed) == [nao_aux_fit, nao_orb, nkp])
          CPASSERT(valid)
          DO ik = 1, nkp
-            tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(overlap_aux(:, :, ik))))
-            defect = MAXVAL(ABS(overlap_aux(:, :, ik) - CONJG(TRANSPOSE(overlap_aux(:, :, ik)))))
+            tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(effective_aux(:, :, ik))))
+            defect = MAXVAL(ABS(effective_aux(:, :, ik) - CONJG(TRANSPOSE(effective_aux(:, :, ik)))))
             CPASSERT(defect <= tolerance)
             IF (use_real_wfn) THEN
-               defect = MAXVAL(ABS(AIMAG(overlap_aux(:, :, ik))))
+               defect = MAXVAL(ABS(AIMAG(effective_aux(:, :, ik))))
                CPASSERT(defect <= tolerance)
-               tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(overlap_aux_orb(:, :, ik))))
-               defect = MAXVAL(ABS(AIMAG(overlap_aux_orb(:, :, ik))))
+               tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(effective_mixed(:, :, ik))))
+               defect = MAXVAL(ABS(AIMAG(effective_mixed(:, :, ik))))
                CPASSERT(defect <= tolerance)
             END IF
          END DO
@@ -3924,11 +4100,11 @@ CONTAINS
             indx = indx + 1
 
             IF (custom_metric) THEN
-               CALL cp_fm_set_submatrix(fmwork(1), REAL(overlap_aux(:, :, ik), dp))
-               CALL cp_fm_set_submatrix(fmwork(3), REAL(overlap_aux_orb(:, :, ik), dp))
+               CALL cp_fm_set_submatrix(fmwork(1), REAL(effective_aux(:, :, ik), dp))
+               CALL cp_fm_set_submatrix(fmwork(3), REAL(effective_mixed(:, :, ik), dp))
                IF (.NOT. use_real_wfn) THEN
-                  CALL cp_fm_set_submatrix(fmwork(2), AIMAG(overlap_aux(:, :, ik)))
-                  CALL cp_fm_set_submatrix(fmwork(4), AIMAG(overlap_aux_orb(:, :, ik)))
+                  CALL cp_fm_set_submatrix(fmwork(2), AIMAG(effective_aux(:, :, ik)))
+                  CALL cp_fm_set_submatrix(fmwork(4), AIMAG(effective_mixed(:, :, ik)))
                END IF
             ELSE IF (use_real_wfn) THEN
                !AUX-AUX overlap

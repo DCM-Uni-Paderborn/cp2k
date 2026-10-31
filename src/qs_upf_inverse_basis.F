@@ -29,6 +29,7 @@ MODULE qs_upf_inverse_basis
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_operator,&
                                               qs_upf_inverse_background_prepare
+   USE qs_upf_inverse_charge_metric,    ONLY: qs_upf_inverse_charge_metric_prepare
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_prepare
    USE qs_upf_inverse_gth_local,        ONLY: qs_upf_inverse_gth_local_active
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_prepare
@@ -216,6 +217,8 @@ CONTAINS
       IF (info /= 0) THEN
          CPABORT('Singular or ill-conditioned auxiliary reconstruction')
       END IF
+      CALL qs_upf_inverse_charge_metric_prepare(qs_env, admm%upf_inverse, admm%upf_inverse, admm%upf_aux_metric)
+      CALL qs_upf_inverse_charge_metric_prepare(qs_env, admm%upf_inverse, primary, admm%upf_mixed_metric)
    END SUBROUTINE qs_upf_inverse_basis_admm
 
 ! **************************************************************************************************

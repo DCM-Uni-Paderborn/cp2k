@@ -971,11 +971,13 @@ list(
   qs_upf_inverse_augmentation.F
   qs_upf_inverse_background.F
   qs_upf_inverse_basis.F
+  qs_upf_inverse_charge_metric.F
   qs_upf_inverse_core.F
   qs_upf_inverse_coulomb.F
   qs_upf_inverse_density.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_gaussian.F
+  qs_upf_inverse_gaussian_centers.F
   qs_upf_inverse_gaussian_pairs.F
   qs_upf_inverse_grid.F
   qs_upf_inverse_gth.F
