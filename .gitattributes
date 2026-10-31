@@ -4,5 +4,6 @@
 tests/QS/regtest-upf/H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf whitespace=-blank-at-eol
 CODEOWNERS export-ignore
 .gitattributes export-ignore
+.github export-ignore
 .git-blame-ignore-revs export-ignore
 .gitignore export-ignore
