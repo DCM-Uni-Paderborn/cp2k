@@ -33,7 +33,8 @@ MODULE qs_upf_inverse_types
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_type
-   USE task_list_types,                 ONLY: task_list_type
+   USE task_list_types,                 ONLY: deallocate_task_list,&
+                                              task_list_type
    USE upf_inverse,                     ONLY: upf_inverse_atomic_type,&
                                               upf_inverse_kinetic_type,&
                                               upf_inverse_type
@@ -115,9 +116,9 @@ MODULE qs_upf_inverse_types
    END TYPE qs_upf_inverse_xc_type
 
    TYPE qs_upf_inverse_background_type
-      INTEGER :: nao = 0
-      LOGICAL :: bloch = .FALSE., soft_basis = .TRUE.
-      CHARACTER(LEN=16) :: orbital_basis = "ORB", grid_basis = "ORB"
+      INTEGER :: nao = 0, ncol = 0
+      LOGICAL :: bloch = .FALSE., soft_basis = .TRUE., ordered = .FALSE., owns_tasks = .FALSE.
+      CHARACTER(LEN=16) :: orbital_basis = "ORB", column_basis = "ORB", grid_basis = "ORB"
       ! Auxiliary lists are borrowed from their native ADMM geometry owner.
       TYPE(task_list_type), POINTER :: task_list => NULL()
       TYPE(neighbor_list_set_p_type), POINTER :: neighbors(:) => NULL()
@@ -272,6 +273,7 @@ CONTAINS
          END DO
          DEALLOCATE (map%density, map%potential)
       END IF
+      IF (map%owns_tasks) CALL deallocate_task_list(map%task_list)
       map = qs_upf_inverse_background_type()
    END SUBROUTINE qs_upf_inverse_background_release
 

@@ -14,7 +14,8 @@ MODULE qs_upf_inverse_background
         dbcsr_copy, dbcsr_get_block_p, dbcsr_get_info, dbcsr_get_matrix_type, &
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
         dbcsr_iterator_stop, dbcsr_iterator_type, dbcsr_p_type, dbcsr_scale, dbcsr_set, &
-        dbcsr_type_symmetric
+        dbcsr_type_no_symmetry, dbcsr_type_symmetric
+   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kp_transform_plan_create,&
@@ -44,6 +45,8 @@ MODULE qs_upf_inverse_background
    USE qs_overlap,                      ONLY: build_overlap_matrix
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_background_release,&
                                               qs_upf_inverse_background_type
+   USE task_list_methods,               ONLY: generate_qs_task_list
+   USE task_list_types,                 ONLY: allocate_task_list
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -72,17 +75,19 @@ CONTAINS
 !> \param qs_env Matching native owner, required with AUX_FIT. Its auxiliary lists must remain live.
 !> \param basis_type ORB by default, or AUX_FIT with its own overlaps, neighbors and grid tasks.
 !>        Release and rebuild the map when the native auxiliary lists change.
+!> \param right_basis_type ORB selects the ordered AUX_FIT/ORB product with independently owned grid tasks.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_background_prepare(ks_env, map, soft_basis, qs_env, basis_type)
+   SUBROUTINE qs_upf_inverse_background_prepare(ks_env, map, soft_basis, qs_env, basis_type, right_basis_type)
       TYPE(qs_ks_env_type), INTENT(IN), TARGET           :: ks_env
       TYPE(qs_upf_inverse_background_type), INTENT(OUT)  :: map
       LOGICAL, INTENT(IN), OPTIONAL                      :: soft_basis
       TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
-      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
+      CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type, right_basis_type
 
       CHARACTER(LEN=1)                                   :: symmetry
+      CHARACTER(LEN=16)                                  :: right_grid_basis
       INTEGER                                            :: a, b, ENTRY, image, info, native_cell(3)
-      INTEGER, POINTER                                   :: sizes(:)
+      INTEGER, POINTER                                   :: column_sizes(:), sizes(:)
       REAL(dp)                                           :: image_error, inverse_lattice(3, 3), &
                                                             rab(3), tolerance
       TYPE(admm_type), POINTER                           :: admm
@@ -90,7 +95,7 @@ CONTAINS
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(kpoint_star_type)                             :: star
-      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(kpoint_type), POINTER                         :: kpoints, task_kpoints
       TYPE(neighbor_list_iterator_p_type), POINTER       :: iterator(:)
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
       TYPE(particle_type), POINTER                       :: atoms(:)
@@ -98,6 +103,12 @@ CONTAINS
 
       IF (PRESENT(soft_basis)) map%soft_basis = soft_basis
       IF (PRESENT(basis_type)) map%orbital_basis = basis_type
+      map%ordered = PRESENT(right_basis_type)
+      map%column_basis = map%orbital_basis
+      IF (map%ordered) THEN
+         map%column_basis = right_basis_type
+         CPASSERT(map%orbital_basis == "AUX_FIT" .AND. map%column_basis == "ORB")
+      END IF
       CPASSERT(map%orbital_basis == "ORB" .OR. map%orbital_basis == "AUX_FIT")
       CALL get_ks_env(ks_env, matrix_s_kp=overlap, kpoints=kpoints, do_kpoints=map%bloch, sab_orb=sab, dft_control=control)
       IF (map%orbital_basis == "AUX_FIT") THEN
@@ -115,18 +126,37 @@ CONTAINS
             map%task_list => admm%admm_gapw_env%task_list
          END IF
          CPASSERT(ASSOCIATED(map%task_list))
+         IF (map%ordered) THEN
+            CALL get_admm_env(admm, matrix_s_aux_fit_vs_orb_kp=overlap, sab_aux_fit_vs_orb=sab)
+            map%neighbors => sab
+            right_grid_basis = "ORB"
+            IF (map%soft_basis) right_grid_basis = "ORB_SOFT"
+            NULLIFY (map%task_list)
+            CALL allocate_task_list(map%task_list)
+            map%owns_tasks = .TRUE.
+            NULLIFY (task_kpoints)
+            IF (map%bloch) task_kpoints => kpoints
+            CALL generate_qs_task_list(owner, map%task_list, map%grid_basis, .FALSE., .FALSE., &
+                                       sab_orb_external=sab, ext_kpoints=task_kpoints, right_basis_type=right_grid_basis)
+         END IF
       END IF
       CPASSERT(ASSOCIATED(overlap) .AND. ASSOCIATED(sab))
-      CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes, group=map%comm)
+      CALL dbcsr_get_info(overlap(1, 1)%matrix, row_blk_size=sizes, col_blk_size=column_sizes, group=map%comm)
       map%nao = SUM(sizes)
-      CPASSERT(map%nao > 0)
+      map%ncol = SUM(column_sizes)
+      CPASSERT(map%nao > 0 .AND. map%ncol > 0)
       ALLOCATE (map%density(SIZE(overlap, 2)), map%potential(SIZE(overlap, 2)))
       DO image = 1, SIZE(overlap, 2)
          symmetry = dbcsr_get_matrix_type(overlap(1, image)%matrix)
-         CPASSERT(symmetry == dbcsr_type_symmetric)
+         IF (map%ordered) THEN
+            CPASSERT(symmetry == dbcsr_type_no_symmetry)
+         ELSE
+            CPASSERT(symmetry == dbcsr_type_symmetric)
+         END IF
          ALLOCATE (map%density(image)%matrix, map%potential(image)%matrix)
          CALL dbcsr_copy(map%density(image)%matrix, overlap(1, image)%matrix)
-         CALL dbcsr_copy(map%potential(image)%matrix, overlap(1, image)%matrix)
+         IF (map%ordered) CALL cp_dbcsr_alloc_block_from_nbl(map%density(image)%matrix, sab)
+         CALL dbcsr_copy(map%potential(image)%matrix, map%density(image)%matrix)
          CALL dbcsr_set(map%density(image)%matrix, 0.0_dp)
          CALL dbcsr_set(map%potential(image)%matrix, 0.0_dp)
       END DO
@@ -138,7 +168,7 @@ CONTAINS
          ! The star retains physical AO actions for both spatial and time-reversed partners.
          CALL kp_transform_plan_create(map%plan, sab, kpoints%cell_to_index, SIZE(overlap, 2), &
                                        block_template=overlap(1, 1)%matrix)
-         CPASSERT(map%plan%symmetric)
+         CPASSERT(map%plan%symmetric .NEQV. map%ordered)
          CALL get_ks_env(ks_env, cell=cell, particle_set=atoms)
          inverse_lattice = cell%hmat
          CALL invmat(inverse_lattice, info)
@@ -192,9 +222,12 @@ CONTAINS
       CPASSERT(SIZE(source%density) == SIZE(source%potential))
       CPASSERT(ALLOCATED(source%weights) .AND. ALLOCATED(source%reduced_k))
       map%nao = source%nao
+      map%ncol = source%ncol
+      map%ordered = source%ordered
       map%bloch = source%bloch
       map%soft_basis = source%soft_basis
       map%orbital_basis = source%orbital_basis
+      map%column_basis = source%column_basis
       map%grid_basis = source%grid_basis
       map%task_list => source%task_list
       map%neighbors => source%neighbors
@@ -213,13 +246,13 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_background_scratch
 
 ! **************************************************************************************************
-!> \brief Collocate the Gaussian soft background from explicit accepted AO occupations.
+!> \brief Collocate the Gaussian background or an ordered cross-basis field.
 !>        The native image density may be stale after inverse Bloch density mixing.
 !>        Mesh weights and image multiplicities are applied once before native soft collocation.
 !> \param map ...
 !> \param ks_env Native owner of the current soft Gaussian task lists and PW grids.
-!> \param matrix Replicated Hermitian occupation matrices indexed by global k, without mesh weights.
-!> \param rho Overwritten positive electronic Gaussian soft density.
+!> \param matrix Replicated Hermitian occupations or ordered cross-basis coefficients, without mesh weights.
+!> \param rho Overwritten Gaussian density or real bilinear cross-basis field.
 !> \param rho_gspace Its matching native Fourier transform.
 !> \param total_rho Optional native negative electron charge.
 !> \param kinetic Optional soft Gaussian kinetic density, using the native factor one half.
@@ -269,7 +302,7 @@ CONTAINS
 !> \param map ...
 !> \param qs_env Native owner of the same soft Gaussian task lists and PW grids.
 !> \param potential Native grid potential, without a grid measure or a mesh weight.
-!> \param ao_operators Overwritten Hermitian AO matrices indexed by global k.
+!> \param ao_operators Overwritten Hermitian or ordered rectangular AO matrices indexed by global k.
 !> \param kinetic Select the transpose of the soft kinetic density instead of charge.
 !> \param ks_env Native KS owner instead of qs_env.
 ! **************************************************************************************************
@@ -285,7 +318,7 @@ CONTAINS
       INTEGER                                            :: image
 
       CPASSERT(ASSOCIATED(map%potential))
-      CPASSERT(ALL(SHAPE(ao_operators) == [map%nao, map%nao, SIZE(map%weights)]))
+      CPASSERT(ALL(SHAPE(ao_operators) == [map%nao, map%ncol, SIZE(map%weights)]))
       DO image = 1, SIZE(map%potential)
          CALL dbcsr_set(map%potential(image)%matrix, 0.0_dp)
       END DO
@@ -308,8 +341,8 @@ CONTAINS
 !> \brief Read a native image operator in the unreduced Hermitian Bloch AO representation.
 !>        Reuses the native Gaussian image domains for kinetic, overlap and grid operators.
 !> \param map Prepared native image and phase map.
-!> \param source Native symmetric image matrices, without k-point weights.
-!> \param ao_operators Overwritten physical Hermitian AO operators indexed by global k.
+!> \param source Native symmetric or ordered image matrices, without k-point weights.
+!> \param ao_operators Overwritten physical Hermitian or rectangular AO operators indexed by global k.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_background_operator(map, source, ao_operators)
       TYPE(qs_upf_inverse_background_type), INTENT(IN)   :: map
@@ -324,7 +357,7 @@ CONTAINS
 
       CPASSERT(ASSOCIATED(map%potential))
       CPASSERT(SIZE(source) == SIZE(map%potential))
-      CPASSERT(ALL(SHAPE(ao_operators) == [map%nao, map%nao, SIZE(map%weights)]))
+      CPASSERT(ALL(SHAPE(ao_operators) == [map%nao, map%ncol, SIZE(map%weights)]))
       ao_operators = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (map%bloch) THEN
          DO ENTRY = 1, map%plan%nentry
@@ -336,17 +369,20 @@ CONTAINS
             c = map%plan%col_offset(ENTRY)
             DO k = 1, SIZE(map%weights)
                phase = background_phase(map, ENTRY, k)
-               CALL add_operator(block, phase, r, c, ao_operators(:, :, k))
+               CALL add_operator(block, phase, r, c, ao_operators(:, :, k), map%ordered)
             END DO
          END DO
       ELSE
          CALL dbcsr_iterator_start(iterator, source(1)%matrix)
          DO WHILE (dbcsr_iterator_blocks_left(iterator))
             CALL dbcsr_iterator_next_block(iterator, block=block, row_offset=r, col_offset=c, transposed=transposed)
+            IF (map%ordered) THEN
+               CPASSERT(.NOT. transposed)
+            END IF
             IF (transposed) THEN
                CALL add_operator(TRANSPOSE(block), CMPLX(1.0_dp, 0.0_dp, dp), r, c, ao_operators(:, :, 1))
             ELSE
-               CALL add_operator(block, CMPLX(1.0_dp, 0.0_dp, dp), r, c, ao_operators(:, :, 1))
+               CALL add_operator(block, CMPLX(1.0_dp, 0.0_dp, dp), r, c, ao_operators(:, :, 1), map%ordered)
             END IF
          END DO
          CALL dbcsr_iterator_stop(iterator)
@@ -379,6 +415,9 @@ CONTAINS
       TYPE(dbcsr_p_type), POINTER                        :: occupations(:, :), operators(:, :)
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
 
+      IF (map%ordered .AND. kinetic) THEN
+         CPABORT("Analytic mixed Gaussian kinetic derivatives are not implemented")
+      END IF
       CALL background_images(map, matrix)
       IF (ASSOCIATED(map%neighbors)) THEN
          sab => map%neighbors
@@ -397,7 +436,7 @@ CONTAINS
                                    force_response=gradients, virial_response=virial)
       ELSE
          CALL build_overlap_matrix(ks_env, matrixkp_s=operators, &
-                                   basis_type_a=map%orbital_basis, basis_type_b=map%orbital_basis, &
+                                   basis_type_a=map%orbital_basis, basis_type_b=map%column_basis, &
                                    sab_nl=sab, calculate_forces=.TRUE., matrixkp_p=occupations, &
                                    force_response=gradients, virial_response=virial)
       END IF
@@ -476,12 +515,14 @@ CONTAINS
       TYPE(dbcsr_iterator_type)                          :: iterator
 
       CPASSERT(ASSOCIATED(map%density))
-      CPASSERT(ALL(SHAPE(matrix) == [map%nao, map%nao, SIZE(map%weights)]))
-      DO k = 1, SIZE(map%weights)
-         tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(matrix(:, :, k))))
-         defect = MAXVAL(ABS(matrix(:, :, k) - CONJG(TRANSPOSE(matrix(:, :, k)))))
-         CPASSERT(defect <= tolerance)
-      END DO
+      CPASSERT(ALL(SHAPE(matrix) == [map%nao, map%ncol, SIZE(map%weights)]))
+      IF (.NOT. map%ordered) THEN
+         DO k = 1, SIZE(map%weights)
+            tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(matrix(:, :, k))))
+            defect = MAXVAL(ABS(matrix(:, :, k) - CONJG(TRANSPOSE(matrix(:, :, k)))))
+            CPASSERT(defect <= tolerance)
+         END DO
+      END IF
       DO image = 1, SIZE(map%density)
          CALL dbcsr_set(map%density(image)%matrix, 0.0_dp)
       END DO
@@ -506,6 +547,9 @@ CONTAINS
             CALL dbcsr_iterator_next_block(iterator, block=block, row_offset=r, col_offset=c, transposed=transposed)
             nr = SIZE(block, 1)
             nc = SIZE(block, 2)
+            IF (map%ordered) THEN
+               CPASSERT(.NOT. transposed)
+            END IF
             IF (transposed) THEN
                block = TRANSPOSE(REAL(matrix(r:r + nc - 1, c:c + nr - 1, 1), dp))
             ELSE
@@ -535,22 +579,31 @@ CONTAINS
    END FUNCTION background_phase
 
 ! **************************************************************************************************
-!> \brief Hermitian transpose under the native symmetric-block density pairing.
+!> \brief Symmetric image transpose or ordered rectangular Frobenius adjoint.
 !> \param block ...
 !> \param phase ...
 !> \param r ...
 !> \param c ...
 !> \param ao_operator ...
+!> \param ordered Add the rectangular block once without a Hermitian completion.
 ! **************************************************************************************************
-   SUBROUTINE add_operator(block, phase, r, c, ao_operator)
+   SUBROUTINE add_operator(block, phase, r, c, ao_operator, ordered)
       REAL(dp), INTENT(IN)                               :: block(:, :)
       COMPLEX(dp), INTENT(IN)                            :: phase
       INTEGER, INTENT(IN)                                :: r, c
       COMPLEX(dp), INTENT(INOUT)                         :: ao_operator(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ordered
 
       INTEGER                                            :: i, j
       REAL(dp)                                           :: factor
 
+      IF (PRESENT(ordered)) THEN
+         IF (ordered) THEN
+            ao_operator(r:r + SIZE(block, 1) - 1, c:c + SIZE(block, 2) - 1) = &
+               ao_operator(r:r + SIZE(block, 1) - 1, c:c + SIZE(block, 2) - 1) + phase*block
+            RETURN
+         END IF
+      END IF
       factor = 1.0_dp
       IF (r == c) factor = 0.5_dp
       DO j = 1, SIZE(block, 2)
