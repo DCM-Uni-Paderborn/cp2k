@@ -44,8 +44,50 @@ MODULE qs_upf_inverse_basis
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_basis_prepare, qs_upf_inverse_basis_images, qs_upf_inverse_basis_admm
+   PUBLIC :: qs_upf_inverse_basis_select
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Borrow the original-UPF representation matching the operator's native Gaussian basis.
+!>        The primary state alone controls SCF activation. An auxiliary state remains disabled
+!>        as an SCF owner, but supplies its own reconstruction to auxiliary-basis operators.
+!> \param qs_env Native primary and optional ADMM geometry owners.
+!> \param basis_type ORB or AUX_FIT, matching the native operator's AO columns.
+!> \param state Borrowed selected state, null when the primary UPF method is inactive.
+!> \return Whether complete original-UPF operator corrections are required for this basis.
+! **************************************************************************************************
+   FUNCTION qs_upf_inverse_basis_select(qs_env, basis_type, state) RESULT(active)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      CHARACTER(LEN=*), INTENT(IN)                       :: basis_type
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      LOGICAL                                            :: active
+
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: primary
+
+      active = .FALSE.
+      NULLIFY (state)
+      CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm)
+      CALL get_ks_env(ks_env, upf_inverse=primary)
+      IF (.NOT. ASSOCIATED(primary)) RETURN
+      IF (.NOT. primary%enabled) RETURN
+      SELECT CASE (TRIM(basis_type))
+      CASE ('ORB')
+         state => primary
+      CASE ('AUX_FIT')
+         CPASSERT(ASSOCIATED(admm))
+         IF (.NOT. ASSOCIATED(admm%upf_inverse)) THEN
+            CPABORT('The original-UPF auxiliary representation is not prepared')
+         END IF
+         state => admm%upf_inverse
+      CASE DEFAULT
+         CPABORT('Unsupported Gaussian basis for original-UPF operators')
+      END SELECT
+      CPASSERT(state%basis_type == basis_type)
+      active = .TRUE.
+   END FUNCTION qs_upf_inverse_basis_select
 
 ! **************************************************************************************************
 !> \brief Fixed cell images covering the selected full basis and original radial reconstruction.

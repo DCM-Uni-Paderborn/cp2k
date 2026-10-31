@@ -119,6 +119,7 @@ MODULE hfx_ri
                                               split_block_sizes
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_projection_adjoint,&
                                               qs_upf_inverse_projection_contract
+   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_select
    USE qs_upf_inverse_hfx,              ONLY: qs_upf_inverse_hfx_gamma_images,&
                                               qs_upf_inverse_hfx_lattice_centers,&
                                               qs_upf_inverse_hfx_lattice_tensor,&
@@ -590,7 +591,7 @@ CONTAINS
             CALL dbt_copy(t_3c_int(1, 1), t_3c_tmp)
             CALL dbt_copy(t_3c_tmp, t_3c_int(1, 1), order=[1, 3, 2], summation=.TRUE., move_data=.TRUE.)
 
-            CALL inverse_3c_integrals(ks_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_int(1, 1))
+            CALL inverse_3c_integrals(qs_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_int(1, 1))
 
             ! For RI-RHO filter_eps_storage is reserved for screening tensor contracted with RI-metric
             ! with RI metric but not to bare integral tensor
@@ -796,15 +797,15 @@ CONTAINS
 !>        Gaussian AO pairs have already been desymmetrized. Corrections may create additional
 !>        blocks and are included before the native combined tensor is filtered. The native
 !>        auxiliary metric and exchange contraction remain unchanged.
-!> \param ks_env Prepared original inverse fields in the native AO order.
+!> \param qs_env Native primary and auxiliary original-UPF basis owners.
 !> \param ri_data Native RI basis and metric selection.
 !> \param basis_set_RI Auxiliary Gaussian bases indexed by kind.
 !> \param atoms Native atom and auxiliary-center positions.
 !> \param kinds Original UPF data and atomic quadrature selection.
 !> \param integrals Native (RI,AO,AO) tensor, with its original split blocks and distribution.
 ! **************************************************************************************************
-   SUBROUTINE inverse_3c_integrals(ks_env, ri_data, basis_set_RI, atoms, kinds, integrals)
-      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+   SUBROUTINE inverse_3c_integrals(qs_env, ri_data, basis_set_RI, atoms, kinds, integrals)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis_set_RI(:)
       TYPE(particle_type), INTENT(IN)                    :: atoms(:)
@@ -818,11 +819,9 @@ CONTAINS
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      IF (.NOT. ASSOCIATED(inverse)) RETURN
-      IF (.NOT. inverse%enabled) RETURN
+      IF (.NOT. qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)) RETURN
       CPASSERT(.NOT. ASSOCIATED(inverse%bloch%kpoints))
-      CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
+      CPASSERT(ri_data%flavor == ri_pmat)
       IF (ALL(inverse%frame%ao%periodicity == 0)) THEN
          CPASSERT(ALL(inverse%frame%ao%images == 0))
       END IF
@@ -876,9 +875,8 @@ CONTAINS
       TYPE(uspp_augmentation_type), POINTER              :: augmentation(:)
 
       CALL get_qs_env(qs_env, ks_env=ks_env, kpoints=kpoints)
-      CALL get_ks_env(ks_env, upf_inverse=inverse, dft_control=control)
-      IF (.NOT. ASSOCIATED(inverse)) RETURN
-      IF (.NOT. inverse%enabled) RETURN
+      CALL get_ks_env(ks_env, dft_control=control)
+      IF (.NOT. qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)) RETURN
       CPASSERT(ASSOCIATED(kpoints))
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
@@ -888,7 +886,7 @@ CONTAINS
          frame => inverse%frame%ao
          augmentation => inverse%augmentation%kinds
       END IF
-      CPASSERT(ri_data%flavor == ri_pmat .AND. TRIM(ri_data%orb_basis_type) == "ORB")
+      CPASSERT(ri_data%flavor == ri_pmat)
       CALL get_kpoint_info(kpoints, index_to_cell=cells)
       CPASSERT(ri_data%nimg == SIZE(integrals) .AND. ri_data%nimg <= SIZE(cells, 2))
       CPASSERT(SIZE(ri_data%RI_cell_to_img) == ri_data%ncell_RI)
@@ -971,9 +969,11 @@ CONTAINS
 
       CALL get_qs_env(qs_env, ks_env=ks_env, force=force, para_env=para_env, atomic_kind_set=atomic_kinds, &
                       cell=cell, virial=virial)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      CPASSERT(ASSOCIATED(inverse))
-      CPASSERT(inverse%enabled)
+      BLOCK
+         LOGICAL :: active
+         active = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
+         CPASSERT(active)
+      END BLOCK
       CPASSERT(.NOT. ASSOCIATED(inverse%bloch%kpoints))
       periodic = ANY(inverse%frame%ao%periodicity /= 0)
       IF (.NOT. periodic) THEN
@@ -2922,9 +2922,7 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, virial=virial, &
                       cell=cell, force=force, para_env=para_env, dft_control=dft_control, &
                       qs_kind_set=qs_kind_set, dbcsr_dist=dbcsr_dist, ks_env=ks_env)
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
-      inverse_exchange = .FALSE.
-      IF (ASSOCIATED(inverse)) inverse_exchange = inverse%enabled
+      inverse_exchange = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       IF (inverse_exchange) THEN
          IF (do_resp) THEN
             CPABORT("Inverse RI exchange response-density forces are not implemented yet")
