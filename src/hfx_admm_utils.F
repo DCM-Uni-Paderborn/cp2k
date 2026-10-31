@@ -136,7 +136,9 @@ MODULE hfx_admm_utils
    USE qs_rho_types,                    ONLY: qs_rho_create,&
                                               qs_rho_get,&
                                               qs_rho_type
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_admm
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_release,&
+                                              qs_upf_inverse_scf_type
    USE rt_propagation_types,            ONLY: rt_prop_type
    USE task_list_methods,               ONLY: generate_qs_task_list
    USE task_list_types,                 ONLY: allocate_task_list,&
@@ -365,6 +367,8 @@ CONTAINS
          IF (admm_env%do_gapw) CALL update_admm_gapw(qs_env)
          IF (do_kpoints) CALL kpoint_calc_admm_matrices(qs_env, calc_forces)
       END IF
+
+      CALL qs_upf_inverse_basis_admm(qs_env)
 
       IF (admm_env%do_gapw .AND. dft_control%do_admm_dm) THEN
          CPABORT("GAPW ADMM not implemented for MCWEENY or NONE_DM purification.")
@@ -625,6 +629,8 @@ CONTAINS
                ks_env, para_env, qs_kind_set, matrix_s_aux_fit_kp, matrix_s_aux_fit_vs_orb_kp)
 
       CALL timeset(routineN, handle)
+
+      CALL qs_upf_inverse_scf_release(admm_env%upf_inverse)
 
       CALL get_qs_env(qs_env, nkind=nkind, particle_set=particle_set, cell=cell, kpoints=kpoints, &
                       local_particles=distribution_1d, distribution_2d=distribution_2d, &

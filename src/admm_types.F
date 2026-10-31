@@ -57,6 +57,8 @@ MODULE admm_types
                                               oce_matrix_type
    USE qs_rho_types,                    ONLY: qs_rho_release,&
                                               qs_rho_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_release,&
+                                              qs_upf_inverse_scf_type
    USE task_list_types,                 ONLY: deallocate_task_list,&
                                               task_list_type
 #include "./base/base_uses.f90"
@@ -195,6 +197,8 @@ MODULE admm_types
                                                   matrix_s_aux_fit_vs_orb
       TYPE(qs_rho_type), POINTER               :: rho_aux_fit => NULL(), rho_aux_fit_buffer => NULL()
       TYPE(task_list_type), POINTER            :: task_list_aux_fit => NULL()
+      ! Release before the borrowed native auxiliary tasks, grids and bases change.
+      TYPE(qs_upf_inverse_scf_type), POINTER :: upf_inverse => NULL()
       TYPE(cp_fm_type), DIMENSION(:), &
          POINTER                               :: mo_derivs_aux_fit => NULL()
 
@@ -432,6 +436,7 @@ CONTAINS
       INTEGER                                            :: ispin
 
       CPASSERT(ASSOCIATED(admm_env))
+      CALL qs_upf_inverse_scf_release(admm_env%upf_inverse)
 
       CALL cp_fm_release(admm_env%S)
       CALL cp_fm_release(admm_env%S_inv)

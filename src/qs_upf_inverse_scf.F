@@ -10,7 +10,6 @@
 !>        Scalar semilocal GPW and mixed XC on full meshes with original full-wave USPP data.
 ! **************************************************************************************************
 MODULE qs_upf_inverse_scf
-   USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_release,&
@@ -52,8 +51,7 @@ MODULE qs_upf_inverse_scf
    USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
-   USE qs_kind_types,                   ONLY: get_qs_kind,&
-                                              qs_kind_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_kpoint_density_state,         ONLY: kpoint_density_state_initialize
    USE qs_kpoint_operators,             ONLY: kpoint_operator_set_native,&
                                               kpoint_slot_ks,&
@@ -73,7 +71,8 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
                                               qs_upf_inverse_background_operator
-   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_prepare
+   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_images,&
+                                              qs_upf_inverse_basis_prepare
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_collocate
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate,&
                                               qs_upf_inverse_grid_integrate,&
@@ -109,11 +108,9 @@ MODULE qs_upf_inverse_scf
                                               qs_uspp_release,&
                                               qs_uspp_type
    USE skala_density_constraints,       ONLY: skala_density_constraints_type
-   USE upf_inverse,                     ONLY: upf_inverse_fields_init
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init,&
                                               upf_local_prepare_fourier
-   USE upf_radial_fields,               ONLY: upf_radial_fields_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -1808,23 +1805,17 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local
 
-      INTEGER                                            :: atom, axis, ikind, image, info, ix, iy, &
-                                                            iz, lower(3), upper(3)
+      INTEGER                                            :: info
       INTEGER, ALLOCATABLE                               :: images(:, :)
       LOGICAL                                            :: use_atomic, use_direct
-      REAL(dp)                                           :: fractional(3), lower_real(3), radius, &
-                                                            reach, upper_real(3)
-      REAL(dp), ALLOCATABLE                              :: radial_radius(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
-      TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson
       TYPE(pw_pool_type), POINTER                        :: pool
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_uspp_type), POINTER                        :: uspp
-      TYPE(upf_radial_fields_type)                       :: beta, delta
 
       CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, cell=cell, pw_env=pw_env, dft_control=control)
       CALL get_ks_env(ks_env, uspp=uspp)
@@ -1840,24 +1831,6 @@ CONTAINS
       END SELECT
       IF (PRESENT(atom_local)) use_atomic = atom_local
       IF (use_direct) use_atomic = .TRUE.
-      ALLOCATE (radial_radius(SIZE(kinds)))
-      radial_radius = 0.0_dp
-      DO ikind = 1, SIZE(kinds)
-         IF (kinds(ikind)%ghost) CYCLE
-         IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
-            radial_radius(ikind) = MAX(kinds(ikind)%gth_potential%ppl_radius, kinds(ikind)%gth_potential%ppnl_radius)
-            CYCLE
-         END IF
-         IF (.NOT. ASSOCIATED(kinds(ikind)%sgp_potential)) THEN
-            CPABORT("Inverse USPP mixed potentials are not implemented")
-         END IF
-         IF (.NOT. ALLOCATED(kinds(ikind)%sgp_potential%upf_data)) THEN
-            CPABORT("Inverse USPP mixed potentials are not implemented")
-         END IF
-         IF (kinds(ikind)%sgp_potential%upf_data%number_of_proj == 0) CYCLE
-         CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, beta, delta, use_direct)
-         radial_radius(ikind) = MAX(beta%radius, delta%radius)
-      END DO
       IF (control%qs_control%gapw .AND. ANY(cell%perd == 0)) THEN
          CALL pw_env_get(pw_env, poisson_env=poisson)
          IF (poisson%parameters%solver /= pw_poisson_analytic .AND. &
@@ -1866,36 +1839,7 @@ CONTAINS
             CPABORT("Inverse GAPW supports analytic Poisson or isolated/slab MT")
          END IF
       END IF
-      lower_real = 0.0_dp
-      upper_real = 0.0_dp
-      DO atom = 1, SIZE(atoms)
-         ikind = atoms(atom)%atomic_kind%kind_number
-         CALL get_qs_kind(kinds(ikind), basis_set=basis, basis_type='ORB')
-         radius = basis%kind_radius
-         IF (.NOT. kinds(ikind)%ghost) THEN
-            radius = MAX(radius, radial_radius(ikind))
-         END IF
-         fractional = MATMUL(cell%h_inv, atoms(atom)%r)
-         DO axis = 1, 3
-            IF (cell%perd(axis) == 0) CYCLE
-            reach = radius*SQRT(SUM(cell%h_inv(axis, :)**2))
-            ! One additional cell keeps exponentially small Gaussian tails away from image boundaries.
-            lower_real(axis) = MIN(lower_real(axis), -fractional(axis) - reach - 1.0_dp)
-            upper_real(axis) = MAX(upper_real(axis), 1.0_dp - fractional(axis) + reach + 1.0_dp)
-         END DO
-      END DO
-      lower = FLOOR(lower_real)
-      upper = CEILING(upper_real)
-      ALLOCATE (images(3, PRODUCT(upper - lower + 1)))
-      image = 0
-      DO iz = lower(3), upper(3)
-         DO iy = lower(2), upper(2)
-            DO ix = lower(1), upper(1)
-               image = image + 1
-               images(:, image) = [ix, iy, iz]
-            END DO
-         END DO
-      END DO
+      CALL qs_upf_inverse_basis_images(ks_env, images, direct=use_direct)
       CALL pw_env_get(pw_env, auxbas_pw_pool=pool)
       CALL qs_upf_inverse_scf_prepare(ks_env, pool%pw_grid, images, info, use_atomic, use_direct)
       IF (info == -2) THEN
