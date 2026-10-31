@@ -21,6 +21,7 @@ MODULE hfx_admm_utils
    USE admm_types,                      ONLY: admm_env_create,&
                                               admm_gapw_r3d_rs_type,&
                                               admm_type,&
+                                              admm_upf_density_type,&
                                               get_admm_env,&
                                               set_admm_env
    USE atomic_kind_types,               ONLY: atomic_kind_type
@@ -633,6 +634,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
+      admm_env%upf_density = admm_upf_density_type()
       CALL qs_upf_inverse_charge_metric_release(admm_env%upf_aux_metric)
       CALL qs_upf_inverse_charge_metric_release(admm_env%upf_mixed_metric)
       CALL qs_upf_inverse_scf_release(admm_env%upf_inverse)

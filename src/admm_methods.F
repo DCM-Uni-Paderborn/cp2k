@@ -116,6 +116,7 @@ MODULE admm_methods
                                               qs_rho_set,&
                                               qs_rho_type
    USE qs_scf_types,                    ONLY: qs_scf_env_type
+   USE qs_upf_inverse_aux_density,      ONLY: qs_upf_inverse_aux_density_build
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_native_operator
@@ -250,19 +251,21 @@ CONTAINS
             task_list => admm_env%admm_gapw_env%task_list
          END IF
 
-         CALL calculate_rho_elec(ks_env=ks_env, &
-                                 matrix_p=rho_ao_aux(ispin)%matrix, &
-                                 rho=rho_r_aux(ispin), &
-                                 rho_gspace=rho_g_aux(ispin), &
-                                 total_rho=tot_rho_r_aux(ispin), &
-                                 soft_valid=.FALSE., &
-                                 basis_type=basis_type, &
-                                 task_list_external=task_list)
+         IF (.NOT. admm_env%upf_aux_metric%ready) CALL calculate_rho_elec(ks_env=ks_env, &
+                                                                          matrix_p=rho_ao_aux(ispin)%matrix, &
+                                                                          rho=rho_r_aux(ispin), &
+                                                                          rho_gspace=rho_g_aux(ispin), &
+                                                                          total_rho=tot_rho_r_aux(ispin), &
+                                                                          soft_valid=.FALSE., &
+                                                                          basis_type=basis_type, &
+                                                                          task_list_external=task_list)
 
       END DO
 
-      !If GAPW, also need to prepare the atomic densities
-      IF (gapw) THEN
+      IF (admm_env%upf_aux_metric%ready) CALL qs_upf_inverse_aux_density_build(qs_env)
+
+      ! Native Gaussian-only atomic densities are not the complete original-UPF density.
+      IF (gapw .AND. .NOT. admm_env%upf_aux_metric%ready) THEN
 
          CALL calculate_rho_atom_coeff(qs_env, rho_ao_aux, &
                                        rho_atom_set=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
@@ -655,19 +658,23 @@ CONTAINS
          task_list => admm_env%admm_gapw_env%task_list
       END IF
 
-      DO ispin = 1, nspins
-         rho_ao => rho_ao_aux(ispin, :)
-         CALL calculate_rho_elec(ks_env=ks_env, &
-                                 matrix_p_kp=rho_ao, &
-                                 rho=rho_r_aux(ispin), &
-                                 rho_gspace=rho_g_aux(ispin), &
-                                 total_rho=tot_rho_r_aux(ispin), &
-                                 soft_valid=.FALSE., &
-                                 basis_type=basis_type, &
-                                 task_list_external=task_list)
-      END DO
+      IF (admm_env%upf_aux_metric%ready) THEN
+         CALL qs_upf_inverse_aux_density_build(qs_env)
+      ELSE
+         DO ispin = 1, nspins
+            rho_ao => rho_ao_aux(ispin, :)
+            CALL calculate_rho_elec(ks_env=ks_env, &
+                                    matrix_p_kp=rho_ao, &
+                                    rho=rho_r_aux(ispin), &
+                                    rho_gspace=rho_g_aux(ispin), &
+                                    total_rho=tot_rho_r_aux(ispin), &
+                                    soft_valid=.FALSE., &
+                                    basis_type=basis_type, &
+                                    task_list_external=task_list)
+         END DO
+      END IF
 
-      IF (gapw) THEN
+      IF (gapw .AND. .NOT. admm_env%upf_aux_metric%ready) THEN
          CALL calculate_rho_atom_coeff(qs_env, rho_ao_aux, &
                                        rho_atom_set=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
                                        qs_kind_set=admm_env%admm_gapw_env%admm_kind_set, &

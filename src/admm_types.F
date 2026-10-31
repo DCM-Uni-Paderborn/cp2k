@@ -68,6 +68,7 @@ MODULE admm_types
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: admm_env_create, admm_env_release, admm_type, admm_gapw_r3d_rs_type, set_admm_env, get_admm_env
+   PUBLIC :: admm_upf_density_type, admm_upf_center_density_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'admm_types'
 
@@ -92,6 +93,19 @@ MODULE admm_types
       TYPE(task_list_type), POINTER                      :: task_list => Null()
       TYPE(oce_matrix_type), POINTER                     :: oce => Null()
    END TYPE admm_gapw_r3d_rs_type
+
+   TYPE admm_upf_center_density_type
+      ! Signed valence density coefficients on one native radial/harmonic grid, indexed by spin.
+      REAL(dp), ALLOCATABLE :: values(:, :, :)
+   END TYPE admm_upf_center_density_type
+
+   TYPE admm_upf_density_type
+      LOGICAL :: valid = .FALSE.
+      ! Original-coordinate density matrices in physical Bloch order, without mesh weights.
+      COMPLEX(dp), ALLOCATABLE :: matrices(:, :, :, :)
+      TYPE(admm_upf_center_density_type), ALLOCATABLE :: centers(:)
+      REAL(dp), ALLOCATABLE :: valence_charge(:)
+   END TYPE admm_upf_density_type
 
 ! **************************************************************************************************
 !> \brief stores some data used in wavefunction fitting
@@ -202,6 +216,7 @@ MODULE admm_types
       ! Release before the borrowed native auxiliary tasks, grids and bases change.
       TYPE(qs_upf_inverse_scf_type), POINTER :: upf_inverse => NULL()
       TYPE(qs_upf_inverse_charge_metric_type) :: upf_aux_metric, upf_mixed_metric
+      TYPE(admm_upf_density_type) :: upf_density
       TYPE(cp_fm_type), DIMENSION(:), &
          POINTER                               :: mo_derivs_aux_fit => NULL()
 
@@ -439,6 +454,7 @@ CONTAINS
       INTEGER                                            :: ispin
 
       CPASSERT(ASSOCIATED(admm_env))
+      admm_env%upf_density = admm_upf_density_type()
       CALL qs_upf_inverse_charge_metric_release(admm_env%upf_aux_metric)
       CALL qs_upf_inverse_charge_metric_release(admm_env%upf_mixed_metric)
       CALL qs_upf_inverse_scf_release(admm_env%upf_inverse)
