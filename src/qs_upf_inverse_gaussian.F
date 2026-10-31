@@ -8,6 +8,7 @@
 MODULE qs_upf_inverse_gaussian
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_type
+   USE gaunt_coefficients,              ONLY: real_gaunt_coefficients
    USE kinds,                           ONLY: dp
    USE orbital_pointers,                ONLY: indso,&
                                               nsoset
@@ -35,45 +36,50 @@ CONTAINS
 !> \param response Optional joint coefficient and radial-coordinate response.
 !> \param coefficients_response Variation of the same compressed density matrix.
 !> \param radius_response Variation of the physical radial nodes, excluding quadrature weights.
+!> \param right_kind Optional independent column primitive basis. The quadrature remains that of kind.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_gaussian_radial(kind, coefficients, radial, response, &
-                                             coefficients_response, radius_response)
+                                             coefficients_response, radius_response, right_kind)
       TYPE(qs_kind_type), INTENT(IN)                     :: kind
       REAL(dp), INTENT(IN)                               :: coefficients(:, :)
       REAL(dp), INTENT(OUT)                              :: radial(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: coefficients_response(:, :), &
                                                             radius_response(:)
+      TYPE(qs_kind_type), INTENT(IN), OPTIONAL           :: right_kind
 
-      INTEGER                                            :: h, i, j, l, maxl, n, nh
-      INTEGER, ALLOCATABLE                               :: angular(:)
-      LOGICAL                                            :: derive
+      INTEGER                                            :: h, i, j, l, n, nh, nr
+      INTEGER, ALLOCATABLE                               :: angular(:), right_angular(:)
+      LOGICAL                                            :: derive, independent
       REAL(dp)                                           :: coupling, exponent
-      REAL(dp), ALLOCATABLE                              :: derivative(:), exponents(:), PRODUCT(:)
+      REAL(dp), ALLOCATABLE                              :: derivative(:), exponents(:), PRODUCT(:), &
+                                                            right_exponents(:)
+      REAL(dp), POINTER                                  :: products(:, :, :)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
 
-      CALL gaussian_layout(kind, grid, harmonics, angular, exponents)
+      CALL gaussian_product_layout(kind, grid, harmonics, angular, exponents, &
+                                   right_angular, right_exponents, products, independent, right_kind)
       n = SIZE(angular)
+      nr = SIZE(right_angular)
       nh = harmonics%max_iso_not0
-      CALL check_shapes(grid, nh, n, coefficients, radial)
+      CALL check_shapes(grid, nh, n, nr, coefficients, radial)
       derive = PRESENT(response)
       CPASSERT(derive .EQV. PRESENT(coefficients_response))
       CPASSERT(derive .EQV. PRESENT(radius_response))
       ALLOCATE (PRODUCT(grid%nr))
       radial = 0.0_dp
       IF (derive) THEN
-         CALL check_shapes(grid, nh, n, coefficients_response, response)
+         CALL check_shapes(grid, nh, n, nr, coefficients_response, response)
          CPASSERT(SIZE(radius_response) == grid%nr)
          ALLOCATE (derivative(grid%nr))
          response = 0.0_dp
       END IF
-      maxl = indso(1, nh)
-      DO j = 1, n
+      DO j = 1, nr
          DO i = 1, n
-            l = indso(1, angular(i)) + indso(1, angular(j))
-            IF (l > maxl) CYCLE
-            exponent = exponents(i) + exponents(j)
+            l = indso(1, angular(i)) + indso(1, right_angular(j))
+            ! Truncate the output harmonics, not the radial power of their product.
+            exponent = exponents(i) + right_exponents(j)
             PRODUCT(:) = grid%rad**l*EXP(-exponent*grid%rad**2)
             IF (derive) THEN
                derivative(:) = -2.0_dp*exponent*grid%rad*product
@@ -82,7 +88,7 @@ CONTAINS
                derivative(:) = derivative*radius_response
             END IF
             DO h = 1, nh
-               coupling = harmonics%my_CG(angular(i), angular(j), h)
+               coupling = products(angular(i), right_angular(j), h)
                IF (ABS(coupling) <= gaunt_threshold) CYCLE
                radial(:, h) = radial(:, h) + coupling*coefficients(i, j)*product
                IF (derive) response(:, h) = response(:, h) + &
@@ -90,6 +96,7 @@ CONTAINS
             END DO
          END DO
       END DO
+      IF (independent) DEALLOCATE (products)
    END SUBROUTINE qs_upf_inverse_gaussian_radial
 
 ! **************************************************************************************************
@@ -99,41 +106,89 @@ CONTAINS
 !> \param kind ...
 !> \param potential Unweighted harmonic-density covector, with no radial measure included.
 !> \param adjoint New compressed primitive adjoint. Native radial weights are applied once.
+!> \param right_kind Optional independent column primitive basis, using the same quadrature as kind.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_gaussian_integrate(kind, potential, adjoint)
+   SUBROUTINE qs_upf_inverse_gaussian_integrate(kind, potential, adjoint, right_kind)
       TYPE(qs_kind_type), INTENT(IN)                     :: kind
       REAL(dp), INTENT(IN)                               :: potential(:, :)
       REAL(dp), INTENT(OUT)                              :: adjoint(:, :)
+      TYPE(qs_kind_type), INTENT(IN), OPTIONAL           :: right_kind
 
-      INTEGER                                            :: h, i, j, l, maxl, n, nh
-      INTEGER, ALLOCATABLE                               :: angular(:)
+      INTEGER                                            :: h, i, j, l, n, nh, nr
+      INTEGER, ALLOCATABLE                               :: angular(:), right_angular(:)
+      LOGICAL                                            :: independent
       REAL(dp)                                           :: coupling
-      REAL(dp), ALLOCATABLE                              :: exponents(:), PRODUCT(:)
+      REAL(dp), ALLOCATABLE                              :: exponents(:), PRODUCT(:), &
+                                                            right_exponents(:)
+      REAL(dp), POINTER                                  :: products(:, :, :)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
 
-      CALL gaussian_layout(kind, grid, harmonics, angular, exponents)
+      CALL gaussian_product_layout(kind, grid, harmonics, angular, exponents, &
+                                   right_angular, right_exponents, products, independent, right_kind)
       n = SIZE(angular)
+      nr = SIZE(right_angular)
       nh = harmonics%max_iso_not0
-      CALL check_shapes(grid, nh, n, adjoint, potential)
+      CALL check_shapes(grid, nh, n, nr, adjoint, potential)
       CPASSERT(ASSOCIATED(grid%wr))
       CPASSERT(SIZE(grid%wr) == grid%nr)
       ALLOCATE (PRODUCT(grid%nr))
       adjoint = 0.0_dp
-      maxl = indso(1, nh)
-      DO j = 1, n
+      DO j = 1, nr
          DO i = 1, n
-            l = indso(1, angular(i)) + indso(1, angular(j))
-            IF (l > maxl) CYCLE
-            PRODUCT(:) = grid%wr*grid%rad**l*EXP(-(exponents(i) + exponents(j))*grid%rad**2)
+            l = indso(1, angular(i)) + indso(1, right_angular(j))
+            PRODUCT(:) = grid%wr*grid%rad**l*EXP(-(exponents(i) + right_exponents(j))*grid%rad**2)
             DO h = 1, nh
-               coupling = harmonics%my_CG(angular(i), angular(j), h)
+               coupling = products(angular(i), right_angular(j), h)
                IF (ABS(coupling) <= gaunt_threshold) CYCLE
                adjoint(i, j) = adjoint(i, j) + coupling*SUM(product*potential(:, h))
             END DO
          END DO
       END DO
+      IF (independent) DEALLOCATE (products)
    END SUBROUTINE qs_upf_inverse_gaussian_integrate
+
+! **************************************************************************************************
+!> \brief Independent primitive layouts on one explicitly selected native radial/angular quadrature.
+!> \param kind Row primitive basis and owner of the integration grid.
+!> \param grid Borrowed native radial grid.
+!> \param harmonics Borrowed output harmonics and their native angular truncation.
+!> \param angular Row spherical-harmonic indices.
+!> \param exponents Row primitive exponents.
+!> \param right_angular Column spherical-harmonic indices.
+!> \param right_exponents Column primitive exponents.
+!> \param products Native Gaunt coefficients, borrowed for a square map and owned for a cross map.
+!> \param independent True when products must be released by the caller.
+!> \param right_kind Optional independent column owner. Its radial grid is not substituted.
+! **************************************************************************************************
+   SUBROUTINE gaussian_product_layout(kind, grid, harmonics, angular, exponents, &
+                                      right_angular, right_exponents, products, independent, right_kind)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kind
+      TYPE(grid_atom_type), POINTER                      :: grid
+      TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: angular(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: exponents(:)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: right_angular(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: right_exponents(:)
+      REAL(dp), POINTER                                  :: products(:, :, :)
+      LOGICAL, INTENT(OUT)                               :: independent
+      TYPE(qs_kind_type), INTENT(IN), OPTIONAL           :: right_kind
+
+      TYPE(grid_atom_type), POINTER                      :: right_grid
+      TYPE(harmonics_atom_type), POINTER                 :: right_harmonics
+
+      CALL gaussian_layout(kind, grid, harmonics, angular, exponents)
+      independent = PRESENT(right_kind)
+      IF (independent) THEN
+         CALL gaussian_layout(right_kind, right_grid, right_harmonics, right_angular, right_exponents)
+         CALL real_gaunt_coefficients(products, MAXVAL(indso(1, angular)), &
+                                      MAXVAL(indso(1, right_angular)), indso(1, harmonics%max_iso_not0))
+      ELSE
+         ALLOCATE (right_angular, SOURCE=angular)
+         ALLOCATE (right_exponents, SOURCE=exponents)
+         products => harmonics%my_CG
+      END IF
+   END SUBROUTINE gaussian_product_layout
 
 ! **************************************************************************************************
 !> \brief Decode the native compressed primitive order, including sets with nonzero lmin.
@@ -183,15 +238,16 @@ CONTAINS
 !> \param grid ...
 !> \param nh ...
 !> \param n ...
+!> \param nright ...
 !> \param coefficients ...
 !> \param radial ...
 ! **************************************************************************************************
-   SUBROUTINE check_shapes(grid, nh, n, coefficients, radial)
+   SUBROUTINE check_shapes(grid, nh, n, nright, coefficients, radial)
       TYPE(grid_atom_type), INTENT(IN)                   :: grid
-      INTEGER, INTENT(IN)                                :: nh, n
+      INTEGER, INTENT(IN)                                :: nh, n, nright
       REAL(dp), INTENT(IN)                               :: coefficients(:, :), radial(:, :)
 
-      CPASSERT(ALL(SHAPE(coefficients) == [n, n]))
+      CPASSERT(ALL(SHAPE(coefficients) == [n, nright]))
       CPASSERT(ALL(SHAPE(radial) == [grid%nr, nh]))
    END SUBROUTINE check_shapes
 

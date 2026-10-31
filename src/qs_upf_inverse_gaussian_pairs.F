@@ -38,8 +38,8 @@ MODULE qs_upf_inverse_gaussian_pairs
 
    TYPE qs_upf_inverse_gaussian_pairs_type
       PRIVATE
-      INTEGER :: nao = 0, nprimitive = 0, center = 0
-      LOGICAL :: derivatives = .FALSE.
+      INTEGER :: nao = 0, ncol = 0, nprimitive = 0, nprimitive_right = 0, center = 0
+      LOGICAL :: derivatives = .FALSE., ordered = .FALSE.
       TYPE(mp_comm_type) :: comm
       TYPE(gaussian_pair_type), ALLOCATABLE :: pairs(:)
    END TYPE qs_upf_inverse_gaussian_pairs_type
@@ -67,7 +67,7 @@ CONTAINS
 !> \brief Freeze the actual distributed overlap/OCE pair pattern for one native Gaussian center.
 !>        No density-dependent CPC screening or additional factorized pair products are used.
 !> \param oce Borrowed current native one-center coefficients and available derivatives.
-!> \param sab Borrowed current native orbital overlap pairs, distributed as in native CPC assembly.
+!> \param sab Borrowed native pairs. Cross-basis maps require the complete ordered cross-basis list.
 !> \param kinds Borrowed current native kinds, including GAPW_1C bases.
 !> \param center Selected original atom number, without an image shift.
 !> \param center_kind Native kind index of that atom.
@@ -77,26 +77,37 @@ CONTAINS
 !> \param map New owned pair map. Rebuild together with native OCE and overlap lists after geometry changes.
 !> \param positions Original physical coordinates before native neighbor-list folding.
 !> \param lattice Physical lattice vectors used by the native OCE lists.
+!> \param right_oce Optional independent column-basis OCE owner. Selects ordered cross-basis pairs.
+!> \param right_kinds Column-basis kinds, with the same atom-kind assignment as kinds.
+!> \param right_ao_first Column AO starting indices, required with right_oce.
+!> \param right_ao_last Column AO ending indices, required with right_oce.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_gaussian_pairs_prepare(oce, sab, kinds, center, center_kind, ao_first, ao_last, comm, map, &
-                                                    positions, lattice)
-      TYPE(oce_matrix_type), INTENT(IN)                  :: oce
+                                                    positions, lattice, right_oce, right_kinds, &
+                                                    right_ao_first, right_ao_last)
+      TYPE(oce_matrix_type), INTENT(IN), TARGET          :: oce
       TYPE(neighbor_list_set_p_type), POINTER            :: sab(:)
-      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(qs_kind_type), INTENT(IN), TARGET             :: kinds(:)
       INTEGER, INTENT(IN)                                :: center, center_kind, ao_first(:), &
                                                             ao_last(:)
 
       CLASS(mp_comm_type), INTENT(IN)                    :: comm
       TYPE(qs_upf_inverse_gaussian_pairs_type), INTENT(OUT) :: map
       REAL(dp), INTENT(IN)                               :: positions(:, :), lattice(3, 3)
+      TYPE(oce_matrix_type), INTENT(IN), OPTIONAL, TARGET :: right_oce
+      TYPE(qs_kind_type), INTENT(IN), OPTIONAL, TARGET   :: right_kinds(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: right_ao_first(:), right_ao_last(:)
 
       INTEGER                                            :: a, b, ca, cb, cell(3), count, iac, ibc, &
                                                             ikind, info, jkind, nkind, pass, ready
+      INTEGER, ALLOCATABLE                               :: col_first(:), col_last(:)
       REAL(dp)                                           :: image_error, inverse_lattice(3, 3)
       TYPE(alist_type), POINTER                          :: alist_a, alist_b
       TYPE(clist_type), POINTER                          :: left, right
       TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(neighbor_list_iterator_p_type), POINTER       :: iterator(:)
+      TYPE(oce_matrix_type), POINTER                     :: column_oce
+      TYPE(qs_kind_type), POINTER                        :: column_kinds(:)
 
       nkind = SIZE(kinds)
       CPASSERT(center_kind >= 1 .AND. center_kind <= nkind)
@@ -111,6 +122,29 @@ CONTAINS
       CPASSERT(ASSOCIATED(basis))
       CALL get_paw_basis_info(basis, nsatbas=map%nprimitive)
       map%nao = MAXVAL(ao_last)
+      map%ordered = PRESENT(right_oce)
+      CPASSERT(map%ordered .EQV. PRESENT(right_kinds))
+      CPASSERT(map%ordered .EQV. PRESENT(right_ao_first))
+      CPASSERT(map%ordered .EQV. PRESENT(right_ao_last))
+      column_oce => oce
+      column_kinds => kinds
+      IF (map%ordered) THEN
+         CPASSERT(SIZE(right_kinds) == nkind)
+         CPASSERT(SIZE(right_ao_first) == SIZE(ao_first))
+         CPASSERT(SIZE(right_ao_last) == SIZE(ao_last))
+         column_oce => right_oce
+         column_kinds => right_kinds
+         ALLOCATE (col_first, SOURCE=right_ao_first)
+         ALLOCATE (col_last, SOURCE=right_ao_last)
+      ELSE
+         ALLOCATE (col_first, SOURCE=ao_first)
+         ALLOCATE (col_last, SOURCE=ao_last)
+      END IF
+      CPASSERT(ASSOCIATED(column_oce%intac))
+      CALL get_qs_kind(column_kinds(center_kind), basis_set=basis, basis_type="GAPW_1C")
+      CPASSERT(ASSOCIATED(basis))
+      CALL get_paw_basis_info(basis, nsatbas=map%nprimitive_right)
+      map%ncol = MAXVAL(col_last)
       map%center = center
       CALL map%comm%set_handle(comm%get_handle())
       ready = 1
@@ -122,9 +156,9 @@ CONTAINS
             iac = ikind + nkind*(center_kind - 1)
             ibc = jkind + nkind*(center_kind - 1)
             IF (.NOT. ASSOCIATED(oce%intac(iac)%alist)) CYCLE
-            IF (.NOT. ASSOCIATED(oce%intac(ibc)%alist)) CYCLE
+            IF (.NOT. ASSOCIATED(column_oce%intac(ibc)%alist)) CYCLE
             CALL get_alist(oce%intac(iac), alist_a, a)
-            CALL get_alist(oce%intac(ibc), alist_b, b)
+            CALL get_alist(column_oce%intac(ibc), alist_b, b)
             IF (.NOT. ASSOCIATED(alist_a) .OR. .NOT. ASSOCIATED(alist_b)) CYCLE
             DO ca = 1, alist_a%nclist
                left => alist_a%clist(ca)
@@ -150,18 +184,18 @@ CONTAINS
                         CPASSERT(image_error < 1.e-9_dp)
                         pair%cell = pair%left_image - pair%right_image
                         pair%factor = 1.0_dp
-                        IF (a == b) pair%factor = 0.5_dp
+                        IF (.NOT. map%ordered .AND. a == b) pair%factor = 0.5_dp
                         ALLOCATE (pair%rows(left%nsgf_cnt), pair%cols(right%nsgf_cnt))
                         pair%rows(:) = ao_first(a) + left%sgf_list(1:left%nsgf_cnt) - 1
-                        pair%cols(:) = ao_first(b) + right%sgf_list(1:right%nsgf_cnt) - 1
+                        pair%cols(:) = col_first(b) + right%sgf_list(1:right%nsgf_cnt) - 1
                         CPASSERT(ALL(pair%rows >= ao_first(a)))
                         CPASSERT(ALL(pair%rows <= ao_last(a)))
-                        CPASSERT(ALL(pair%cols >= ao_first(b)))
-                        CPASSERT(ALL(pair%cols <= ao_last(b)))
+                        CPASSERT(ALL(pair%cols >= col_first(b)))
+                        CPASSERT(ALL(pair%cols <= col_last(b)))
                         CALL copy_leg(left, a == center .AND. ALL(left%cell == 0), &
                                       map%nprimitive, pair%left_h, pair%left_s, ready)
                         CALL copy_leg(right, b == center .AND. ALL(right%cell == 0), &
-                                      map%nprimitive, pair%right_h, pair%right_s, ready)
+                                      map%nprimitive_right, pair%right_h, pair%right_s, ready)
                      END ASSOCIATE
                   END IF
                   EXIT
@@ -176,12 +210,12 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_gaussian_pairs_prepare
 
 ! **************************************************************************************************
-!> \brief Real symmetric native CPC densities from a Hermitian complex occupation matrix at one k.
+!> \brief Native CPC products of a Hermitian density or an ordered rectangular complex matrix.
 !>        AO occupations are included in matrix. The caller sums k weights once outside this map.
 !> \param map ...
 !> \param reduced_k Reduced Bloch vector, with native Gaussian phase exp(i*2*pi*k.T).
-!> \param matrix Accepted or independently varied Hermitian AO density, without a mesh weight.
-!> \param hard New replicated compressed hard Gaussian density coefficients.
+!> \param matrix Unweighted Hermitian AO density, or arbitrary ordered row/column coefficients.
+!> \param hard New replicated compressed hard Gaussian coefficients, rectangular for an ordered map.
 !> \param soft New replicated compressed soft Gaussian density coefficients.
 !> \param hard_response Optional fixed-matrix geometry/Bloch response. All response inputs are required.
 !> \param soft_response ...
@@ -208,8 +242,10 @@ CONTAINS
       REAL(dp)                                           :: dl(3), dr(3)
 
       CALL check_map(map, SHAPE(matrix), SHAPE(hard), SHAPE(soft))
-      IF (MAXVAL(ABS(matrix - CONJG(TRANSPOSE(matrix)))) > 1.e-10_dp*MAX(1.0_dp, MAXVAL(ABS(matrix)))) THEN
-         CPABORT("Non-Hermitian Gaussian AO density")
+      IF (.NOT. map%ordered) THEN
+         IF (MAXVAL(ABS(matrix - CONJG(TRANSPOSE(matrix)))) > 1.e-10_dp*MAX(1.0_dp, MAXVAL(ABS(matrix)))) THEN
+            CPABORT("Non-Hermitian Gaussian AO density")
+         END IF
       END IF
       derive = PRESENT(hard_response)
       CPASSERT(derive .EQV. PRESENT(soft_response))
@@ -230,9 +266,9 @@ CONTAINS
          ASSOCIATE (pair => map%pairs(slot))
             phase = pair_phase(pair, reduced_k)
             CALL add_density(pair%left_h(:, :, 1), pair%right_h(:, :, 1), &
-                             matrix(pair%rows, pair%cols), pair%factor*phase, hard)
+                             matrix(pair%rows, pair%cols), pair%factor*phase, hard, map%ordered)
             CALL add_density(pair%left_s(:, :, 1), pair%right_s(:, :, 1), &
-                             matrix(pair%rows, pair%cols), pair%factor*phase, soft)
+                             matrix(pair%rows, pair%cols), pair%factor*phase, soft, map%ordered)
             IF (derive) THEN
                CPASSERT(SIZE(atom_response, 2) >= pair%left_atom)
                CPASSERT(SIZE(atom_response, 2) >= pair%right_atom)
@@ -242,9 +278,9 @@ CONTAINS
                     MATMUL(cell_response, REAL(pair%right_image, dp))
                dphase = CMPLX(0.0_dp, -twopi*SUM(reduced_k_response*pair%cell), dp)*phase
                CALL add_response(pair%left_h, pair%right_h, matrix(pair%rows, pair%cols), &
-                                 pair%factor, phase, dphase, dl, dr, hard_response)
+                                 pair%factor, phase, dphase, dl, dr, hard_response, map%ordered)
                CALL add_response(pair%left_s, pair%right_s, matrix(pair%rows, pair%cols), &
-                                 pair%factor, phase, dphase, dl, dr, soft_response)
+                                 pair%factor, phase, dphase, dl, dr, soft_response, map%ordered)
             END IF
          END ASSOCIATE
       END DO
@@ -262,7 +298,7 @@ CONTAINS
 !> \param reduced_k ...
 !> \param hard_adjoint Replicated real compressed primitive hard covector, including its radial measure.
 !> \param soft_adjoint Matching soft covector, including its sign and radial measure.
-!> \param adjoint New replicated Hermitian AO matrix, without a mesh weight.
+!> \param adjoint New replicated Hermitian AO matrix or ordered rectangular Frobenius adjoint, without a mesh weight.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_gaussian_pairs_integrate(map, reduced_k, hard_adjoint, soft_adjoint, adjoint)
       TYPE(qs_upf_inverse_gaussian_pairs_type), &
@@ -276,9 +312,14 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: bh(:, :), bs(:, :)
 
       CALL check_map(map, SHAPE(adjoint), SHAPE(hard_adjoint), SHAPE(soft_adjoint))
-      ALLOCATE (bh(map%nprimitive, map%nprimitive), bs(map%nprimitive, map%nprimitive))
-      bh(:, :) = 0.5_dp*(hard_adjoint + TRANSPOSE(hard_adjoint))
-      bs(:, :) = 0.5_dp*(soft_adjoint + TRANSPOSE(soft_adjoint))
+      ALLOCATE (bh(map%nprimitive, map%nprimitive_right), bs(map%nprimitive, map%nprimitive_right))
+      IF (map%ordered) THEN
+         bh(:, :) = hard_adjoint
+         bs(:, :) = soft_adjoint
+      ELSE
+         bh(:, :) = 0.5_dp*(hard_adjoint + TRANSPOSE(hard_adjoint))
+         bs(:, :) = 0.5_dp*(soft_adjoint + TRANSPOSE(soft_adjoint))
+      END IF
       adjoint = CMPLX(0.0_dp, 0.0_dp, dp)
       DO slot = 1, SIZE(map%pairs)
          ASSOCIATE (pair => map%pairs(slot))
@@ -289,7 +330,9 @@ CONTAINS
             DO j = 1, SIZE(pair%cols)
                DO i = 1, SIZE(pair%rows)
                   adjoint(pair%rows(i), pair%cols(j)) = adjoint(pair%rows(i), pair%cols(j)) + block(i, j)
-                  adjoint(pair%cols(j), pair%rows(i)) = adjoint(pair%cols(j), pair%rows(i)) + CONJG(block(i, j))
+                  IF (.NOT. map%ordered) THEN
+                     adjoint(pair%cols(j), pair%rows(i)) = adjoint(pair%cols(j), pair%rows(i)) + CONJG(block(i, j))
+                  END IF
                END DO
             END DO
             DEALLOCATE (block)
@@ -341,17 +384,23 @@ CONTAINS
 !> \param matrix ...
 !> \param phase ...
 !> \param density ...
+!> \param ordered Keep a single ordered product instead of its Hermitian completion.
 ! **************************************************************************************************
-   SUBROUTINE add_density(left, right, matrix, phase, density)
+   SUBROUTINE add_density(left, right, matrix, phase, density, ordered)
       REAL(dp), INTENT(IN)                               :: left(:, :), right(:, :)
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :), phase
       REAL(dp), INTENT(INOUT)                            :: density(:, :)
+      LOGICAL, INTENT(IN)                                :: ordered
 
       COMPLEX(dp), ALLOCATABLE                           :: block(:, :)
 
       ALLOCATE (block(SIZE(density, 1), SIZE(density, 2)))
       block(:, :) = phase*MATMUL(TRANSPOSE(left), MATMUL(matrix, right))
-      density = density + REAL(block + CONJG(TRANSPOSE(block)), dp)
+      IF (ordered) THEN
+         density = density + REAL(block, dp)
+      ELSE
+         density = density + REAL(block + CONJG(TRANSPOSE(block)), dp)
+      END IF
    END SUBROUTINE add_density
 
 ! **************************************************************************************************
@@ -365,21 +414,23 @@ CONTAINS
 !> \param dl ...
 !> \param dr ...
 !> \param response ...
+!> \param ordered Retain the rectangular product convention of the fixed map.
 ! **************************************************************************************************
-   SUBROUTINE add_response(left, right, matrix, factor, phase, dphase, dl, dr, response)
+   SUBROUTINE add_response(left, right, matrix, factor, phase, dphase, dl, dr, response, ordered)
       REAL(dp), INTENT(IN)                               :: left(:, :, :), right(:, :, :)
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
       REAL(dp), INTENT(IN)                               :: factor
       COMPLEX(dp), INTENT(IN)                            :: phase, dphase
       REAL(dp), INTENT(IN)                               :: dl(3), dr(3)
       REAL(dp), INTENT(INOUT)                            :: response(:, :)
+      LOGICAL, INTENT(IN)                                :: ordered
 
       INTEGER                                            :: axis
 
-      CALL add_density(left(:, :, 1), right(:, :, 1), matrix, factor*dphase, response)
+      CALL add_density(left(:, :, 1), right(:, :, 1), matrix, factor*dphase, response, ordered)
       DO axis = 1, 3
-         CALL add_density(left(:, :, axis + 1), right(:, :, 1), matrix, factor*phase*dl(axis), response)
-         CALL add_density(left(:, :, 1), right(:, :, axis + 1), matrix, factor*phase*dr(axis), response)
+         CALL add_density(left(:, :, axis + 1), right(:, :, 1), matrix, factor*phase*dl(axis), response, ordered)
+         CALL add_density(left(:, :, 1), right(:, :, axis + 1), matrix, factor*phase*dr(axis), response, ordered)
       END DO
    END SUBROUTINE add_response
 
@@ -413,9 +464,9 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: ao_shape(2), hard_shape(2), soft_shape(2)
 
       CPASSERT(ALLOCATED(map%pairs))
-      CPASSERT(ALL(ao_shape == map%nao))
-      CPASSERT(ALL(hard_shape == map%nprimitive))
-      CPASSERT(ALL(soft_shape == map%nprimitive))
+      CPASSERT(ALL(ao_shape == [map%nao, map%ncol]))
+      CPASSERT(ALL(hard_shape == [map%nprimitive, map%nprimitive_right]))
+      CPASSERT(ALL(soft_shape == [map%nprimitive, map%nprimitive_right]))
    END SUBROUTINE check_map
 
 END MODULE qs_upf_inverse_gaussian_pairs
