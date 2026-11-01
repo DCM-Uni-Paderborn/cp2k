@@ -46,7 +46,8 @@ MODULE accint_weights_forces
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_fxc,                          ONLY: qs_fxc_create
    USE qs_kind_types,                   ONLY: qs_kind_type
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_rho_atom_types,               ONLY: rho_atom_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
@@ -76,8 +77,61 @@ MODULE accint_weights_forces
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'accint_weights_forces'
 
    PUBLIC :: accint_weight_force, weight_function_pwgrid
+   PUBLIC :: accint_weight_geometry
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Contract the actual Gaussian XC weight source without changing native forces or virials.
+!> \param qs_env Native grid weights and their original Gaussian parameters.
+!> \param potential Unweighted XC derivative with respect to the auxiliary-grid weights.
+!> \param atom_response Total Cartesian atomic motion, including affine cell motion.
+!> \param cell_response Lattice derivative at fixed fractional grid points.
+!> \param response Globally reduced positive energy derivative, excluding the ordinary volume measure.
+! **************************************************************************************************
+   SUBROUTINE accint_weight_geometry(qs_env, potential, atom_response, cell_response, response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response
+
+      INTEGER                                            :: atom, nkind
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: native_virial(3, 3), strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: gradients(:, :), relative_motion(:, :), &
+                                                            values(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_r3d_rs_type)                               :: weighted_potential
+      TYPE(pw_r3d_rs_type), POINTER                      :: weights
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+
+      response = 0.0_dp
+      CALL get_qs_env(qs_env, ks_env=ks_env, cell=cell, particle_set=atoms, dft_control=control, &
+                      para_env=para_env, nkind=nkind)
+      CALL get_ks_env(ks_env, xcint_weights=weights)
+      IF (.NOT. ASSOCIATED(weights)) RETURN
+      valid = pw_grid_compare(weights%pw_grid, potential%pw_grid)
+      CPASSERT(valid)
+      valid = ALL(SHAPE(atom_response) == [3, SIZE(atoms)])
+      CPASSERT(valid)
+      CALL weighted_potential%create(potential%pw_grid)
+      weighted_potential%array = potential%pw_grid%dvol*potential%array
+      ALLOCATE (gradients(3, SIZE(atoms)), values(nkind), SOURCE=1.0_dp)
+      CALL gauss_grid_force(weighted_potential, qs_env, control%qs_control%gapw_control%oweights, &
+                            control%qs_control%gapw_control%aw, values, gradients, native_virial, &
+                            consistent_radius=.TRUE.)
+      CALL weighted_potential%release()
+      strain = MATMUL(cell_response, cell%h_inv)
+      ALLOCATE (relative_motion, SOURCE=atom_response)
+      DO atom = 1, SIZE(atoms)
+         relative_motion(:, atom) = relative_motion(:, atom) - MATMUL(strain, atoms(atom)%r)
+      END DO
+      response = SUM(gradients*relative_motion) - SUM(native_virial*strain)
+      CALL para_env%sum(response)
+   END SUBROUTINE accint_weight_geometry
 
 ! **************************************************************************************************
 !> \brief ...
@@ -271,14 +325,16 @@ CONTAINS
 !> \param cvalue ...
 !> \param aforce ...
 !> \param avirial ...
+!> \param consistent_radius Use the exact radius of the collocated weight source.
 ! **************************************************************************************************
-   SUBROUTINE gauss_grid_force(e_rspace, qs_env, order, calpha, cvalue, aforce, avirial)
+   SUBROUTINE gauss_grid_force(e_rspace, qs_env, order, calpha, cvalue, aforce, avirial, consistent_radius)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: e_rspace
       TYPE(qs_environment_type), POINTER                 :: qs_env
       INTEGER, INTENT(IN)                                :: order
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: calpha, cvalue
       REAL(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: aforce
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(OUT)        :: avirial
+      LOGICAL, INTENT(IN), OPTIONAL                      :: consistent_radius
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'gauss_grid_force'
 
@@ -287,7 +343,7 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: cores
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
       LOGICAL                                            :: use_virial
-      REAL(KIND=dp)                                      :: alpha, eps_rho_rspace, radius
+      REAL(KIND=dp)                                      :: alpha, cutoff, eps_rho_rspace, radius
       REAL(KIND=dp), DIMENSION(3)                        :: force_a, force_b, ra
       REAL(KIND=dp), DIMENSION(3, 3)                     :: my_virial_a, my_virial_b
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: hab, pab
@@ -330,6 +386,10 @@ CONTAINS
                       particle_set=particle_set)
 
       use_virial = .TRUE.
+      cutoff = 1.0_dp
+      IF (PRESENT(consistent_radius)) THEN
+         IF (consistent_radius) cutoff = 0.0_dp
+      END IF
       avirial = 0.0_dp
       aforce = 0.0_dp
 
@@ -379,7 +439,7 @@ CONTAINS
                                               ra=ra, rb=ra, rp=ra, &
                                               zetp=alpha, eps=eps_rho_rspace, &
                                               pab=pab, o1=0, o2=0, &
-                                              prefactor=1.0_dp, cutoff=1.0_dp)
+                                              prefactor=1.0_dp, cutoff=cutoff)
 
             CALL integrate_pgf_product(on, alpha, 0, &
                                        0, 0.0_dp, 0, ra, [0.0_dp, 0.0_dp, 0.0_dp], &

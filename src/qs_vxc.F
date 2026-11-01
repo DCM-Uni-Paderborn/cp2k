@@ -69,10 +69,12 @@ MODULE qs_vxc
                                               native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference,&
                                               skala_gpw_eval,&
+                                              skala_gpw_weight_derivative,&
                                               xc_section_uses_native_skala_evaluator
    USE virial_types,                    ONLY: virial_type
    USE xc,                              ONLY: calc_xc_density,&
                                               xc_exc_calc,&
+                                              xc_exc_pw_create,&
                                               xc_vxc_pw_create
 #include "./base/base_uses.f90"
 
@@ -115,6 +117,9 @@ CONTAINS
 !> \param upf_density Unweighted occupation matrices of that state, in physical k and spin order.
 !> \param upf_atomic_energy Independent atom XC residual, required with upf_context.
 !> \param upf_grid_virial Optional native grid XC virial for that independent context.
+!> \param upf_weight_potential Optional derivative with respect to the native GAPW integration weights.
+!>        The caller supplies allocated auxiliary-grid storage. The unweighted covector includes
+!>        the same selected XC and prescribed cores, with the transpose of the grid transfer.
 !>        It neither reads nor replaces the primary accepted XC virial.
 !> \par History
 !>      - 05.2002 modified to use the mp_allgather function each pe
@@ -130,7 +135,7 @@ CONTAINS
                             just_energy, edisp, dispersion_env, adiabatic_rescale_factor, &
                             pw_env_external, native_skala_atom_force, qs_env_external, &
                             native_gapw_composite_override, native_skala_defer_to_atom_composite, &
-                            upf_context, upf_density, upf_atomic_energy, upf_grid_virial)
+                            upf_context, upf_density, upf_atomic_energy, upf_grid_virial, upf_weight_potential)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_struct
@@ -151,6 +156,7 @@ CONTAINS
          OPTIONAL, TARGET                                :: upf_context
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: upf_density(:, :, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: upf_atomic_energy, upf_grid_virial(3, 3)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: upf_weight_potential
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_vxc_create'
 
@@ -211,6 +217,7 @@ CONTAINS
                tau_smooth_model_g, tau_smooth_model_r, tau_smooth_r, gauxc_section)
 
       exc = 0.0_dp
+      IF (PRESENT(upf_weight_potential)) CALL pw_zero(upf_weight_potential)
       IF (PRESENT(upf_atomic_energy)) upf_atomic_energy = 0.0_dp
       my_just_energy = .FALSE.
       IF (PRESENT(just_energy)) my_just_energy = just_energy
@@ -245,6 +252,7 @@ CONTAINS
       ELSE
          CPASSERT(.NOT. PRESENT(upf_density))
          CPASSERT(.NOT. PRESENT(upf_grid_virial))
+         CPASSERT(.NOT. PRESENT(upf_weight_potential))
       END IF
 
       CALL qs_rho_get(rho_struct, &
@@ -717,6 +725,36 @@ CONTAINS
                                   compute_virial=compute_virial, &
                                   virial_xc=xc_virial, density_constraints=skala_constraints, &
                                   project_density_potential=.NOT. inverse_active)
+         END IF
+
+         IF (PRESENT(upf_weight_potential) .AND. ASSOCIATED(weights_use)) THEN
+            BLOCK
+               TYPE(pw_r3d_rs_type) :: weight_covector
+               TYPE(pw_c1d_gs_type) :: covector_g, folded_g
+               TYPE(pw_r3d_rs_type), POINTER :: no_weights
+
+               NULLIFY (no_weights)
+               CALL xc_pw_pool%create_pw(weight_covector)
+               CALL pw_zero(weight_covector)
+               IF (native_skala_grid) THEN
+                  CALL skala_gpw_weight_derivative(weight_covector, rho_r, rho_g, tau, xc_section, weights_use, &
+                                                   xc_pw_pool, particle_set, cell)
+               ELSE
+                  CALL xc_exc_pw_create(rho_r, rho_g, tau, xc_section, no_weights, xc_pw_pool, weight_covector)
+               END IF
+               IF (pw_grid_compare(weight_covector%pw_grid, upf_weight_potential%pw_grid)) THEN
+                  upf_weight_potential%array = weight_covector%array
+               ELSE
+                  CALL covector_g%create(weight_covector%pw_grid)
+                  CALL folded_g%create(upf_weight_potential%pw_grid)
+                  CALL pw_transfer(weight_covector, covector_g)
+                  CALL pw_real_transfer(covector_g, folded_g)
+                  CALL pw_transfer(folded_g, upf_weight_potential)
+                  CALL covector_g%release()
+                  CALL folded_g%release()
+               END IF
+               CALL xc_pw_pool%give_back_pw(weight_covector)
+            END BLOCK
          END IF
 
          IF ((dft_control%qs_control%gapw_xc .OR. dft_control%qs_control%gapw .OR. &
