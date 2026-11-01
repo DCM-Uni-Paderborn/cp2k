@@ -379,14 +379,16 @@ CONTAINS
          CPABORT("GAPW ADMM not implemented for MCWEENY or NONE_DM purification.")
       END IF
 
-      !ADMMS and ADMMP stress tensors only available for close-shell systesms, because virial cannot
-      !be scaled by gsi spin component wise
+      ! The original-UPF functional contracts each spin's scaled geometry before summation.
+      ! The ordinary Gaussian implementation still has no separate spin virials.
       use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
-      IF (use_virial .AND. admm_env%do_admms .AND. dft_control%nspins == 2) THEN
-         CPABORT("ADMMS stress tensor is only available for closed-shell systems")
-      END IF
-      IF (use_virial .AND. admm_env%do_admmp .AND. dft_control%nspins == 2) THEN
-         CPABORT("ADMMP stress tensor is only available for closed-shell systems")
+      IF (use_virial .AND. .NOT. admm_env%upf_aux_metric%ready .AND. dft_control%nspins == 2) THEN
+         IF (admm_env%do_admms) THEN
+            CPABORT("ADMMS stress tensor is only available for closed-shell systems")
+         END IF
+         IF (admm_env%do_admmp) THEN
+            CPABORT("ADMMP stress tensor is only available for closed-shell systems")
+         END IF
       END IF
 
       IF (dft_control%do_admm_dm .AND. .NOT. ASSOCIATED(admm_env%admm_dm)) THEN
