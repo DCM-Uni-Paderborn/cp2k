@@ -8,7 +8,8 @@
 MODULE qs_upf_inverse_aux_operator
    USE admm_types,                      ONLY: admm_type,&
                                               get_admm_env
-   USE admm_utils,                      ONLY: admm_purified_operator
+   USE admm_utils,                      ONLY: admm_charge_scaled_operator,&
+                                              admm_purified_operator
    USE cell_types,                      ONLY: cell_type
    USE cp_cfm_types,                    ONLY: cp_cfm_get_submatrix
    USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
@@ -23,7 +24,8 @@ MODULE qs_upf_inverse_aux_operator
                                               hfx_ri_update_ks_kp
    USE hfx_types,                       ONLY: hfx_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
-   USE input_constants,                 ONLY: do_admm_exch_scaling_none,&
+   USE input_constants,                 ONLY: do_admm_exch_scaling_merlot,&
+                                              do_admm_exch_scaling_none,&
                                               do_admm_purify_mo_diag,&
                                               do_admm_purify_none
    USE input_cp2k_hfx,                  ONLY: ri_pmat
@@ -49,7 +51,7 @@ MODULE qs_upf_inverse_aux_operator
    USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_upf_inverse_aux_xc,           ONLY: qs_upf_inverse_aux_xc_evaluate
+   USE qs_upf_inverse_aux_xc,           ONLY: qs_upf_inverse_aux_xc_rescale
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_geometry
    USE qs_upf_inverse_charge_metric,    ONLY: qs_upf_inverse_charge_metric_contract
@@ -226,8 +228,10 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), saved_exchange(:, :, :, :)
       INTEGER                                            :: contribution, ik, image, natom, ns, spin
       LOGICAL                                            :: bloch, valid
-      REAL(dp)                                           :: fraction, term_energy, term_strain(3, 3)
-      REAL(dp), ALLOCATABLE                              :: term_gradient(:, :)
+      REAL(dp)                                           :: fraction, native_energy, part, &
+                                                            raw_energy, spin_energy, term_energy, &
+                                                            term_strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: spin_weights(:), term_gradient(:, :)
       TYPE(admm_type), POINTER                           :: admm
       TYPE(dbcsr_p_type), POINTER                        :: density(:, :), native_ks(:, :), &
                                                             term_ks(:, :)
@@ -242,6 +246,12 @@ CONTAINS
       CPASSERT(state%basis_type == 'AUX_FIT')
       CPASSERT(SIZE(exchange, 2) > 0)
       ns = SIZE(admm%upf_density%matrices, 4)
+      IF (admm%do_admmp) THEN
+         ALLOCATE (spin_weights(ns))
+         CPASSERT(ALL(admm%gsi(1:ns) > 0.0_dp))
+         spin_weights(:) = admm%gsi(1:ns)**2
+      END IF
+      ! An unallocated optional spin_weights argument is absent for the other variants.
       bloch = ASSOCIATED(state%bloch%kpoints)
       IF (bloch) THEN
          DO ik = 1, state%bloch%kpoints%nkp
@@ -300,24 +310,64 @@ CONTAINS
             IF (ALLOCATED(state%exchange_k)) state%exchange_k = CMPLX(0.0_dp, 0.0_dp, dp)
             CALL hfx_ri_update_ks_kp(qs_env, exchange(contribution, 1)%ri_data, term_ks, term_energy, &
                                      density, geometry_changed, ns, fraction)
+            native_energy = term_energy
             CPASSERT(ALLOCATED(state%exchange_k))
             valid = ALL(SHAPE(state%exchange_k) == SHAPE(operators))
             CPASSERT(valid)
-            operators(:, :, :, :) = operators + state%exchange_k
+            IF (admm%do_admmp) THEN
+               raw_energy = 0.0_dp
+               term_energy = 0.0_dp
+               DO spin = 1, ns
+                  spin_energy = 0.0_dp
+                  DO ik = 1, SIZE(operators, 3)
+                     spin_energy = spin_energy + 0.5_dp*admm%upf_aux_metric%weights(ik)* &
+                                   REAL(SUM(CONJG(state%exchange_k(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
+                  END DO
+                  raw_energy = raw_energy + spin_energy
+                  term_energy = term_energy + spin_weights(spin)*spin_energy
+                  operators(:, :, :, spin) = operators(:, :, :, spin) + spin_weights(spin)*state%exchange_k(:, :, :, spin)
+               END DO
+            ELSE
+               operators(:, :, :, :) = operators + state%exchange_k
+            END IF
+            IF (admm%do_admmp) THEN
+               valid = ABS(raw_energy - native_energy) <= 1.e-9_dp*MAX(1.0_dp, ABS(native_energy))
+               IF (.NOT. valid) THEN
+                  CPABORT('Auxiliary RI energy/operator mismatch')
+               END IF
+            END IF
             IF (geometry) THEN
                CALL hfx_ri_update_forces_kp(qs_env, exchange(contribution, 1)%ri_data, ns, fraction, density, &
-                                            use_virial=use_virial, atom_gradient=term_gradient, strain_gradient=term_strain)
+                                            use_virial=use_virial, atom_gradient=term_gradient, strain_gradient=term_strain, &
+                                            spin_weights=spin_weights)
             END IF
          ELSE
             CALL hfx_ri_update_ks(qs_env, exchange(contribution, 1)%ri_data, term_ks, term_energy, &
                                   rho_ao=density, geometry_did_change=geometry_changed, nspins=ns, hf_fraction=fraction)
+            raw_energy = term_energy
+            IF (admm%do_admmp) term_energy = 0.0_dp
+            spin_energy = 0.0_dp
             DO spin = 1, ns
                CALL qs_upf_inverse_matrix_gather(state%frame%ao, term_ks(spin, 1)%matrix, gamma)
-               operators(:, :, 1, spin) = operators(:, :, 1, spin) + gamma
+               IF (admm%do_admmp) THEN
+                  part = 0.5_dp*REAL(SUM(CONJG(gamma)*admm%upf_density%matrices(:, :, 1, spin)), dp)
+                  spin_energy = spin_energy + part
+                  term_energy = term_energy + spin_weights(spin)*part
+                  operators(:, :, 1, spin) = operators(:, :, 1, spin) + spin_weights(spin)*gamma
+               ELSE
+                  operators(:, :, 1, spin) = operators(:, :, 1, spin) + gamma
+               END IF
             END DO
+            IF (admm%do_admmp) THEN
+               valid = ABS(spin_energy - raw_energy) <= 1.e-9_dp*MAX(1.0_dp, ABS(raw_energy))
+               IF (.NOT. valid) THEN
+                  CPABORT('Auxiliary RI energy/operator mismatch')
+               END IF
+            END IF
             IF (geometry) THEN
                CALL hfx_ri_update_forces(qs_env, exchange(contribution, 1)%ri_data, ns, fraction, rho_ao=density, &
-                                         use_virial=use_virial, atom_gradient=term_gradient, strain_gradient=term_strain)
+                                         use_virial=use_virial, atom_gradient=term_gradient, strain_gradient=term_strain, &
+                                         spin_weights=spin_weights)
             END IF
          END IF
          energy = energy + term_energy
@@ -432,10 +482,10 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_aux_projection
 
 ! **************************************************************************************************
-!> \brief Compose original auxiliary Fock/XC and transfer their unpurified electronic derivative.
+!> \brief Compose original auxiliary Fock/XC and transfer their complete electronic derivative.
 !>        Use the actual native projection A and its complete original charge metric. For charge
 !>        normalization, Dbar_A=eta A D_O A^dagger and eta=N_O/N_A. The global spin response
-!>        lambda=Sum_k w_k Tr(K_A D_A)/N_A enters both normalization metrics. Geometry outputs
+!>        lambda includes the density-normalization response and explicit exchange-ratio derivatives. Geometry outputs
 !>        additionally differentiate A=G_AA^-1 G_AO. Their scalar pairing applies mesh weights once.
 !>        Reduce derivatives before differentiating the native projection. Its metric is the
 !>        native star average, not a separately factorized metric for every physical partner.
@@ -443,7 +493,7 @@ CONTAINS
 !> \param qs_env Same native projection and auxiliary density used by the Fock producer.
 !> \param xc_section Selected auxiliary XC functional, with its actual exchange scaling.
 !> \param fock Original-coordinate auxiliary Fock operators at the current auxiliary density,
-!>        including HF fractions but no k weights or additional explicit charge rescaling.
+!>        including HF fractions and ADMMP eta**2 scaling, but no k weights or PAW core exchange.
 !> \param grid_energy Auxiliary uniform-grid XC energy.
 !> \param atom_energy Auxiliary original atomic residual and selected PAW XC energy.
 !> \param operators New primary operators, in original physical k and spin order, without weights.
@@ -470,18 +520,53 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: auxiliary_operator(:, :, :, :), &
                                                             core_operator(:, :, :, :)
       LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: core_derivative(:), eta_derivative(:)
 
       CPASSERT(PRESENT(exchange) .EQV. PRESENT(core_energy))
-      CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator)
+      ALLOCATE (eta_derivative(SIZE(fock, 4)), core_derivative(SIZE(fock, 4)))
+      CALL qs_upf_inverse_aux_xc_rescale(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator, eta_derivative)
       valid = ALL(SHAPE(fock) == SHAPE(auxiliary_operator))
       CPASSERT(valid)
       IF (PRESENT(exchange)) THEN
-         CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator)
+         CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator, eta_derivative=core_derivative)
+         eta_derivative(:) = eta_derivative + core_derivative
          auxiliary_operator(:, :, :, :) = auxiliary_operator + core_operator
       END IF
       auxiliary_operator(:, :, :, :) = auxiliary_operator + fock
-      CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector)
+      CALL hf_ratio_response(qs_env, fock, eta_derivative)
+      CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector, &
+                             eta_derivative)
    END SUBROUTINE qs_upf_inverse_aux_operator_evaluate
+
+! **************************************************************************************************
+!> \brief Add the explicit ADMMP valence-HF ratio derivative without differentiating core or XC twice.
+!> \param qs_env Actual native auxiliary density and full physical-k weights.
+!> \param fock Valence RI operator, including eta**2 for ADMMP and no mesh weights.
+!> \param derivative Accumulated partial_eta F at fixed native auxiliary density.
+! **************************************************************************************************
+   SUBROUTINE hf_ratio_response(qs_env, fock, derivative)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      COMPLEX(dp), INTENT(IN)                            :: fock(:, :, :, :)
+      REAL(dp), INTENT(INOUT)                            :: derivative(:)
+
+      INTEGER                                            :: ik, spin
+      LOGICAL                                            :: valid
+      TYPE(admm_type), POINTER                           :: admm
+
+      CALL get_qs_env(qs_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      IF (.NOT. admm%do_admmp) RETURN
+      valid = ALL(SHAPE(fock) == SHAPE(admm%upf_density%matrices))
+      CPASSERT(valid)
+      CPASSERT(SIZE(derivative) == SIZE(fock, 4))
+      DO spin = 1, SIZE(fock, 4)
+         CPASSERT(admm%gsi(spin) > 0.0_dp)
+         DO ik = 1, SIZE(fock, 3)
+            derivative(spin) = derivative(spin) + admm%upf_aux_metric%weights(ik)* &
+                               REAL(SUM(CONJG(fock(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)/admm%gsi(spin)
+         END DO
+      END DO
+   END SUBROUTINE hf_ratio_response
 
 ! **************************************************************************************************
 !> \brief Transfer the derivative of the same auxiliary energy through the actual A and eta.
@@ -491,15 +576,17 @@ CONTAINS
 !> \param mixed_covector ...
 !> \param auxiliary_covector ...
 !> \param primary_covector ...
+!> \param eta_derivative Optional explicit partial_eta F at fixed native density, required for P/S scaling.
 ! **************************************************************************************************
    SUBROUTINE transfer_operator(qs_env, auxiliary_operator, operators, &
-                                mixed_covector, auxiliary_covector, primary_covector)
+                                mixed_covector, auxiliary_covector, primary_covector, eta_derivative)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       COMPLEX(dp), INTENT(IN)                            :: auxiliary_operator(:, :, :, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: mixed_covector(:, :, :, :), &
                                                             auxiliary_covector(:, :, :, :), &
                                                             primary_covector(:, :, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: eta_derivative(:)
 
       COMPLEX(dp), ALLOCATABLE :: auxiliary_reduced(:, :, :), corrected(:, :), &
          corrected_k(:, :, :), density(:, :, :, :), expanded(:, :, :), gamma(:, :), &
@@ -507,9 +594,10 @@ CONTAINS
          primary_metric(:, :, :), projection(:, :, :), reduced_corrected(:, :, :), &
          reduced_density(:, :, :), reduced_projection(:, :, :), unscaled(:, :), work(:, :), z(:, :)
       INTEGER                                            :: ik, na, nk, no, ns, spin
-      LOGICAL                                            :: geometry, normalized, purified, valid
-      REAL(dp)                                           :: eta, lambda, na_spin, no_spin, &
-                                                            numerator, tolerance
+      LOGICAL                                            :: geometry, normalized, purified, &
+                                                            ratio_dependent, scaled, valid
+      REAL(dp)                                           :: density_scale, eta, explicit_derivative, &
+                                                            lambda
       TYPE(admm_type), POINTER                           :: admm
       TYPE(dbcsr_p_type), POINTER                        :: density_ao(:), metric(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -524,15 +612,23 @@ CONTAINS
           admm%block_fit .OR. admm%block_dm) THEN
          CPABORT('This UPF ADMM purification or blocked fit is not implemented yet')
       END IF
-      IF (admm%do_admmp .OR. admm%do_admms .OR. admm%scaling_model /= do_admm_exch_scaling_none) THEN
-         CPABORT('ADMM exchange rescaling not implemented yet')
+      scaled = admm%do_admmp .OR. admm%do_admms
+      IF (admm%scaling_model /= do_admm_exch_scaling_none) THEN
+         CPASSERT(scaled .AND. admm%scaling_model == do_admm_exch_scaling_merlot)
+      END IF
+      IF (scaled) THEN
+         CPASSERT(PRESENT(eta_derivative))
+         IF (purified) THEN
+            CPABORT('Exchange rescaling requires no purification')
+         END IF
       END IF
       geometry = PRESENT(mixed_covector) .OR. PRESENT(auxiliary_covector) .OR. PRESENT(primary_covector)
       IF (geometry) THEN
          valid = PRESENT(mixed_covector) .AND. PRESENT(auxiliary_covector) .AND. PRESENT(primary_covector)
          CPASSERT(valid)
       END IF
-      normalized = admm%do_admmq
+      normalized = admm%do_admmq .OR. admm%do_admms
+      ratio_dependent = normalized .OR. admm%do_admmp
       IF (normalized) THEN
          CPASSERT(admm%charge_constrain)
       END IF
@@ -574,40 +670,35 @@ CONTAINS
             density(:, :, 1, spin) = gamma
          END DO
       END IF
-      ALLOCATE (operators(no, no, nk, ns), unscaled(na, na), corrected(na, na), work(na, no), z(na, no))
+      IF (PRESENT(eta_derivative)) THEN
+         CPASSERT(SIZE(eta_derivative) == ns)
+      END IF
+      ALLOCATE (operators(no, no, nk, ns), unscaled(na, na), corrected(na, na), work(na, no), z(na, no), &
+                corrected_k(na, na, nk))
       IF (geometry) THEN
          ALLOCATE (mixed_covector(na, no, nk, ns), auxiliary_covector(na, na, nk, ns), &
-                   primary_covector(no, no, nk, ns), corrected_k(na, na, nk), &
+                   primary_covector(no, no, nk, ns), &
                    mixed_reduced(na, no, SIZE(reduced_projection, 3)), &
                    auxiliary_reduced(na, na, SIZE(reduced_projection, 3)))
       END IF
       DO spin = 1, ns
          eta = 1.0_dp
          lambda = 0.0_dp
-         IF (normalized) THEN
+         density_scale = 1.0_dp
+         IF (ratio_dependent) THEN
             eta = admm%gsi(spin)
-            CPASSERT(eta > 0.0_dp)
-            na_spin = 0.0_dp
-            no_spin = 0.0_dp
-            numerator = 0.0_dp
-            DO ik = 1, nk
-               unscaled(:, :) = admm%upf_density%matrices(:, :, ik, spin)/eta
-               na_spin = na_spin + admm%upf_aux_metric%weights(ik)* &
-                         REAL(SUM(CONJG(admm%upf_aux_metric%values(:, :, ik))*unscaled), dp)
-               no_spin = no_spin + admm%upf_aux_metric%weights(ik)* &
-                         REAL(SUM(CONJG(primary_metric(:, :, ik))*density(:, :, ik, spin)), dp)
-               numerator = numerator + admm%upf_aux_metric%weights(ik)* &
-                           REAL(SUM(CONJG(auxiliary_operator(:, :, ik, spin))*unscaled), dp)
-            END DO
-            tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(na_spin), ABS(no_spin))
-            IF (ABS(na_spin) > tolerance .OR. ABS(no_spin) > tolerance) THEN
-               CPASSERT(na_spin > 0.0_dp)
-               lambda = numerator/na_spin
-            END IF
+            IF (normalized) density_scale = eta
+            explicit_derivative = 0.0_dp
+            IF (PRESENT(eta_derivative)) explicit_derivative = eta_derivative(spin)
+            CALL admm_charge_scaled_operator(auxiliary_operator(:, :, :, spin), admm%upf_density%matrices(:, :, :, spin), &
+                                  admm%upf_aux_metric%values, density(:, :, :, spin), primary_metric, admm%upf_aux_metric%weights, &
+                                             eta, normalized, explicit_derivative, corrected_k, lambda)
+         ELSE
+            corrected_k(:, :, :) = auxiliary_operator(:, :, :, spin)
          END IF
          DO ik = 1, nk
-            unscaled(:, :) = admm%upf_density%matrices(:, :, ik, spin)/eta
-            corrected(:, :) = eta*(auxiliary_operator(:, :, ik, spin) - lambda*admm%upf_aux_metric%values(:, :, ik))
+            unscaled(:, :) = admm%upf_density%matrices(:, :, ik, spin)/density_scale
+            corrected(:, :) = corrected_k(:, :, ik)
             IF (purified) THEN
                IF (geometry) THEN
                   CALL transfer_purified(qs_env, spin, projection(:, :, ik), primary_metric(:, :, ik), &
@@ -761,17 +852,21 @@ CONTAINS
 !> \param atom_response Optional total atomic motion, including affine cell motion.
 !> \param cell_response Optional physical lattice derivative at fixed reduced k coordinates.
 !> \param response Optional fixed-auxiliary-occupation directional derivative. Supply all three geometry arguments.
+!> \param eta_derivative Optional explicit ADMMP core-valence ratio derivative at fixed native density.
+!>        Core-core energy remains unscaled. Other variants return zero explicit ratio response.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_core_exchange(qs_env, exchange, energy, operators, &
-                                               atom_response, cell_response, response)
+                                               atom_response, cell_response, response, eta_derivative)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
       REAL(dp), INTENT(OUT)                              :: energy
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response, eta_derivative(:)
 
-      INTEGER                                            :: kind, nk, ns
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: scaled_matrices(:, :, :, :)
+      COMPLEX(dp), POINTER                               :: matrices(:, :, :, :)
+      INTEGER                                            :: ik, kind, nk, ns, spin
       LOGICAL                                            :: geometry
       REAL(dp)                                           :: energies(3)
       REAL(dp), ALLOCATABLE                              :: core_energy(:), reduced_k_response(:, :)
@@ -795,8 +890,12 @@ CONTAINS
       ALLOCATE (operators, MOLD=admm%upf_density%matrices)
       operators = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (geometry) response = 0.0_dp
-      IF (.NOT. ANY(state%paw%active)) RETURN
       ns = SIZE(admm%upf_density%matrices, 4)
+      IF (PRESENT(eta_derivative)) THEN
+         CPASSERT(SIZE(eta_derivative) == ns)
+         eta_derivative = 0.0_dp
+      END IF
+      IF (.NOT. ANY(state%paw%active)) RETURN
       nk = SIZE(admm%upf_density%matrices, 3)
       ALLOCATE (core_energy(SIZE(kinds)), SOURCE=0.0_dp)
       ALLOCATE (core_potential(SIZE(kinds)))
@@ -808,14 +907,23 @@ CONTAINS
                                                  core_energy(kind), core_potential(kind)%matrix(:, :, 1))
          END ASSOCIATE
       END DO
+      matrices => admm%upf_density%matrices
+      IF (admm%do_admmp) THEN
+         ALLOCATE (scaled_matrices, SOURCE=admm%upf_density%matrices)
+         matrices => scaled_matrices
+         DO spin = 1, ns
+            CPASSERT(admm%gsi(spin) > 0.0_dp)
+            matrices(:, :, :, spin) = admm%gsi(spin)*admm%upf_density%matrices(:, :, :, spin)
+         END DO
+      END IF
       NULLIFY (no_functional)
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
-         CALL qs_upf_inverse_paw_evaluate(state%paw, state%bloch%frames, admm%upf_density%matrices, state%bloch%weights, &
+         CALL qs_upf_inverse_paw_evaluate(state%paw, state%bloch%frames, matrices, state%bloch%weights, &
                                           no_functional, 0.0_dp, 0.0_dp, energies, operators, potential, &
                                       semilocal_xc=.FALSE., core_energy=core_energy, core_potential=core_potential, hartree=.FALSE.)
       ELSE
          CPASSERT(nk == 1)
-         CALL qs_upf_inverse_paw_evaluate(state%paw, [state%frame], admm%upf_density%matrices, [1.0_dp], &
+         CALL qs_upf_inverse_paw_evaluate(state%paw, [state%frame], matrices, [1.0_dp], &
                                           no_functional, 0.0_dp, 0.0_dp, energies, operators, potential, &
                                       semilocal_xc=.FALSE., core_energy=core_energy, core_potential=core_potential, hartree=.FALSE.)
       END IF
@@ -823,12 +931,23 @@ CONTAINS
       IF (geometry) THEN
          ALLOCATE (reduced_k_response(3, nk), SOURCE=0.0_dp)
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
-            CALL qs_upf_inverse_paw_response(state%bloch%frames, admm%upf_density%matrices, state%bloch%weights, potential, &
+            CALL qs_upf_inverse_paw_response(state%bloch%frames, matrices, state%bloch%weights, potential, &
                                              atom_response, cell_response, reduced_k_response, response)
          ELSE
-            CALL qs_upf_inverse_paw_response([state%frame], admm%upf_density%matrices, [1.0_dp], potential, &
+            CALL qs_upf_inverse_paw_response([state%frame], matrices, [1.0_dp], potential, &
                                              atom_response, cell_response, reduced_k_response, response)
          END IF
+      END IF
+      IF (admm%do_admmp) THEN
+         DO spin = 1, ns
+            IF (PRESENT(eta_derivative)) THEN
+               DO ik = 1, nk
+                  eta_derivative(spin) = eta_derivative(spin) + admm%upf_aux_metric%weights(ik)* &
+                                         REAL(SUM(CONJG(operators(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
+               END DO
+            END IF
+            operators(:, :, :, spin) = admm%gsi(spin)*operators(:, :, :, spin)
+         END DO
       END IF
    END SUBROUTINE qs_upf_inverse_aux_core_exchange
 
@@ -878,6 +997,7 @@ CONTAINS
       LOGICAL                                            :: valid
       REAL(dp) :: atom_energy, core_energy, core_response, grid_energy, projection_response, &
          ri_response, strain(3, 3), xc_response
+      REAL(dp), ALLOCATABLE                              :: core_derivative(:), eta_derivative(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), POINTER                       :: atoms(:)
 
@@ -888,15 +1008,19 @@ CONTAINS
       valid = ieee_is_finite(ri_energy) .AND. ALL(ieee_is_finite(ri_atom_gradient)) .AND. &
               ALL(ieee_is_finite(ri_strain_gradient))
       CPASSERT(valid)
-      CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator, &
-                                          atom_response=atom_response, cell_response=cell_response, response=xc_response)
+      ALLOCATE (eta_derivative(SIZE(ri_operator, 4)), core_derivative(SIZE(ri_operator, 4)))
+      CALL qs_upf_inverse_aux_xc_rescale(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator, eta_derivative, &
+                                         atom_response=atom_response, cell_response=cell_response, response=xc_response)
       valid = ALL(SHAPE(ri_operator) == SHAPE(auxiliary_operator))
       CPASSERT(valid)
       CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator, &
-                                            atom_response, cell_response, core_response)
+                                            atom_response, cell_response, core_response, eta_derivative=core_derivative)
+      eta_derivative(:) = eta_derivative + core_derivative
+      CALL hf_ratio_response(qs_env, ri_operator, eta_derivative)
       auxiliary_operator(:, :, :, :) = auxiliary_operator + core_operator
       auxiliary_operator(:, :, :, :) = auxiliary_operator + ri_operator
-      CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector)
+      CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector, &
+                             eta_derivative)
       CALL qs_upf_inverse_aux_metric_response(qs_env, mixed_covector, auxiliary_covector, primary_covector, &
                                               atom_response, cell_response, projection_response)
       strain = MATMUL(cell_response, cell%h_inv)

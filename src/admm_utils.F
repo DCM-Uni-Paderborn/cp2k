@@ -22,6 +22,7 @@ MODULE admm_utils
                                               dbcsr_type,&
                                               dbcsr_type_symmetric
    USE cp_dbcsr_operations,             ONLY: copy_fm_to_dbcsr
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_admm_purify_cauchy,&
                                               do_admm_purify_cauchy_subspace,&
                                               do_admm_purify_mo_diag,&
@@ -34,7 +35,7 @@ MODULE admm_utils
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: admm_inverse_sqrt_divdiff, admm_purified_operator
+   PUBLIC :: admm_inverse_sqrt_divdiff, admm_purified_operator, admm_charge_scaled_operator
    PUBLIC :: admm_correct_for_eigenvalues, &
              admm_uncorrect_for_eigenvalues
 
@@ -43,6 +44,75 @@ MODULE admm_utils
 !***
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Charge-ratio chain rule for F(R,eta), with R=D or R=eta*D in one spin sector.
+!>        The actual native auxiliary density R is supplied. With the raw charge N_A=Tr(M_A D),
+!>        lambda=[s'(eta) Tr(K_R D)+partial_eta F]/N_A and K_D=s K_R-eta lambda M_A.
+!>        Traces include physical k weights once. Add lambda M_O in the primary operator and
+!>        -eta lambda D / lambda P in the auxiliary / primary geometry metric covectors.
+!> \param auxiliary_operator Unweighted Hermitian derivative K_R at fixed eta, in auxiliary physical-k order.
+!> \param density Actual native auxiliary density R in the same coordinates.
+!> \param auxiliary_metric Physical valence charge metric M_A, excluding frozen cores.
+!> \param primary_density Primary physical density P.
+!> \param primary_metric Primary valence charge metric M_O.
+!> \param weights Physical normalized mesh weights.
+!> \param eta Positive charge ratio N_O/N_A, shared over the full mesh.
+!> \param normalized_density True for R=eta D. False for R=D with explicit exchange rescaling.
+!> \param explicit_derivative Partial derivative of the complete energy with respect to eta at fixed R.
+!> \param corrected Raw-density derivative K_D including the auxiliary charge normalization term.
+!> \param lambda Primary charge-normalization multiplier.
+! **************************************************************************************************
+   SUBROUTINE admm_charge_scaled_operator(auxiliary_operator, density, auxiliary_metric, primary_density, primary_metric, &
+                                          weights, eta, normalized_density, explicit_derivative, corrected, lambda)
+      COMPLEX(dp), INTENT(IN) :: auxiliary_operator(:, :, :), density(:, :, :), &
+         auxiliary_metric(:, :, :), primary_density(:, :, :), primary_metric(:, :, :)
+      REAL(dp), INTENT(IN)                               :: weights(:), eta
+      LOGICAL, INTENT(IN)                                :: normalized_density
+      REAL(dp), INTENT(IN)                               :: explicit_derivative
+      COMPLEX(dp), INTENT(OUT)                           :: corrected(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: lambda
+
+      INTEGER                                            :: ik, na, nk, no
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: auxiliary_charge, numerator, &
+                                                            primary_charge, scale, tolerance
+
+      na = SIZE(density, 1)
+      no = SIZE(primary_density, 1)
+      nk = SIZE(weights)
+      valid = ALL(SHAPE(auxiliary_operator) == [na, na, nk]) .AND. ALL(SHAPE(density) == [na, na, nk])
+      CPASSERT(valid)
+      valid = ALL(SHAPE(auxiliary_metric) == [na, na, nk]) .AND. ALL(SHAPE(corrected) == [na, na, nk])
+      CPASSERT(valid)
+      valid = ALL(SHAPE(primary_density) == [no, no, nk]) .AND. ALL(SHAPE(primary_metric) == [no, no, nk])
+      CPASSERT(valid)
+      valid = ieee_is_finite(eta) .AND. eta > 0.0_dp .AND. ieee_is_finite(explicit_derivative)
+      CPASSERT(valid)
+      CPASSERT(ALL(ieee_is_finite(weights)) .AND. ALL(weights >= 0.0_dp))
+      scale = 1.0_dp
+      IF (normalized_density) scale = eta
+      auxiliary_charge = 0.0_dp
+      primary_charge = 0.0_dp
+      numerator = explicit_derivative
+      DO ik = 1, nk
+         auxiliary_charge = auxiliary_charge + weights(ik)* &
+                            REAL(SUM(CONJG(auxiliary_metric(:, :, ik))*density(:, :, ik)), dp)/scale
+         primary_charge = primary_charge + weights(ik)* &
+                          REAL(SUM(CONJG(primary_metric(:, :, ik))*primary_density(:, :, ik)), dp)
+         IF (normalized_density) numerator = numerator + weights(ik)* &
+                                             REAL(SUM(CONJG(auxiliary_operator(:, :, ik))*density(:, :, ik)), dp)/scale
+      END DO
+      valid = ieee_is_finite(auxiliary_charge) .AND. ieee_is_finite(primary_charge) .AND. ieee_is_finite(numerator)
+      CPASSERT(valid)
+      lambda = 0.0_dp
+      tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(auxiliary_charge), ABS(primary_charge))
+      IF (ABS(auxiliary_charge) > tolerance .OR. ABS(primary_charge) > tolerance) THEN
+         CPASSERT(auxiliary_charge > 0.0_dp)
+         lambda = numerator/auxiliary_charge
+      END IF
+      corrected(:, :, :) = scale*auxiliary_operator - eta*lambda*auxiliary_metric
+   END SUBROUTINE admm_charge_scaled_operator
 
 ! **************************************************************************************************
 !> \brief Divided difference of x**(-1/2) at positive metric eigenvalues, including equality.

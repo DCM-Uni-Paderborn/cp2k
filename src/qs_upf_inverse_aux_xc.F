@@ -405,7 +405,8 @@ CONTAINS
          charge(spin) = pw_integrate_function(density_r(spin))
       END DO
       CALL qs_rho_set(rho, rho_r=density_r, rho_g=density_g, tau_r=kinetic_r, tau_g=kinetic_g, &
-                      rho_r_valid=.TRUE., rho_g_valid=.TRUE., tau_r_valid=.TRUE., tau_g_valid=.TRUE., &
+                      rho_r_valid=.TRUE., rho_g_valid=.TRUE., &
+                      tau_r_valid=ALLOCATED(state%kinetic_cache), tau_g_valid=ALLOCATED(state%kinetic_cache), &
                       tot_rho_r=charge)
    END SUBROUTINE build_xc_rho
 
