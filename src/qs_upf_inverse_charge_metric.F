@@ -248,7 +248,8 @@ CONTAINS
          CALL qs_upf_inverse_background_collocate(map%gaussian, ks_env, matrix, rho, rho_g, total_rho=smooth_charge)
          ALLOCATE (forces, MOLD=atom_response)
          CALL qs_upf_inverse_background_geometry(map%gaussian, qs_env, matrix, one, forces, virial)
-         response = trace_strain*smooth_charge - SUM(virial*strain) - &
+         ! Native total_rho is the negative electronic density integral.
+         response = -trace_strain*smooth_charge - SUM(virial*strain) - &
                     SUM(forces*(atom_response - MATMUL(strain, left_frame%ao%positions)))
          CALL one%release()
          CALL rho%release()
