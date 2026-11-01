@@ -120,6 +120,7 @@ MODULE qs_upf_inverse_scf
    PUBLIC :: qs_upf_inverse_scf_collocate, qs_upf_inverse_scf_integrate, qs_upf_inverse_scf_core
    PUBLIC :: qs_upf_inverse_scf_integrate_kinetic
    PUBLIC :: qs_upf_inverse_scf_initialize, qs_upf_inverse_scf_reset
+   PUBLIC :: qs_upf_inverse_scf_mulliken
    PUBLIC :: qs_upf_inverse_scf_install_metric
    PUBLIC :: qs_upf_inverse_scf_paw_evaluate, qs_upf_inverse_scf_add_paw
    PUBLIC :: qs_upf_inverse_scf_add_coulomb
@@ -128,6 +129,38 @@ MODULE qs_upf_inverse_scf
    PUBLIC :: qs_upf_inverse_scf_core_response
    PUBLIC :: qs_upf_inverse_scf_response
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Mulliken populations from the complete physical Bloch density and charge metric.
+!>        Atom permutations and AO rotations act on each density before assigning populations.
+!>        Only the world source contributes to the caller's following population reduction.
+!> \param ks_env Prepared original-UPF environment with accepted native Bloch densities.
+!> \param populations Overwritten AO populations for each spin, before the caller's reduction.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_mulliken(ks_env, populations)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      REAL(dp), INTENT(OUT)                              :: populations(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :)
+      INTEGER                                            :: ik, spin
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      CPASSERT(ASSOCIATED(state))
+      CPASSERT(ASSOCIATED(state%bloch%kpoints))
+      CPASSERT(ALLOCATED(state%metric_k))
+      CPASSERT(SIZE(populations, 1) == SIZE(state%metric_k, 1))
+      populations = 0.0_dp
+      DO spin = 1, SIZE(populations, 2)
+         CALL qs_upf_inverse_kpoints_density(state%bloch, spin, density)
+         CPASSERT(ALL(SHAPE(density) == SHAPE(state%metric_k)))
+         IF (.NOT. state%bloch%kpoints%para_env%is_source()) CYCLE
+         DO ik = 1, SIZE(state%bloch%weights)
+            populations(:, spin) = populations(:, spin) + state%bloch%weights(ik)* &
+                                   SUM(REAL(density(:, :, ik)*CONJG(state%metric_k(:, :, ik)), dp), DIM=2)
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_scf_mulliken
 
 ! **************************************************************************************************
 !> \brief Explicitly install one inverse frame, its charge metric, and core operator in native KS.

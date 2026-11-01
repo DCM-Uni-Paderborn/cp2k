@@ -56,10 +56,13 @@ MODULE population_analyses
                                               qs_kind_type
    USE qs_kpoint_density_state,         ONLY: kpoint_density_state_active,&
                                               kpoint_density_state_mulliken
+   USE qs_ks_types,                     ONLY: qs_ks_env_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_scf_diagonalization,          ONLY: diag_kp_smat
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_mulliken
    USE scf_control_types,               ONLY: scf_control_type
 #include "./base/base_uses.f90"
 
@@ -277,6 +280,7 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
 
       CALL timeset(routineN, handle)
@@ -288,6 +292,7 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, &
                       qs_kind_set=qs_kind_set, &
                       matrix_metric_kp=matrix_s, &
+                      ks_env=ks_env, &
                       kpoints=kpoints, &
                       particle_set=particle_set, &
                       rho=rho, &
@@ -336,7 +341,11 @@ CONTAINS
 
       ! Build Mulliken population matrix for each spin
       IF (native_density) THEN
-         CALL kpoint_density_state_mulliken(kpoints, orbpop)
+         IF (qs_upf_inverse_scf_active(ks_env)) THEN
+            CALL qs_upf_inverse_scf_mulliken(ks_env, orbpop)
+         ELSE
+            CALL kpoint_density_state_mulliken(kpoints, orbpop)
+         END IF
       ELSE
          DO ispin = 1, nspin
             DO ic = 1, SIZE(matrix_s, 2)
