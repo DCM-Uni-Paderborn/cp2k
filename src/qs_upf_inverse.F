@@ -254,7 +254,8 @@ CONTAINS
 
       COMPLEX(dp)                                        :: phase, phase_response
       INTEGER                                            :: axis, derivative_index, first, image, &
-                                                            iset, last, nder, np, nshell, powers(3)
+                                                            image_nder, iset, last, nder, np, &
+                                                            nshell, powers(3)
       REAL(dp)                                           :: direction(3), displacement(3), dk(3), &
                                                             shift(3)
       REAL(dp), ALLOCATABLE                              :: contracted(:, :), derivative(:, :), &
@@ -291,14 +292,20 @@ CONTAINS
          IF (PRESENT(cell_response)) direction = direction + MATMUL(cell_response, REAL(images(:, image), dp))
          phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(reduced_k, REAL(images(:, image), dp)), dp))
          phase_response = CMPLX(0.0_dp, twopi*DOT_PRODUCT(dk, REAL(images(:, image), dp)), dp)*phase
+         ! A phase-only response needs the unperturbed integrals, including the kinetic Laplacian.
+         image_nder = nder
+         IF (ALL(direction == 0.0_dp)) THEN
+            image_nder = 0
+            IF (PRESENT(kinetic)) image_nder = 2
+         END IF
          DO iset = 1, basis%nset
             nshell = basis%nshell(iset)
             first = MINVAL(basis%first_sgf(:nshell, iset))
             last = MAXVAL(basis%last_sgf(:nshell, iset))
             np = basis%npgf(iset)*ncoset(basis%lmax(iset))
-            ALLOCATE (integrals(np, hard%nproj, ncoset(nder)), contracted(last - first + 1, hard%nproj))
+            ALLOCATE (integrals(np, hard%nproj, ncoset(image_nder)), contracted(last - first + 1, hard%nproj))
             CALL upf_projector_overlap(hard, basis%lmax(iset), basis%zet(:basis%npgf(iset), iset), &
-                                       displacement, nder, integrals)
+                                       displacement, image_nder, integrals)
             contracted(:, :) = MATMUL(TRANSPOSE(basis%sphi(:np, first:last)), integrals(:, :, 1))
             overlaps(:, first:last) = overlaps(:, first:last) + phase*TRANSPOSE(contracted)
             IF (PRESENT(response)) THEN
@@ -306,6 +313,7 @@ CONTAINS
                ALLOCATE (derivative(last - first + 1, hard%nproj))
                derivative = 0.0_dp
                DO axis = 1, 3
+                  IF (direction(axis) == 0.0_dp) CYCLE
                   derivative(:, :) = derivative + direction(axis)* &
                                      MATMUL(TRANSPOSE(basis%sphi(:np, first:last)), integrals(:, :, axis + 1))
                END DO
@@ -328,6 +336,7 @@ CONTAINS
                   derivative = 0.0_dp
                   DO axis = 1, 3
                      DO derivative_index = 1, 3
+                        IF (direction(derivative_index) == 0.0_dp) CYCLE
                         powers = 0
                         powers(axis) = 2
                         powers(derivative_index) = powers(derivative_index) + 1
