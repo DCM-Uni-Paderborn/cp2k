@@ -16,6 +16,7 @@ MODULE admm_methods
    USE admm_types,                      ONLY: admm_gapw_r3d_rs_type,&
                                               admm_type,&
                                               get_admm_env
+   USE admm_utils,                      ONLY: admm_inverse_sqrt_divdiff
    USE atomic_kind_types,               ONLY: atomic_kind_type
    USE bibliography,                    ONLY: Merlot2014,&
                                               cite_reference
@@ -1589,8 +1590,7 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'merge_mo_derivs_diag'
 
       INTEGER                                            :: handle, i, j, nao_aux_fit, nao_orb, nmo
-      REAL(dp)                                           :: eig_diff, pole, tmp32, tmp52, tmp72, &
-                                                            tmp92
+      REAL(dp)                                           :: pole
       REAL(dp), DIMENSION(:), POINTER                    :: occupation_numbers, scaling_factor
 
       CALL timeset(routineN, handle)
@@ -1626,24 +1626,9 @@ CONTAINS
       pole = 0.0_dp
       DO i = 1, nmo
          DO j = i, nmo
-            eig_diff = (admm_env%eigvals_lambda(ispin)%eigvals%data(i) - &
-                        admm_env%eigvals_lambda(ispin)%eigvals%data(j))
-            ! *** two eigenvalues could be the degenerated. In that case use 2nd order formula for the poles
-            IF (ABS(eig_diff) < 0.0001_dp) THEN
-               tmp32 = 1.0_dp/SQRT(admm_env%eigvals_lambda(ispin)%eigvals%data(j))**3
-               tmp52 = tmp32/admm_env%eigvals_lambda(ispin)%eigvals%data(j)*eig_diff
-               tmp72 = tmp52/admm_env%eigvals_lambda(ispin)%eigvals%data(j)*eig_diff
-               tmp92 = tmp72/admm_env%eigvals_lambda(ispin)%eigvals%data(j)*eig_diff
-
-               pole = -0.5_dp*tmp32 + 3.0_dp/8.0_dp*tmp52 - 5.0_dp/16.0_dp*tmp72 + 35.0_dp/128.0_dp*tmp92
-               CALL cp_fm_set_element(admm_env%M(ispin), i, j, pole)
-            ELSE
-               pole = 1.0_dp/SQRT(admm_env%eigvals_lambda(ispin)%eigvals%data(i))
-               pole = pole - 1.0_dp/SQRT(admm_env%eigvals_lambda(ispin)%eigvals%data(j))
-               pole = pole/(admm_env%eigvals_lambda(ispin)%eigvals%data(i) - &
-                            admm_env%eigvals_lambda(ispin)%eigvals%data(j))
-               CALL cp_fm_set_element(admm_env%M(ispin), i, j, pole)
-            END IF
+            pole = admm_inverse_sqrt_divdiff(admm_env%eigvals_lambda(ispin)%eigvals%data(i), &
+                                             admm_env%eigvals_lambda(ispin)%eigvals%data(j))
+            CALL cp_fm_set_element(admm_env%M(ispin), i, j, pole)
          END DO
       END DO
       CALL cp_fm_uplo_to_full(admm_env%M(ispin), admm_env%work_nmo_nmo1(ispin))

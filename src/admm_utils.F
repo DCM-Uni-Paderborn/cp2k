@@ -34,6 +34,7 @@ MODULE admm_utils
    IMPLICIT NONE
    PRIVATE
 
+   PUBLIC :: admm_inverse_sqrt_divdiff
    PUBLIC :: admm_correct_for_eigenvalues, &
              admm_uncorrect_for_eigenvalues
 
@@ -42,6 +43,24 @@ MODULE admm_utils
 !***
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Divided difference of x**(-1/2) at positive metric eigenvalues, including equality.
+!>        Rationalization avoids subtraction of nearly equal roots and a truncated Taylor series.
+!> \param a First positive eigenvalue.
+!> \param b Second positive eigenvalue.
+!> \return Exact inverse-square-root derivative kernel, up to floating-point rounding.
+! **************************************************************************************************
+   PURE FUNCTION admm_inverse_sqrt_divdiff(a, b) RESULT(value)
+      REAL(dp), INTENT(IN)                               :: a, b
+      REAL(dp)                                           :: value
+
+      REAL(dp)                                           :: root_a, root_b
+
+      root_a = SQRT(a)
+      root_b = SQRT(b)
+      value = -1.0_dp/(root_a + root_b)/root_a/root_b
+   END FUNCTION admm_inverse_sqrt_divdiff
 
 ! **************************************************************************************************
 !> \brief ...
