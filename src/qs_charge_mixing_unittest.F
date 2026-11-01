@@ -67,6 +67,15 @@ PROGRAM qs_charge_mixing_unittest
       ERROR STOP "Degenerate Broyden direction was not discarded"
    END IF
 
+   ! A history can be released before all vectors exist, as before the first SCF iteration.
+   ALLOCATE (mixing_store%rhoin_buffer(2, 2), mixing_store%res_buffer(2, 2), &
+             mixing_store%drho_buffer(2, 2), mixing_store%last_res(2), &
+             mixing_store%rhoin(2), mixing_store%rhoin_old(2), &
+             mixing_store%delta_res(2, 2), mixing_store%u_vec(2, 2), mixing_store%z_vec(2, 2))
+   ALLOCATE (mixing_store%rhoin_buffer(1, 1)%cc(1), mixing_store%res_buffer(1, 1)%cc(1), &
+             mixing_store%drho_buffer(1, 1)%cc(1), mixing_store%last_res(1)%cc(1), &
+             mixing_store%rhoin(1)%cc(1), mixing_store%rhoin_old(1)%cc(1), &
+             mixing_store%delta_res(1, 1)%cc(1), mixing_store%u_vec(1, 1)%cc(1), mixing_store%z_vec(1, 1)%cc(1))
    CALL mixing_storage_release(mixing_store)
    DEALLOCATE (mixing_store)
 #if defined(__TBLITE)

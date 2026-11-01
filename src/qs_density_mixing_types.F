@@ -269,10 +269,11 @@ CONTAINS
          DEALLOCATE (mixing_store%pulay_matrix)
       END IF
 
+      ! History descriptors can precede allocation of their individual vectors.
       IF (ASSOCIATED(mixing_store%rhoin_buffer)) THEN
          DO i = 1, SIZE(mixing_store%rhoin_buffer, 2)
             DO j = 1, SIZE(mixing_store%rhoin_buffer, 1)
-               DEALLOCATE (mixing_store%rhoin_buffer(j, i)%cc)
+               IF (ASSOCIATED(mixing_store%rhoin_buffer(j, i)%cc)) DEALLOCATE (mixing_store%rhoin_buffer(j, i)%cc)
             END DO
          END DO
          DEALLOCATE (mixing_store%rhoin_buffer)
@@ -364,7 +365,7 @@ CONTAINS
       IF (ASSOCIATED(mixing_store%res_buffer)) THEN
          DO i = 1, SIZE(mixing_store%res_buffer, 2)
             DO j = 1, SIZE(mixing_store%res_buffer, 1)
-               DEALLOCATE (mixing_store%res_buffer(j, i)%cc)
+               IF (ASSOCIATED(mixing_store%res_buffer(j, i)%cc)) DEALLOCATE (mixing_store%res_buffer(j, i)%cc)
             END DO
          END DO
          DEALLOCATE (mixing_store%res_buffer)
@@ -381,7 +382,7 @@ CONTAINS
       IF (ASSOCIATED(mixing_store%drho_buffer)) THEN
          DO i = 1, SIZE(mixing_store%drho_buffer, 2)
             DO j = 1, SIZE(mixing_store%drho_buffer, 1)
-               DEALLOCATE (mixing_store%drho_buffer(j, i)%cc)
+               IF (ASSOCIATED(mixing_store%drho_buffer(j, i)%cc)) DEALLOCATE (mixing_store%drho_buffer(j, i)%cc)
             END DO
          END DO
          DEALLOCATE (mixing_store%drho_buffer)
@@ -389,21 +390,21 @@ CONTAINS
 
       IF (ASSOCIATED(mixing_store%last_res)) THEN
          DO i = 1, SIZE(mixing_store%last_res)
-            DEALLOCATE (mixing_store%last_res(i)%cc)
+            IF (ASSOCIATED(mixing_store%last_res(i)%cc)) DEALLOCATE (mixing_store%last_res(i)%cc)
          END DO
          DEALLOCATE (mixing_store%last_res)
       END IF
 
       IF (ASSOCIATED(mixing_store%rhoin)) THEN
          DO i = 1, SIZE(mixing_store%rhoin)
-            DEALLOCATE (mixing_store%rhoin(i)%cc)
+            IF (ASSOCIATED(mixing_store%rhoin(i)%cc)) DEALLOCATE (mixing_store%rhoin(i)%cc)
          END DO
          DEALLOCATE (mixing_store%rhoin)
       END IF
 
       IF (ASSOCIATED(mixing_store%rhoin_old)) THEN
          DO i = 1, SIZE(mixing_store%rhoin_old)
-            DEALLOCATE (mixing_store%rhoin_old(i)%cc)
+            IF (ASSOCIATED(mixing_store%rhoin_old(i)%cc)) DEALLOCATE (mixing_store%rhoin_old(i)%cc)
          END DO
          DEALLOCATE (mixing_store%rhoin_old)
       END IF
@@ -450,7 +451,7 @@ CONTAINS
       IF (ASSOCIATED(mixing_store%delta_res)) THEN
          DO i = 1, SIZE(mixing_store%delta_res, 2)
             DO j = 1, SIZE(mixing_store%delta_res, 1)
-               DEALLOCATE (mixing_store%delta_res(j, i)%cc)
+               IF (ASSOCIATED(mixing_store%delta_res(j, i)%cc)) DEALLOCATE (mixing_store%delta_res(j, i)%cc)
             END DO
          END DO
          DEALLOCATE (mixing_store%delta_res)
@@ -459,7 +460,7 @@ CONTAINS
       IF (ASSOCIATED(mixing_store%u_vec)) THEN
          DO i = 1, SIZE(mixing_store%u_vec, 2)
             DO j = 1, SIZE(mixing_store%u_vec, 1)
-               DEALLOCATE (mixing_store%u_vec(j, i)%cc)
+               IF (ASSOCIATED(mixing_store%u_vec(j, i)%cc)) DEALLOCATE (mixing_store%u_vec(j, i)%cc)
             END DO
          END DO
          DEALLOCATE (mixing_store%u_vec)
@@ -468,7 +469,7 @@ CONTAINS
       IF (ASSOCIATED(mixing_store%z_vec)) THEN
          DO i = 1, SIZE(mixing_store%z_vec, 2)
             DO j = 1, SIZE(mixing_store%z_vec, 1)
-               DEALLOCATE (mixing_store%z_vec(j, i)%cc)
+               IF (ASSOCIATED(mixing_store%z_vec(j, i)%cc)) DEALLOCATE (mixing_store%z_vec(j, i)%cc)
             END DO
          END DO
          DEALLOCATE (mixing_store%z_vec)
