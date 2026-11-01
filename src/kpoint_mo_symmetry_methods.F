@@ -70,11 +70,12 @@ CONTAINS
 !> \param antiunitary Whether the source coefficients must be conjugated
 !> \param status Zero on success, negative for unavailable or inconsistent mappings
 !> \param for_aux_fit Use the auxiliary fitting basis rotations instead of primary AO rotations.
+!> \param original_atom_positions Use input atom images instead of native folded centers.
 !> \note An atom shifted to image L contributes exp(-i*k_target*L). No atomic-gauge
 !>       reciprocal-vector phase or legacy SCF phase calibration belongs in this cell gauge.
 ! **************************************************************************************************
    SUBROUTINE kpoint_cell_gauge_action(kpoints, representative, operation, TARGET, action, &
-                                       rotation, antiunitary, status, for_aux_fit)
+                                       rotation, antiunitary, status, for_aux_fit, original_atom_positions)
       TYPE(kpoint_type), POINTER                         :: kpoints
       INTEGER, INTENT(IN)                                :: representative, operation
       REAL(dp), INTENT(IN)                               :: target(3)
@@ -82,10 +83,11 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: rotation(3, 3)
       LOGICAL, INTENT(OUT)                               :: antiunitary
       INTEGER, INTENT(OUT)                               :: status
-      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit
+      LOGICAL, INTENT(IN), OPTIONAL                      :: for_aux_fit, original_atom_positions
 
       INTEGER                                            :: a, b, first, i, kind, n, na, nb, slot
       INTEGER, ALLOCATABLE                               :: offset(:), seen(:), width(:)
+      INTEGER, POINTER                                   :: cell_shift(:, :, :)
       REAL(dp)                                           :: angle
       TYPE(kind_rotmat_type), POINTER                    :: kind_rot(:, :)
       TYPE(kpoint_sym_type), POINTER                     :: sym
@@ -126,7 +128,11 @@ CONTAINS
          IF (for_aux_fit) kind_rot => kpoints%kind_rotmat_aux
       END IF
       IF (.NOT. ASSOCIATED(kind_rot)) RETURN
-      IF (.NOT. ASSOCIATED(sym%fcell_gauge)) RETURN
+      cell_shift => sym%fcell_gauge
+      IF (PRESENT(original_atom_positions)) THEN
+         IF (original_atom_positions) cell_shift => sym%fcell
+      END IF
+      IF (.NOT. ASSOCIATED(cell_shift)) RETURN
       slot = find_kpoint_rotation_slot(kpoints, sym%rotp(operation))
       IF (slot < 1 .OR. slot > SIZE(kind_rot, 1)) RETURN
       na = SIZE(kpoints%atype)
@@ -150,7 +156,7 @@ CONTAINS
          kind = kpoints%atype(a)
          nb = width(b)
          IF (SIZE(kind_rot(slot, kind)%rmat, 1) /= nb) RETURN
-         angle = -twopi*DOT_PRODUCT(TARGET, REAL(sym%fcell_gauge(:, a, operation), dp))
+         angle = -twopi*DOT_PRODUCT(TARGET, REAL(cell_shift(:, a, operation), dp))
          action(offset(b):offset(b) + nb - 1, offset(a):offset(a) + width(a) - 1) = &
             CMPLX(COS(angle), SIN(angle), dp)*kind_rot(slot, kind)%rmat
       END DO

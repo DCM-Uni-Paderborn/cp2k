@@ -164,7 +164,7 @@ CONTAINS
       sym%apply_symmetry = .TRUE.
       sym%nwght = 3
       sym%nwred = 4
-      ALLOCATE (sym%rot(3, 3, 4), sym%rotp(4), sym%f0(2, 4), sym%fcell_gauge(3, 2, 4), &
+      ALLOCATE (sym%rot(3, 3, 4), sym%rotp(4), sym%f0(2, 4), sym%fcell(3, 2, 4), sym%fcell_gauge(3, 2, 4), &
                 sym%phase_mode(4), sym%xkp(3, 4))
       DO i = 1, 4
          sym%rot(:, :, i) = kpoint%kind_rotmat(1, 1)%rmat
@@ -181,6 +181,11 @@ CONTAINS
       sym%fcell_gauge(:, 1, 2) = [1, 0, 0]
       sym%fcell_gauge(:, 2, 2) = [0, -1, 1]
       sym%fcell_gauge(:, :, 3) = sym%fcell_gauge(:, :, 2)
+      ! Move the first atom by one x lattice vector while retaining its folded center.
+      sym%fcell = sym%fcell_gauge
+      sym%fcell(:, 1, 2) = sym%fcell(:, 1, 2) + [0, 1, 0]
+      sym%fcell(:, 2, 2) = sym%fcell(:, 2, 2) - [1, 0, 0]
+      sym%fcell(:, :, 3) = sym%fcell(:, :, 2)
       sym%phase_mode = [1, 1, 2, 1]
       sym%xkp(:, 2) = [-0.21_dp, 0.13_dp, 0.07_dp]
       sym%xkp(:, 3) = -sym%xkp(:, 2)
@@ -202,12 +207,12 @@ CONTAINS
          END DO
          operators(:, :, link) = 0.5_dp*(operators(:, :, link) + CONJG(TRANSPOSE(operators(:, :, link))))
       END DO
-      DO pass = 1, 2
+      DO pass = 1, 4
          kpoint%wkp = [0.37_dp, 0.63_dp]
          sym%phase_mode = 0
-         IF (pass == 2) kpoint%wkp = [0.0_dp, 1.0_dp]
-         IF (pass == 2) sym%phase_mode = [1, 2, 1, 2]
-         CALL kpoint_star_create(kpoint, [3, 3], map)
+         IF (MOD(pass, 2) == 0) kpoint%wkp = [0.0_dp, 1.0_dp]
+         IF (MOD(pass, 2) == 0) sym%phase_mode = [1, 2, 1, 2]
+         CALL kpoint_star_create(kpoint, [3, 3], map, original_atom_positions=pass > 2)
          IF (SIZE(map%weights) /= 4 .OR. ANY(map%representative /= [1, 1, 1, 2])) THEN
             ERROR STOP 'Little-group metadata added spurious density contributions'
          END IF
@@ -216,7 +221,8 @@ CONTAINS
          DO link = 1, 4
             ik = map%representative(link)
             CALL kpoint_cell_gauge_action(kpoint, ik, map%operation(link), map%vectors(:, link), &
-                                          action, rotation, antiunitary, status)
+                                          action, rotation, antiunitary, status, &
+                                          original_atom_positions=map%original_atom_positions)
             IF (status /= 0) ERROR STOP 'The independent cell-gauge AO action is unavailable'
             IF (antiunitary) THEN
                expected = MATMUL(action, CONJG(coefficients(:, :, ik)))
@@ -235,7 +241,8 @@ CONTAINS
          DO link = 1, SIZE(map%weights)
             ik = map%representative(link)
             CALL kpoint_cell_gauge_action(kpoint, ik, map%operation(link), map%vectors(:, link), &
-                                          action, rotation, antiunitary, status)
+                                          action, rotation, antiunitary, status, &
+                                          original_atom_positions=map%original_atom_positions)
             IF (status /= 0) ERROR STOP 'Covariance control has no independent AO action'
             DO j = 1, 6
                DO i = 1, 6
@@ -270,14 +277,15 @@ CONTAINS
          IF (.NOT. ABS(lhs - rhs) <= 1.e-12_dp*MAX(1.0_dp, ABS(lhs), ABS(rhs))) THEN
             ERROR STOP 'Weighted k-point symmetry is not paired with its operator adjoint'
          END IF
-         IF (pass == 1) reference = reduced
-         IF (pass == 2) THEN
+         IF (MOD(pass, 2) == 1) reference = reduced
+         IF (MOD(pass, 2) == 0) THEN
             IF (.NOT. MAXVAL(ABS(reduced - reference)) <= 1.e-13_dp) THEN
                ERROR STOP 'Zero representative weight changed an unweighted symmetry operator'
             END IF
          END IF
       END DO
       CALL check_auxiliary_star(kpoint, .FALSE.)
+      CALL check_auxiliary_star(kpoint, .FALSE., original_atom_positions=.TRUE.)
       ! A fixed-point operation is usable independently of Brillouin-zone reduction.
       sym%apply_symmetry = .FALSE.
       sym%nwght = 1
@@ -326,7 +334,7 @@ CONTAINS
       IF (.NOT. defect <= 1.e-12_dp) ERROR STOP 'The full physical mesh acquired a fixed-point restriction'
       CALL check_auxiliary_star(kpoint, .TRUE.)
       map = kpoint_star_type()
-      DEALLOCATE (sym%rot, sym%rotp, sym%f0, sym%fcell_gauge, sym%phase_mode, sym%xkp)
+      DEALLOCATE (sym%rot, sym%rotp, sym%f0, sym%fcell, sym%fcell_gauge, sym%phase_mode, sym%xkp)
       DO i = 1, 2
          DEALLOCATE (kpoint%kp_sym(i)%kpoint_sym, kpoint%kind_rotmat(i, 1)%rmat)
          DEALLOCATE (kpoint%kind_rotmat_aux(i, 1)%rmat)
@@ -340,10 +348,12 @@ CONTAINS
 !> \brief Auxiliary s+p blocks must not use the primary scaled p rotation matrices.
 !> \param kpoint Existing two-atom spatial and time-reversal metadata.
 !> \param little_group Test fixed-point operator covariance instead of star expansion.
+!> \param original_atom_positions Check Bloch fields centered at the original atom images.
 ! **************************************************************************************************
-   SUBROUTINE check_auxiliary_star(kpoint, little_group)
+   SUBROUTINE check_auxiliary_star(kpoint, little_group, original_atom_positions)
       TYPE(kpoint_type), POINTER                         :: kpoint
       LOGICAL, INTENT(IN)                                :: little_group
+      LOGICAL, INTENT(IN), OPTIONAL                      :: original_atom_positions
 
       COMPLEX(dp) :: action(8, 8), coefficients(8, 2, 2), cross(8, 6, 2), &
          cross_operators(8, 6, 4), density(8, 8, 2), expected(8, 2), missing_action(6, 6), &
@@ -352,13 +362,15 @@ CONTAINS
                                                             primary_orbitals(:, :, :), &
                                                             reduced(:, :, :)
       INTEGER                                            :: i, ik, j, link, status
-      LOGICAL                                            :: antiunitary, full_grid
+      LOGICAL                                            :: antiunitary, full_grid, original
       REAL(dp)                                           :: defect, lhs, rhs, rotation(3, 3), scale, &
                                                             weights(2)
       TYPE(kpoint_star_type)                             :: map, primary_map
       TYPE(kpoint_sym_type), POINTER                     :: sym
 
       sym => kpoint%kp_sym(1)%kpoint_sym
+      original = .FALSE.
+      IF (PRESENT(original_atom_positions)) original = original_atom_positions
       IF (.NOT. ASSOCIATED(kpoint%kind_rotmat_aux)) THEN
          CALL kpoint_cell_gauge_action(kpoint, 1, 2, sym%xkp(:, 2), missing_action, &
                                        rotation, antiunitary, status, for_aux_fit=.TRUE.)
@@ -377,7 +389,7 @@ CONTAINS
       weights = kpoint%wkp
       kpoint%full_grid = .FALSE.
       kpoint%wkp = [.37_dp, .63_dp]
-      CALL kpoint_star_create(kpoint, [4, 4], map, for_aux_fit=.TRUE.)
+      CALL kpoint_star_create(kpoint, [4, 4], map, for_aux_fit=.TRUE., original_atom_positions=original)
       IF (little_group) THEN
          operators = 0.0_dp
          DO link = 1, SIZE(map%weights)
@@ -407,7 +419,8 @@ CONTAINS
          DO link = 1, SIZE(map%weights)
             ik = map%representative(link)
             CALL kpoint_cell_gauge_action(kpoint, ik, map%operation(link), map%vectors(:, link), &
-                                          action, rotation, antiunitary, status, for_aux_fit=.TRUE.)
+                                          action, rotation, antiunitary, status, for_aux_fit=.TRUE., &
+                                          original_atom_positions=original)
             IF (status /= 0) ERROR STOP 'Auxiliary cell-gauge action unavailable'
             expected = coefficients(:, :, ik)
             IF (antiunitary) expected = CONJG(expected)
@@ -433,7 +446,7 @@ CONTAINS
             ERROR STOP 'Auxiliary symmetry operator is not the weighted density adjoint'
          END IF
          ! Mixed ADMM matrices need distinct rotations on their auxiliary and orbital indices.
-         CALL kpoint_star_create(kpoint, [3, 3], primary_map)
+         CALL kpoint_star_create(kpoint, [3, 3], primary_map, original_atom_positions=original)
          DO ik = 1, 2
             DO j = 1, 2
                DO i = 1, 6

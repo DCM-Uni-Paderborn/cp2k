@@ -285,7 +285,7 @@ MODULE kpoint_types
    ! Symmetry metadata are borrowed and remain valid until k-point reinitialization.
    TYPE, PUBLIC :: kpoint_star_type
       TYPE(kpoint_type), POINTER :: kpoints => NULL()
-      LOGICAL :: for_aux_fit = .FALSE.
+      LOGICAL :: for_aux_fit = .FALSE., original_atom_positions = .FALSE.
       INTEGER, ALLOCATABLE :: representative(:), operation(:), first(:), last(:)
       REAL(dp), ALLOCATABLE :: vectors(:, :), weights(:), relative_weights(:)
    END TYPE kpoint_star_type

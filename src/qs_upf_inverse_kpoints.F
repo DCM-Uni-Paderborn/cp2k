@@ -155,7 +155,8 @@ CONTAINS
       CPASSERT(ABS(SUM(kpoints%wkp) - 1.0_dp) <= 128.0_dp*EPSILON(1.0_dp)*kpoints%nkp)
       frame%kpoints => kpoints
       frame%kp_range = kpoints%kp_range
-      CALL kpoint_star_create(kpoints, sizes, frame%star, for_aux_fit=auxiliary)
+      ! Explicit Bloch fields are centered at the original, unfolded particle positions.
+      CALL kpoint_star_create(kpoints, sizes, frame%star, for_aux_fit=auxiliary, original_atom_positions=.TRUE.)
       ALLOCATE (frame%reduced_k, SOURCE=frame%star%vectors)
       ALLOCATE (frame%weights, SOURCE=frame%star%weights)
       ALLOCATE (frame%frames(SIZE(frame%weights)))
