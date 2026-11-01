@@ -970,7 +970,8 @@ CONTAINS
                END IF
             END IF
             ! Native NC retains its density-only core convention in mixed systems.
-            IF (control%use_kinetic_energy_density .AND. (pot%is_ultrasoft .OR. pot%is_paw)) THEN
+            ! An independent basis functional may need tau even when the primary one does not.
+            IF (ALLOCATED(state%kinetic_cache) .AND. (pot%is_ultrasoft .OR. pot%is_paw)) THEN
                IF (state%paw(ikind)%active) THEN
                   IF (ALLOCATED(core_tau)) DEALLOCATE (core_tau)
                   ALLOCATE (core_tau, SOURCE=state%paw(ikind)%xcgrid%core_kinetic%kinetic(:, 2))
