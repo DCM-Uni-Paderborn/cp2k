@@ -70,7 +70,10 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_background_gaussian_geometry,&
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
-                                              qs_upf_inverse_background_operator
+                                              qs_upf_inverse_background_operator,&
+                                              qs_upf_inverse_background_prepare,&
+                                              qs_upf_inverse_background_release,&
+                                              qs_upf_inverse_background_set_density
    USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_images,&
                                               qs_upf_inverse_basis_prepare
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_collocate
@@ -100,6 +103,7 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_paw_evaluate,&
                                               qs_upf_inverse_paw_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
+                                              qs_upf_inverse_background_type,&
                                               qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_scf_release,&
@@ -121,6 +125,7 @@ MODULE qs_upf_inverse_scf
    PUBLIC :: qs_upf_inverse_scf_integrate_kinetic
    PUBLIC :: qs_upf_inverse_scf_initialize, qs_upf_inverse_scf_reset
    PUBLIC :: qs_upf_inverse_scf_mulliken
+   PUBLIC :: qs_upf_inverse_scf_weighted_images
    PUBLIC :: qs_upf_inverse_scf_install_metric
    PUBLIC :: qs_upf_inverse_scf_paw_evaluate, qs_upf_inverse_scf_add_paw
    PUBLIC :: qs_upf_inverse_scf_add_coulomb
@@ -161,6 +166,37 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_scf_mulliken
+
+! **************************************************************************************************
+!> \brief Transform the native energy-weighted Bloch density into the ordinary image storage.
+!>        Expand the same physical star used by the UPF force functional, then apply the
+!>        original-coordinate image phases without changing any accepted density owner.
+!> \param ks_env Prepared original-UPF environment with native W(k) already evaluated.
+!> \param matrices Image-indexed energy-weighted density matrices for each spin.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_weighted_images(ks_env, matrices)
+      TYPE(qs_ks_env_type), INTENT(IN), TARGET           :: ks_env
+      TYPE(dbcsr_p_type), INTENT(INOUT)                  :: matrices(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: weighted(:, :, :)
+      INTEGER                                            :: image, spin
+      TYPE(qs_upf_inverse_background_type)               :: images
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      CPASSERT(ASSOCIATED(state))
+      CPASSERT(ASSOCIATED(state%bloch%kpoints))
+      CALL qs_upf_inverse_background_prepare(ks_env, images)
+      CPASSERT(SIZE(matrices, 2) == SIZE(images%density))
+      DO spin = 1, SIZE(matrices, 1)
+         CALL qs_upf_inverse_kpoints_density(state%bloch, spin, weighted, energy_weighted=.TRUE.)
+         CALL qs_upf_inverse_background_set_density(images, weighted)
+         DO image = 1, SIZE(images%density)
+            CALL dbcsr_copy(matrices(spin, image)%matrix, images%density(image)%matrix)
+         END DO
+      END DO
+      CALL qs_upf_inverse_background_release(images)
+   END SUBROUTINE qs_upf_inverse_scf_weighted_images
 
 ! **************************************************************************************************
 !> \brief Explicitly install one inverse frame, its charge metric, and core operator in native KS.

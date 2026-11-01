@@ -48,12 +48,15 @@ MODULE qs_matrix_w
                                               kpoint_operator_get,&
                                               kpoint_operator_prepare,&
                                               kpoint_slot_ks
+   USE qs_ks_types,                     ONLY: qs_ks_env_type
    USE qs_matrix_pools,                 ONLY: mpools_get
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_weighted_images
    USE scf_control_types,               ONLY: scf_control_type
 #include "./base/base_uses.f90"
 
@@ -112,6 +115,7 @@ CONTAINS
                TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks_kp, matrix_s_kp, &
                                                                      matrix_w_kp
                TYPE(kpoint_type), POINTER                         :: kpoints
+               TYPE(qs_ks_env_type), POINTER                       :: ks_env
                TYPE(neighbor_list_set_p_type), DIMENSION(:), &
                   POINTER                                         :: sab_nl
 
@@ -122,6 +126,7 @@ CONTAINS
                                sab_orb=sab_nl, &
                                mos=mos, &
                                dft_control=dft_control, &
+                               ks_env=ks_env, &
                                kpoints=kpoints, &
                                scf_control=scf_control)
 
@@ -150,8 +155,13 @@ CONTAINS
                   END IF
                END IF
                ! energy weighted density matrices in real space
-               CALL kpoint_density_transform(kpoints, matrix_w_kp, .TRUE., &
-                                             matrix_s_kp(1, 1)%matrix, sab_nl, fmwork)
+               IF (qs_upf_inverse_scf_active(ks_env)) THEN
+                  ! UPF coefficients use the original atom images and their physical Bloch star.
+                  CALL qs_upf_inverse_scf_weighted_images(ks_env, matrix_w_kp)
+               ELSE
+                  CALL kpoint_density_transform(kpoints, matrix_w_kp, .TRUE., &
+                                                matrix_s_kp(1, 1)%matrix, sab_nl, fmwork)
+               END IF
 
                DO is = 1, SIZE(fmwork)
                   CALL cp_fm_release(fmwork(is))
