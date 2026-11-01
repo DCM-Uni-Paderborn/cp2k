@@ -171,7 +171,7 @@ CONTAINS
       IF (control%drho_by_collocation) THEN
          CPABORT("Inverse SCF needs spectral XC gradients")
       END IF
-      IF (control%do_admm .OR. control%do_sccs .OR. control%qs_control%cdft .OR. &
+      IF (control%do_sccs .OR. control%qs_control%cdft .OR. &
         control%qs_control%rigpw .OR. control%qs_control%lrigpw .OR. control%dft_plus_u .OR. control%sic_method_id /= sic_none) THEN
          CPABORT("Unsupported inverse SCF density consumer")
       END IF

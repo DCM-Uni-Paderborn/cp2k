@@ -2034,8 +2034,8 @@ CONTAINS
          DEALLOCATE (v_tau_rspace)
       END IF
 
-      ! Add contributions from ADMM if requested
-      IF (dft_control%do_admm) THEN
+      ! Original-UPF ADMM supplies its complete transferred operator separately.
+      IF (dft_control%do_admm .AND. .NOT. inverse_scf) THEN
          CALL get_qs_env(qs_env, admm_env=admm_env)
          CALL get_admm_env(admm_env, matrix_ks_aux_fit_kp=matrix_ks_aux_fit, rho_aux_fit=rho_aux_fit, &
                            matrix_ks_aux_fit_dft_kp=matrix_ks_aux_fit_dft)

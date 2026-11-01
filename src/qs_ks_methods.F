@@ -143,10 +143,13 @@ MODULE qs_ks_methods
    USE qs_sccs,                         ONLY: sccs,&
                                               sccs_core_fill_coefficients
    USE qs_scf_types,                    ONLY: qs_scf_env_type
+   USE qs_upf_inverse_aux_operator,     ONLY: qs_upf_inverse_aux_evaluate
+   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_select
    USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_force
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_update
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_add_paw,&
+                                              qs_upf_inverse_scf_integrate_background,&
                                               qs_upf_inverse_scf_paw_evaluate,&
                                               qs_upf_inverse_scf_traces
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
@@ -226,21 +229,21 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_ks_build_kohn_sham_matrix'
 
       CHARACTER(len=default_string_length)               :: gauxc_model_name, name
+      COMPLEX(dp), ALLOCATABLE                           :: auxiliary_operator(:, :, :, :)
       INTEGER :: ace_rebuild_frequency, atom_a, gapw_representation, handle, iatom, ikind, img, &
          ispin, natom, nimages, nspins, output_unit
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, kind_of
       LOGICAL :: ace_active, do_adiabatic_rescaling, do_ddapc, do_hfx, do_kpoints, do_ppl, dokp, &
          gapw, gapw_all_all_electron, gapw_all_pseudopotentials, gapw_mixed_core_representations, &
-         gapw_xc, gauxc_model_none, inverse_coulomb, just_energy_xc, lrigpw, my_print, &
-         native_direct_valence_atom_composite, native_gapw_all_electron_atom_composite, &
+         gapw_xc, gauxc_model_none, inverse_admm, inverse_coulomb, just_energy_xc, lrigpw, &
+         my_print, native_direct_valence_atom_composite, native_gapw_all_electron_atom_composite, &
          native_gapw_atom_composite_reference, native_gapw_atom_composite_requested, &
          native_gapw_composite_direct_ao, native_gapw_composite_reference, &
-         native_gapw_periodic_atom_composite, native_grid_diagnostics, native_grid_use_cuda, &
-         native_skala_evaluator
-      LOGICAL :: native_skala_restore_exc, paw_composite_representation, rigpw, skala_fields_only, &
-         use_gauxc_matrix, use_virial
+         native_gapw_periodic_atom_composite, native_grid_diagnostics, native_grid_use_cuda
+      LOGICAL :: native_skala_evaluator, native_skala_restore_exc, paw_composite_representation, &
+         rigpw, skala_fields_only, use_gauxc_matrix, use_virial
       LOGICAL, SAVE :: native_grid_cpu_kpoints_warned = .FALSE.
-      REAL(dp)                                           :: paw_energies(3)
+      REAL(dp)                                           :: auxiliary_energies(4), paw_energies(3)
       REAL(KIND=dp) :: ecore_ppl, edisp, ee_ener, ekin_mol, mulliken_order_p, &
          native_skala_composite_contraction, native_skala_composite_rho_contraction, &
          native_skala_composite_tau_contraction, native_skala_exc_scf, native_skala_total_scf, &
@@ -384,6 +387,7 @@ CONTAINS
 
       nimages = dft_control%nimages
       nspins = dft_control%nspins
+      inverse_admm = dft_control%do_admm .AND. qs_upf_inverse_scf_active(ks_env)
 
       ! remap pointer to allow for non-kpoint external ks matrix
       IF (PRESENT(ext_ks_matrix)) ks_matrix(1:nspins, 1:1) => ext_ks_matrix(1:nspins)
@@ -697,34 +701,36 @@ CONTAINS
       ! If we do wavefunction fitting, we need the vxc_potential in the auxiliary basis set
       IF (dft_control%do_admm) THEN
          CALL get_qs_env(qs_env, admm_env=admm_env)
-         xc_section => admm_env%xc_section_aux
-         CALL get_admm_env(admm_env, rho_aux_fit=rho_struct)
+         IF (.NOT. inverse_admm) THEN
+            xc_section => admm_env%xc_section_aux
+            CALL get_admm_env(admm_env, rho_aux_fit=rho_struct)
 
-         ! here we ignore a possible vdW section in admm_env%xc_section_aux
-         CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
-                            vxc_rho=v_rspace_new_aux_fit, vxc_tau=v_tau_rspace_aux_fit, exc=energy%exc_aux_fit, &
-                            just_energy=just_energy_xc)
+            ! here we ignore a possible vdW section in admm_env%xc_section_aux
+            CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
+                               vxc_rho=v_rspace_new_aux_fit, vxc_tau=v_tau_rspace_aux_fit, exc=energy%exc_aux_fit, &
+                               just_energy=just_energy_xc)
 
-         IF (admm_env%do_gapw) THEN
-            !compute the potential due to atomic densities
-            CALL calculate_vxc_atom(qs_env, energy_only=just_energy_xc, exc1=energy%exc1_aux_fit, &
-                                    kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
-                                    xc_section_external=xc_section, &
-                                    rho_atom_set_external=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
-                                    calculate_forces=calculate_forces)
+            IF (admm_env%do_gapw) THEN
+               !compute the potential due to atomic densities
+               CALL calculate_vxc_atom(qs_env, energy_only=just_energy_xc, exc1=energy%exc1_aux_fit, &
+                                       kind_set_external=admm_env%admm_gapw_env%admm_kind_set, &
+                                       xc_section_external=xc_section, &
+                                       rho_atom_set_external=admm_env%admm_gapw_env%local_rho_set%rho_atom_set, &
+                                       calculate_forces=calculate_forces)
 
-         END IF
+            END IF
 
-         NULLIFY (rho_struct)
+            NULLIFY (rho_struct)
 
-         IF (use_virial .AND. calculate_forces) THEN
-            vscale = 1.0_dp
-            !Note: ADMMS and ADMMP stress tensor only for closed-shell calculations
-            IF (admm_env%do_admms) vscale = admm_env%gsi(1)**(2.0_dp/3.0_dp)
-            IF (admm_env%do_admmp) vscale = admm_env%gsi(1)**2
-            virial%pv_exc = virial%pv_exc - vscale*virial%pv_xc
-            virial%pv_virial = virial%pv_virial - vscale*virial%pv_xc
-            ! virial%pv_xc will be zeroed in the xc routines
+            IF (use_virial .AND. calculate_forces) THEN
+               vscale = 1.0_dp
+               !Note: ADMMS and ADMMP stress tensor only for closed-shell calculations
+               IF (admm_env%do_admms) vscale = admm_env%gsi(1)**(2.0_dp/3.0_dp)
+               IF (admm_env%do_admmp) vscale = admm_env%gsi(1)**2
+               virial%pv_exc = virial%pv_exc - vscale*virial%pv_xc
+               virial%pv_virial = virial%pv_virial - vscale*virial%pv_xc
+               ! virial%pv_xc will be zeroed in the xc routines
+            END IF
          END IF
          xc_section => admm_env%xc_section_primary
       ELSE
@@ -1062,7 +1068,7 @@ CONTAINS
          END IF
       END IF
 
-      IF (do_hfx) THEN
+      IF (do_hfx .AND. .NOT. inverse_admm) THEN
          CALL get_qs_env(qs_env, x_data=exchange)
          CPASSERT(ASSOCIATED(exchange))
          CALL qs_upf_inverse_scf_paw_evaluate(ks_env, xc_section, paw_energies, exchange=exchange)
@@ -1176,7 +1182,12 @@ CONTAINS
       END IF
 
       IF (do_hfx) THEN
-         IF (dokp) THEN
+         IF (inverse_admm) THEN
+            CALL upf_admm_exchange(qs_env, calculate_forces, use_virial, auxiliary_energies, auxiliary_operator)
+            energy%ex = auxiliary_energies(1) + auxiliary_energies(2)
+            energy%exc_aux_fit = auxiliary_energies(3)
+            energy%exc1_aux_fit = auxiliary_energies(4)
+         ELSE IF (dokp) THEN
             IF (ace_active) THEN
                CPABORT("ACE-HFX for k-points is not implemented yet")
             ELSE
@@ -1271,7 +1282,7 @@ CONTAINS
             END IF
          END IF
 
-         IF (.NOT. do_hfx) THEN
+         IF (.NOT. do_hfx .OR. inverse_admm) THEN
             ! Initialize the Kohn-Sham matrix with the core Hamiltonian matrix
             ! (sets ks sparsity equal to matrix_h sparsity)
             DO ispin = 1, nspins
@@ -1355,7 +1366,7 @@ CONTAINS
                   CALL accint_weight_force(qs_env, rho_struct, rho1, 0, xc_section)
                END IF
                !
-               IF (dft_control%do_admm) THEN
+               IF (dft_control%do_admm .AND. .NOT. inverse_admm) THEN
                   CALL get_qs_env(qs_env, admm_env=admm_env)
                   xc_section => admm_env%xc_section_aux
                   CALL get_admm_env(admm_env, rho_aux_fit=rho_struct)
@@ -1484,11 +1495,18 @@ CONTAINS
       IF (gapw .OR. gapw_xc) THEN
          ! Single atom contributions in the KS matrix ***
          CALL update_ks_atom(qs_env, ks_matrix, rho_ao, calculate_forces)
-         IF (dft_control%do_admm) THEN
+         IF (dft_control%do_admm .AND. .NOT. inverse_admm) THEN
             !Single atom contribution to the AUX matrices
             !Note: also update ks_aux_fit matrix in case of rtp
             CALL admm_update_ks_atom(qs_env, calculate_forces)
          END IF
+      END IF
+
+      IF (inverse_admm .AND. do_hfx .AND. .NOT. just_energy) THEN
+         DO ispin = 1, nspins
+            CALL qs_upf_inverse_scf_integrate_background(ks_env, auxiliary_operator(:, :, :, ispin), &
+                                                         ks_matrix(ispin, 1)%matrix, ispin, additive=.TRUE.)
+         END DO
       END IF
 
       !Calculation of Mulliken restraint, if requested
@@ -1515,13 +1533,13 @@ CONTAINS
       END DO
 
       !** merge the auxiliary KS matrix and the primary one
-      IF (dft_control%do_admm_mo) THEN
+      IF (dft_control%do_admm_mo .AND. .NOT. inverse_admm) THEN
          IF (qs_env%run_rtp) THEN
             CALL rtp_admm_merge_ks_matrix(qs_env)
          ELSE
             CALL admm_mo_merge_ks_matrix(qs_env)
          END IF
-      ELSE IF (dft_control%do_admm_dm) THEN
+      ELSE IF (dft_control%do_admm_dm .AND. .NOT. inverse_admm) THEN
          CALL admm_dm_merge_ks_matrix(qs_env)
       END IF
 
@@ -1540,7 +1558,7 @@ CONTAINS
       END IF
 
       ! ADMM overlap forces
-      IF (calculate_forces .AND. dft_control%do_admm) THEN
+      IF (calculate_forces .AND. dft_control%do_admm .AND. .NOT. inverse_admm) THEN
          IF (dokp) THEN
             CALL calc_admm_ovlp_forces_kp(qs_env)
          ELSE
@@ -1735,7 +1753,7 @@ CONTAINS
          END IF
       END DO
 
-      IF (dft_control%do_admm_mo) THEN
+      IF (dft_control%do_admm_mo .AND. .NOT. qs_upf_inverse_scf_active(qs_env%ks_env)) THEN
          CALL calc_admm_mo_derivatives(qs_env, mo_derivs)
       END IF
 
@@ -2041,6 +2059,72 @@ CONTAINS
    END SUBROUTINE qs_ks_allocate_basics
 
 ! **************************************************************************************************
+!> \brief Evaluate the complete original-UPF auxiliary exchange in the native SCF calculation.
+!>        Its transferred AO operator replaces the separate auxiliary XC integration and KS merge.
+!>        Globally reduced complete gradients enter native accumulators on the global source rank.
+!>        The exchange virial includes the signed auxiliary XC and projection/normalization terms.
+!> \param qs_env ...
+!> \param calculate_forces ...
+!> \param use_virial ...
+!> \param components ...
+!> \param operators ...
+! **************************************************************************************************
+   SUBROUTINE upf_admm_exchange(qs_env, calculate_forces, use_virial, components, operators)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(IN)                                :: calculate_forces, use_virial
+      REAL(dp), INTENT(OUT)                              :: components(4)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+
+      INTEGER                                            :: atom, natom
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      LOGICAL                                            :: geometry_changed
+      REAL(dp)                                           :: strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: gradient(:, :)
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(atomic_kind_type), POINTER                    :: kinds(:)
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+      TYPE(mp_para_env_type), POINTER                    :: para
+      TYPE(qs_force_type), POINTER                       :: force(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
+      TYPE(virial_type), POINTER                         :: virial
+
+      CALL get_qs_env(qs_env, admm_env=admm, x_data=exchange, natom=natom, ks_env=ks_env, &
+                      s_mstruct_changed=geometry_changed, atomic_kind_set=kinds, &
+                      para_env=para, force=force, virial=virial)
+      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      CPASSERT(ASSOCIATED(inverse))
+      IF (ALLOCATED(inverse%exchange_k)) inverse%exchange_k = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (calculate_forces) THEN
+         CPASSERT(ASSOCIATED(force))
+         ALLOCATE (gradient(3, natom))
+         IF (use_virial) THEN
+            CALL qs_upf_inverse_aux_evaluate(qs_env, admm%xc_section_aux, exchange, geometry_changed, components, operators, &
+                                             atom_gradient=gradient, strain_gradient=strain)
+         ELSE
+            CALL qs_upf_inverse_aux_evaluate(qs_env, admm%xc_section_aux, exchange, geometry_changed, components, operators, &
+                                             atom_gradient=gradient)
+         END IF
+         CALL get_atomic_kind_set(kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
+         IF (para%is_source()) THEN
+            DO atom = 1, natom
+               force(kind_of(atom))%fock_4c(:, atom_of_kind(atom)) = &
+                  force(kind_of(atom))%fock_4c(:, atom_of_kind(atom)) + gradient(:, atom)
+            END DO
+         END IF
+         IF (use_virial) THEN
+            virial%pv_fock_4c = 0.0_dp
+            IF (para%is_source()) virial%pv_fock_4c = strain
+            virial%pv_exx = virial%pv_exx - virial%pv_fock_4c
+            virial%pv_virial = virial%pv_virial - virial%pv_fock_4c
+            virial%pv_calculate = .FALSE.
+         END IF
+      ELSE
+         CALL qs_upf_inverse_aux_evaluate(qs_env, admm%xc_section_aux, exchange, geometry_changed, components, operators)
+      END IF
+   END SUBROUTINE upf_admm_exchange
+
+! **************************************************************************************************
 !> \brief Require the native RI contraction of the complete original inverse transition charges.
 !>        Unsupported exchange variants must not use ordinary Gaussian products alone.
 !> \param qs_env Native inverse fields and exchange contributions.
@@ -2048,7 +2132,9 @@ CONTAINS
    SUBROUTINE check_inverse_exchange(qs_env)
       TYPE(qs_environment_type), POINTER                 :: qs_env
 
+      CHARACTER(LEN=7)                                   :: selected_basis
       INTEGER                                            :: contribution
+      LOGICAL                                            :: selected
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(hfx_type), POINTER                            :: exchange(:, :)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -2057,8 +2143,11 @@ CONTAINS
       CALL get_qs_env(qs_env, ks_env=ks_env, dft_control=control, x_data=exchange)
       CALL get_ks_env(ks_env, upf_inverse=inverse)
       CPASSERT(ASSOCIATED(inverse))
+      selected_basis = 'ORB'
       IF (control%do_admm) THEN
-         CPABORT("Inverse UPF ADMM exchange is not implemented yet")
+         selected_basis = 'AUX_FIT'
+         selected = qs_upf_inverse_basis_select(qs_env, selected_basis, inverse)
+         CPASSERT(selected)
       END IF
       IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
@@ -2070,13 +2159,16 @@ CONTAINS
       END IF
       CPASSERT(ASSOCIATED(exchange))
       DO contribution = 1, SIZE(exchange, 1)
+         IF (control%do_admm) THEN
+            IF (exchange(contribution, 1)%general_parameter%fraction == 0.0_dp) CYCLE
+         END IF
          IF (.NOT. exchange(contribution, 1)%do_hfx_ri) THEN
             CPABORT("Inverse UPF exchange requires RI transition integrals")
          END IF
          CPASSERT(ASSOCIATED(exchange(contribution, 1)%ri_data))
          ASSOCIATE (ri => exchange(contribution, 1)%ri_data)
-            IF (ri%input_flavor /= ri_pmat .OR. TRIM(ri%orb_basis_type) /= "ORB") THEN
-               CPABORT("Inverse UPF exchange requires RI-RHO with the primary orbital basis")
+            IF (ri%input_flavor /= ri_pmat .OR. ri%orb_basis_type /= selected_basis) THEN
+               CPABORT("Inverse UPF exchange requires RI-RHO in the selected basis")
             END IF
             IF (.NOT. ASSOCIATED(inverse%bloch%kpoints)) THEN
                IF (ANY(inverse%frame%ao%periodicity /= 0) .AND. &

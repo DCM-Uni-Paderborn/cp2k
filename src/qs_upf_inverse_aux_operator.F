@@ -84,10 +84,12 @@ CONTAINS
 !> \param operators Complete primary AO derivative in original physical k/spin order, without weights.
 !> \param atom_response Optional total atomic displacement, including affine cell motion.
 !> \param cell_response Optional lattice derivative at fixed reduced k.
-!> \param response Optional complete energy derivative. Supply all three geometry arguments together.
+!> \param response Optional complete directional derivative. Supply the three directional arguments together.
+!> \param atom_gradient Optional complete Cartesian energy gradients, evaluated with one native RI force call.
+!> \param strain_gradient Optional complete affine dE/dstrain at fixed reduced k.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_evaluate(qs_env, xc_section, exchange, geometry_changed, components, operators, &
-                                          atom_response, cell_response, response)
+                                          atom_response, cell_response, response, atom_gradient, strain_gradient)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
@@ -95,31 +97,103 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: components(4)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response, atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: ri_operator(:, :, :, :)
       LOGICAL                                            :: geometry, use_virial
-      REAL(dp)                                           :: energy, ri_energy, strain_gradient(3, 3)
-      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :)
+      REAL(dp)                                           :: energy, ri_energy, ri_strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: ri_gradient(:, :)
 
-      geometry = PRESENT(response)
-      CPASSERT(geometry .EQV. PRESENT(atom_response))
-      CPASSERT(geometry .EQV. PRESENT(cell_response))
-      use_virial = .FALSE.
-      IF (geometry) use_virial = ANY(cell_response /= 0.0_dp)
+      CPASSERT(PRESENT(response) .EQV. PRESENT(atom_response))
+      CPASSERT(PRESENT(response) .EQV. PRESENT(cell_response))
+      geometry = PRESENT(atom_gradient) .OR. PRESENT(strain_gradient)
+      CPASSERT(.NOT. (geometry .AND. PRESENT(response)))
+      use_virial = PRESENT(strain_gradient)
+      geometry = geometry .OR. PRESENT(response)
+      IF (PRESENT(response)) use_virial = ANY(cell_response /= 0.0_dp)
       CALL auxiliary_ri(qs_env, exchange, geometry_changed, geometry, use_virial, &
-                        ri_energy, ri_operator, atom_gradient, strain_gradient)
-      IF (geometry) THEN
+                        ri_energy, ri_operator, ri_gradient, ri_strain)
+      IF (PRESENT(response)) THEN
          CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
-                                          atom_gradient, strain_gradient, atom_response, cell_response, &
+                                          ri_gradient, ri_strain, atom_response, cell_response, &
                                           energy, operators, response, components)
       ELSE
          components(1) = ri_energy
          CALL qs_upf_inverse_aux_operator_evaluate(qs_env, xc_section, ri_operator, &
                                                    components(3), components(4), operators, &
                                                    exchange=exchange, core_energy=components(2))
+         IF (geometry) THEN
+            CALL auxiliary_gradients(qs_env, xc_section, exchange, ri_energy, ri_operator, ri_gradient, ri_strain, &
+                                     atom_gradient, strain_gradient)
+         END IF
       END IF
    END SUBROUTINE qs_upf_inverse_aux_evaluate
+
+! **************************************************************************************************
+!> \brief Contract complete auxiliary geometry while reusing the native RI energy, operator and gradients.
+!>        The independent XC and metric responses retain the same frozen primary occupations.
+!>        Cartesian variations keep the cell fixed. Affine strain moves atoms and cell together.
+!> \param qs_env ...
+!> \param xc_section ...
+!> \param exchange ...
+!> \param ri_energy ...
+!> \param ri_operator ...
+!> \param ri_gradient ...
+!> \param ri_strain ...
+!> \param atom_gradient ...
+!> \param strain_gradient ...
+! **************************************************************************************************
+   SUBROUTINE auxiliary_gradients(qs_env, xc_section, exchange, ri_energy, ri_operator, ri_gradient, ri_strain, &
+                                  atom_gradient, strain_gradient)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
+      REAL(dp), INTENT(IN)                               :: ri_energy
+      COMPLEX(dp), INTENT(IN)                            :: ri_operator(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: ri_gradient(:, :), ri_strain(3, 3)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :, :)
+      INTEGER                                            :: atom, axis, other
+      REAL(dp)                                           :: energy, response, strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: motion(:, :), positions(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(particle_type), POINTER                       :: atoms(:)
+
+      CALL get_qs_env(qs_env, cell=cell, particle_set=atoms)
+      ALLOCATE (motion(3, SIZE(atoms)), positions(3, SIZE(atoms)))
+      DO atom = 1, SIZE(atoms)
+         positions(:, atom) = atoms(atom)%r
+      END DO
+      IF (PRESENT(atom_gradient)) THEN
+         CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(motion)))
+         DO atom = 1, SIZE(atoms)
+            DO axis = 1, 3
+               motion = 0.0_dp
+               motion(axis, atom) = 1.0_dp
+               CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
+                                                ri_gradient, ri_strain, motion, 0.0_dp*cell%hmat, &
+                                                energy, operators, response)
+               atom_gradient(axis, atom) = response
+            END DO
+         END DO
+      END IF
+      IF (PRESENT(strain_gradient)) THEN
+         DO other = 1, 3
+            DO axis = 1, 3
+               strain = 0.0_dp
+               strain(axis, other) = 1.0_dp
+               motion(:, :) = MATMUL(strain, positions)
+               CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
+                                                ri_gradient, ri_strain, motion, MATMUL(strain, cell%hmat), &
+                                                energy, operators, response)
+               strain_gradient(axis, other) = response
+            END DO
+         END DO
+      END IF
+   END SUBROUTINE auxiliary_gradients
 
 ! **************************************************************************************************
 !> \brief Sum native RI repetitions into owned original-coordinate outputs.
