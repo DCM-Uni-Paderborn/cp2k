@@ -145,8 +145,10 @@ MODULE qs_scf
    USE qs_charge_mixing,                ONLY: charge_mixing_scc_error
    USE qs_charges_types,                ONLY: qs_charges_type
    USE qs_density_matrices,             ONLY: calculate_density_matrix
-   USE qs_density_mixing_types,         ONLY: direct_mixing_nr,&
+   USE qs_density_mixing_types,         ONLY: broyden_mixing_nr,&
+                                              direct_mixing_nr,&
                                               gspace_mixing_nr,&
+                                              modified_broyden_mixing_nr,&
                                               no_mixing_nr
    USE qs_diis,                         ONLY: qs_diis_b_clear,&
                                               qs_diis_b_clear_kp,&
@@ -1759,8 +1761,9 @@ CONTAINS
             SELECT CASE (scf_env%method)
             CASE (general_diag_method_nr)
                IF (scf_control%diagonalization%update_method == diag_update_method_adiis .OR. &
-                   (scf_env%mixing_method /= direct_mixing_nr .AND. scf_env%mixing_method /= no_mixing_nr)) THEN
-                  CPABORT("Inverse Bloch diagonalization requires STANDARD and direct mixing")
+                   (scf_env%mixing_method /= direct_mixing_nr .AND. scf_env%mixing_method /= no_mixing_nr .AND. &
+                    scf_env%mixing_method /= broyden_mixing_nr .AND. scf_env%mixing_method /= modified_broyden_mixing_nr)) THEN
+                  CPABORT("Inverse Bloch SCF requires STANDARD and direct or Broyden mixing")
                END IF
             CASE (ot_method_nr)
                IF (scf_env%mixing_method /= no_mixing_nr) THEN

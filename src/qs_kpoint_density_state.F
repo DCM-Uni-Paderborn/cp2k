@@ -18,6 +18,8 @@ MODULE qs_kpoint_density_state
    USE kinds,                           ONLY: dp
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
+   USE qs_charge_mixing,                ONLY: broyden_vector_mixing
+   USE qs_density_mixing_types,         ONLY: mixing_storage_type
    USE qs_kpoint_operators,             ONLY: kpoint_slot_s
 #include "./base/base_uses.f90"
 
@@ -26,6 +28,7 @@ MODULE qs_kpoint_density_state
    PUBLIC :: kpoint_density_state_active
    PUBLIC :: kpoint_density_state_initialize, kpoint_density_state_capture
    PUBLIC :: kpoint_density_state_accept, kpoint_density_state_delta, kpoint_density_state_restore
+   PUBLIC :: kpoint_density_state_broyden
    PUBLIC :: kpoint_density_state_mulliken
    PUBLIC :: kpoint_density_state_write, kpoint_density_state_read
 CONTAINS
@@ -297,6 +300,79 @@ CONTAINS
       END DO
       CALL kpoint_density_state_restore(kpoints)
    END SUBROUTINE kpoint_density_state_accept
+
+! **************************************************************************************************
+!> \brief Mix complete group-local Bloch matrices with the real k-weighted Frobenius product.
+!>        Spin pairs are represented by orthonormal charge/magnetization combinations.
+!>        The raw trial is retained for convergence and unmixed finalization. Zero-weight
+!>        points take their trial value and do not enter the history scalar product.
+!> \param kpoints Accepted and trial densities on their actual matrix and k-point owners.
+!> \param mixing_store Broyden parameters, including independent magnetization damping.
+!> \param mixing_method Standard or modified Broyden.
+!> \param iteration Native SCF iteration.
+! **************************************************************************************************
+   SUBROUTINE kpoint_density_state_broyden(kpoints, mixing_store, mixing_method, iteration)
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoints
+      TYPE(mixing_storage_type), POINTER                 :: mixing_store
+      INTEGER, INTENT(IN)                                :: mixing_method, iteration
+
+      COMPLEX(dp), ALLOCATABLE                           :: input(:), trial(:)
+      INTEGER                                            :: first, ik, last, n, nlocal, nspin, spin
+      REAL(dp)                                           :: factor, sign_spin
+      REAL(dp), ALLOCATABLE                              :: alpha(:)
+
+      CPASSERT(kpoints%native_trial_valid)
+      nspin = SIZE(kpoints%native_density, 2)
+      CPASSERT(nspin == 1 .OR. nspin == 2)
+      nlocal = 0
+      DO ik = 1, SIZE(kpoints%native_density, 1)
+         nlocal = nlocal + nspin*SIZE(kpoints%native_density(ik, 1)%local_data)
+      END DO
+      ALLOCATE (input(nlocal), trial(nlocal), alpha(nlocal))
+      first = 1
+      DO ik = 1, SIZE(kpoints%native_density, 1)
+         factor = SQRT(kpoints%wkp(kpoints%kp_range(1) + ik - 1))
+         IF (nspin == 2) factor = factor/SQRT(2.0_dp)
+         n = SIZE(kpoints%native_density(ik, 1)%local_data)
+         DO spin = 1, nspin
+            last = first + n - 1
+            input(first:last) = factor*RESHAPE(kpoints%native_density(ik, 1)%local_data, [n])
+            trial(first:last) = factor*RESHAPE(kpoints%native_trial(ik, 1)%local_data, [n])
+            IF (nspin == 2) THEN
+               sign_spin = REAL(3 - 2*spin, dp)
+               input(first:last) = input(first:last) + &
+                                   factor*sign_spin*RESHAPE(kpoints%native_density(ik, 2)%local_data, [n])
+               trial(first:last) = trial(first:last) + &
+                                   factor*sign_spin*RESHAPE(kpoints%native_trial(ik, 2)%local_data, [n])
+            END IF
+            alpha(first:last) = mixing_store%alpha
+            IF (spin == 2 .AND. mixing_store%alpha_mag >= 0.0_dp) alpha(first:last) = mixing_store%alpha_mag
+            first = last + 1
+         END DO
+      END DO
+      CALL broyden_vector_mixing(mixing_method, mixing_store, input, trial, kpoints%para_env, iteration, alpha)
+      first = 1
+      DO ik = 1, SIZE(kpoints%native_density, 1)
+         factor = SQRT(kpoints%wkp(kpoints%kp_range(1) + ik - 1))
+         n = SIZE(kpoints%native_density(ik, 1)%local_data)
+         last = first + n - 1
+         DO spin = 1, nspin
+            IF (factor == 0.0_dp) THEN
+               kpoints%native_density(ik, spin)%local_data(:, :) = kpoints%native_trial(ik, spin)%local_data
+            ELSE IF (nspin == 1) THEN
+               kpoints%native_density(ik, spin)%local_data(:, :) = &
+                  RESHAPE(trial(first:last)/factor, SHAPE(kpoints%native_density(ik, spin)%local_data))
+            ELSE
+               sign_spin = REAL(3 - 2*spin, dp)
+               kpoints%native_density(ik, spin)%local_data(:, :) = &
+                  RESHAPE((trial(first:last) + sign_spin*trial(first + n:last + n))/(SQRT(2.0_dp)*factor), &
+                          SHAPE(kpoints%native_density(ik, spin)%local_data))
+            END IF
+         END DO
+         first = first + nspin*n
+      END DO
+      CALL kpoint_density_state_restore(kpoints)
+   END SUBROUTINE kpoint_density_state_broyden
 
 ! **************************************************************************************************
 !> \brief Restore the accepted P(k) used by the next native commutator/DIIS evaluation.

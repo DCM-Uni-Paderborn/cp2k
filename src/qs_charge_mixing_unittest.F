@@ -11,10 +11,11 @@ PROGRAM qs_charge_mixing_unittest
    USE message_passing, ONLY: mp_para_env_type, &
                               mp_world_finalize, &
                               mp_world_init
-   USE qs_charge_mixing, ONLY: charge_mixing
+   USE qs_charge_mixing, ONLY: broyden_vector_mixing, charge_mixing
    USE qs_density_mixing_types, ONLY: broyden_mixing_nr, &
                                       mixing_storage_release, &
                                       mixing_storage_type
+   USE qs_density_mixing_types, ONLY: modified_broyden_mixing_nr
 #if defined(__TBLITE)
    USE mctc_env, ONLY: error_type
    USE tblite_scf_mixer_type, ONLY: mixer_type
@@ -78,15 +79,79 @@ PROGRAM qs_charge_mixing_unittest
              mixing_store%delta_res(1, 1)%cc(1), mixing_store%u_vec(1, 1)%cc(1), mixing_store%z_vec(1, 1)%cc(1))
    CALL mixing_storage_release(mixing_store)
    DEALLOCATE (mixing_store)
+   CALL test_vector_mixing()
 #if defined(__TBLITE)
    CALL test_tblite_history()
 #endif
    DEALLOCATE (para_env)
    CALL mp_world_finalize()
 
-#if defined(__TBLITE)
 CONTAINS
 
+! **************************************************************************************************
+!> \brief Distributed complex fixed points, wrapped history, empty ranks and SCF resets.
+! **************************************************************************************************
+   SUBROUTINE test_vector_mixing()
+      COMPLEX(dp), ALLOCATABLE                           :: current(:), reference(:), trial(:)
+      INTEGER                                            :: i, method, nlocal, step, variable
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      REAL(dp)                                           :: error
+      REAL(dp), ALLOCATABLE                              :: damping(:)
+      TYPE(mixing_storage_type), POINTER                 :: store
+
+      nlocal = 0
+      DO variable = 1, 2
+         IF (MOD(variable - 1, para_env%num_pe) == para_env%mepos) nlocal = nlocal + 1
+      END DO
+      ALLOCATE (current(nlocal), reference(nlocal), trial(nlocal), indices(nlocal), damping(nlocal))
+      i = 0
+      DO variable = 1, 2
+         IF (MOD(variable - 1, para_env%num_pe) /= para_env%mepos) CYCLE
+         i = i + 1
+         indices(i) = variable
+         damping(i) = 0.1_dp + 0.05_dp*REAL(variable, dp)
+         reference(i) = CMPLX(REAL(variable, dp)/3.0_dp, 0.2_dp*REAL(3 - variable, dp), dp)
+      END DO
+      DO method = broyden_mixing_nr, modified_broyden_mixing_nr
+         ALLOCATE (store)
+         store%nbuffer = 4
+         store%alpha = 0.2_dp
+         store%nskip_mixing = 0
+         store%n_simple_mix = 0
+         store%broy_w0 = 1.e-10_dp
+         IF (method == modified_broyden_mixing_nr) store%broy_w0 = 1.e-5_dp
+         store%wc = 0.1_dp
+         store%wmax = 10.0_dp
+         current(:) = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO step = 1, 20
+            DO i = 1, nlocal
+               trial(i) = reference(i) + CMPLX(0.5_dp + 0.1_dp*indices(i), 0.1_dp, dp)*(current(i) - reference(i))
+            END DO
+            CALL broyden_vector_mixing(method, store, current, trial, para_env, step)
+            IF (.NOT. ALL(ieee_is_finite(REAL(trial, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(trial)))) &
+               ERROR STOP 'Nonfinite distributed complex Broyden step'
+            current(:) = trial
+         END DO
+         error = 0.0_dp
+         IF (nlocal > 0) error = MAXVAL(ABS(current - reference))
+         CALL para_env%max(error)
+         IF (error > 1.e-8_dp) ERROR STOP 'Distributed complex Broyden fixed point'
+         IF (store%vector_count /= 5) ERROR STOP 'Complex Broyden history did not wrap'
+         DO step = 1, 2
+            current(:) = CMPLX(0.0_dp, 0.0_dp, dp)
+            trial(:) = 0.5_dp*reference
+            CALL broyden_vector_mixing(method, store, current, trial, para_env, step, damping)
+            error = 0.0_dp
+            IF (nlocal > 0) error = MAXVAL(ABS(trial - 0.5_dp*damping*reference))
+            CALL para_env%max(error)
+            IF (error > 1.e-12_dp .OR. store%vector_count /= step) ERROR STOP 'Complex Broyden SCF reset or zero direction'
+         END DO
+         CALL mixing_storage_release(store)
+         DEALLOCATE (store)
+      END DO
+   END SUBROUTINE test_vector_mixing
+
+#if defined(__TBLITE)
 ! **************************************************************************************************
 !> \brief A wrapped Broyden history must match a fresh replay of the retained input/output pairs.
 ! **************************************************************************************************

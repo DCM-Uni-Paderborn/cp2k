@@ -93,6 +93,8 @@ MODULE qs_scf_loop_utils
                                               qs_kind_type,&
                                               set_qs_kind
    USE qs_kpoint_density_state,         ONLY: kpoint_density_state_accept,&
+                                              kpoint_density_state_active,&
+                                              kpoint_density_state_broyden,&
                                               kpoint_density_state_capture,&
                                               kpoint_density_state_delta
    USE qs_kpoint_operators,             ONLY: kpoint_operator_context_create,&
@@ -3516,6 +3518,11 @@ CONTAINS
                   CALL kpoint_density_state_accept(kpoints, 1.0_dp)
                   RETURN
                END IF
+               IF (scf_env%mixing_method == broyden_mixing_nr .OR. scf_env%mixing_method == modified_broyden_mixing_nr) THEN
+                  CALL kpoint_density_state_delta(kpoints, scf_env%iter_delta)
+                  CALL kpoint_density_state_broyden(kpoints, scf_env%mixing_store, scf_env%mixing_method, scf_env%iter_count)
+                  RETURN
+               END IF
                IF (scf_env%mixing_method /= direct_mixing_nr .AND. scf_env%mixing_method /= no_mixing_nr) THEN
                   CPABORT("Native k-point densities require direct or no mixing")
                END IF
@@ -3798,7 +3805,7 @@ CONTAINS
       ! ** update qs_env%rho
       CALL qs_rho_update_rho(rho, qs_env=qs_env)
       ! ** Density mixing through density matrix or on the reciprocal space grid (exclusive)
-      IF (mix_rho) THEN
+      IF (mix_rho .AND. .NOT. kpoint_density_state_active(kpoints)) THEN
          IF (ASSOCIATED(kpoints)) THEN
             IF (ALLOCATED(kpoints%lowdin_q)) THEN
                CALL lowdin_kp_population(kpoints, alpha=1.0_dp)

@@ -22,14 +22,10 @@ MODULE qs_mixing_utils
    USE mathconstants,                   ONLY: z_zero
    USE message_passing,                 ONLY: mp_para_env_type
    USE pw_types,                        ONLY: pw_c1d_gs_type
-   USE qs_density_mixing_types,         ONLY: broyden_mixing_nr,&
-                                              cp_1d_z_p_type,&
-                                              gspace_mixing_nr,&
-                                              mixing_storage_type,&
-                                              modified_broyden_mixing_nr,&
-                                              multisecant_mixing_nr,&
-                                              new_pulay_mixing_nr,&
-                                              pulay_mixing_nr
+   USE qs_density_mixing_types,         ONLY: &
+        broyden_mixing_nr, cp_1d_z_p_type, gspace_mixing_nr, mixing_storage_type, &
+        mixing_vector_history_release, modified_broyden_mixing_nr, multisecant_mixing_nr, &
+        new_pulay_mixing_nr, pulay_mixing_nr
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
@@ -482,6 +478,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
+      CALL mixing_vector_history_release(mixing_store)
       NULLIFY (g2, g_vec, rho_ao_kp, rho_g)
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp, rho_g=rho_g)
 

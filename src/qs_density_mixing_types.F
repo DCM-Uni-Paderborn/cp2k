@@ -54,6 +54,7 @@ MODULE qs_density_mixing_types
                                  multisecant_mixing_nr = 6, &
                                  new_pulay_mixing_nr = 7
    PUBLIC :: cp_1d_z_p_type, mixing_storage_create, mixing_storage_type, mixing_storage_release, create_mixing_section
+   PUBLIC :: mixing_vector_history_release
 
    TYPE cp_1d_z_p_type
       COMPLEX(dp), DIMENSION(:), POINTER :: cc => NULL()
@@ -63,6 +64,9 @@ MODULE qs_density_mixing_types
       ! Replicated density coordinates are appended on world rank zero only.
       INTEGER                                           :: naux = 0
       COMPLEX(KIND=dp), ALLOCATABLE                     :: aux_buffer(:, :)
+      ! Rank-local coordinates and consecutive residuals for complete Bloch densities.
+      COMPLEX(dp), ALLOCATABLE                         :: vector_input(:, :), vector_residual(:, :)
+      INTEGER                                           :: vector_next = 1, vector_count = 0, vector_iteration = -1
    INTEGER                                           :: ig_max = -1, ncall = -1, ncall_p(2) = -1, nbuffer = -1, n_simple_mix = -1, &
                                                            nskip_mixing = -1, p_metric_method = -1
       INTEGER, POINTER, DIMENSION(:)                    :: ig_global_index => NULL()
@@ -112,6 +116,20 @@ MODULE qs_density_mixing_types
    END TYPE mixing_storage_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Release a local-vector history at an SCF, geometry or distribution boundary.
+!> \param mixing_store Mixing owner whose grid and atomic histories remain unchanged.
+! **************************************************************************************************
+   SUBROUTINE mixing_vector_history_release(mixing_store)
+      TYPE(mixing_storage_type), INTENT(INOUT)           :: mixing_store
+
+      IF (ALLOCATED(mixing_store%vector_input)) DEALLOCATE (mixing_store%vector_input)
+      IF (ALLOCATED(mixing_store%vector_residual)) DEALLOCATE (mixing_store%vector_residual)
+      mixing_store%vector_next = 1
+      mixing_store%vector_count = 0
+      mixing_store%vector_iteration = -1
+   END SUBROUTINE mixing_vector_history_release
 
 ! **************************************************************************************************
 !> \brief creates a mixing_storage
@@ -252,6 +270,7 @@ CONTAINS
 
       IF (ALLOCATED(mixing_store%aux_buffer)) DEALLOCATE (mixing_store%aux_buffer)
       mixing_store%naux = 0
+      CALL mixing_vector_history_release(mixing_store)
 
       IF (ASSOCIATED(mixing_store%kerker_factor)) THEN
          DEALLOCATE (mixing_store%kerker_factor)
@@ -562,7 +581,9 @@ CONTAINS
 
       CALL keyword_create(keyword, __LOCATION__, &
                           name="METHOD", &
-                          description="Mixing method to be applied", &
+                          description="Mixing method to be applied. For complete Bloch densities, "// &
+                          "the Broyden methods mix the distributed complex density matrices "// &
+                          "using their k-point weights.", &
                           repeats=.FALSE., &
                           usage="METHOD KERKER_MIXING", &
                           default_i_val=default_mix, &

@@ -28,6 +28,7 @@ MODULE qs_charge_mixing
    USE qs_density_mixing_types, ONLY: broyden_mixing_nr, &
                                       gspace_mixing_nr, &
                                       mixing_storage_type, &
+                                      mixing_vector_history_release, &
                                       modified_broyden_mixing_nr, &
                                       multisecant_mixing_nr, &
                                       new_pulay_mixing_nr, &
@@ -41,10 +42,131 @@ MODULE qs_charge_mixing
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_charge_mixing'
 
    PUBLIC :: charge_mixing, charge_mixing_scc_error, tblite_scc_error_on_cp2k_scale
+   PUBLIC :: broyden_vector_mixing
 
    REAL(KIND=dp), PARAMETER, PUBLIC :: tblite_scc_pconv = 2.0E-5_dp
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Regularized Broyden in distributed complex coordinates with a real scalar product.
+!>        Coordinates are unique across ranks and may already contain physical mesh weights.
+!>        Only small history products are reduced. No density vector is gathered or replicated.
+!> \param mixing_method Standard or modified Broyden.
+!> \param mixing_store SCF parameters and bounded, rank-local input/residual history.
+!> \param input Accepted coordinates before the current nonlinear evaluation.
+!> \param trial Unmixed output on entry, accepted mixed coordinates on return.
+!> \param para_env Communicator over all coordinate owners, including empty ranks.
+!> \param iteration Current SCF iteration. A new iteration sequence clears the history.
+!> \param alpha Optional diagonal damping, for independently scaled spin channels.
+! **************************************************************************************************
+   SUBROUTINE broyden_vector_mixing(mixing_method, mixing_store, input, trial, para_env, iteration, alpha)
+      INTEGER, INTENT(IN)                                :: mixing_method
+      TYPE(mixing_storage_type), POINTER                 :: mixing_store
+      COMPLEX(dp), INTENT(IN)                            :: input(:)
+      COMPLEX(dp), INTENT(INOUT)                         :: trial(:)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      INTEGER, INTENT(IN)                                :: iteration
+      REAL(dp), INTENT(IN), OPTIONAL                     :: alpha(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: differences(:, :), residual(:)
+      INTEGER                                            :: capacity, current, i, j, newer, nlocal, &
+                                                            nvec, older, reset_flag
+      LOGICAL                                            :: modified, reset
+      REAL(dp)                                           :: regularization
+      REAL(dp), ALLOCATABLE                              :: damping(:), gram(:, :), inverse(:, :), &
+                                                            normalization(:), norms(:), rhs(:), &
+                                                            solution(:), system(:, :), weights(:)
+
+      CPASSERT(ASSOCIATED(mixing_store))
+      IF (mixing_method /= broyden_mixing_nr .AND. mixing_method /= modified_broyden_mixing_nr) THEN
+         CPABORT("Invalid distributed Broyden method")
+      END IF
+      CPASSERT(SIZE(input) == SIZE(trial))
+      CPASSERT(mixing_store%nbuffer > 0)
+      capacity = mixing_store%nbuffer + 1
+      nlocal = SIZE(input)
+      reset = .NOT. ALLOCATED(mixing_store%vector_input)
+      IF (.NOT. reset) reset = ANY(SHAPE(mixing_store%vector_input) /= [nlocal, capacity])
+      reset = reset .OR. iteration <= mixing_store%vector_iteration
+      reset_flag = MERGE(1, 0, reset)
+      CALL para_env%max(reset_flag)
+      reset = reset_flag /= 0
+      IF (reset) THEN
+         CALL mixing_vector_history_release(mixing_store)
+         ALLOCATE (mixing_store%vector_input(nlocal, capacity), mixing_store%vector_residual(nlocal, capacity))
+         mixing_store%ncall = 0
+      END IF
+      ALLOCATE (residual(nlocal), damping(nlocal))
+      residual(:) = trial - input
+      damping(:) = mixing_store%alpha
+      IF (PRESENT(alpha)) THEN
+         CPASSERT(SIZE(alpha) == nlocal)
+         damping(:) = alpha
+      END IF
+      current = mixing_store%vector_next
+      mixing_store%vector_input(:, current) = input
+      mixing_store%vector_residual(:, current) = residual
+      mixing_store%vector_next = MOD(current, capacity) + 1
+      mixing_store%vector_count = MIN(capacity, mixing_store%vector_count + 1)
+      mixing_store%vector_iteration = iteration
+      mixing_store%ncall = mixing_store%ncall + 1
+      IF (iteration < mixing_store%nskip_mixing) THEN
+         mixing_store%iter_method = "NoMix"
+         RETURN
+      END IF
+      trial(:) = input + damping*residual
+      mixing_store%iter_method = "Mixing"
+      nvec = mixing_store%vector_count - 1
+      IF (nvec == 0 .OR. iteration - mixing_store%nskip_mixing < mixing_store%n_simple_mix) RETURN
+      ALLOCATE (differences(nlocal, nvec), gram(nvec, nvec + 1), normalization(nvec), &
+                norms(nvec), weights(nvec), system(nvec, nvec), inverse(nvec, nvec), rhs(nvec), solution(nvec))
+      DO j = 1, nvec
+         newer = MODULO(current - j, capacity) + 1
+         older = MODULO(newer - 2, capacity) + 1
+         differences(:, j) = mixing_store%vector_residual(:, newer) - mixing_store%vector_residual(:, older)
+         norms(j) = REAL(SUM(CONJG(mixing_store%vector_residual(:, newer))* &
+                             mixing_store%vector_residual(:, newer)), dp)
+      END DO
+      DO j = 1, nvec
+         DO i = 1, nvec
+            gram(i, j) = REAL(SUM(CONJG(differences(:, i))*differences(:, j)), dp)
+         END DO
+         gram(j, nvec + 1) = REAL(SUM(CONJG(differences(:, j))*residual), dp)
+      END DO
+      CALL para_env%sum(gram)
+      CALL para_env%sum(norms)
+      modified = mixing_method == modified_broyden_mixing_nr
+      DO j = 1, nvec
+         normalization(j) = 0.0_dp
+         IF (gram(j, j) > TINY(1.0_dp)) normalization(j) = 1.0_dp/SQRT(gram(j, j))
+         weights(j) = 1.0_dp
+         IF (modified) THEN
+            weights(j) = mixing_store%wmax
+            IF (norms(j) > (mixing_store%wc/mixing_store%wmax)**2) weights(j) = mixing_store%wc/SQRT(norms(j))
+            weights(j) = MAX(1.0_dp, weights(j))
+         END IF
+      END DO
+      regularization = mixing_store%broy_w0
+      IF (modified) regularization = regularization**2
+      DO j = 1, nvec
+         rhs(j) = weights(j)*normalization(j)*gram(j, nvec + 1)
+         DO i = 1, nvec
+            system(i, j) = weights(i)*weights(j)*normalization(i)*normalization(j)*gram(i, j)
+         END DO
+         system(j, j) = system(j, j) + regularization
+      END DO
+      CALL get_pseudo_inverse_svd(system, inverse, 1.e-12_dp)
+      solution(:) = MATMUL(inverse, rhs)
+      DO j = 1, nvec
+         newer = MODULO(current - j, capacity) + 1
+         older = MODULO(newer - 2, capacity) + 1
+         trial(:) = trial - weights(j)*solution(j)*normalization(j)* &
+                    (mixing_store%vector_input(:, newer) - mixing_store%vector_input(:, older) + damping*differences(:, j))
+      END DO
+      mixing_store%iter_method = "Broy."
+      IF (modified) mixing_store%iter_method = "MBroy"
+   END SUBROUTINE broyden_vector_mixing
 
 ! **************************************************************************************************
 !> \brief  Driver for TB SCC variable mixing, calls the requested method.
