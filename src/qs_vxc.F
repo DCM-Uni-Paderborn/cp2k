@@ -252,7 +252,9 @@ CONTAINS
       ELSE
          CPASSERT(.NOT. PRESENT(upf_density))
          CPASSERT(.NOT. PRESENT(upf_grid_virial))
-         CPASSERT(.NOT. PRESENT(upf_weight_potential))
+         IF (PRESENT(upf_weight_potential)) THEN
+            CPASSERT(inverse_active)
+         END IF
       END IF
 
       CALL qs_rho_get(rho_struct, &
@@ -915,6 +917,7 @@ CONTAINS
 
          IF (my_scaling /= 1.0_dp) THEN
             exc = exc*my_scaling
+            IF (PRESENT(upf_weight_potential)) CALL pw_scale(upf_weight_potential, my_scaling)
             IF (ASSOCIATED(my_vxc_rho)) THEN
                DO ispin = 1, SIZE(my_vxc_rho)
                   CALL pw_scale(my_vxc_rho(ispin), my_scaling)

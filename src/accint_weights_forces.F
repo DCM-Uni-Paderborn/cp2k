@@ -142,14 +142,16 @@ CONTAINS
 !> \param xc_section ...
 !> \param triplet ...
 !> \param force_scale ...
+!> \param weight_potential Optional precomputed XC derivative with respect to the native grid weights.
 ! **************************************************************************************************
-   SUBROUTINE accint_weight_force(qs_env, rho, rho1, order, xc_section, triplet, force_scale)
+   SUBROUTINE accint_weight_force(qs_env, rho, rho1, order, xc_section, triplet, force_scale, weight_potential)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_rho_type), POINTER                         :: rho, rho1
       INTEGER, INTENT(IN)                                :: order
       TYPE(section_vals_type), POINTER                   :: xc_section
       LOGICAL, INTENT(IN), OPTIONAL                      :: triplet
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: force_scale
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: weight_potential
 
       CHARACTER(len=*), PARAMETER :: routineN = 'accint_weight_force'
 
@@ -192,7 +194,7 @@ CONTAINS
       IF (.NOT. composite_reference .AND. xc_section_uses_native_skala_grid(xc_section)) THEN
          composite_reference = native_skala_uses_atom_composite_grid(xc_section)
       END IF
-      IF (composite_reference) THEN
+      IF (composite_reference .AND. .NOT. PRESENT(weight_potential)) THEN
          CALL timestop(handle)
          RETURN
       END IF
@@ -214,6 +216,11 @@ CONTAINS
          CALL get_qs_env(qs_env, ks_env=ks_env, pw_env=pw_env)
          CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool, xc_pw_pool=xc_pw_pool)
          uf_grid = .NOT. pw_grid_compare(auxbas_pw_pool%pw_grid, xc_pw_pool%pw_grid)
+         IF (PRESENT(weight_potential)) THEN
+            CPASSERT(order == 0)
+            CPASSERT(pw_grid_compare(auxbas_pw_pool%pw_grid, weight_potential%pw_grid))
+            uf_grid = .FALSE.
+         END IF
          IF (uf_grid) THEN
             CALL xc_pw_pool%create_pw(e_rspace)
          ELSE
@@ -225,7 +232,12 @@ CONTAINS
          my_force_scale = 1.0_dp
          IF (PRESENT(force_scale)) my_force_scale = force_scale
 
-         CALL xc_density(qs_env, rho, rho1, order, xc_section, lr_triplet, e_rspace)
+         IF (PRESENT(weight_potential)) THEN
+            ! Use the derivative from the actual XC call, including its original core and tau fields.
+            e_rspace%array = weight_potential%array
+         ELSE
+            CALL xc_density(qs_env, rho, rho1, order, xc_section, lr_triplet, e_rspace)
+         END IF
 
          IF (uf_grid) THEN
             CALL auxbas_pw_pool%create_pw(e_force_rspace)
@@ -241,12 +253,14 @@ CONTAINS
             END BLOCK
             CALL pw_scale(e_force_rspace, e_force_rspace%pw_grid%dvol)
             ! integrate energy field to get force
-            CALL gauss_grid_force(e_force_rspace, qs_env, oweight, calpha, cvalue, aforce, avirial)
+            CALL gauss_grid_force(e_force_rspace, qs_env, oweight, calpha, cvalue, aforce, avirial, &
+                                  consistent_radius=PRESENT(weight_potential))
             !
             CALL auxbas_pw_pool%give_back_pw(e_force_rspace)
          ELSE
             CALL pw_scale(e_rspace, e_rspace%pw_grid%dvol)
-            CALL gauss_grid_force(e_rspace, qs_env, oweight, calpha, cvalue, aforce, avirial)
+            CALL gauss_grid_force(e_rspace, qs_env, oweight, calpha, cvalue, aforce, avirial, &
+                                  consistent_radius=PRESENT(weight_potential))
          END IF
 
          IF (uf_grid) THEN

@@ -287,6 +287,7 @@ CONTAINS
                                                             v_tau_rspace_aux_fit
       TYPE(pw_r3d_rs_type), POINTER :: rho0_s_rs, rho_nlcc, rhoz_cneo_s_rs, v_hartree_rspace, &
          v_sccs_rspace, v_sic_rspace, v_spin_ddapc_rest_r, vee, vppl_rspace
+      TYPE(pw_r3d_rs_type), POINTER                      :: inverse_weight_potential, inverse_weights
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -309,7 +310,7 @@ CONTAINS
                v_rspace_new, v_rspace_new_aux_fit, v_tau_rspace, v_tau_rspace_aux_fit, matrix_vxc, &
                matrix_vxc_kp, matrix_vhxc, &
                vee, rho_nlcc, ks_env, ks_matrix, ks_matrix_im, rho, energy, rho_xc, rho_r, rho_ao, &
-               rho_core, sab_orb, particle_set, qs_kind_set, kpoints)
+               rho_core, sab_orb, particle_set, qs_kind_set, kpoints, inverse_weight_potential, inverse_weights)
 
       CPASSERT(ASSOCIATED(qs_env))
 
@@ -429,7 +430,7 @@ CONTAINS
       ! Check for GAPW method : additional terms for local densities
       gapw = dft_control%qs_control%gapw
       gapw_xc = dft_control%qs_control%gapw_xc
-      CALL get_ks_env(ks_env, upf_inverse=inverse)
+      CALL get_ks_env(ks_env, upf_inverse=inverse, xcint_weights=inverse_weights)
       inverse_coulomb = .FALSE.
       IF (ASSOCIATED(inverse)) inverse_coulomb = ASSOCIATED(inverse%coulomb)
       IF (inverse_coulomb) THEN
@@ -463,6 +464,11 @@ CONTAINS
 
       ! gets the tmp grids
       CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool, poisson_env=poisson_env)
+      IF (calculate_forces .AND. qs_upf_inverse_scf_active(ks_env) .AND. ASSOCIATED(inverse_weights)) THEN
+         ALLOCATE (inverse_weight_potential)
+         CALL auxbas_pw_pool%create_pw(inverse_weight_potential)
+         inverse_weight_potential%array = 0.0_dp
+      END IF
 
       IF (gapw .AND. (poisson_env%parameters%solver == pw_poisson_implicit)) THEN
          CPABORT("The implicit Poisson solver cannot be used in conjunction with GAPW.")
@@ -887,7 +893,8 @@ CONTAINS
                                         edisp=edisp, dispersion_env=qs_env%dispersion_env, &
                                         just_energy=just_energy_xc, qs_env_external=qs_env, &
                                         native_gapw_composite_override=native_gapw_composite_reference, &
-                                        native_skala_defer_to_atom_composite=.TRUE.)
+                                        native_skala_defer_to_atom_composite=.TRUE., &
+                                        upf_weight_potential=inverse_weight_potential)
                   ELSE
                      CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
                                         vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
@@ -895,7 +902,8 @@ CONTAINS
                                         just_energy=just_energy_xc, &
                                         native_skala_atom_force=native_skala_atom_force, &
                                         qs_env_external=qs_env, &
-                                        native_gapw_composite_override=native_gapw_composite_reference)
+                                        native_gapw_composite_override=native_gapw_composite_reference, &
+                                        upf_weight_potential=inverse_weight_potential)
                   END IF
                   IF (native_gapw_composite_reference .AND. .NOT. native_gapw_composite_direct_ao .AND. &
                       ASSOCIATED(v_rspace_new) .AND. ASSOCIATED(v_tau_rspace)) THEN
@@ -975,7 +983,8 @@ CONTAINS
                                      native_gapw_composite_override=native_gapw_composite_reference, &
                                      native_skala_defer_to_atom_composite= &
                                      (native_gapw_atom_composite_reference .OR. &
-                                      native_direct_valence_atom_composite))
+                                      native_direct_valence_atom_composite), &
+                                     upf_weight_potential=inverse_weight_potential)
                   IF (native_gapw_composite_reference .AND. .NOT. native_gapw_composite_direct_ao .AND. &
                       ASSOCIATED(v_rspace_new) .AND. ASSOCIATED(v_tau_rspace)) THEN
                      CALL integrate_gapw_composite_vxc_gspace( &
@@ -1053,7 +1062,7 @@ CONTAINS
             CALL qs_vxc_create(ks_env=ks_env, rho_struct=rho_struct, xc_section=xc_section, &
                                vxc_rho=v_rspace_new, vxc_tau=v_tau_rspace, exc=energy%exc, &
                                edisp=edisp, dispersion_env=qs_env%dispersion_env, &
-                               just_energy=just_energy_xc)
+                               just_energy=just_energy_xc, upf_weight_potential=inverse_weight_potential)
             IF (edisp /= 0.0_dp) energy%dispersion = edisp
             IF (qs_env%requires_matrix_vxc .AND. ASSOCIATED(v_rspace_new)) THEN
                CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace_new, matrix_vxc=matrix_vxc)
@@ -1337,6 +1346,14 @@ CONTAINS
                   CALL dbcsr_add(ks_matrix(ispin, 1)%matrix, matrix_vxc(ispin)%matrix, 1.0_dp, 1.0_dp)
                END DO
             END IF
+         END IF
+
+         IF (ASSOCIATED(inverse_weight_potential)) THEN
+            ! Inverse GAPW bypasses the native atom consumers, but retains the moving XC grid weights.
+            NULLIFY (rho1)
+            CALL accint_weight_force(qs_env, rho, rho1, 0, xc_section, weight_potential=inverse_weight_potential)
+            CALL auxbas_pw_pool%give_back_pw(inverse_weight_potential)
+            DEALLOCATE (inverse_weight_potential)
          END IF
 
          IF (gapw .OR. gapw_xc) THEN
