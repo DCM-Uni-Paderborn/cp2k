@@ -708,13 +708,15 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET :: known_coefficients_response(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL :: saved_coefficients_response(:, :)
 
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_grid_response'
+
       COMPLEX(dp), ALLOCATABLE :: gradient(:, :, :), gradient_response(:, :, :), &
          kinetic_operator(:, :), kinetic_response(:, :), partial(:, :), projected(:, :), &
          projected_response(:, :), soft(:, :), soft_response(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
       COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
-                                                            nproj
+                                                            nproj, timing_handle
       LOGICAL                                            :: use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
                                                             volume_response
@@ -722,6 +724,7 @@ CONTAINS
                                                             dvn(:), dvt(:), points_response(:, :), &
                                                             weights_response(:)
 
+      CALL timeset(routineN, timing_handle)
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
@@ -821,6 +824,7 @@ CONTAINS
             ALLOCATE (saved_coefficients_response, SOURCE=dw)
          END IF
       END IF
+      CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_grid_response
 
 ! **************************************************************************************************

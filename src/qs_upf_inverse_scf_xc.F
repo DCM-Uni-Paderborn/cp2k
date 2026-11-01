@@ -929,10 +929,12 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
          OPTIONAL, TARGET                                :: context
 
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_scf_xc_response'
+
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_coefficients(:, :, :)
       COMPLEX(dp), POINTER                               :: coefficients(:, :, :)
       INTEGER                                            :: axis, ik, nao, nk, np, nproj, ns, other, &
-                                                            stride
+                                                            stride, timing_handle
       REAL(dp)                                           :: strain(3, 3)
       REAL(dp), ALLOCATABLE :: core(:, :), core_gradient(:, :, :), core_tau(:, :), &
          defining_points(:, :), defining_weights(:), fields(:, :, :, :), points(:, :), weights(:)
@@ -950,6 +952,7 @@ CONTAINS
       CALL comm%set_handle(para_env%get_handle())
       CPASSERT(ASSOCIATED(state))
       IF (.NOT. ASSOCIATED(state%xc_grid)) RETURN
+      CALL timeset(routineN, timing_handle)
       CALL frame_refs(state, frames, augmentation)
       frame => frames(1)%frame
       nk = SIZE(frames)
@@ -995,6 +998,7 @@ CONTAINS
                                            fields, state%xc_grid, cell, points, weights, atom_response, cell_response, &
                                            reduced_k_response, coefficients, core, core_gradient, comm, response, &
                                            state%kinetic_cache, core_tau, state%paw_reconstruction)
+      CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_scf_xc_response
 
 ! **************************************************************************************************

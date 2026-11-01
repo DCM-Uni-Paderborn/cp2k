@@ -1088,11 +1088,14 @@ CONTAINS
       TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
          OPTIONAL                                        :: orbital_factors
 
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_paw_response'
+
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
       COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: center, first, ik, info, last, n, nao, &
-                                                            nk, nproj, ns, p, q, spin
+                                                            nk, nproj, ns, p, q, spin, &
+                                                            timing_handle
       LOGICAL                                            :: assertion_valid
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
                                                             volume_response
@@ -1101,6 +1104,7 @@ CONTAINS
       TYPE(twofold_real_type)                            :: retained_response
       TYPE(twofold_real_type), ALLOCATABLE               :: occupation_response(:, :)
 
+      CALL timeset(routineN, timing_handle)
       nk = SIZE(frames)
       CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
       nao = SIZE(frames(1)%ao%coefficients, 2)
@@ -1185,6 +1189,7 @@ CONTAINS
          END DO
       END DO
       derivative = derivative + twofold_value(retained_response)
+      CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_paw_response
 
 END MODULE qs_upf_inverse_paw

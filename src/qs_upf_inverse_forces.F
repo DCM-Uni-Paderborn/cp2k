@@ -66,10 +66,12 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic_potential(:)
 
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_force'
+
       COMPLEX(dp), ALLOCATABLE :: coefficients_response(:, :, :), spin_density(:, :, :, :), &
          total_density(:, :, :), total_weighted(:, :, :)
       INTEGER                                            :: atom, axis, index, kind, nk, nspin, &
-                                                            other, spin
+                                                            other, spin, timing_handle
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       LOGICAL                                            :: complete_coulomb
       REAL(dp) :: coulomb_cell_gradient(3, 3), external_energy, external_response, field_measure, &
@@ -91,6 +93,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(virial_type), POINTER                         :: virial
 
+      CALL timeset(routineN, timing_handle)
       CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho, force=force, cell=cell, virial=virial, &
                       particle_set=atoms, atomic_kind_set=atomic_kinds, para_env=para_env)
       CALL get_ks_env(ks_env, upf_inverse=state)
@@ -237,6 +240,7 @@ CONTAINS
             CALL vgradient(axis, spin)%release()
          END DO
       END DO
+      CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_force
 
 ! **************************************************************************************************

@@ -999,9 +999,11 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: coefficients_response(:, :)
 
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_scf_core_response'
+
       COMPLEX(dp), ALLOCATABLE                           :: atomic_m(:, :), atomic_t(:, :), &
                                                             dm(:, :), dt(:, :), dw(:, :)
-      INTEGER                                            :: axis, info
+      INTEGER                                            :: axis, info, timing_handle
       LOGICAL                                            :: use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3)
       TYPE(particle_type), POINTER                       :: atoms(:)
@@ -1010,6 +1012,7 @@ CONTAINS
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
+      CALL timeset(routineN, timing_handle)
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       cell_inverse = frame%ao%cell
@@ -1058,6 +1061,7 @@ CONTAINS
       DO axis = 1, 3
          CALL zeros(axis)%release()
       END DO
+      CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_scf_core_response
 
 ! **************************************************************************************************
@@ -1086,10 +1090,12 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: response, metric_response
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: coefficients_response(:, :, :)
 
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_scf_response'
+
       COMPLEX(dp), ALLOCATABLE :: core(:, :, :), density(:, :, :), dw(:, :), dw_all(:, :, :), &
          energy_weighted(:, :, :), matrix(:, :), metric(:, :, :), metric_part(:, :)
       INTEGER                                            :: active_potential, axis, component, ik, &
-                                                            info, nk, nspin
+                                                            info, nk, nspin, timing_handle
       REAL(dp) :: cell_inverse(3, 3), foreign_energy, foreign_response, gaussian_virial(3, 3), &
          native_metric, native_response, paw_response, strain(3, 3), weight
       REAL(dp), ALLOCATABLE                              :: gaussian_gradients(:, :), &
@@ -1102,6 +1108,7 @@ CONTAINS
       TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
+      CALL timeset(routineN, timing_handle)
       CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
       CPASSERT(ASSOCIATED(state))
       CALL check_geometry(ks_env, state)
@@ -1252,6 +1259,7 @@ CONTAINS
       DO axis = 1, 3
          CALL zeros(axis)%release()
       END DO
+      CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_scf_response
 
 ! **************************************************************************************************
