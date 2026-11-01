@@ -8,6 +8,7 @@
 MODULE qs_upf_inverse_aux_operator
    USE admm_types,                      ONLY: admm_type,&
                                               get_admm_env
+   USE admm_utils,                      ONLY: admm_purified_operator
    USE cell_types,                      ONLY: cell_type
    USE cp_cfm_types,                    ONLY: cp_cfm_get_submatrix
    USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
@@ -23,6 +24,7 @@ MODULE qs_upf_inverse_aux_operator
    USE hfx_types,                       ONLY: hfx_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_admm_exch_scaling_none,&
+                                              do_admm_purify_mo_diag,&
                                               do_admm_purify_none
    USE input_cp2k_hfx,                  ONLY: ri_pmat
    USE input_section_types,             ONLY: section_vals_type
@@ -44,6 +46,7 @@ MODULE qs_upf_inverse_aux_operator
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
+   USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_upf_inverse_aux_xc,           ONLY: qs_upf_inverse_aux_xc_evaluate
@@ -504,7 +507,7 @@ CONTAINS
          primary_metric(:, :, :), projection(:, :, :), reduced_corrected(:, :, :), &
          reduced_density(:, :, :), reduced_projection(:, :, :), unscaled(:, :), work(:, :), z(:, :)
       INTEGER                                            :: ik, na, nk, no, ns, spin
-      LOGICAL                                            :: geometry, normalized, valid
+      LOGICAL                                            :: geometry, normalized, purified, valid
       REAL(dp)                                           :: eta, lambda, na_spin, no_spin, &
                                                             numerator, tolerance
       TYPE(admm_type), POINTER                           :: admm
@@ -516,8 +519,10 @@ CONTAINS
       CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm, rho=rho)
       CPASSERT(ASSOCIATED(admm))
       CPASSERT(admm%upf_density%valid)
-      IF (admm%purification_method /= do_admm_purify_none .OR. admm%block_fit .OR. admm%block_dm) THEN
-         CPABORT('Purified or blocked ADMM not implemented yet')
+      purified = admm%purification_method == do_admm_purify_mo_diag
+      IF ((admm%purification_method /= do_admm_purify_none .AND. .NOT. purified) .OR. &
+          admm%block_fit .OR. admm%block_dm) THEN
+         CPABORT('This UPF ADMM purification or blocked fit is not implemented yet')
       END IF
       IF (admm%do_admmp .OR. admm%do_admms .OR. admm%scaling_model /= do_admm_exch_scaling_none) THEN
          CPABORT('ADMM exchange rescaling not implemented yet')
@@ -534,6 +539,9 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=primary)
       CPASSERT(ASSOCIATED(primary))
       CPASSERT(primary%enabled)
+      IF (purified .AND. ASSOCIATED(primary%bloch%kpoints)) THEN
+         CPABORT('MO_DIAG purification requires real Gamma orbitals')
+      END IF
       IF (geometry) THEN
          CALL qs_upf_inverse_aux_projection(qs_env, projection, reduced_projection, metric_inverse)
       ELSE
@@ -600,16 +608,33 @@ CONTAINS
          DO ik = 1, nk
             unscaled(:, :) = admm%upf_density%matrices(:, :, ik, spin)/eta
             corrected(:, :) = eta*(auxiliary_operator(:, :, ik, spin) - lambda*admm%upf_aux_metric%values(:, :, ik))
-            work(:, :) = MATMUL(corrected, projection(:, :, ik))
-            operators(:, :, ik, spin) = MATMUL(CONJG(TRANSPOSE(projection(:, :, ik))), work) + &
-                                        lambda*primary_metric(:, :, ik)
+            IF (purified) THEN
+               IF (geometry) THEN
+                  CALL transfer_purified(qs_env, spin, projection(:, :, ik), primary_metric(:, :, ik), &
+                                         density(:, :, ik, spin), unscaled, corrected, operators(:, :, ik, spin), &
+                                         metric_inverse(:, :, ik), mixed_covector(:, :, ik, spin), &
+                                         auxiliary_covector(:, :, ik, spin), primary_covector(:, :, ik, spin))
+               ELSE
+                  CALL transfer_purified(qs_env, spin, projection(:, :, ik), primary_metric(:, :, ik), &
+                                         density(:, :, ik, spin), unscaled, corrected, operators(:, :, ik, spin))
+               END IF
+               operators(:, :, ik, spin) = operators(:, :, ik, spin) + lambda*primary_metric(:, :, ik)
+            ELSE
+               work(:, :) = MATMUL(corrected, projection(:, :, ik))
+               operators(:, :, ik, spin) = MATMUL(CONJG(TRANSPOSE(projection(:, :, ik))), work) + &
+                                           lambda*primary_metric(:, :, ik)
+               IF (geometry) THEN
+                  auxiliary_covector(:, :, ik, spin) = CMPLX(0.0_dp, 0.0_dp, dp)
+                  primary_covector(:, :, ik, spin) = CMPLX(0.0_dp, 0.0_dp, dp)
+               END IF
+            END IF
             IF (geometry) THEN
                corrected_k(:, :, ik) = corrected
-               auxiliary_covector(:, :, ik, spin) = -eta*lambda*unscaled
-               primary_covector(:, :, ik, spin) = lambda*density(:, :, ik, spin)
+               auxiliary_covector(:, :, ik, spin) = auxiliary_covector(:, :, ik, spin) - eta*lambda*unscaled
+               primary_covector(:, :, ik, spin) = primary_covector(:, :, ik, spin) + lambda*density(:, :, ik, spin)
             END IF
          END DO
-         IF (geometry) THEN
+         IF (geometry .AND. .NOT. purified) THEN
             IF (ASSOCIATED(primary%bloch%kpoints)) THEN
                CALL kpoint_star_operator(admm%upf_inverse%bloch%star, corrected_k, reduced_corrected)
                CALL kpoint_star_operator(primary%bloch%star, density(:, :, :, spin), reduced_density)
@@ -638,6 +663,90 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE transfer_operator
+
+! **************************************************************************************************
+!> \brief Use the actual native MO_DIAG factors for the original-coordinate AO derivative.
+!>        This orbital purification requires a primary density from the same orthonormal MOs.
+!>        Density mixing cannot silently replace those MOs by an unrelated occupation matrix.
+!> \param qs_env ...
+!> \param spin ...
+!> \param projection ...
+!> \param primary_metric ...
+!> \param primary_density ...
+!> \param auxiliary_density Unscaled purified density, before charge normalization.
+!> \param auxiliary_operator Complete derivative including the charge-normalization multiplier.
+!> \param operator ...
+!> \param metric_inverse ...
+!> \param mixed_covector ...
+!> \param auxiliary_covector ...
+!> \param primary_covector ...
+! **************************************************************************************************
+   SUBROUTINE transfer_purified(qs_env, spin, projection, primary_metric, primary_density, auxiliary_density, &
+                                auxiliary_operator, OPERATOR, metric_inverse, mixed_covector, &
+                                auxiliary_covector, primary_covector)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      INTEGER, INTENT(IN)                                :: spin
+      COMPLEX(dp), INTENT(IN) :: projection(:, :), primary_metric(:, :), primary_density(:, :), &
+         auxiliary_density(:, :), auxiliary_operator(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: operator(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: metric_inverse(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: mixed_covector(:, :), &
+                                                            auxiliary_covector(:, :), &
+                                                            primary_covector(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: check(:, :), coefficients(:, :), &
+                                                            gram_vectors(:, :), &
+                                                            inverse_root(:, :), weighted(:, :)
+      INTEGER                                            :: i, m, no
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: occupations(:), real_coefficients(:, :), &
+                                                            real_gram(:, :)
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(mo_set_type), POINTER                         :: mos(:)
+
+      CALL get_qs_env(qs_env, admm_env=admm, mos=mos)
+      m = admm%nmo(spin)
+      no = SIZE(primary_metric, 1)
+      ALLOCATE (real_coefficients(no, m), real_gram(m, m), occupations(m))
+      IF (m > 0) THEN
+         CALL cp_fm_get_submatrix(mos(spin)%mo_coeff, real_coefficients, n_rows=no, n_cols=m)
+         occupations(:) = mos(spin)%occupation_numbers(1:m)
+      END IF
+      ALLOCATE (coefficients, SOURCE=CMPLX(real_coefficients, 0.0_dp, dp))
+      IF (m > 0) CALL cp_fm_get_submatrix(admm%R(spin), real_gram)
+      ALLOCATE (gram_vectors, SOURCE=CMPLX(real_gram, 0.0_dp, dp))
+      IF (m > 0) CALL cp_fm_get_submatrix(admm%lambda_inv_sqrt(spin), real_gram)
+      ALLOCATE (inverse_root, SOURCE=CMPLX(real_gram, 0.0_dp, dp))
+      ALLOCATE (check, SOURCE=MATMUL(CONJG(TRANSPOSE(coefficients)), MATMUL(primary_metric, coefficients)))
+      DO i = 1, m
+         check(i, i) = check(i, i) - 1.0_dp
+      END DO
+      IF (m > 0) THEN
+         valid = MAXVAL(ABS(check)) < 1.0E-8_dp
+         CPASSERT(valid)
+      END IF
+      ALLOCATE (weighted, SOURCE=coefficients)
+      DO i = 1, m
+         weighted(:, i) = weighted(:, i)*occupations(i)
+      END DO
+      DEALLOCATE (check)
+      ALLOCATE (check, SOURCE=MATMUL(weighted, CONJG(TRANSPOSE(coefficients))))
+      valid = MAXVAL(ABS(check - primary_density)) < 1.0E-8_dp*MAX(1.0_dp, MAXVAL(ABS(primary_density)))
+      CPASSERT(valid)
+      DEALLOCATE (weighted, check)
+      ALLOCATE (weighted, SOURCE=MATMUL(projection, MATMUL(coefficients, inverse_root)))
+      ALLOCATE (check, SOURCE=weighted)
+      DO i = 1, m
+         check(:, i) = check(:, i)*occupations(i)
+      END DO
+      valid = MAXVAL(ABS(MATMUL(check, CONJG(TRANSPOSE(weighted))) - auxiliary_density)) < &
+              1.0E-8_dp*MAX(1.0_dp, MAXVAL(ABS(auxiliary_density)))
+      CPASSERT(valid)
+      CALL admm_purified_operator(projection, primary_metric, admm%upf_aux_metric%values(:, :, 1), &
+                                  coefficients, occupations, gram_vectors, admm%eigvals_lambda(spin)%eigvals%data, &
+                                  inverse_root, auxiliary_operator, OPERATOR, metric_inverse, mixed_covector, &
+                                  auxiliary_covector, primary_covector)
+   END SUBROUTINE transfer_purified
 
 ! **************************************************************************************************
 !> \brief Original PAW closed-core HF energy and its auxiliary AO and geometry derivatives.

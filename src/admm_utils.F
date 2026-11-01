@@ -34,7 +34,7 @@ MODULE admm_utils
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: admm_inverse_sqrt_divdiff
+   PUBLIC :: admm_inverse_sqrt_divdiff, admm_purified_operator
    PUBLIC :: admm_correct_for_eigenvalues, &
              admm_uncorrect_for_eigenvalues
 
@@ -61,6 +61,126 @@ CONTAINS
       root_b = SQRT(b)
       value = -1.0_dp/(root_a + root_b)/root_a/root_b
    END FUNCTION admm_inverse_sqrt_divdiff
+
+! **************************************************************************************************
+!> \brief Derivative of the MO_DIAG auxiliary density on the fixed-rank primary density manifold.
+!>        Primary orbitals are orthonormal in the physical primary metric. Their positive
+!>        occupations define the primary density. The auxiliary projection is orthonormalized
+!>        with its actual Gram inverse square root. The returned Hermitian AO derivative also
+!>        gives the occupation derivatives. Geometry includes the primary-metric response of
+!>        the natural orbitals, in addition to the auxiliary and mixed metric responses.
+!> \param projection Physical projection A = M_AA**(-1) M_AO.
+!> \param primary_metric Physical primary normalization metric M_OO.
+!> \param auxiliary_metric Physical auxiliary normalization metric M_AA.
+!> \param coefficients Primary orbitals C with C**dagger M_OO C = I.
+!> \param occupations Positive retained orbital occupations.
+!> \param gram_vectors Eigenvectors of (A C)**dagger M_AA (A C).
+!> \param gram_values Positive Gram eigenvalues in the same order.
+!> \param inverse_root The same Gram inverse square root used to build the auxiliary density.
+!> \param auxiliary_operator Hermitian derivative at fixed purified auxiliary density.
+!> \param operator Hermitian derivative with respect to the primary AO density.
+!> \param metric_inverse Optional inverse M_AA for geometry. Supply all four geometry arguments.
+!> \param mixed_covector Optional derivative with respect to M_AO, with the factor two included.
+!> \param auxiliary_covector Optional Hermitian derivative with respect to M_AA.
+!> \param primary_covector Optional Hermitian derivative with respect to M_OO at fixed AO density.
+! **************************************************************************************************
+   SUBROUTINE admm_purified_operator(projection, primary_metric, auxiliary_metric, coefficients, occupations, &
+                                     gram_vectors, gram_values, inverse_root, auxiliary_operator, OPERATOR, &
+                                     metric_inverse, mixed_covector, auxiliary_covector, primary_covector)
+      COMPLEX(dp), INTENT(IN)                            :: projection(:, :), primary_metric(:, :), &
+                                                            auxiliary_metric(:, :), &
+                                                            coefficients(:, :)
+      REAL(dp), INTENT(IN)                               :: occupations(:)
+      COMPLEX(dp), INTENT(IN)                            :: gram_vectors(:, :)
+      REAL(dp), INTENT(IN)                               :: gram_values(:)
+      COMPLEX(dp), INTENT(IN)                            :: inverse_root(:, :), &
+                                                            auxiliary_operator(:, :)
+      COMPLEX(dp), INTENT(OUT)                           :: operator(:, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: metric_inverse(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: mixed_covector(:, :), &
+                                                            auxiliary_covector(:, :), &
+                                                            primary_covector(:, :)
+
+      COMPLEX(dp), ALLOCATABLE :: delta(:, :), eigen_covector(:, :), gram_covector(:, :), &
+         metric_orbitals(:, :), occupied_gradient(:, :), occupied_operator(:, :), &
+         orbital_gradient(:, :), projected(:, :), purified(:, :), tangent(:, :), &
+         weighted_gradient(:, :), z(:, :)
+      INTEGER                                            :: i, j, m, na, no
+      LOGICAL                                            :: geometry, valid
+
+      no = SIZE(coefficients, 1)
+      m = SIZE(coefficients, 2)
+      na = SIZE(projection, 1)
+      valid = ALL(SHAPE(projection) == [na, no]) .AND. &
+              ALL(SHAPE(primary_metric) == [no, no]) .AND. &
+              ALL(SHAPE(auxiliary_metric) == [na, na]) .AND. &
+              ALL(SHAPE(auxiliary_operator) == [na, na]) .AND. &
+              ALL(SHAPE(OPERATOR) == [no, no]) .AND. &
+              ALL(SHAPE(gram_vectors) == [m, m]) .AND. &
+              ALL(SHAPE(inverse_root) == [m, m]) .AND. &
+              SIZE(occupations) == m .AND. SIZE(gram_values) == m
+      CPASSERT(valid)
+      geometry = PRESENT(metric_inverse) .OR. PRESENT(mixed_covector) .OR. &
+                 PRESENT(auxiliary_covector) .OR. PRESENT(primary_covector)
+      IF (geometry) THEN
+         valid = PRESENT(metric_inverse) .AND. PRESENT(mixed_covector) .AND. &
+                 PRESENT(auxiliary_covector) .AND. PRESENT(primary_covector)
+         CPASSERT(valid)
+         valid = ALL(SHAPE(metric_inverse) == [na, na]) .AND. &
+                 ALL(SHAPE(mixed_covector) == [na, no]) .AND. &
+                 ALL(SHAPE(auxiliary_covector) == [na, na]) .AND. &
+                 ALL(SHAPE(primary_covector) == [no, no])
+         CPASSERT(valid)
+         mixed_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+         auxiliary_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+         primary_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      OPERATOR = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (m == 0) RETURN
+      CPASSERT(ALL(occupations > 0.0_dp) .AND. ALL(gram_values > 0.0_dp))
+      ALLOCATE (projected, SOURCE=MATMUL(projection, coefficients))
+      ALLOCATE (purified, SOURCE=MATMUL(projected, inverse_root))
+      ALLOCATE (weighted_gradient, SOURCE=MATMUL(auxiliary_operator, purified))
+      DO i = 1, m
+         weighted_gradient(:, i) = weighted_gradient(:, i)*occupations(i)
+      END DO
+      ALLOCATE (gram_covector, SOURCE=MATMUL(CONJG(TRANSPOSE(projected)), weighted_gradient))
+      gram_covector(:, :) = gram_covector + CONJG(TRANSPOSE(gram_covector))
+      ALLOCATE (eigen_covector, SOURCE=MATMUL(CONJG(TRANSPOSE(gram_vectors)), MATMUL(gram_covector, gram_vectors)))
+      DO j = 1, m
+         DO i = 1, m
+            eigen_covector(i, j) = eigen_covector(i, j)*admm_inverse_sqrt_divdiff(gram_values(i), gram_values(j))
+         END DO
+      END DO
+      gram_covector(:, :) = MATMUL(gram_vectors, MATMUL(eigen_covector, CONJG(TRANSPOSE(gram_vectors))))
+      weighted_gradient(:, :) = MATMUL(weighted_gradient, inverse_root) + &
+                                MATMUL(auxiliary_metric, MATMUL(projected, gram_covector))
+      ALLOCATE (orbital_gradient, SOURCE=MATMUL(CONJG(TRANSPOSE(projection)), weighted_gradient))
+      ALLOCATE (occupied_gradient, SOURCE=MATMUL(CONJG(TRANSPOSE(coefficients)), orbital_gradient))
+      ALLOCATE (occupied_operator, SOURCE=MATMUL(CONJG(TRANSPOSE(purified)), MATMUL(auxiliary_operator, purified)))
+      ALLOCATE (metric_orbitals, SOURCE=MATMUL(primary_metric, coefficients))
+      ALLOCATE (tangent, SOURCE=orbital_gradient - MATMUL(metric_orbitals, occupied_gradient))
+      DO i = 1, m
+         tangent(:, i) = tangent(:, i)/occupations(i)
+      END DO
+      OPERATOR(:, :) = MATMUL(metric_orbitals, MATMUL(occupied_operator, CONJG(TRANSPOSE(metric_orbitals)))) + &
+                       MATMUL(tangent, CONJG(TRANSPOSE(metric_orbitals))) + &
+                       MATMUL(metric_orbitals, CONJG(TRANSPOSE(tangent)))
+      OPERATOR(:, :) = 0.5_dp*(OPERATOR + CONJG(TRANSPOSE(OPERATOR)))
+      IF (geometry) THEN
+         ALLOCATE (z, SOURCE=MATMUL(metric_inverse, MATMUL(weighted_gradient, CONJG(TRANSPOSE(coefficients)))))
+         mixed_covector(:, :) = 2.0_dp*z
+         auxiliary_covector(:, :) = MATMUL(projected, MATMUL(gram_covector, CONJG(TRANSPOSE(projected)))) - &
+                                    MATMUL(z, CONJG(TRANSPOSE(projection))) - MATMUL(projection, CONJG(TRANSPOSE(z)))
+         ALLOCATE (delta, SOURCE=occupied_operator)
+         DO i = 1, m
+            delta(:, i) = delta(:, i)*occupations(i)
+         END DO
+         delta(:, :) = delta - occupied_gradient
+         delta(:, :) = 0.5_dp*(delta + CONJG(TRANSPOSE(delta)))
+         primary_covector(:, :) = MATMUL(coefficients, MATMUL(delta, CONJG(TRANSPOSE(coefficients))))
+      END IF
+   END SUBROUTINE admm_purified_operator
 
 ! **************************************************************************************************
 !> \brief ...
