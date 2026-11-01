@@ -294,13 +294,18 @@ CONTAINS
 !> \param debug_stress ...
 !> \param iotag ...
 !> \param kind_mask Optional selection matching the collocated core field.
+!> \param force_response Optional local atomic energy gradients, leaving native forces unchanged.
+!> \param virial_response Optional local source virial, leaving native virials unchanged.
 ! **************************************************************************************************
-   SUBROUTINE integrate_rho_nlcc(rho_rspace, qs_env, debug_forces, debug_stress, iotag, kind_mask)
+   SUBROUTINE integrate_rho_nlcc(rho_rspace, qs_env, debug_forces, debug_stress, iotag, kind_mask, &
+                                 force_response, virial_response)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: rho_rspace
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: debug_forces, debug_stress
       CHARACTER(len=*), OPTIONAL                         :: iotag
       LOGICAL, INTENT(IN), OPTIONAL                      :: kind_mask(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), &
+                                                            virial_response(3, 3)
 
       CHARACTER(len=*), PARAMETER :: routineN = 'integrate_rho_nlcc'
 
@@ -310,8 +315,10 @@ CONTAINS
                                                             ni, npme
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: nct_nlcc
       INTEGER, DIMENSION(:), POINTER                     :: atom_list, cores
-      LOGICAL                                            :: debfor, debstr, use_virial
-      REAL(KIND=dp)                                      :: alpha, eps_rho_rspace, fconv, radius
+      LOGICAL                                            :: debfor, debstr, isolated, use_virial, &
+                                                            valid
+      REAL(KIND=dp)                                      :: alpha, cutoff, eps_rho_rspace, fconv, &
+                                                            radius
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: alpha_nlcc
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: cval_nlcc
       REAL(KIND=dp), DIMENSION(3)                        :: fodeb, force_a, force_b, ra
@@ -356,11 +363,26 @@ CONTAINS
                       force=force, virial=virial)
 
       use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
+      isolated = PRESENT(force_response) .OR. PRESENT(virial_response)
+      IF (PRESENT(force_response)) THEN
+         valid = ALL(SHAPE(force_response) == [3, SIZE(particle_set)])
+         CPASSERT(valid)
+         force_response = 0.0_dp
+      END IF
+      IF (PRESENT(virial_response)) THEN
+         virial_response = 0.0_dp
+         use_virial = .TRUE.
+      END IF
+      cutoff = 1.0_dp
+      ! Isolated responses use the radius of the actual calculate_rho_nlcc source.
+      IF (isolated) cutoff = 0.0_dp
       !debug
       debfor = .FALSE.
       IF (PRESENT(debug_forces)) debfor = debug_forces
       debstr = .FALSE.
       IF (PRESENT(debug_stress)) debstr = debug_stress
+      valid = .NOT. isolated .OR. (.NOT. debfor .AND. .NOT. debstr)
+      CPASSERT(valid)
       debstr = debstr .AND. use_virial
       IF (debstr) THEN
          fconv = 1.0E-9_dp*pascal/cell%deth
@@ -489,7 +511,7 @@ CONTAINS
                                                  ra=ra, rb=ra, rp=ra, &
                                                  zetp=1/(2*alpha**2), eps=eps_rho_rspace, &
                                                  pab=pab, o1=0, o2=0, &  ! without map_consistent
-                                                 prefactor=1.0_dp, cutoff=1.0_dp)
+                                                 prefactor=1.0_dp, cutoff=cutoff)
 
                CALL integrate_pgf_product(ni, 1/(2*alpha**2), 0, &
                                           0, 0.0_dp, 0, ra, [0.0_dp, 0.0_dp, 0.0_dp], &
@@ -499,10 +521,15 @@ CONTAINS
                                           force_b=force_b, use_virial=use_virial, my_virial_a=my_virial_a, &
                                           my_virial_b=my_virial_b, use_subpatch=.TRUE., subpatch_pattern=0)
 
-               force(ikind)%gth_nlcc(:, iatom) = &
-                  force(ikind)%gth_nlcc(:, iatom) + force_a(:)*rho_rspace%pw_grid%dvol
-
-               IF (use_virial) THEN
+               IF (PRESENT(force_response)) THEN
+                  force_response(:, atom_a) = force_response(:, atom_a) + force_a*rho_rspace%pw_grid%dvol
+               ELSE IF (.NOT. isolated) THEN
+                  force(ikind)%gth_nlcc(:, iatom) = &
+                     force(ikind)%gth_nlcc(:, iatom) + force_a(:)*rho_rspace%pw_grid%dvol
+               END IF
+               IF (PRESENT(virial_response)) THEN
+                  virial_response = virial_response + my_virial_a*rho_rspace%pw_grid%dvol
+               ELSE IF (use_virial .AND. .NOT. isolated) THEN
                   virial%pv_nlcc = virial%pv_nlcc + my_virial_a*rho_rspace%pw_grid%dvol
                   virial%pv_virial = virial%pv_virial + my_virial_a*rho_rspace%pw_grid%dvol
                END IF

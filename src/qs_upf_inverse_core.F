@@ -8,10 +8,12 @@
 MODULE qs_upf_inverse_core
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind_set
+   USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
+   USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_methods,                      ONLY: pw_axpy,&
                                               pw_integral_ab,&
                                               pw_transfer
@@ -36,6 +38,7 @@ MODULE qs_upf_inverse_core
    PRIVATE
    PUBLIC :: qs_upf_inverse_core_collocate, qs_upf_inverse_core_force
    PUBLIC :: qs_upf_inverse_core_kinetic
+   PUBLIC :: qs_upf_inverse_core_source_geometry
 
 CONTAINS
 
@@ -269,6 +272,197 @@ CONTAINS
          CALL core_field_force(qs_env, kinetic_potential, .TRUE.)
       END IF
    END SUBROUTINE qs_upf_inverse_core_force
+
+! **************************************************************************************************
+!> \brief Contract frozen-core source geometry without changing accepted forces or virials.
+!>        Charge follows the actual native partial-core grid. Core tau follows the independently
+!>        prepared UPF context. Original UPF radial fields and native GTH Gaussian cores retain
+!>        their spin split and reciprocal-grid transfer. Return integral(v_n delta n_c +
+!>        v_tau delta tau_c) with the reference integration measure. The explicit functional
+!>        measure and atomic XC residual are separate contributions.
+!> \param qs_env Original potentials, native core grid and geometry owners.
+!> \param potential Unweighted folded density covectors, one per spin.
+!> \param atom_response Total Cartesian atomic motion, including affine cell motion.
+!> \param cell_response Lattice derivative at fixed grid topology.
+!> \param response Globally reduced source contraction, without a force minus sign.
+!> \param kinetic_potential Optional covectors conjugate to the specified frozen-core tau.
+!> \param context Optional independent UPF basis and its core-tau convention.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_core_source_geometry(qs_env, potential, atom_response, cell_response, response, &
+                                                  kinetic_potential, context)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic_potential(:)
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: context
+
+      INTEGER                                            :: atom, kind, spin
+      LOGICAL                                            :: original_upf, valid
+      LOGICAL, ALLOCATABLE                               :: native_kinds(:)
+      REAL(dp)                                           :: native_response, strain(3, 3), &
+                                                            virial(3, 3)
+      REAL(dp), ALLOCATABLE                              :: gradient(:, :), relative_motion(:, :)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_c1d_gs_type)                               :: folded_g
+      TYPE(pw_r3d_rs_type)                               :: folded
+      TYPE(pw_r3d_rs_type), POINTER                      :: core_density
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, cell=cell, particle_set=atoms, qs_kind_set=kinds, &
+                      dft_control=control, para_env=para_env)
+      CALL get_ks_env(ks_env, upf_inverse=state, rho_nlcc=core_density)
+      original_upf = .FALSE.
+      IF (ASSOCIATED(state)) original_upf = state%enabled
+      IF (PRESENT(context)) state => context
+      valid = ALL(SHAPE(atom_response) == [3, SIZE(atoms)])
+      CPASSERT(valid)
+      CPASSERT(SIZE(potential) == control%nspins)
+      strain = MATMUL(cell_response, cell%h_inv)
+      response = 0.0_dp
+      IF (ASSOCIATED(core_density)) THEN
+         IF (original_upf) THEN
+            CALL core_field_geometry(kinds, atoms, state, core_density%pw_grid, potential, &
+                                     atom_response, strain, .FALSE., response)
+         END IF
+         ALLOCATE (native_kinds(SIZE(kinds)), SOURCE=.FALSE.)
+         DO kind = 1, SIZE(kinds)
+            IF (kinds(kind)%ghost) CYCLE
+            IF (ASSOCIATED(kinds(kind)%gth_potential)) native_kinds(kind) = kinds(kind)%gth_potential%nlcc
+            IF (.NOT. original_upf .AND. ASSOCIATED(kinds(kind)%sgp_potential)) THEN
+               ! Pure NC calculations retain their native fitted partial-core source.
+               native_kinds(kind) = kinds(kind)%sgp_potential%has_nlcc
+            END IF
+         END DO
+         IF (ANY(native_kinds)) THEN
+            ALLOCATE (gradient(3, SIZE(atoms)), relative_motion(3, SIZE(atoms)))
+            DO atom = 1, SIZE(atoms)
+               relative_motion(:, atom) = atom_response(:, atom) - MATMUL(strain, atoms(atom)%r)
+            END DO
+            CALL folded%create(core_density%pw_grid)
+            CALL folded_g%create(core_density%pw_grid)
+            native_response = 0.0_dp
+            DO spin = 1, SIZE(potential)
+               CALL core_potential_transfer(potential(spin), folded_g)
+               CALL pw_transfer(folded_g, folded)
+               CALL integrate_rho_nlcc(folded, qs_env, kind_mask=native_kinds, &
+                                       force_response=gradient, virial_response=virial)
+               native_response = native_response + SUM(gradient*relative_motion) - SUM(virial*strain)
+            END DO
+            CALL para_env%sum(native_response)
+            response = response + native_response
+            CALL folded%release()
+            CALL folded_g%release()
+         END IF
+      END IF
+      IF (PRESENT(kinetic_potential)) THEN
+         CPASSERT(SIZE(kinetic_potential) == SIZE(potential))
+         IF (.NOT. ASSOCIATED(state)) RETURN
+         CALL prepare_core_kinetic(ks_env, state)
+         IF (.NOT. state%has_core_tau) RETURN
+         CALL core_field_geometry(kinds, atoms, state, state%core_tau_g%pw_grid, kinetic_potential, &
+                                  atom_response, strain, .TRUE., native_response)
+         response = response + native_response
+      END IF
+   END SUBROUTINE qs_upf_inverse_core_source_geometry
+
+! **************************************************************************************************
+!> \brief Differentiate original spherical Fourier cores on their defining grid.
+!> \param kinds Original UPF and native kind ownership.
+!> \param atoms Original Cartesian centers.
+!> \param state Selected PAW PS-core or USPP model-core kinetic fields.
+!> \param grid Defining core-density or core-tau grid.
+!> \param potential Folded spin covectors on the consumer grid.
+!> \param atom_response Total Cartesian center directions.
+!> \param strain Lattice derivative times the inverse reference lattice.
+!> \param kinetic Select core tau instead of partial-core charge.
+!> \param response Globally reduced source contraction, excluding the explicit measure.
+! **************************************************************************************************
+   SUBROUTINE core_field_geometry(kinds, atoms, state, grid, potential, atom_response, strain, kinetic, response)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(particle_type), INTENT(IN)                    :: atoms(:)
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), strain(3, 3)
+      LOGICAL, INTENT(IN)                                :: kinetic
+      REAL(dp), INTENT(OUT)                              :: response
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:), dg(:, :), dr(:, :)
+      INTEGER                                            :: atom, kind, spin
+      REAL(dp)                                           :: trace_strain
+      REAL(dp), ALLOCATABLE                              :: reciprocal_response(:, :)
+      TYPE(pw_c1d_gs_type)                               :: derivative
+      TYPE(pw_c1d_gs_type), ALLOCATABLE                  :: folded(:)
+
+      CPASSERT(ASSOCIATED(grid))
+      CALL derivative%create(grid)
+      ALLOCATE (folded(SIZE(potential)))
+      DO spin = 1, SIZE(potential)
+         CALL folded(spin)%create(grid)
+         CALL core_potential_transfer(potential(spin), folded(spin))
+      END DO
+      ALLOCATE (density(SIZE(grid%g, 2)), dr(3, SIZE(grid%g, 2)), dg(3, SIZE(grid%g, 2)))
+      ALLOCATE (reciprocal_response, SOURCE=-MATMUL(TRANSPOSE(strain), grid%g))
+      trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
+      response = 0.0_dp
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         IF (kinetic) THEN
+            IF (state%paw(kind)%active) THEN
+               CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, grid%g, atoms(atom)%r, grid%vol, &
+                                             density, dr, dg, core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
+            ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
+               CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, grid%g, atoms(atom)%r, grid%vol, &
+                                             density, dr, dg)
+            ELSE
+               CYCLE
+            END IF
+         ELSE
+            CALL upf_core_fourier(kinds(kind)%sgp_potential%upf_data, grid%g, atoms(atom)%r, grid%vol, density, dr, dg)
+         END IF
+         derivative%array = (SUM(dr*SPREAD(atom_response(:, atom), 2, SIZE(density)), DIM=1) + &
+                             SUM(dg*reciprocal_response, DIM=1) - trace_strain*density)/REAL(SIZE(potential), dp)
+         DO spin = 1, SIZE(potential)
+            response = response + pw_integral_ab(folded(spin), derivative)
+         END DO
+      END DO
+      DO spin = 1, SIZE(potential)
+         CALL folded(spin)%release()
+      END DO
+      CALL derivative%release()
+   END SUBROUTINE core_field_geometry
+
+! **************************************************************************************************
+!> \brief Transpose the existing reciprocal transfer to a core source's defining grid.
+!> \param potential Unweighted real covector on the consumer grid.
+!> \param folded Created Fourier covector on the source grid.
+! **************************************************************************************************
+   SUBROUTINE core_potential_transfer(potential, folded)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: folded
+
+      TYPE(pw_c1d_gs_type)                               :: fine
+
+      CPASSERT(ASSOCIATED(potential%pw_grid))
+      IF (ASSOCIATED(potential%pw_grid, folded%pw_grid)) THEN
+         CALL pw_transfer(potential, folded)
+      ELSE
+         CALL fine%create(potential%pw_grid)
+         CALL pw_transfer(potential, fine)
+         CALL pw_real_transfer(fine, folded)
+         CALL fine%release()
+      END IF
+   END SUBROUTINE core_potential_transfer
 
 ! **************************************************************************************************
 !> \brief Contract one independent spherical core field's center and strain response.
