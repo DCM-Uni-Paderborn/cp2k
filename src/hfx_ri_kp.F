@@ -57,6 +57,7 @@ MODULE hfx_ri_kp
    USE hfx_ri,                          ONLY: get_idx_to_atom,&
                                               hfx_ri_pre_scf_calc_tensors
    USE hfx_types,                       ONLY: hfx_ri_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_potential_short,&
                                               hfx_ri_do_2c_cholesky,&
                                               hfx_ri_do_2c_diag,&
@@ -1013,9 +1014,12 @@ CONTAINS
 !>        Outputs include each subgroup once and are globally reduced. RI workspaces still update.
 !> \note Because this routine uses stored quantities calculated in the energy calculation, they should
 !>       always be called by pairs, and with the same input densities
+!> \param spin_weights Optional fixed nonnegative weights of the separate spin exchange energies.
+!>        Weight both three-center covectors and each spin's two-center accumulation before summation.
+!>        The caller supplies any derivative of the weights themselves.
 ! **************************************************************************************************
    SUBROUTINE hfx_ri_update_forces_kp(qs_env, ri_data, nspins, hf_fraction, rho_ao, use_virial, &
-                                      atom_gradient, strain_gradient)
+                                      atom_gradient, strain_gradient, spin_weights)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
@@ -1025,6 +1029,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_virial
       REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
                                                             strain_gradient(3, 3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: spin_weights(:)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_update_forces_kp'
 
@@ -1040,7 +1045,8 @@ CONTAINS
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: force_pattern, sparsity_pattern
       INTEGER, DIMENSION(2, 1)                           :: bounds_iat, bounds_jat
       LOGICAL                                            :: inverse_transition, use_virial_prv
-      REAL(dp)                                           :: fac, occ, pref, t1, t2
+      REAL(dp)                                           :: fac, occ, pref, spin_pref, t1, t2, &
+                                                            weights(nspins)
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
       REAL(dp), POINTER                                  :: fock_virial(:, :)
       REAL(dp), TARGET                                   :: independent_strain(3, 3)
@@ -1071,6 +1077,13 @@ CONTAINS
                virial, particle_set, cell)
 
       CALL timeset(routineN, handle)
+
+      weights = 1.0_dp
+      IF (PRESENT(spin_weights)) THEN
+         CPASSERT(SIZE(spin_weights) == nspins)
+         CPASSERT(ALL(ieee_is_finite(spin_weights)) .AND. ALL(spin_weights >= 0.0_dp))
+         weights = spin_weights
+      END IF
 
       use_virial_prv = .FALSE.
       IF (PRESENT(use_virial)) use_virial_prv = use_virial
@@ -1273,6 +1286,8 @@ CONTAINS
                      END DO
 
                      DO i_spin = 1, nspins
+                        spin_pref = pref*weights(i_spin)
+                        IF (weights(i_spin) == 0.0_dp) CYCLE
                         !stack the t_3c_apc tensors
                         CALL dbt_clear(t_3c_work_2(3))
                         CALL fill_3c_stack(t_3c_work_2(3), t_3c_apc_sub(i_spin, :), iapc_pairs(:, 2), 3, &
@@ -1313,19 +1328,19 @@ CONTAINS
                            ! selects its stored derivative blocks. Images here are physical,
                            ! while the stack follows the current RI image permutation.
                            CALL add_inverse_lattice_covector(inverse_covectors, t_3c_work_3(4), i_images, &
-                                                             batch_ranges_nze(i_batch), 2.0_dp*pref)
+                                                             batch_ranges_nze(i_batch), 2.0_dp*spin_pref)
                         END IF
                         IF (use_virial_prv) THEN
                            CALL get_force_from_3c_trace(force, t_3c_work_3(4), t_3c_der_stack(1:3), &
                                                         t_3c_der_stack(4:6), atom_of_kind, kind_of, &
                                                         idx_to_at_RI, idx_to_at_AO, i_images, &
-                                                        batch_ranges_nze(i_batch), 2.0_dp*pref, &
+                                                        batch_ranges_nze(i_batch), 2.0_dp*spin_pref, &
                                                         ri_data, qs_env, work_virial, cell, particle_set)
                         ELSE
                            CALL get_force_from_3c_trace(force, t_3c_work_3(4), t_3c_der_stack(1:3), &
                                                         t_3c_der_stack(4:6), atom_of_kind, kind_of, &
                                                         idx_to_at_RI, idx_to_at_AO, i_images, &
-                                                        batch_ranges_nze(i_batch), 2.0_dp*pref, &
+                                                        batch_ranges_nze(i_batch), 2.0_dp*spin_pref, &
                                                         ri_data, qs_env)
                         END IF
                         CALL dbt_clear(t_3c_work_3(4))
@@ -1341,7 +1356,7 @@ CONTAINS
                         CALL dbt_copy(t_3c_work_3(4), t_3c_work_3(3), move_data=.TRUE.)
 
                         CALL dbt_batched_contract_init(t_2c_R_split)
-                        CALL dbt_contract(1.0_dp, t_3c_work_3(1), t_3c_work_3(3), &
+                        CALL dbt_contract(weights(i_spin), t_3c_work_3(1), t_3c_work_3(3), &
                                           1.0_dp, t_2c_R_split, map_1=[1], map_2=[2], &
                                           contract_1=[2, 3], notcontract_1=[1], &
                                           contract_2=[2, 3], notcontract_2=[1], &

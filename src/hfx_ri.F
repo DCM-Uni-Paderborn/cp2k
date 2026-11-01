@@ -69,6 +69,7 @@ MODULE hfx_ri
                                               hfx_ri_init,&
                                               hfx_ri_release,&
                                               hfx_ri_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: hfx_ri_do_2c_cholesky,&
                                               hfx_ri_do_2c_diag,&
                                               hfx_ri_do_2c_iter
@@ -2839,9 +2840,12 @@ CONTAINS
 !> \param rescale_factor ...
 !> \param force_target Optional independently owned native force structure.
 !> \param virial_target Its local dE/dstrain accumulator, required with force_target.
+!> \param spin_weights Optional fixed nonnegative weights of the separate spin exchange energies.
+!>        Apply the same weights to Gaussian, reconstruction, metric and potential derivatives.
+!>        Their density/geometry dependence, if any, must be differentiated by the caller.
 ! **************************************************************************************************
    SUBROUTINE hfx_ri_forces_Pmat(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, &
-                                 use_virial, resp_only, rescale_factor, force_target, virial_target)
+                                 use_virial, resp_only, rescale_factor, force_target, virial_target, spin_weights)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
@@ -2854,6 +2858,7 @@ CONTAINS
       TYPE(qs_force_type), INTENT(INOUT), OPTIONAL, &
          TARGET                                          :: force_target(:)
       REAL(dp), INTENT(INOUT), OPTIONAL, TARGET          :: virial_target(3, 3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: spin_weights(:)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_forces_Pmat'
 
@@ -2871,7 +2876,7 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: col_bsize, row_bsize
       LOGICAL                                            :: do_resp, inverse_exchange, &
                                                             resp_only_prv, use_virial_prv
-      REAL(dp)                                           :: pref, spin_fac, t1, t2
+      REAL(dp)                                           :: pref, spin_fac, spin_weight, t1, t2
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
       REAL(dp), POINTER                                  :: fock_virial(:, :)
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -2881,9 +2886,11 @@ CONTAINS
       TYPE(dbcsr_type)                                   :: dbcsr_tmp, virial_trace
       TYPE(dbt_type) :: rho_ao_1, rho_ao_2, t_2c_RI, t_2c_RI_tmp, t_2c_tmp, t_2c_virial, t_3c_1, &
          t_3c_2, t_3c_3, t_3c_4, t_3c_5, t_3c_ao_ri_ao, t_3c_help_1, t_3c_help_2, t_3c_int, &
-         t_3c_int_2, t_3c_inverse_covector, t_3c_ri_ao_ao, t_3c_sparse, t_3c_virial, t_R, t_SVS
+         t_3c_int_2, t_3c_ri_ao_ao, t_3c_sparse, t_3c_virial, t_R, t_SVS
       TYPE(dbt_type), ALLOCATABLE, DIMENSION(:)          :: t_2c_der_metric, t_2c_der_RI, &
                                                             t_3c_der_AO, t_3c_der_RI
+      TYPE(dbt_type), POINTER                            :: inverse_covector
+      TYPE(dbt_type), TARGET                             :: t_3c_inverse_covector, t_3c_inverse_spin
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_p_type), ALLOCATABLE, &
          DIMENSION(:), TARGET                            :: basis_set_AO, basis_set_RI
@@ -2918,6 +2925,11 @@ CONTAINS
 
       use_virial_prv = .FALSE.
       IF (PRESENT(use_virial)) use_virial_prv = use_virial
+
+      IF (PRESENT(spin_weights)) THEN
+         CPASSERT(SIZE(spin_weights) == nspins)
+         CPASSERT(ALL(ieee_is_finite(spin_weights)) .AND. ALL(spin_weights >= 0.0_dp))
+      END IF
 
       do_resp = .FALSE.
       IF (PRESENT(rho_ao_resp)) THEN
@@ -3063,7 +3075,14 @@ CONTAINS
       CALL dbt_create(t_3c_ri_ao_ao, t_3c_5)
       CALL dbt_create(t_3c_ri_ao_ao, t_3c_help_1)
       CALL dbt_create(t_3c_ri_ao_ao, t_3c_help_2)
-      IF (inverse_exchange) CALL dbt_create(t_3c_ri_ao_ao, t_3c_inverse_covector)
+      IF (inverse_exchange) THEN
+         CALL dbt_create(t_3c_ri_ao_ao, t_3c_inverse_covector)
+         inverse_covector => t_3c_inverse_covector
+         IF (PRESENT(spin_weights)) THEN
+            CALL dbt_create(t_3c_ri_ao_ao, t_3c_inverse_spin)
+            inverse_covector => t_3c_inverse_spin
+         END IF
+      END IF
 
       CALL dbt_create(t_3c_ao_ri_ao, t_3c_int)
       CALL dbt_copy(ri_data%t_3c_int_ctr_2(1, 1), t_3c_int)
@@ -3108,6 +3127,9 @@ CONTAINS
       CALL dbt_batched_contract_init(t_3c_sparse, batch_range_1=batch_ranges_RI, &
                                      batch_range_2=batch_ranges, batch_range_3=batch_ranges)
       DO i_spin = 1, nspins
+         spin_weight = 1.0_dp
+         IF (PRESENT(spin_weights)) spin_weight = spin_weights(i_spin)
+         IF (spin_weight == 0.0_dp) CYCLE
 
          !Prepare Pmat in tensor format
          CALL dbt_create(rho_ao(i_spin, 1)%matrix, t_2c_tmp)
@@ -3201,7 +3223,7 @@ CONTAINS
                      ! Augmentation derivatives may extend beyond the Gaussian derivative blocks.
                      ! Reuse the complete product, with every free index restricted to this batch.
                      ! The copy completes deferred products and restores the native distribution.
-                     CALL dbt_copy(t_3c_4, t_3c_inverse_covector, summation=.TRUE.)
+                     CALL dbt_copy(t_3c_4, inverse_covector, summation=.TRUE.)
                   END IF
                   CALL dbt_batched_contract_finalize(t_SVS)
 
@@ -3224,7 +3246,7 @@ CONTAINS
             CALL dbt_copy(t_3c_5, t_3c_help_1, move_data=.TRUE.)
 
             !The force from the 3c derivatives
-            pref = -0.5_dp*2.0_dp*hf_fraction*spin_fac
+            pref = -0.5_dp*2.0_dp*hf_fraction*spin_fac*spin_weight
 
             DO k_mem = 1, SIZE(t_3c_der_RI_comp, 1)
                DO i_xyz = 1, 3
@@ -3236,7 +3258,7 @@ CONTAINS
                                             idx_to_at_RI, pref)
             END DO
 
-            pref = -0.5_dp*4.0_dp*hf_fraction*spin_fac
+            pref = -0.5_dp*4.0_dp*hf_fraction*spin_fac*spin_weight
             IF (do_resp) THEN
                pref = 0.5_dp*pref
                CALL dbt_copy(t_3c_help_1, t_3c_help_2, order=[1, 3, 2])
@@ -3259,7 +3281,7 @@ CONTAINS
 
             !The 3c virial contribution. Note: only fraction of integrals correspondig to i_mem calculated
             IF (use_virial) THEN
-               pref = -0.5_dp*2.0_dp*hf_fraction*spin_fac
+               pref = -0.5_dp*2.0_dp*hf_fraction*spin_fac*spin_weight
                CALL dbt_copy(t_3c_help_1, t_3c_virial, move_data=.TRUE.)
                CALL calc_3c_virial(work_virial, t_3c_virial, pref, qs_env, nl_3c, basis_set_RI, &
                                    basis_set_AO, basis_set_AO, ri_data%ri_metric, &
@@ -3291,7 +3313,7 @@ CONTAINS
          ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
 
          !Calculate the potential contribution to the force: [S^-1*R*S^-1]_QR d/dx (Q|R)
-         pref = 0.5_dp*hf_fraction*spin_fac
+         pref = 0.5_dp*hf_fraction*spin_fac*spin_weight
          IF (.NOT. ri_data%same_op) pref = -pref
          CALL get_2c_der_force(force, t_2c_RI, t_2c_der_RI, atom_of_kind, kind_of, idx_to_at_RI, pref)
 
@@ -3319,7 +3341,7 @@ CONTAINS
                               unit_nr=unit_nr_dbcsr, flop=nflop)
             ri_data%dbcsr_nflop = ri_data%dbcsr_nflop + nflop
 
-            pref = 0.5_dp*2.0_dp*hf_fraction*spin_fac
+            pref = 0.5_dp*2.0_dp*hf_fraction*spin_fac*spin_weight
             CALL get_2c_der_force(force, t_2c_RI, t_2c_der_metric, atom_of_kind, kind_of, idx_to_at_RI, pref)
 
             IF (use_virial_prv) THEN
@@ -3346,12 +3368,19 @@ CONTAINS
                END DO
             END DO
          END IF
+         IF (inverse_exchange .AND. PRESENT(spin_weights)) THEN
+            ! Weight the complete reconstruction covector before summing spin contributions.
+            ! The RI density, history and unweighted Gaussian derivative tensors are unchanged.
+            CALL dbt_scale(t_3c_inverse_spin, spin_weight)
+            CALL dbt_copy(t_3c_inverse_spin, t_3c_inverse_covector, summation=.TRUE., move_data=.TRUE.)
+         END IF
       END DO !i_spin
 
       IF (inverse_exchange) THEN
          CALL dbt_scale(t_3c_inverse_covector, -hf_fraction*spin_fac)
          CALL inverse_3c_forces(qs_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_inverse_covector, &
                                 use_virial_prv, force, fock_virial)
+         IF (PRESENT(spin_weights)) CALL dbt_destroy(t_3c_inverse_spin)
          CALL dbt_destroy(t_3c_inverse_covector)
       END IF
       CALL dbt_batched_contract_finalize(t_3c_int)
@@ -3437,9 +3466,12 @@ CONTAINS
 !> \param strain_gradient Optional independent dE/dstrain, evaluated when use_virial is true.
 !>        Supply both outputs together to leave native force and virial accumulators unchanged.
 !>        Outputs are globally reduced once. RI working tensors retain their normal updates.
+!> \param spin_weights Optional fixed nonnegative weights of the separate spin exchange energies.
+!>        Apply the same weights to Gaussian, reconstruction, metric and potential derivatives.
+!>        Their density/geometry dependence, if any, must be differentiated by the caller.
 ! **************************************************************************************************
    SUBROUTINE hfx_ri_update_forces(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, &
-                                   mos, use_virial, resp_only, rescale_factor, atom_gradient, strain_gradient)
+                                   mos, use_virial, resp_only, rescale_factor, atom_gradient, strain_gradient, spin_weights)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
@@ -3453,6 +3485,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: rescale_factor
       REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
                                                             strain_gradient(3, 3)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: spin_weights(:)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_update_forces'
 
@@ -3484,6 +3517,7 @@ CONTAINS
 
       SELECT CASE (ri_data%flavor)
       CASE (ri_mo)
+         IF (PRESENT(spin_weights)) CPABORT("Spin-weighted RI forces require RI-RHO")
 
          DO ispin = 1, nspins
             NULLIFY (mo_coeff_b_tmp)
@@ -3510,10 +3544,10 @@ CONTAINS
 
          IF (PRESENT(atom_gradient)) THEN
             CALL hfx_ri_forces_Pmat(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, use_virial, &
-                                    resp_only, rescale_factor, independent_force, independent_strain)
+                                    resp_only, rescale_factor, independent_force, independent_strain, spin_weights)
          ELSE
             CALL hfx_ri_forces_Pmat(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, use_virial, &
-                                    resp_only, rescale_factor)
+                                    resp_only, rescale_factor, spin_weights=spin_weights)
          END IF
       END SELECT
 
