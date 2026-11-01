@@ -138,7 +138,8 @@ MODULE hfx_admm_utils
    USE qs_rho_types,                    ONLY: qs_rho_create,&
                                               qs_rho_get,&
                                               qs_rho_type
-   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_admm
+   USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_admm,&
+                                              qs_upf_inverse_basis_select
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_charge_metric_release,&
                                               qs_upf_inverse_scf_release,&
                                               qs_upf_inverse_scf_type
@@ -1027,6 +1028,13 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=inverse)
       IF (ASSOCIATED(inverse)) THEN
          IF (ALLOCATED(inverse%exchange_k)) inverse%exchange_k = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (dft_control%do_admm) THEN
+         IF (qs_upf_inverse_basis_select(qs_env, 'AUX_FIT', inverse)) THEN
+            ! RI adds each HF repetition to the selected basis owner. Start a fresh
+            ! auxiliary operator as well as a fresh primary assembled operator.
+            IF (ALLOCATED(inverse%exchange_k)) inverse%exchange_k = CMPLX(0.0_dp, 0.0_dp, dp)
+         END IF
       END IF
 
       ! No RTP

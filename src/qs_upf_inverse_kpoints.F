@@ -68,6 +68,7 @@ MODULE qs_upf_inverse_kpoints
    PUBLIC :: qs_upf_inverse_kpoints_integrate, qs_upf_inverse_kpoints_metric, qs_upf_inverse_kpoints_distribute
    PUBLIC :: qs_upf_inverse_kpoints_metric_dense
    PUBLIC :: qs_upf_inverse_kpoints_native_operator
+   PUBLIC :: qs_upf_inverse_kpoints_original_operator
    PUBLIC :: qs_upf_inverse_kpoints_release_operators
 
 CONTAINS
@@ -306,6 +307,46 @@ CONTAINS
       TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
          OPTIONAL, TARGET                                :: right_frame
 
+      CALL convert_basis_matrix(frame, original, native, .TRUE., right_frame)
+   END SUBROUTINE qs_upf_inverse_kpoints_native_operator
+
+! **************************************************************************************************
+!> \brief Express a native coefficient map or operator in the original atom coordinates.
+!>        The rectangular case has independent row and column bases. This unitary inverse
+!>        precedes physical star expansion and applies no mesh weights or Hermitian completion.
+!> \param frame Native row basis, including its atom folding shifts.
+!> \param native Matrices in native irreducible representative order.
+!> \param original New matrices in original-coordinate irreducible representative order.
+!> \param right_frame Optional independent column basis on the same native mesh.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_kpoints_original_operator(frame, native, original, right_frame)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         TARGET                                          :: frame
+      COMPLEX(dp), INTENT(IN)                            :: native(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: original(:, :, :)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         OPTIONAL, TARGET                                :: right_frame
+
+      CALL convert_basis_matrix(frame, native, original, .FALSE., right_frame)
+   END SUBROUTINE qs_upf_inverse_kpoints_original_operator
+
+! **************************************************************************************************
+!> \brief Apply either direction of the same native basis phase convention.
+!> \param frame Row basis.
+!> \param source Irreducible matrices in the supplied coordinates.
+!> \param result New matrices in the requested coordinates.
+!> \param to_native True for original to native coordinates, false for its unitary inverse.
+!> \param right_frame Optional independent column basis.
+! **************************************************************************************************
+   SUBROUTINE convert_basis_matrix(frame, source, RESULT, to_native, right_frame)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         TARGET                                          :: frame
+      COMPLEX(dp), INTENT(IN)                            :: source(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: result(:, :, :)
+      LOGICAL, INTENT(IN)                                :: to_native
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN), &
+         OPTIONAL, TARGET                                :: right_frame
+
       COMPLEX(dp), ALLOCATABLE                           :: left_phase(:), right_phase(:)
       INTEGER                                            :: column, ik
       TYPE(qs_upf_inverse_kpoints_type), POINTER         :: right
@@ -317,16 +358,20 @@ CONTAINS
          CALL check_live(right)
          CPASSERT(ASSOCIATED(frame%kpoints, right%kpoints))
       END IF
-      CPASSERT(ALL(SHAPE(original) == [frame%nao, right%nao, frame%kpoints%nkp]))
-      ALLOCATE (native, MOLD=original)
+      CPASSERT(ALL(SHAPE(source) == [frame%nao, right%nao, frame%kpoints%nkp]))
+      ALLOCATE (RESULT, MOLD=source)
       DO ik = 1, frame%kpoints%nkp
          CALL native_basis_phase(frame, ik, left_phase)
          CALL native_basis_phase(right, ik, right_phase)
+         IF (.NOT. to_native) THEN
+            left_phase(:) = CONJG(left_phase)
+            right_phase(:) = CONJG(right_phase)
+         END IF
          DO column = 1, right%nao
-            native(:, column, ik) = left_phase*original(:, column, ik)*CONJG(right_phase(column))
+            RESULT(:, column, ik) = left_phase*source(:, column, ik)*CONJG(right_phase(column))
          END DO
       END DO
-   END SUBROUTINE qs_upf_inverse_kpoints_native_operator
+   END SUBROUTINE convert_basis_matrix
 
 ! **************************************************************************************************
 !> \brief Diagonal phase taking original-coordinate coefficients to the native basis convention.
