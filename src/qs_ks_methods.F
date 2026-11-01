@@ -1192,7 +1192,7 @@ CONTAINS
 
       IF (do_hfx) THEN
          IF (inverse_admm) THEN
-            CALL upf_admm_exchange(qs_env, calculate_forces, use_virial, auxiliary_energies, auxiliary_operator)
+            CALL upf_admm_exchange(qs_env, calculate_forces, use_virial, just_energy, auxiliary_energies, auxiliary_operator)
             energy%ex = auxiliary_energies(1) + auxiliary_energies(2)
             energy%exc_aux_fit = auxiliary_energies(3)
             energy%exc1_aux_fit = auxiliary_energies(4)
@@ -2083,16 +2083,17 @@ CONTAINS
 !> \param qs_env ...
 !> \param calculate_forces ...
 !> \param use_virial ...
+!> \param just_energy Energy-only evaluation retains an active inner functional, otherwise original exchange.
 !> \param components ...
 !> \param operators ...
 ! **************************************************************************************************
-   SUBROUTINE upf_admm_exchange(qs_env, calculate_forces, use_virial, components, operators)
+   SUBROUTINE upf_admm_exchange(qs_env, calculate_forces, use_virial, just_energy, components, operators)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      LOGICAL, INTENT(IN)                                :: calculate_forces, use_virial
+      LOGICAL, INTENT(IN)                                :: calculate_forces, use_virial, just_energy
       REAL(dp), INTENT(OUT)                              :: components(4)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
 
-      INTEGER                                            :: atom, natom
+      INTEGER                                            :: atom, contribution, natom
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       LOGICAL                                            :: geometry_changed
       REAL(dp)                                           :: strain(3, 3)
@@ -2136,8 +2137,13 @@ CONTAINS
             virial%pv_virial = virial%pv_virial - virial%pv_fock_4c
             virial%pv_calculate = .FALSE.
          END IF
+         DO contribution = 1, SIZE(exchange, 1)
+            IF (exchange(contribution, 1)%use_ace) &
+               exchange(contribution, 1)%ace%geometry_step = exchange(contribution, 1)%ace%geometry_step + 1
+         END DO
       ELSE
-         CALL qs_upf_inverse_aux_evaluate(qs_env, admm%xc_section_aux, exchange, geometry_changed, components, operators)
+         CALL qs_upf_inverse_aux_evaluate(qs_env, admm%xc_section_aux, exchange, geometry_changed, components, operators, &
+                                          just_energy=just_energy)
       END IF
    END SUBROUTINE upf_admm_exchange
 
@@ -2166,13 +2172,10 @@ CONTAINS
          selected = qs_upf_inverse_basis_select(qs_env, selected_basis, inverse)
          CPASSERT(selected)
       END IF
-      IF (.NOT. control%do_admm .AND. ASSOCIATED(inverse%bloch%kpoints)) THEN
+      ! RI uses all physical star contributions in either basis. Its image-density
+      ! transpose and final star reduction retain each mesh weight exactly once.
+      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
-         DO contribution = 1, inverse%bloch%kpoints%nkp
-            IF (inverse%bloch%kpoints%kp_sym(contribution)%kpoint_sym%apply_symmetry) THEN
-               CPABORT("Spatial k-point symmetry for inverse UPF exact exchange is not implemented yet")
-            END IF
-         END DO
       END IF
       CPASSERT(ASSOCIATED(exchange))
       DO contribution = 1, SIZE(exchange, 1)

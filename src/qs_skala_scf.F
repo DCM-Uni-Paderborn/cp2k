@@ -57,6 +57,8 @@ MODULE qs_skala_scf
         qs_skala_orbitals_retained_symmetry, qs_skala_orbitals_type
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_evaluate
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_integrate
+   USE qs_upf_inverse_aux_operator,     ONLY: qs_upf_inverse_aux_ace_search_begin,&
+                                              qs_upf_inverse_aux_ace_search_end
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_integrate
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_integrate_dense,&
@@ -2601,9 +2603,10 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: output_unit, iteration_offset
 
       INTEGER                                            :: i, m
-      LOGICAL                                            :: coupled_curvature, valid
+      LOGICAL                                            :: coupled_curvature, frozen_exchange, &
+                                                            inner_converged, valid
       REAL(dp), ALLOCATABLE :: combined_floors(:), coordinate_scales(:), density_floors(:), &
-         gradient(:), origin(:), response(:), zero(:), zero_multipliers(:)
+         gradient(:), origin(:), reference_gradient(:), response(:), zero(:), zero_multipliers(:)
       TYPE(mp_comm_type)                                 :: comm
       TYPE(physical_constraints_context)                 :: context
       TYPE(section_vals_type), POINTER                   :: functional_section, xc_section
@@ -2670,6 +2673,12 @@ CONTAINS
          context%targets(:) = targets
       END IF
       ALLOCATE (origin, SOURCE=coordinate)
+      CALL qs_upf_inverse_aux_ace_search_begin(state%qs_env, frozen_exchange)
+      IF (frozen_exchange) THEN
+         ! Reevaluate the origin with the same compressed operator used by every later trial.
+         ALLOCATE (reference_gradient(SIZE(coordinate)))
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient=reference_gradient)
+      END IF
       coupled_curvature = state%thermal
       IF (.NOT. coupled_curvature) THEN
          ! Probe the appropriate complete response before the native search stalls.
@@ -2709,6 +2718,23 @@ CONTAINS
       ELSE
          ALLOCATE (gradient(SIZE(coordinate)))
          CALL evaluate_limiting_state(state, coordinate, energy, gradient, at_native_coordinate(state, coordinate))
+      END IF
+      IF (frozen_exchange) THEN
+         CALL qs_upf_inverse_aux_ace_search_end(state%qs_env)
+         state%evaluated = .FALSE.
+         state%operator_current = .FALSE.
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient=reference_gradient)
+         inner_converged = converged
+         IF (inner_converged) THEN
+            ! A stationary affine inner model does not establish original RI stationarity.
+            CALL evaluate_native_stationarity(coordinate, context, converged)
+            energy = state%energy%total
+            IF (.NOT. converged) THEN
+               context%rechart = .TRUE.
+               ! An exchange-reference refresh consumes SCF budget even for a zero-step inner search.
+               IF (PRESENT(iterations)) iterations = MAX(1, iterations)
+            END IF
+         END IF
       END IF
       IF (PRESENT(rechart)) THEN
          rechart = context%rechart

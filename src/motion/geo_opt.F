@@ -82,7 +82,7 @@ CONTAINS
       ! entire first geometry step so that wavefunction extrapolation
       ! delivers a near-converged C_occ to step 1, making the ACE
       ! projector BUILD there accurate.
-      CALL hfx_ace_set_dynamic_mode(.TRUE.)
+      CALL hfx_ace_set_dynamic_mode(force_env, .TRUE.)
 
       root_section => force_env%root_section
       geo_section => section_vals_get_subs_vals(root_section, "MOTION%GEO_OPT")

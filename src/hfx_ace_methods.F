@@ -72,11 +72,15 @@ MODULE hfx_ace_methods
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
                                               cp_logger_type
+   USE force_env_types,                 ONLY: force_env_get,&
+                                              force_env_p_type,&
+                                              force_env_type,&
+                                              use_qs_force
    USE hfx_admm_utils,                  ONLY: hfx_ks_matrix
-   USE hfx_types,                       ONLY: hfx_type
-   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
-                                              section_vals_type,&
-                                              section_vals_val_get
+   USE hfx_types,                       ONLY: hfx_ace_release_state,&
+                                              hfx_ace_state_type,&
+                                              hfx_type
+   USE input_section_types,             ONLY: section_vals_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
@@ -84,6 +88,8 @@ MODULE hfx_ace_methods
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
@@ -95,21 +101,6 @@ MODULE hfx_ace_methods
    PRIVATE
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'hfx_ace_methods'
-
-   ! -----------------------------------------------------------------------
-   ! Module-level state: persists across SCF steps within one run.
-   !
-   !   ace_W(1,ispin)   ACE projector W, shape nao x nocc
-   !   ace_is_built     .FALSE. until at least one successful BUILD
-   !   ace_step_counter counts calls since last BUILD
-   !   ace_W_ref_norm   ||W^T C_occ^BUILD||_F stored at BUILD for DIAG A
-   ! -----------------------------------------------------------------------
-   TYPE(cp_fm_type), ALLOCATABLE, SAVE :: ace_W(:, :)
-   LOGICAL, SAVE :: ace_is_built = .FALSE.
-   LOGICAL, SAVE :: ace_convergence_rebuild = .FALSE.
-   INTEGER, SAVE :: ace_step_counter = 0
-   REAL(dp), SAVE :: ace_W_ref_norm = 0.0_dp
-   INTEGER, SAVE :: ace_geo_step = 0   ! NEW
 
    ! -----------------------------------------------------------------------
    ! Debug / diagnostic flags  — set all .FALSE. for production.
@@ -126,17 +117,13 @@ MODULE hfx_ace_methods
    LOGICAL, PARAMETER, PRIVATE :: DBG_STALE = .FALSE.
    LOGICAL, PARAMETER, PRIVATE :: DBG_EXACT_EX = .FALSE.
 
-   LOGICAL, SAVE :: ace_dynamic_mode = .FALSE.
-   ! Set to .TRUE. by hfx_ace_set_dynamic_mode before geo_opt/MD starts.
-   ! Stays .FALSE. for ENERGY/ENERGY_FORCE single-point runs.
-
    PUBLIC :: hfx_ace_ks_matrix, hfx_ace_release, hfx_ace_set_dynamic_mode
    PUBLIC :: hfx_ace_requires_refresh
 
 CONTAINS
 
 ! **************************************************************************************************
-!> \brief Request a fresh exchange build before accepting convergence with a reused ACE projector.
+!> \brief Require complete exchange for every ACE repetition before accepting SCF convergence.
 !> \param qs_env Current SCF environment and ACE input.
 !> \return Whether the next SCF step must rebuild the projector.
 ! **************************************************************************************************
@@ -144,27 +131,38 @@ CONTAINS
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
       LOGICAL                                            :: refresh
 
-      LOGICAL                                            :: active
-      TYPE(section_vals_type), POINTER                   :: section
+      INTEGER                                            :: contribution
+      LOGICAL                                            :: full_exchange
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
 
       refresh = .FALSE.
-      IF (ace_convergence_rebuild) THEN
+      exchange => qs_env%x_data
+      IF (.NOT. ASSOCIATED(exchange)) RETURN
+      CPASSERT(SIZE(exchange, 2) > 0)
+      full_exchange = .FALSE.
+      DO contribution = 1, SIZE(exchange, 1)
+         IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
+         full_exchange = full_exchange .OR. exchange(contribution, 1)%ace%convergence_rebuild
+      END DO
+      IF (full_exchange) THEN
          IF (qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf) THEN
-            ace_convergence_rebuild = .FALSE.
+            DO contribution = 1, SIZE(exchange, 1)
+               IF (exchange(contribution, 1)%use_ace) exchange(contribution, 1)%ace%convergence_rebuild = .FALSE.
+            END DO
          END IF
          RETURN
       END IF
-      IF (.NOT. ace_is_built) RETURN
-      section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF%ACE")
-      IF (.NOT. ASSOCIATED(section)) RETURN
-      CALL section_vals_val_get(section, "ACTIVE", l_val=active)
-      IF (.NOT. active) RETURN
-      ace_is_built = .FALSE.
-      ace_step_counter = 0
-      ! Once the frozen-operator iteration approaches convergence, finish with full exchange
-      ! at every step instead of starting another long frozen-operator iteration.
-      ace_convergence_rebuild = .TRUE.
-      refresh = .TRUE.
+      DO contribution = 1, SIZE(exchange, 1)
+         IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
+         ASSOCIATE (ace => exchange(contribution, 1)%ace)
+            IF (.NOT. ace%built) CYCLE
+            ace%built = .FALSE.
+            ace%step_counter = 0
+            ! Every compressed contribution enters the same full-exchange convergence phase.
+            ace%convergence_rebuild = .TRUE.
+            refresh = .TRUE.
+         END ASSOCIATE
+      END DO
    END FUNCTION hfx_ace_requires_refresh
 
 ! **************************************************************************************************
@@ -198,14 +196,18 @@ CONTAINS
 
       INTEGER                                            :: handle, iw, n_rep_hf, nspins, &
                                                             rebuild_freq
-      LOGICAL                                            :: ace_built_now, rebuild_ace
+      LOGICAL                                            :: ace_built_now, geometry_changed, &
+                                                            rebuild_ace
       REAL(dp)                                           :: ex_ace
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(hfx_ace_state_type), POINTER                  :: ace
       TYPE(hfx_type), DIMENSION(:, :), POINTER           :: x_data
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(scf_control_type), POINTER                    :: scf_control
 
       CALL timeset(routineN, handle)
+      ace => get_ace_state(qs_env)
 
       CALL cite_reference(Lin2016ACE)
       NULLIFY (logger, dft_control, x_data, scf_control)
@@ -213,7 +215,9 @@ CONTAINS
       logger => cp_get_default_logger()
       iw = cp_logger_get_default_io_unit(logger)
 
-      CALL get_qs_env(qs_env, x_data=x_data, dft_control=dft_control)
+      CALL get_qs_env(qs_env, x_data=x_data, dft_control=dft_control, ks_env=ks_env)
+      CALL get_ks_env(ks_env, s_mstruct_changed=geometry_changed)
+      IF (geometry_changed) CALL hfx_ace_release_state(ace, keep_motion=.TRUE.)
       n_rep_hf = SIZE(x_data, 1)
       nspins = dft_control%nspins
 
@@ -256,10 +260,10 @@ CONTAINS
          CALL hfx_call(qs_env, ks_matrix, rho, energy, &
                        calculate_forces, just_energy, &
                        v_rspace_new, v_tau_rspace, ext_xc_section)
-         ace_is_built = .FALSE.
-         ace_step_counter = 0
-         ace_convergence_rebuild = .FALSE.
-         ace_geo_step = ace_geo_step + 1   ! NEW: step 0 done, ACE active from now
+         ace%built = .FALSE.
+         ace%step_counter = 0
+         ace%convergence_rebuild = .FALSE.
+         ace%geometry_step = ace%geometry_step + 1   ! NEW: step 0 done, ACE active from now
          CALL timestop(handle)
          RETURN
       END IF
@@ -273,7 +277,7 @@ CONTAINS
       ! delivers a near-converged C_occ to geometry step 1, making the
       ! ACE BUILD there accurate from the first application.
       ! ------------------------------------------------------------------
-      IF (ace_geo_step == 0 .AND. ace_dynamic_mode) THEN
+      IF (ace%geometry_step == 0 .AND. ace%dynamic_mode) THEN
          IF (iw > 0) WRITE (iw, '(T2,A)') &
             'ACE | geo_step=0 (MD/GEO_OPT): full HFX for reference wavefunction'
          CALL hfx_call(qs_env, ks_matrix, rho, energy, &
@@ -285,13 +289,13 @@ CONTAINS
 
       ! Finish with the full operator and energy, without recompressing a freshly
       ! evaluated matrix. Compression need only be accurate on its reference subspace.
-      IF (ace_convergence_rebuild) THEN
+      IF (ace%convergence_rebuild) THEN
          IF (DBG_ROUTING .AND. iw > 0) WRITE (iw, '(T2,A)') 'ACE | Finishing SCF with full exchange'
          CALL hfx_call(qs_env, ks_matrix, rho, energy, &
                        .FALSE., just_energy, &
                        v_rspace_new, v_tau_rspace, ext_xc_section)
-         ace_is_built = .FALSE.
-         ace_step_counter = 0
+         ace%built = .FALSE.
+         ace%step_counter = 0
          CALL timestop(handle)
          RETURN
       END IF
@@ -299,15 +303,15 @@ CONTAINS
       ! ------------------------------------------------------------------
       ! Rebuild decision
       ! ------------------------------------------------------------------
-      rebuild_ace = (.NOT. ace_is_built) .OR. &
-                    (MOD(ace_step_counter, rebuild_freq) == 0)
+      rebuild_ace = (.NOT. ace%built) .OR. &
+                    (MOD(ace%step_counter, rebuild_freq) == 0)
 
       IF (DBG_ROUTING .AND. iw > 0) THEN
          WRITE (iw, '(/,T2,A)') REPEAT('-', 56)
          WRITE (iw, '(T2,A)') 'ACE | hfx_ace_ks_matrix'
-         WRITE (iw, '(T4,A,L1)') 'ace_is_built  = ', ace_is_built
+         WRITE (iw, '(T4,A,L1)') 'ace%built  = ', ace%built
          WRITE (iw, '(T4,A,L1)') 'rebuild_ace   = ', rebuild_ace
-         WRITE (iw, '(T4,A,I6)') 'step_counter  = ', ace_step_counter
+         WRITE (iw, '(T4,A,I6)') 'step_counter  = ', ace%step_counter
          WRITE (iw, '(T4,A,I6)') 'rebuild_freq  = ', rebuild_freq
          WRITE (iw, '(T4,A,I4)') 'nspins        = ', nspins
          WRITE (iw, '(T4,A)') MERGE('-> BUILD', '-> APPLY', rebuild_ace)
@@ -323,14 +327,14 @@ CONTAINS
                                       nspins, iw, ace_built_now, &
                                       ext_xc_section)
          IF (ace_built_now) THEN
-            ace_is_built = .TRUE.
-            ace_step_counter = 1
+            ace%built = .TRUE.
+            ace%step_counter = 1
             IF (DBG_ROUTING .AND. iw > 0) THEN
                WRITE (iw, '(T4,A)') 'ACE | W built. Projector live from next step.'
             END IF
          ELSE
-            ace_is_built = .FALSE.
-            ace_step_counter = 0
+            ace%built = .FALSE.
+            ace%step_counter = 0
             IF (DBG_ROUTING .AND. iw > 0) THEN
                WRITE (iw, '(T4,A)') 'ACE | Build deferred (C_occ=0). Full HFX in ks_matrix.'
             END IF
@@ -339,7 +343,7 @@ CONTAINS
       ELSE
 
          CALL hfx_ace_apply_projector(qs_env, ks_matrix, rho, energy, nspins, iw)
-         ace_step_counter = ace_step_counter + 1
+         ace%step_counter = ace%step_counter + 1
 
          ! ----------------------------------------------------------------
          ! DIAGNOSTIC B: compare E_x^ACE[P^k] with E_x^exact[P^k].
@@ -364,7 +368,7 @@ CONTAINS
                           v_rspace_new, v_tau_rspace, ext_xc_section)
             IF (iw > 0) THEN
                WRITE (iw, '(/,T2,A)') REPEAT('-', 56)
-               WRITE (iw, '(T2,A,I6)') 'ACE DIAG B | ace_step_counter = ', ace_step_counter
+               WRITE (iw, '(T2,A,I6)') 'ACE DIAG B | ace%step_counter = ', ace%step_counter
                WRITE (iw, '(T4,A,F20.10)') 'E_x(exact, P^k)  = ', energy%ex
                WRITE (iw, '(T4,A,F20.10)') 'E_x(ACE,   P^k)  = ', ex_ace
                WRITE (iw, '(T4,A,ES12.4)') '|delta|          = ', ABS(ex_ace - energy%ex)
@@ -381,7 +385,7 @@ CONTAINS
 
       IF (DBG_ROUTING .AND. iw > 0) THEN
          WRITE (iw, '(T4,A,F20.10)') 'energy%ex on exit = ', energy%ex
-         WRITE (iw, '(T4,A,I6)') 'step_counter now  = ', ace_step_counter
+         WRITE (iw, '(T4,A,I6)') 'step_counter now  = ', ace%step_counter
       END IF
 
       CALL timestop(handle)
@@ -433,12 +437,14 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_h
       TYPE(dbcsr_type)                                   :: K_ao_dbcsr
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(hfx_ace_state_type), POINTER                  :: ace
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos, mos_for_ace
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
 ! A_ref_fm: temporary nocc x nocc scratch for DIAG A reference norm
 
       CALL timeset(routineN, handle)
+      ace => get_ace_state(qs_env)
       NULLIFY (blacs_env, para_env, mos, mo_coeff, matrix_h, occ_nums, fmstruct)
       NULLIFY (dft_control, admm_env, mos_for_ace, ks_aux_fit)
 
@@ -470,13 +476,13 @@ CONTAINS
       END IF
 
       ! Allocate / resize module storage
-      IF (ALLOCATED(ace_W)) THEN
-         IF (SIZE(ace_W, 2) /= nspins) CALL hfx_ace_release()
+      IF (ALLOCATED(ace%projectors)) THEN
+         IF (SIZE(ace%projectors, 2) /= nspins) CALL hfx_ace_release_state(ace, keep_motion=.TRUE.)
       END IF
-      IF (.NOT. ALLOCATED(ace_W)) ALLOCATE (ace_W(1, nspins))
+      IF (.NOT. ALLOCATED(ace%projectors)) ALLOCATE (ace%projectors(1, nspins))
 
       ! Reset reference norm; accumulated per spin in the loop below
-      ace_W_ref_norm = 0.0_dp
+      ace%reference_norm = 0.0_dp
 
       ! ----------------------------------------------------------------
       ! Per-spin build loop
@@ -594,14 +600,14 @@ CONTAINS
          END IF
 
          ! Step 7: W = xi * U^{-1}
-         IF (ASSOCIATED(ace_W(1, ispin)%matrix_struct)) THEN
-            CALL cp_fm_release(ace_W(1, ispin))
+         IF (ASSOCIATED(ace%projectors(1, ispin)%matrix_struct)) THEN
+            CALL cp_fm_release(ace%projectors(1, ispin))
          END IF
 
-         CALL cp_fm_create(ace_W(1, ispin), xi_fm%matrix_struct, name="W_ACE")
-         CALL cp_fm_to_fm(xi_fm, ace_W(1, ispin))
+         CALL cp_fm_create(ace%projectors(1, ispin), xi_fm%matrix_struct, name="W_ACE")
+         CALL cp_fm_to_fm(xi_fm, ace%projectors(1, ispin))
 
-         CALL cp_fm_triangular_multiply(M_fm, ace_W(1, ispin), &
+         CALL cp_fm_triangular_multiply(M_fm, ace%projectors(1, ispin), &
                                         side='R', uplo_tr='U', &
                                         transpose_tr=.FALSE., &
                                         invert_tr=.TRUE., &
@@ -612,7 +618,7 @@ CONTAINS
          CALL cp_fm_release(M_fm)
 
          IF (DBG_BUILD .AND. iw > 0) THEN
-            CALL cp_fm_trace(ace_W(1, ispin), ace_W(1, ispin), frob)
+            CALL cp_fm_trace(ace%projectors(1, ispin), ace%projectors(1, ispin), frob)
             WRITE (iw, '(T4,A,I4,A,2I8,A,ES12.4)') &
                'W spin=', ispin, ' shape=', nao, nocc, &
                '  ||W||_F=', SQRT(MAX(frob, 0.0_dp))
@@ -645,9 +651,9 @@ CONTAINS
             CALL cp_fm_struct_release(fmstruct)
 
             CALL parallel_gemm('T', 'N', nocc, nocc, nao, &
-                               1.0_dp, ace_W(1, ispin), C_occ_fm, 0.0_dp, A_ref_fm)
+                               1.0_dp, ace%projectors(1, ispin), C_occ_fm, 0.0_dp, A_ref_fm)
             CALL cp_fm_trace(A_ref_fm, A_ref_fm, frob)
-            ace_W_ref_norm = ace_W_ref_norm + SQRT(MAX(frob, 0.0_dp))
+            ace%reference_norm = ace%reference_norm + SQRT(MAX(frob, 0.0_dp))
 
             CALL cp_fm_release(C_occ_fm)
             CALL cp_fm_release(A_ref_fm)
@@ -659,7 +665,7 @@ CONTAINS
          WRITE (iw, '(/,T2,A)') REPEAT('-', 56)
          WRITE (iw, '(T2,A)') 'ACE DIAG A | Reference norm stored at BUILD'
          WRITE (iw, '(T4,A,ES12.4)') &
-            '||W^T C_occ^BUILD||_F (sum over spins) = ', ace_W_ref_norm
+            '||W^T C_occ^BUILD||_F (sum over spins) = ', ace%reference_norm
          WRITE (iw, '(T4,A)') &
             'Staleness ratio = 1.0 at BUILD step; decreasing means W is becoming stale'
          WRITE (iw, '(T2,A)') REPEAT('-', 56)
@@ -709,6 +715,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks_aux_fit, ks_aux_fit_hfx
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_h, rho_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(hfx_ace_state_type), POINTER                  :: ace
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos_aux_diag, mos_diag
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(qs_rho_type), POINTER                         :: rho_aux_fit
@@ -726,10 +733,11 @@ CONTAINS
 ! ------------------------------------------------------------------
 
       CALL timeset(routineN, handle)
+      ace => get_ace_state(qs_env)
       NULLIFY (blacs_env, para_env, matrix_h, rho_ao, fmstruct)
       NULLIFY (dft_control, admm_env, ks_aux_fit, ks_aux_fit_hfx, rho_aux_fit)
       NULLIFY (mos_diag, mos_aux_diag, mo_coeff_diag, fmstruct_diag)
-      CPASSERT(ALLOCATED(ace_W))
+      CPASSERT(ALLOCATED(ace%projectors))
 
       CALL get_qs_env(qs_env, blacs_env=blacs_env, para_env=para_env, &
                       matrix_h_kp=matrix_h, dft_control=dft_control)
@@ -747,7 +755,7 @@ CONTAINS
       END IF
 
       DO ispin = 1, nspins
-         CALL cp_fm_get_info(ace_W(1, ispin), nrow_global=nao, ncol_global=nocc)
+         CALL cp_fm_get_info(ace%projectors(1, ispin), nrow_global=nao, ncol_global=nocc)
 
          IF (do_admm) THEN
             CALL dbcsr_set(ks_matrix(ispin, 1)%matrix, 0.0_dp)
@@ -756,7 +764,7 @@ CONTAINS
             CALL dbcsr_set(ks_aux_fit(ispin)%matrix, 0.0_dp)
             CALL cp_dbcsr_plus_fm_fm_t( &
                sparse_matrix=ks_aux_fit(ispin)%matrix, &
-               matrix_v=ace_W(1, ispin), &
+               matrix_v=ace%projectors(1, ispin), &
                ncol=nocc, &
                alpha=-1.0_dp, &
                keep_sparsity=.TRUE.)
@@ -766,7 +774,7 @@ CONTAINS
             CALL dbcsr_set(ks_matrix(ispin, 1)%matrix, 0.0_dp)
             CALL cp_dbcsr_plus_fm_fm_t( &
                sparse_matrix=ks_matrix(ispin, 1)%matrix, &
-               matrix_v=ace_W(1, ispin), &
+               matrix_v=ace%projectors(1, ispin), &
                ncol=nocc, &
                alpha=-1.0_dp, &
                keep_sparsity=.TRUE.)
@@ -778,7 +786,7 @@ CONTAINS
       ! Exchange energy: E_x = -0.5 * sum_spin Tr[ W^T * P * W ]
       ehfx_ace = 0.0_dp
       DO ispin = 1, nspins
-         CALL cp_fm_get_info(ace_W(1, ispin), nrow_global=nao, ncol_global=nocc)
+         CALL cp_fm_get_info(ace%projectors(1, ispin), nrow_global=nao, ncol_global=nocc)
 
          NULLIFY (fmstruct)
          CALL cp_fm_struct_create(fmstruct, context=blacs_env, para_env=para_env, &
@@ -787,10 +795,10 @@ CONTAINS
          CALL cp_fm_struct_release(fmstruct)
          CALL copy_dbcsr_to_fm(rho_ao(ispin, 1)%matrix, P_fm)
 
-         CALL cp_fm_create(PW_fm, ace_W(1, ispin)%matrix_struct, name="PW")
+         CALL cp_fm_create(PW_fm, ace%projectors(1, ispin)%matrix_struct, name="PW")
          CALL parallel_gemm('N', 'N', nao, nocc, nao, &
-                            1.0_dp, P_fm, ace_W(1, ispin), 0.0_dp, PW_fm)
-         CALL cp_fm_trace(ace_W(1, ispin), PW_fm, trace_val)
+                            1.0_dp, P_fm, ace%projectors(1, ispin), 0.0_dp, PW_fm)
+         CALL cp_fm_trace(ace%projectors(1, ispin), PW_fm, trace_val)
          ehfx_ace = ehfx_ace - 0.5_dp*trace_val
 
          CALL cp_fm_release(P_fm)
@@ -818,7 +826,7 @@ CONTAINS
       ! DIAG A: projector staleness check.
       !
       ! Computes ||W^T C_occ^current||_F (summed over spins) and divides
-      ! by ace_W_ref_norm = ||W^T C_occ^BUILD||_F stored at BUILD time.
+      ! by ace%reference_norm = ||W^T C_occ^BUILD||_F stored at BUILD time.
       !
       ! staleness_ratio:
       !   1.0  → C_occ hasn't changed since BUILD; projector is fresh
@@ -827,14 +835,14 @@ CONTAINS
       !
       ! For non-ADMM: C_occ comes from primary mos (nao_orb x nocc).
       ! For ADMM:     C_occ comes from mos_aux_fit (nao_aux x nocc_aux),
-      !               consistent with ace_W dimensions.
+      !               consistent with ace%projectors dimensions.
       ! ----------------------------------------------------------------
-      IF (DBG_STALE .AND. ace_W_ref_norm > 0.0_dp) THEN
+      IF (DBG_STALE .AND. ace%reference_norm > 0.0_dp) THEN
          stale_norm = 0.0_dp
          CALL get_qs_env(qs_env, mos=mos_diag)
 
          DO ispin = 1, nspins
-            CALL cp_fm_get_info(ace_W(1, ispin), nrow_global=nao_d, ncol_global=nocc_d)
+            CALL cp_fm_get_info(ace%projectors(1, ispin), nrow_global=nao_d, ncol_global=nocc_d)
 
             IF (do_admm) THEN
                CALL get_admm_env(admm_env, mos_aux_fit=mos_aux_diag)
@@ -869,7 +877,7 @@ CONTAINS
             CALL cp_fm_struct_release(fmstruct_diag)
 
             CALL parallel_gemm('T', 'N', nocc_d, nocc_d, nao_d, &
-                               1.0_dp, ace_W(1, ispin), C_occ_diag, 0.0_dp, A_diag_fm)
+                               1.0_dp, ace%projectors(1, ispin), C_occ_diag, 0.0_dp, A_diag_fm)
             CALL cp_fm_trace(A_diag_fm, A_diag_fm, frob_A)
             stale_norm = stale_norm + SQRT(MAX(frob_A, 0.0_dp))
 
@@ -878,11 +886,11 @@ CONTAINS
          END DO
          IF (iw > 0) THEN
             WRITE (iw, '(/,T2,A)') REPEAT('-', 56)
-            WRITE (iw, '(T2,A,I6)') 'ACE DIAG A | ace_step_counter      = ', ace_step_counter
+            WRITE (iw, '(T2,A,I6)') 'ACE DIAG A | ace%step_counter      = ', ace%step_counter
             WRITE (iw, '(T4,A,ES12.4)') '||W^T C_occ^current||_F          = ', stale_norm
-            WRITE (iw, '(T4,A,ES12.4)') '||W^T C_occ^BUILD||_F  (ref)     = ', ace_W_ref_norm
+            WRITE (iw, '(T4,A,ES12.4)') '||W^T C_occ^BUILD||_F  (ref)     = ', ace%reference_norm
             WRITE (iw, '(T4,A,F10.6)') 'staleness ratio (1=fresh, 0=stale) = ', &
-               stale_norm/MAX(ace_W_ref_norm, 1.0e-30_dp)
+               stale_norm/MAX(ace%reference_norm, 1.0e-30_dp)
             WRITE (iw, '(T2,A)') REPEAT('-', 56)
          END IF
       END IF
@@ -892,52 +900,72 @@ CONTAINS
    END SUBROUTINE hfx_ace_apply_projector
 
 ! **************************************************************************************************
-!> \brief Release all ACE storage and reset state flags.
-!> \param iw_opt ...
+!> \brief Release the current Quickstep environment's ACE storage and history.
+!> \param qs_env Current exchange owner.
+!> \param iw_opt Optional output unit.
 ! **************************************************************************************************
-   SUBROUTINE hfx_ace_release(iw_opt)
-
+   SUBROUTINE hfx_ace_release(qs_env, iw_opt)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
       INTEGER, INTENT(IN), OPTIONAL                      :: iw_opt
 
-      INTEGER                                            :: i, iw, j
+      TYPE(hfx_ace_state_type), POINTER                  :: ace
 
-      iw = -1
-      IF (PRESENT(iw_opt)) iw = iw_opt
-
-      IF (ALLOCATED(ace_W)) THEN
-         DO j = 1, SIZE(ace_W, 2)
-            DO i = 1, SIZE(ace_W, 1)
-               IF (ASSOCIATED(ace_W(i, j)%matrix_struct)) CALL cp_fm_release(ace_W(i, j))
-            END DO
-         END DO
-         DEALLOCATE (ace_W)
+      ace => get_ace_state(qs_env)
+      CALL hfx_ace_release_state(ace)
+      IF (PRESENT(iw_opt)) THEN
+         IF (iw_opt > 0) WRITE (iw_opt, '(T2,A)') 'ACE | storage released, counters reset'
       END IF
-
-      ace_is_built = .FALSE.
-      ace_step_counter = 0
-      ace_convergence_rebuild = .FALSE.
-      ace_W_ref_norm = 0.0_dp
-      ace_geo_step = 0
-      ace_dynamic_mode = .FALSE.   ! ADDED: reset dynamic mode on release, so it must be explicitly re-enabled for GEO_OPT/MD runs
-
-      IF (iw > 0) WRITE (iw, '(T2,A)') 'ACE | storage released, counters reset'
-
    END SUBROUTINE hfx_ace_release
 
-   ! **************************************************************************************************
-   !> \brief Mark this run as dynamic (GEO_OPT/MD) so Bypass C fires for geo step 0.
-   !>        Call this once from the geo_opt or MD driver before the first SCF.
-   !> \param is_dynamic .TRUE. for GEO_OPT/MD, .FALSE. to reset.
-   ! **************************************************************************************************
 ! **************************************************************************************************
-!> \brief ...
-!> \param is_dynamic ...
+!> \brief Apply the first-geometry full-exchange convention to the actual Quickstep environments.
+!> \param force_env Motion calculation, including any nested force evaluations.
+!> \param is_dynamic Whether the motion driver requests the first-geometry convention.
 ! **************************************************************************************************
-   SUBROUTINE hfx_ace_set_dynamic_mode(is_dynamic)
+   RECURSIVE SUBROUTINE hfx_ace_set_dynamic_mode(force_env, is_dynamic)
+      TYPE(force_env_type), POINTER                      :: force_env
       LOGICAL, INTENT(IN)                                :: is_dynamic
 
-      ace_dynamic_mode = is_dynamic
+      INTEGER                                            :: contribution, i, in_use
+      TYPE(force_env_p_type), POINTER                    :: sub_force_env(:)
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+
+      CPASSERT(ASSOCIATED(force_env))
+      CALL force_env_get(force_env, in_use=in_use, sub_force_env=sub_force_env)
+      IF (in_use == use_qs_force) THEN
+         CALL force_env_get(force_env, qs_env=qs_env)
+         CALL get_qs_env(qs_env, x_data=exchange)
+         IF (ASSOCIATED(exchange)) THEN
+            DO contribution = 1, SIZE(exchange, 1)
+               exchange(contribution, 1)%ace%dynamic_mode = is_dynamic
+            END DO
+         END IF
+      END IF
+      IF (ASSOCIATED(sub_force_env)) THEN
+         DO i = 1, SIZE(sub_force_env)
+            IF (.NOT. ASSOCIATED(sub_force_env(i)%force_env)) CYCLE
+            CALL hfx_ace_set_dynamic_mode(sub_force_env(i)%force_env, is_dynamic)
+         END DO
+      END IF
    END SUBROUTINE hfx_ace_set_dynamic_mode
+
+! **************************************************************************************************
+!> \brief Select the ACE state owned by the first thread of the actual exchange repetition.
+!> \param qs_env Current Quickstep environment.
+!> \return Owned projector matrices and SCF history.
+! **************************************************************************************************
+   FUNCTION get_ace_state(qs_env) RESULT(ace)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_ace_state_type), POINTER                  :: ace
+
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+
+      CALL get_qs_env(qs_env, x_data=exchange)
+      CPASSERT(ASSOCIATED(exchange))
+      CPASSERT(SIZE(exchange, 1) == 1 .AND. SIZE(exchange, 2) > 0)
+      ace => exchange(1, 1)%ace
+   END FUNCTION get_ace_state
 
    ! **************************************************************************************************
    !> \brief Private helper: call hfx_ks_matrix with or without ext_xc_section.

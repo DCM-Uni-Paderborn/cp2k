@@ -147,7 +147,7 @@ CONTAINS
       ! Tell ACE that this is a dynamic run: Bypass C will use full HFX
       ! for the entire first MD step so wavefunction propagation delivers
       ! a near-converged C_occ to step 1, making the ACE BUILD accurate.
-      CALL hfx_ace_set_dynamic_mode(.TRUE.)
+      CALL hfx_ace_set_dynamic_mode(force_env, .TRUE.)
 
       para_env => force_env%para_env
       motion_section => section_vals_get_subs_vals(force_env%root_section, "MOTION")

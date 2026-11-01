@@ -7,22 +7,33 @@
 !> \brief Original-coordinate auxiliary operators and physical projection/charge adjoints.
 MODULE qs_upf_inverse_aux_operator
    USE admm_types,                      ONLY: admm_type,&
+                                              admm_upf_ace_search_type,&
                                               get_admm_env
    USE admm_utils,                      ONLY: admm_charge_scaled_operator,&
                                               admm_purified_operator
+   USE bibliography,                    ONLY: Lin2016ACE,&
+                                              cite_reference
    USE cell_types,                      ONLY: cell_type
    USE cp_cfm_types,                    ONLY: cp_cfm_get_submatrix
+   USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
                                               dbcsr_p_type,&
                                               dbcsr_set
-   USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set,&
+   USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              dbcsr_allocate_matrix_set,&
                                               dbcsr_deallocate_matrix_set
-   USE cp_fm_types,                     ONLY: cp_fm_get_submatrix
+   USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_get_submatrix,&
+                                              cp_fm_release,&
+                                              cp_fm_type
+   USE hfx_ace_affine,                  ONLY: hfx_ace_affine_build,&
+                                              hfx_ace_affine_evaluate
    USE hfx_ri,                          ONLY: hfx_ri_update_forces,&
                                               hfx_ri_update_ks
    USE hfx_ri_kp,                       ONLY: hfx_ri_update_forces_kp,&
                                               hfx_ri_update_ks_kp
-   USE hfx_types,                       ONLY: hfx_type
+   USE hfx_types,                       ONLY: hfx_ace_release_state,&
+                                              hfx_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_admm_exch_scaling_merlot,&
                                               do_admm_exch_scaling_none,&
@@ -33,12 +44,15 @@ MODULE qs_upf_inverse_aux_operator
    USE integral_library_types,          ONLY: compare_potential_types
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_star_density,&
-                                              kpoint_star_operator
+                                              kpoint_star_operator,&
+                                              kpoint_star_operator_defect,&
+                                              kpoint_star_orbitals
    USE kpoint_transitional,             ONLY: get_1d_pointer
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
    USE mathlib,                         ONLY: invert_matrix,&
                                               invmat
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE paw_types,                       ONLY: paw_potential_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
@@ -73,8 +87,391 @@ MODULE qs_upf_inverse_aux_operator
    PUBLIC :: qs_upf_inverse_aux_metric_response
    PUBLIC :: qs_upf_inverse_aux_core_exchange, qs_upf_inverse_aux_response
    PUBLIC :: qs_upf_inverse_aux_evaluate
+   PUBLIC :: qs_upf_inverse_aux_ace_build, qs_upf_inverse_aux_ace_evaluate
+   PUBLIC :: qs_upf_inverse_aux_ace_search_begin, qs_upf_inverse_aux_ace_search_end
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Begin one immutable auxiliary ACE inner functional. Its first evaluation builds the reference.
+!>        Outside this interval OT always evaluates complete original RI exchange.
+!> \param qs_env Native environment whose auxiliary density and exchange owners are borrowed.
+!> \param active Whether this search uses auxiliary ACE. Other methods remain unchanged.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_ace_search_begin(qs_env, active)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(OUT)                               :: active
+
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+
+      active = .FALSE.
+      CALL get_qs_env(qs_env, dft_control=control, admm_env=admm, x_data=exchange)
+      IF (.NOT. control%do_admm .OR. .NOT. ASSOCIATED(admm) .OR. .NOT. ASSOCIATED(exchange)) RETURN
+      IF (.NOT. qs_env%scf_control%use_ot) RETURN
+      IF (SIZE(exchange, 1) == 0 .OR. SIZE(exchange, 2) == 0) RETURN
+      IF (.NOT. ANY(exchange(:, 1)%use_ace)) RETURN
+      CPASSERT(.NOT. admm%upf_ace_search%active)
+      admm%upf_ace_search = admm_upf_ace_search_type()
+      admm%upf_ace_search%active = .TRUE.
+      active = .TRUE.
+   END SUBROUTINE qs_upf_inverse_aux_ace_search_begin
+
+! **************************************************************************************************
+!> \brief End the inner functional and release its independently owned projectors.
+!>        The caller must reevaluate the complete original functional before physical acceptance.
+!> \param qs_env Same native environment used to begin the search.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_ace_search_end(qs_env)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+
+      TYPE(admm_type), POINTER                           :: admm
+
+      CALL get_qs_env(qs_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      CPASSERT(admm%upf_ace_search%active)
+      admm%upf_ace_search = admm_upf_ace_search_type()
+   END SUBROUTINE qs_upf_inverse_aux_ace_search_end
+
+! **************************************************************************************************
+!> \brief Evaluate one fixed inner exchange functional for all energy, gradient and curvature trials.
+!>        Copy only owned local affine projectors, never distributed FM pointer descriptors.
+!>        If compression fails at the reference, retain complete RI for this entire search.
+!>        Both current ADMMP charge factors and their affine offsets remain part of the energy.
+!> \param qs_env Current native auxiliary density, projection and physical mesh weights.
+!> \param exchange Original HF repetitions, unchanged throughout the search.
+!> \param geometry_changed Prepare original RI geometry on the first evaluation only.
+!> \param energy Weighted inner valence exchange energy.
+!> \param operators Unweighted physical-k/spin auxiliary derivative.
+!> \param spin_energies Weighted inner spin energies, including complete affine offsets.
+! **************************************************************************************************
+   SUBROUTINE evaluate_auxiliary_search(qs_env, exchange, geometry_changed, energy, operators, spin_energies)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_type), INTENT(INOUT)                      :: exchange(:, :)
+      LOGICAL, INTENT(IN)                                :: geometry_changed
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: spin_energies(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      INTEGER                                            :: contribution, ik, nk, ns, spin
+      LOGICAL                                            :: compressible, ready
+      REAL(dp)                                           :: fraction, part, scale, unused_strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: unused_gradient(:, :)
+      TYPE(admm_type), POINTER                           :: admm
+
+      CALL get_qs_env(qs_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      CPASSERT(admm%upf_density%valid)
+      ns = SIZE(admm%upf_density%matrices, 4)
+      nk = SIZE(admm%upf_density%matrices, 3)
+      ASSOCIATE (search => admm%upf_ace_search)
+         CPASSERT(search%active)
+         IF (.NOT. search%initialized) THEN
+            ALLOCATE (search%fractions(SIZE(exchange, 1)), search%potentials(SIZE(exchange, 1)))
+            compressible = .TRUE.
+            DO contribution = 1, SIZE(exchange, 1)
+               fraction = exchange(contribution, 1)%general_parameter%fraction
+               search%fractions(contribution) = fraction
+               search%potentials(contribution) = exchange(contribution, 1)%potential_parameter
+               IF (.NOT. MERGE(0.5_dp*fraction, fraction, ns == 1) > EPSILON(0.0_dp)) CYCLE
+               compressible = compressible .AND. exchange(contribution, 1)%use_ace
+            END DO
+            ready = .FALSE.
+            IF (compressible) THEN
+               CALL qs_upf_inverse_aux_ace_build(qs_env, exchange, geometry_changed, energy, operators, spin_energies, ready)
+            ELSE
+               CALL auxiliary_ri(qs_env, exchange, geometry_changed, .FALSE., .FALSE., energy, operators, &
+                                 unused_gradient, unused_strain, spin_energies, allow_ace=.TRUE.)
+            END IF
+            search%initialized = .TRUE.
+            search%compressed = ready
+            IF (.NOT. ready) RETURN
+            ALLOCATE (search%references(nk, ns, SIZE(exchange, 1)))
+            DO contribution = 1, SIZE(exchange, 1)
+               IF (.NOT. ALLOCATED(exchange(contribution, 1)%ace%auxiliary)) CYCLE
+               search%references(:, :, contribution) = exchange(contribution, 1)%ace%auxiliary
+            END DO
+         ELSE
+            CPASSERT(.NOT. geometry_changed)
+            CPASSERT(SIZE(search%fractions) == SIZE(exchange, 1))
+            DO contribution = 1, SIZE(exchange, 1)
+               ready = search%fractions(contribution) == exchange(contribution, 1)%general_parameter%fraction
+               CPASSERT(ready)
+               ready = compare_potential_types(search%potentials(contribution), exchange(contribution, 1)%potential_parameter)
+               CPASSERT(ready)
+            END DO
+            IF (.NOT. search%compressed) THEN
+               CALL auxiliary_ri(qs_env, exchange, .FALSE., .FALSE., .FALSE., energy, operators, &
+                                 unused_gradient, unused_strain, spin_energies, allow_ace=.TRUE.)
+               RETURN
+            END IF
+         END IF
+         ! The very first inner operator is compressed too. Mixing a full reference operator
+         ! with later frozen trial operators would give inconsistent orbital-chart curvature.
+         IF (ALLOCATED(operators)) DEALLOCATE (operators)
+         IF (ALLOCATED(spin_energies)) DEALLOCATE (spin_energies)
+         ALLOCATE (operators, MOLD=admm%upf_density%matrices)
+         ALLOCATE (spin_energies(ns), SOURCE=0.0_dp)
+         operators = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO contribution = 1, SIZE(exchange, 1)
+            fraction = search%fractions(contribution)
+            IF (.NOT. MERGE(0.5_dp*fraction, fraction, ns == 1) > EPSILON(0.0_dp)) CYCLE
+            DO spin = 1, ns
+               scale = 1.0_dp
+               IF (admm%do_admmp) THEN
+                  ready = ieee_is_finite(admm%gsi(spin)) .AND. admm%gsi(spin) > 0.0_dp
+                  CPASSERT(ready)
+                  scale = admm%gsi(spin)**2
+               END IF
+               DO ik = 1, nk
+                  CALL hfx_ace_affine_evaluate(search%references(ik, spin, contribution), &
+                                               admm%upf_density%matrices(:, :, ik, spin), part, matrix)
+                  operators(:, :, ik, spin) = operators(:, :, ik, spin) + scale*matrix
+                  spin_energies(spin) = spin_energies(spin) + admm%upf_aux_metric%weights(ik)*scale*part
+               END DO
+            END DO
+         END DO
+      END ASSOCIATE
+      energy = SUM(spin_energies)
+   END SUBROUTINE evaluate_auxiliary_search
+
+! **************************************************************************************************
+!> \brief Build owned auxiliary ACE projectors from each complete native RI exchange contribution.
+!>        Return the original RI energy and operator even if compression is unavailable. The
+!>        occupied interpolation factors do not replace the actual mixed RI build density.
+!>        Each kernel, physical k point and spin keeps its own affine energy and projector set.
+!>        Compression must preserve physical-star and little-group operator covariance.
+!>        A nonzero retained density without occupied factors requires full exchange.
+!> \param qs_env Native primary MOs, independent auxiliary basis and installed auxiliary density.
+!> \param exchange Actual HF repetitions. Projectors belong to the first thread of each repetition.
+!> \param geometry_changed Recompute the original native RI integrals when the geometry changes.
+!> \param energy Original valence exchange energy, including mesh weights and ADMMP rescaling.
+!> \param operators Original unweighted physical-k/spin auxiliary valence exchange derivative.
+!> \param spin_energies Original spin-resolved exchange energies with the same weights and scaling.
+!> \param ready All active ACE contributions have usable projectors. False retains full RI outputs.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_ace_build(qs_env, exchange, geometry_changed, energy, operators, spin_energies, ready)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_type), INTENT(INOUT)                      :: exchange(:, :)
+      LOGICAL, INTENT(IN)                                :: geometry_changed
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: spin_energies(:)
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      COMPLEX(dp), ALLOCATABLE                           :: compressed(:, :, :), &
+                                                            factors(:, :, :, :), matrix(:, :), &
+                                                            projection(:, :, :), &
+                                                            term_operator(:, :, :, :)
+      INTEGER                                            :: contribution, ik, info, nk, ns, rank, &
+                                                            spin
+      INTEGER, ALLOCATABLE                               :: ranks(:, :)
+      LOGICAL                                            :: available, selected, term_ready
+      REAL(dp)                                           :: anchor_shift, covariance_defect, &
+                                                            covariance_scale, fraction, &
+                                                            reference_energy, scale, term_energy, &
+                                                            unused_strain(3, 3), weight
+      REAL(dp), ALLOCATABLE                              :: term_spin_energy(:), &
+                                                            unused_gradient(:, :)
+      TYPE(admm_type), POINTER                           :: admm
+
+      CALL get_qs_env(qs_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      CPASSERT(admm%upf_density%valid)
+      CPASSERT(SIZE(exchange, 2) > 0)
+      ns = SIZE(admm%upf_density%matrices, 4)
+      nk = SIZE(admm%upf_density%matrices, 3)
+      CALL qs_upf_inverse_aux_projection(qs_env, projection, interpolation_factors=factors, &
+                                         interpolation_ranks=ranks, interpolation_ready=available)
+      ALLOCATE (operators, MOLD=admm%upf_density%matrices)
+      ALLOCATE (spin_energies(ns))
+      operators = CMPLX(0.0_dp, 0.0_dp, dp)
+      spin_energies = 0.0_dp
+      energy = 0.0_dp
+      ready = available
+      selected = .FALSE.
+      DO contribution = 1, SIZE(exchange, 1)
+         CALL hfx_ace_release_state(exchange(contribution, 1)%ace, keep_motion=.TRUE.)
+         fraction = exchange(contribution, 1)%general_parameter%fraction
+         CPASSERT(ieee_is_finite(fraction))
+         IF (fraction < 0.0_dp) CPABORT('Auxiliary RI needs nonnegative HF fractions')
+         IF (.NOT. MERGE(0.5_dp*fraction, fraction, ns == 1) > EPSILON(0.0_dp)) CYCLE
+         CALL auxiliary_ri(qs_env, exchange(contribution:contribution, :), geometry_changed, .FALSE., .FALSE., &
+                           term_energy, term_operator, unused_gradient, unused_strain, term_spin_energy, &
+                           ace_reference=.TRUE.)
+         IF (exchange(contribution, 1)%use_ace) THEN
+            selected = .TRUE.
+            term_ready = available
+            IF (available) THEN
+               ALLOCATE (exchange(contribution, 1)%ace%auxiliary(nk, ns))
+               DO spin = 1, ns
+                  DO ik = 1, nk
+                     rank = ranks(ik, spin)
+                     IF (rank == 0 .AND. ANY(admm%upf_density%matrices(:, :, ik, spin) /= 0.0_dp)) THEN
+                        term_ready = .FALSE.
+                        CYCLE
+                     END IF
+                     reference_energy = 0.5_dp*REAL(SUM(CONJG(term_operator(:, :, ik, spin))* &
+                                                        admm%upf_density%matrices(:, :, ik, spin)), dp)
+                     CALL hfx_ace_affine_build(term_operator(:, :, ik, spin), factors(:, :rank, ik, spin), &
+                                               reference_energy, exchange(contribution, 1)%ace%auxiliary(ik, spin), &
+                                               info, reference_density=admm%upf_density%matrices(:, :, ik, spin))
+                     IF (info /= 0) term_ready = .FALSE.
+                  END DO
+               END DO
+            END IF
+            IF (term_ready .AND. ASSOCIATED(admm%upf_inverse%bloch%kpoints)) THEN
+               ALLOCATE (compressed(SIZE(term_operator, 1), SIZE(term_operator, 2), nk))
+               DO spin = 1, ns
+                  DO ik = 1, nk
+                     CALL hfx_ace_affine_evaluate(exchange(contribution, 1)%ace%auxiliary(ik, spin), &
+                                                  admm%upf_density%matrices(:, :, ik, spin), reference_energy, matrix)
+                     compressed(:, :, ik) = matrix
+                  END DO
+                  CALL kpoint_star_operator_defect(admm%upf_inverse%bloch%star, compressed, &
+                                                   covariance_defect, covariance_scale, little_group=.TRUE.)
+                  IF (.NOT. ieee_is_finite(covariance_defect) .OR. .NOT. ieee_is_finite(covariance_scale)) &
+                     term_ready = .FALSE.
+                  IF (covariance_defect > 1.e-10_dp*MAX(1.0_dp, covariance_scale)) term_ready = .FALSE.
+               END DO
+               DEALLOCATE (compressed)
+            END IF
+            ready = ready .AND. term_ready
+         END IF
+         IF (.NOT. admm%do_admmp) THEN
+            ! Native RI and its half-trace can differ by reduction roundoff. Anchor the
+            ! affine energy to the actual RI value without modifying its AO derivative.
+            anchor_shift = term_energy - SUM(term_spin_energy)
+            term_spin_energy(1) = term_spin_energy(1) + anchor_shift
+            IF (exchange(contribution, 1)%use_ace .AND. available) THEN
+               ik = MAXLOC(admm%upf_aux_metric%weights, DIM=1)
+               weight = admm%upf_aux_metric%weights(ik)
+               CPASSERT(weight > 0.0_dp)
+               exchange(contribution, 1)%ace%auxiliary(ik, 1)%offset = &
+                  exchange(contribution, 1)%ace%auxiliary(ik, 1)%offset + anchor_shift/weight
+            END IF
+         END IF
+         DO spin = 1, ns
+            scale = 1.0_dp
+            IF (admm%do_admmp) THEN
+               CPASSERT(ieee_is_finite(admm%gsi(spin)))
+               CPASSERT(admm%gsi(spin) > 0.0_dp)
+               scale = admm%gsi(spin)**2
+            END IF
+            operators(:, :, :, spin) = operators(:, :, :, spin) + scale*term_operator(:, :, :, spin)
+            spin_energies(spin) = spin_energies(spin) + scale*term_spin_energy(spin)
+         END DO
+         energy = energy + term_energy
+      END DO
+      IF (admm%do_admmp) energy = SUM(spin_energies)
+      ready = ready .AND. selected
+      DO contribution = 1, SIZE(exchange, 1)
+         IF (.NOT. ready) THEN
+            CALL hfx_ace_release_state(exchange(contribution, 1)%ace, keep_motion=.TRUE.)
+         ELSE IF (ALLOCATED(exchange(contribution, 1)%ace%auxiliary)) THEN
+            exchange(contribution, 1)%ace%built = .TRUE.
+            exchange(contribution, 1)%ace%step_counter = 1
+            exchange(contribution, 1)%ace%auxiliary_fraction = exchange(contribution, 1)%general_parameter%fraction
+            exchange(contribution, 1)%ace%auxiliary_potential = exchange(contribution, 1)%potential_parameter
+         END IF
+      END DO
+   END SUBROUTINE qs_upf_inverse_aux_ace_build
+
+! **************************************************************************************************
+!> \brief Evaluate frozen auxiliary ACE matrices and affine energies at the actual current RI density.
+!>        Caches store raw valence exchange. Apply the current ADMMP spin charge ratio squared
+!>        to both the matrix and complete affine energy. Core exchange and XC remain separate.
+!>        Geometry changes, final full-exchange iterations, incompatible owners and newly populated
+!>        empty blocks require full exchange. Failure returns no partial operator or spin energy.
+!> \param qs_env Current auxiliary density, physical mesh weights and spin charge ratios.
+!> \param exchange Fixed native HF owners. This evaluation changes neither caches nor counters.
+!> \param geometry_changed Whether the AO basis, lattice or physical k-point geometry changed.
+!> \param energy Weighted affine valence exchange energy, zero when the cache is unavailable.
+!> \param operators Complete unweighted physical-k/spin AO derivative, unallocated on failure.
+!> \param spin_energies Weighted affine spin energies, unallocated on failure.
+!> \param ready All positive exchange contributions have compatible usable caches.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_ace_evaluate(qs_env, exchange, geometry_changed, energy, operators, spin_energies, ready)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
+      LOGICAL, INTENT(IN)                                :: geometry_changed
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: spin_energies(:)
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      INTEGER                                            :: contribution, ik, n, nk, ns, spin
+      LOGICAL                                            :: selected
+      REAL(dp)                                           :: fraction, part, scale
+      TYPE(admm_type), POINTER                           :: admm
+
+      energy = 0.0_dp
+      ready = .FALSE.
+      IF (geometry_changed) RETURN
+      CALL get_qs_env(qs_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      IF (.NOT. admm%upf_density%valid) RETURN
+      CPASSERT(admm%upf_aux_metric%ready)
+      CPASSERT(SIZE(exchange, 2) > 0)
+      n = SIZE(admm%upf_density%matrices, 1)
+      nk = SIZE(admm%upf_density%matrices, 3)
+      ns = SIZE(admm%upf_density%matrices, 4)
+      IF (admm%do_admmp) THEN
+         IF (.NOT. ALL(ieee_is_finite(admm%gsi(1:ns)))) RETURN
+         IF (ANY(admm%gsi(1:ns) <= 0.0_dp)) RETURN
+      END IF
+      selected = .FALSE.
+      DO contribution = 1, SIZE(exchange, 1)
+         ASSOCIATE (hf => exchange(contribution, 1), ace => exchange(contribution, 1)%ace)
+            fraction = hf%general_parameter%fraction
+            CPASSERT(ieee_is_finite(fraction))
+            IF (fraction < 0.0_dp) CPABORT('Auxiliary RI needs nonnegative HF fractions')
+            IF (.NOT. MERGE(0.5_dp*fraction, fraction, ns == 1) > EPSILON(0.0_dp)) CYCLE
+            selected = .TRUE.
+            IF (.NOT. hf%use_ace .OR. .NOT. hf%do_hfx_ri) RETURN
+            IF (.NOT. ASSOCIATED(hf%ri_data)) RETURN
+            IF (hf%ri_data%input_flavor /= ri_pmat .OR. hf%ri_data%orb_basis_type /= 'AUX_FIT') RETURN
+            IF (.NOT. ace%built .OR. ace%convergence_rebuild) RETURN
+            IF (ace%auxiliary_fraction /= fraction) RETURN
+            IF (.NOT. compare_potential_types(ace%auxiliary_potential, hf%potential_parameter)) RETURN
+            IF (.NOT. ALLOCATED(ace%auxiliary)) RETURN
+            IF (ANY(SHAPE(ace%auxiliary) /= [nk, ns])) RETURN
+            DO spin = 1, ns
+               DO ik = 1, nk
+                  IF (.NOT. ace%auxiliary(ik, spin)%ready) RETURN
+                  IF (.NOT. ALLOCATED(ace%auxiliary(ik, spin)%projectors)) RETURN
+                  IF (SIZE(ace%auxiliary(ik, spin)%projectors, 1) /= n) RETURN
+                  IF (SIZE(ace%auxiliary(ik, spin)%projectors, 2) == 0 .AND. &
+                      ANY(admm%upf_density%matrices(:, :, ik, spin) /= 0.0_dp)) RETURN
+               END DO
+            END DO
+         END ASSOCIATE
+      END DO
+      IF (.NOT. selected) RETURN
+      ALLOCATE (operators, MOLD=admm%upf_density%matrices)
+      ALLOCATE (spin_energies(ns))
+      operators = CMPLX(0.0_dp, 0.0_dp, dp)
+      spin_energies = 0.0_dp
+      DO contribution = 1, SIZE(exchange, 1)
+         fraction = exchange(contribution, 1)%general_parameter%fraction
+         IF (.NOT. MERGE(0.5_dp*fraction, fraction, ns == 1) > EPSILON(0.0_dp)) CYCLE
+         DO spin = 1, ns
+            scale = 1.0_dp
+            IF (admm%do_admmp) scale = admm%gsi(spin)**2
+            DO ik = 1, nk
+               CALL hfx_ace_affine_evaluate(exchange(contribution, 1)%ace%auxiliary(ik, spin), &
+                                            admm%upf_density%matrices(:, :, ik, spin), part, matrix)
+               operators(:, :, ik, spin) = operators(:, :, ik, spin) + scale*matrix
+               spin_energies(spin) = spin_energies(spin) + admm%upf_aux_metric%weights(ik)*scale*part
+            END DO
+         END DO
+      END DO
+      energy = SUM(spin_energies)
+      ready = .TRUE.
+   END SUBROUTINE qs_upf_inverse_aux_ace_evaluate
 
 ! **************************************************************************************************
 !> \brief Evaluate the complete auxiliary exchange correction using the actual native RI owners.
@@ -92,23 +489,28 @@ CONTAINS
 !> \param response Optional complete directional derivative. Supply the three directional arguments together.
 !> \param atom_gradient Optional complete Cartesian energy gradients, evaluated with one native RI force call.
 !> \param strain_gradient Optional complete affine dE/dstrain at fixed reduced k.
+!> \param just_energy Complete original exchange outside an explicit immutable inner search.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_evaluate(qs_env, xc_section, exchange, geometry_changed, components, operators, &
-                                          atom_response, cell_response, response, atom_gradient, strain_gradient)
+                                          atom_response, cell_response, response, atom_gradient, strain_gradient, just_energy)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
-      TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
+      TYPE(hfx_type), INTENT(INOUT)                      :: exchange(:, :)
       LOGICAL, INTENT(IN)                                :: geometry_changed
       REAL(dp), INTENT(OUT)                              :: components(4)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: response, atom_gradient(:, :), &
                                                             strain_gradient(3, 3)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: just_energy
 
       COMPLEX(dp), ALLOCATABLE                           :: ri_operator(:, :, :, :)
-      LOGICAL                                            :: geometry, use_virial
+      INTEGER                                            :: contribution, natom
+      LOGICAL                                            :: active, frozen_search, full_exchange, geometry, ready, &
+                                                            rebuild, use_virial
       REAL(dp)                                           :: energy, ri_energy, ri_strain(3, 3)
-      REAL(dp), ALLOCATABLE                              :: ri_gradient(:, :)
+      REAL(dp), ALLOCATABLE                              :: ri_gradient(:, :), ri_spin_energy(:)
+      TYPE(admm_type), POINTER                           :: admm
 
       CPASSERT(PRESENT(response) .EQV. PRESENT(atom_response))
       CPASSERT(PRESENT(response) .EQV. PRESENT(cell_response))
@@ -117,21 +519,86 @@ CONTAINS
       use_virial = PRESENT(strain_gradient)
       geometry = geometry .OR. PRESENT(response)
       IF (PRESENT(response)) use_virial = ANY(cell_response /= 0.0_dp)
-      CALL auxiliary_ri(qs_env, exchange, geometry_changed, geometry, use_virial, &
-                        ri_energy, ri_operator, ri_gradient, ri_strain)
+      CPASSERT(SIZE(exchange, 2) > 0)
+      active = ANY(exchange(:, 1)%use_ace)
+      IF (active) CALL cite_reference(Lin2016ACE)
+      CALL get_qs_env(qs_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      frozen_search = admm%upf_ace_search%active
+      IF (frozen_search) THEN
+         CPASSERT(active)
+      END IF
+      ! Ordinary OT evaluations, canonical acceptance and geometry use the original functional.
+      ! Only an explicit inner search may reuse one immutable affine reference.
+      full_exchange = geometry .OR. (active .AND. qs_env%scf_control%use_ot)
+      IF (PRESENT(just_energy)) full_exchange = full_exchange .OR. just_energy
+      rebuild = .FALSE.
+      DO contribution = 1, SIZE(exchange, 1)
+         IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
+         ASSOCIATE (ace => exchange(contribution, 1)%ace)
+            IF (geometry_changed .AND. .NOT. frozen_search) CALL hfx_ace_release_state(ace, keep_motion=.TRUE.)
+            full_exchange = full_exchange .OR. ace%convergence_rebuild .OR. &
+                            (ace%dynamic_mode .AND. ace%geometry_step == 0)
+            rebuild = rebuild .OR. .NOT. ace%built .OR. &
+                      MOD(ace%step_counter, MAX(1, exchange(contribution, 1)%ace_rebuild_freq)) == 0
+         END ASSOCIATE
+      END DO
+      IF (frozen_search) THEN
+         CPASSERT(.NOT. geometry)
+         CALL evaluate_auxiliary_search(qs_env, exchange, geometry_changed, ri_energy, ri_operator, ri_spin_energy)
+         CALL get_qs_env(qs_env, natom=natom)
+         ALLOCATE (ri_gradient(3, natom), SOURCE=0.0_dp)
+         ri_strain = 0.0_dp
+      ELSE IF (active .AND. .NOT. full_exchange) THEN
+         ready = .FALSE.
+         IF (.NOT. rebuild) THEN
+            CALL qs_upf_inverse_aux_ace_evaluate(qs_env, exchange, geometry_changed, &
+                                                ri_energy, ri_operator, ri_spin_energy, ready)
+         END IF
+         IF (.NOT. ready) THEN
+            CALL qs_upf_inverse_aux_ace_build(qs_env, exchange, geometry_changed, &
+                                             ri_energy, ri_operator, ri_spin_energy, ready)
+         ELSE
+            DO contribution = 1, SIZE(exchange, 1)
+               IF (exchange(contribution, 1)%use_ace .AND. exchange(contribution, 1)%ace%built) &
+                  exchange(contribution, 1)%ace%step_counter = exchange(contribution, 1)%ace%step_counter + 1
+            END DO
+         END IF
+         CALL get_qs_env(qs_env, natom=natom)
+         ALLOCATE (ri_gradient(3, natom), SOURCE=0.0_dp)
+         ri_strain = 0.0_dp
+      ELSE
+         CALL auxiliary_ri(qs_env, exchange, geometry_changed, geometry, use_virial, &
+                           ri_energy, ri_operator, ri_gradient, ri_strain, ri_spin_energy, allow_ace=active)
+         IF (active .AND. .NOT. geometry) THEN
+            DO contribution = 1, SIZE(exchange, 1)
+               IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
+               IF (.NOT. exchange(contribution, 1)%ace%convergence_rebuild) CYCLE
+               exchange(contribution, 1)%ace%built = .FALSE.
+               exchange(contribution, 1)%ace%step_counter = 0
+            END DO
+         END IF
+      END IF
       IF (PRESENT(response)) THEN
          CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
                                           ri_gradient, ri_strain, atom_response, cell_response, &
-                                          energy, operators, response, components)
+                                          energy, operators, response, components, valence_spin_energy=ri_spin_energy)
       ELSE
          components(1) = ri_energy
          CALL qs_upf_inverse_aux_operator_evaluate(qs_env, xc_section, ri_operator, &
                                                    components(3), components(4), operators, &
-                                                   exchange=exchange, core_energy=components(2))
+                                                   exchange=exchange, core_energy=components(2), &
+                                                   valence_spin_energy=ri_spin_energy)
          IF (geometry) THEN
             CALL auxiliary_gradients(qs_env, xc_section, exchange, ri_energy, ri_operator, ri_gradient, ri_strain, &
-                                     atom_gradient, strain_gradient)
+                                     atom_gradient, strain_gradient, ri_spin_energy)
          END IF
+      END IF
+      IF (active .AND. geometry) THEN
+         DO contribution = 1, SIZE(exchange, 1)
+            IF (exchange(contribution, 1)%use_ace) &
+               CALL hfx_ace_release_state(exchange(contribution, 1)%ace, keep_motion=.TRUE.)
+         END DO
       END IF
    END SUBROUTINE qs_upf_inverse_aux_evaluate
 
@@ -148,9 +615,10 @@ CONTAINS
 !> \param ri_strain ...
 !> \param atom_gradient ...
 !> \param strain_gradient ...
+!> \param ri_spin_energy Physical spin-resolved valence energies, including ADMMP eta**2 and k weights.
 ! **************************************************************************************************
    SUBROUTINE auxiliary_gradients(qs_env, xc_section, exchange, ri_energy, ri_operator, ri_gradient, ri_strain, &
-                                  atom_gradient, strain_gradient)
+                                  atom_gradient, strain_gradient, ri_spin_energy)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
@@ -159,6 +627,7 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: ri_gradient(:, :), ri_strain(3, 3)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
                                                             strain_gradient(3, 3)
+      REAL(dp), INTENT(IN)                               :: ri_spin_energy(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :, :)
       INTEGER                                            :: atom, axis, other
@@ -180,7 +649,7 @@ CONTAINS
                motion(axis, atom) = 1.0_dp
                CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
                                                 ri_gradient, ri_strain, motion, 0.0_dp*cell%hmat, &
-                                                energy, operators, response)
+                                                energy, operators, response, valence_spin_energy=ri_spin_energy)
                atom_gradient(axis, atom) = response
             END DO
          END DO
@@ -193,7 +662,7 @@ CONTAINS
                motion(:, :) = MATMUL(strain, positions)
                CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
                                                 ri_gradient, ri_strain, motion, MATMUL(strain, cell%hmat), &
-                                                energy, operators, response)
+                                                energy, operators, response, valence_spin_energy=ri_spin_energy)
                strain_gradient(axis, other) = response
             END DO
          END DO
@@ -214,9 +683,12 @@ CONTAINS
 !> \param operators Unweighted physical-k/spin auxiliary AO derivative.
 !> \param atom_gradient Positive globally reduced Cartesian energy gradients, zero without geometry.
 !> \param strain_gradient Positive globally reduced affine dE/dstrain, zero without requested strain.
+!> \param spin_energies Spin-resolved valence energies with the same k weights and ADMMP scaling.
+!> \param ace_reference Optional full RI reference for explicit ACE construction, before ADMMP scaling.
+!> \param allow_ace Permit complete original RI while ACE is selected, with normal scaling and geometry.
 ! **************************************************************************************************
    SUBROUTINE auxiliary_ri(qs_env, exchange, geometry_changed, geometry, use_virial, &
-                           energy, operators, atom_gradient, strain_gradient)
+                           energy, operators, atom_gradient, strain_gradient, spin_energies, ace_reference, allow_ace)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
       LOGICAL, INTENT(IN)                                :: geometry_changed, geometry, use_virial
@@ -224,14 +696,17 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: atom_gradient(:, :)
       REAL(dp), INTENT(OUT)                              :: strain_gradient(3, 3)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: spin_energies(:)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ace_reference, allow_ace
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), saved_exchange(:, :, :, :)
       INTEGER                                            :: contribution, ik, image, natom, ns, spin
-      LOGICAL                                            :: bloch, spatial_symmetry, valid
+      LOGICAL                                            :: bloch, permitted, reference, rescale, valid
       REAL(dp)                                           :: fraction, native_energy, part, &
-                                                            raw_energy, spin_energy, term_energy, &
+                                                            raw_energy, term_energy, &
                                                             term_strain(3, 3)
-      REAL(dp), ALLOCATABLE                              :: spin_weights(:), term_gradient(:, :)
+      REAL(dp), ALLOCATABLE                              :: spin_weights(:), term_gradient(:, :), &
+                                                            term_spin_energy(:)
       TYPE(admm_type), POINTER                           :: admm
       TYPE(dbcsr_p_type), POINTER                        :: density(:, :), native_ks(:, :), &
                                                             term_ks(:, :)
@@ -246,19 +721,21 @@ CONTAINS
       CPASSERT(state%basis_type == 'AUX_FIT')
       CPASSERT(SIZE(exchange, 2) > 0)
       ns = SIZE(admm%upf_density%matrices, 4)
-      IF (admm%do_admmp) THEN
+      ALLOCATE (spin_energies(ns), term_spin_energy(ns))
+      spin_energies = 0.0_dp
+      reference = .FALSE.
+      IF (PRESENT(ace_reference)) reference = ace_reference
+      permitted = reference
+      IF (PRESENT(allow_ace)) permitted = permitted .OR. allow_ace
+      CPASSERT(.NOT. (reference .AND. geometry))
+      rescale = admm%do_admmp .AND. .NOT. reference
+      IF (rescale) THEN
          ALLOCATE (spin_weights(ns))
          CPASSERT(ALL(admm%gsi(1:ns) > 0.0_dp))
          spin_weights(:) = admm%gsi(1:ns)**2
       END IF
       ! An unallocated optional spin_weights argument is absent for the other variants.
       bloch = ASSOCIATED(state%bloch%kpoints)
-      spatial_symmetry = .FALSE.
-      IF (bloch) THEN
-         DO ik = 1, state%bloch%kpoints%nkp
-            spatial_symmetry = spatial_symmetry .OR. state%bloch%kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry
-         END DO
-      END IF
       ! RI image densities include every physical star contribution. The returned
       ! image adjoint has no mesh weights; transfer_operator applies the matching star adjoint.
       DO contribution = 1, SIZE(exchange, 1)
@@ -268,7 +745,7 @@ CONTAINS
             CPABORT('Auxiliary RI needs nonnegative HF fractions')
          END IF
          IF (.NOT. MERGE(0.5_dp*fraction, fraction, ns == 1) > EPSILON(0.0_dp)) CYCLE
-         IF (.NOT. exchange(contribution, 1)%do_hfx_ri .OR. exchange(contribution, 1)%use_ace) THEN
+         IF (.NOT. exchange(contribution, 1)%do_hfx_ri .OR. (exchange(contribution, 1)%use_ace .AND. .NOT. permitted)) THEN
             CPABORT('Original-UPF auxiliary exchange requires uncompressed RI')
          END IF
          CPASSERT(ASSOCIATED(exchange(contribution, 1)%ri_data))
@@ -302,6 +779,7 @@ CONTAINS
       DO contribution = 1, SIZE(exchange, 1)
          fraction = exchange(contribution, 1)%general_parameter%fraction
          IF (.NOT. MERGE(0.5_dp*fraction, fraction, ns == 1) > EPSILON(0.0_dp)) CYCLE
+         term_spin_energy = 0.0_dp
          DO image = 1, SIZE(term_ks, 2)
             DO spin = 1, ns
                CALL dbcsr_set(term_ks(spin, image)%matrix, 0.0_dp)
@@ -315,27 +793,25 @@ CONTAINS
             CPASSERT(ALLOCATED(state%exchange_k))
             valid = ALL(SHAPE(state%exchange_k) == SHAPE(operators))
             CPASSERT(valid)
-            IF (admm%do_admmp .OR. spatial_symmetry) THEN
-               raw_energy = 0.0_dp
-               IF (admm%do_admmp) term_energy = 0.0_dp
-               DO spin = 1, ns
-                  spin_energy = 0.0_dp
-                  DO ik = 1, SIZE(operators, 3)
-                     spin_energy = spin_energy + 0.5_dp*admm%upf_aux_metric%weights(ik)* &
-                                   REAL(SUM(CONJG(state%exchange_k(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
-                  END DO
-                  raw_energy = raw_energy + spin_energy
-                  IF (admm%do_admmp) THEN
-                     term_energy = term_energy + spin_weights(spin)*spin_energy
-                     operators(:, :, :, spin) = operators(:, :, :, spin) + spin_weights(spin)*state%exchange_k(:, :, :, spin)
-                  END IF
+            DO spin = 1, ns
+               DO ik = 1, SIZE(operators, 3)
+                  term_spin_energy(spin) = term_spin_energy(spin) + 0.5_dp*admm%upf_aux_metric%weights(ik)* &
+                                    REAL(SUM(CONJG(state%exchange_k(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
                END DO
-               valid = ABS(raw_energy - native_energy) <= 1.e-9_dp*MAX(1.0_dp, ABS(native_energy))
-               IF (.NOT. valid) THEN
-                  CPABORT('Auxiliary RI energy/operator mismatch')
-               END IF
+            END DO
+            raw_energy = SUM(term_spin_energy)
+            valid = ABS(raw_energy - native_energy) <= 1.e-9_dp*MAX(1.0_dp, ABS(native_energy))
+            IF (.NOT. valid) THEN
+               CPABORT('Auxiliary RI energy/operator mismatch')
             END IF
-            IF (.NOT. admm%do_admmp) operators(:, :, :, :) = operators + state%exchange_k
+            IF (rescale) THEN
+               term_spin_energy(:) = spin_weights*term_spin_energy
+               term_energy = SUM(term_spin_energy)
+               DO spin = 1, ns
+                  operators(:, :, :, spin) = operators(:, :, :, spin) + spin_weights(spin)*state%exchange_k(:, :, :, spin)
+               END DO
+            END IF
+            IF (.NOT. rescale) operators(:, :, :, :) = operators + state%exchange_k
             IF (geometry) THEN
                CALL hfx_ri_update_forces_kp(qs_env, exchange(contribution, 1)%ri_data, ns, fraction, density, &
                                             use_virial=use_virial, atom_gradient=term_gradient, strain_gradient=term_strain, &
@@ -345,25 +821,23 @@ CONTAINS
             CALL hfx_ri_update_ks(qs_env, exchange(contribution, 1)%ri_data, term_ks, term_energy, &
                                   rho_ao=density, geometry_did_change=geometry_changed, nspins=ns, hf_fraction=fraction)
             raw_energy = term_energy
-            IF (admm%do_admmp) term_energy = 0.0_dp
-            spin_energy = 0.0_dp
+            IF (rescale) term_energy = 0.0_dp
             DO spin = 1, ns
                CALL qs_upf_inverse_matrix_gather(state%frame%ao, term_ks(spin, 1)%matrix, gamma)
-               IF (admm%do_admmp) THEN
-                  part = 0.5_dp*REAL(SUM(CONJG(gamma)*admm%upf_density%matrices(:, :, 1, spin)), dp)
-                  spin_energy = spin_energy + part
+               part = 0.5_dp*REAL(SUM(CONJG(gamma)*admm%upf_density%matrices(:, :, 1, spin)), dp)
+               term_spin_energy(spin) = part
+               IF (rescale) THEN
                   term_energy = term_energy + spin_weights(spin)*part
                   operators(:, :, 1, spin) = operators(:, :, 1, spin) + spin_weights(spin)*gamma
                ELSE
                   operators(:, :, 1, spin) = operators(:, :, 1, spin) + gamma
                END IF
             END DO
-            IF (admm%do_admmp) THEN
-               valid = ABS(spin_energy - raw_energy) <= 1.e-9_dp*MAX(1.0_dp, ABS(raw_energy))
-               IF (.NOT. valid) THEN
-                  CPABORT('Auxiliary RI energy/operator mismatch')
-               END IF
+            valid = ABS(SUM(term_spin_energy) - raw_energy) <= 1.e-9_dp*MAX(1.0_dp, ABS(raw_energy))
+            IF (.NOT. valid) THEN
+               CPABORT('Auxiliary RI energy/operator mismatch')
             END IF
+            IF (rescale) term_spin_energy(:) = spin_weights*term_spin_energy
             IF (geometry) THEN
                CALL hfx_ri_update_forces(qs_env, exchange(contribution, 1)%ri_data, ns, fraction, rho_ao=density, &
                                          use_virial=use_virial, atom_gradient=term_gradient, strain_gradient=term_strain, &
@@ -371,6 +845,7 @@ CONTAINS
             END IF
          END IF
          energy = energy + term_energy
+         spin_energies(:) = spin_energies + term_spin_energy
          IF (geometry) THEN
             atom_gradient(:, :) = atom_gradient + term_gradient
             strain_gradient = strain_gradient + term_strain
@@ -391,12 +866,20 @@ CONTAINS
 !> \param projection New A(k), with auxiliary rows, orbital columns and no mesh weights.
 !> \param reduced_projection Optional actual projection before physical star expansion.
 !> \param metric_inverse Optional inverse of its retained native metric in representative order.
+!> \param interpolation_factors Optional occupied projected MOs, including sqrt(f) and density scaling.
+!>        These specify an interpolation subspace, not a factorization of a mixed or purified density.
+!> \param interpolation_ranks Number of populated columns at each physical k point and spin.
+!> \param interpolation_ready Whether all native MO factors were available and finite.
+!>        Supply all three interpolation arguments together. The RI density and MOs stay unchanged.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_aux_projection(qs_env, projection, reduced_projection, metric_inverse)
+   SUBROUTINE qs_upf_inverse_aux_projection(qs_env, projection, reduced_projection, metric_inverse, &
+                                            interpolation_factors, interpolation_ranks, interpolation_ready)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: projection(:, :, :)
-      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: reduced_projection(:, :, :), &
-                                                            metric_inverse(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL :: reduced_projection(:, :, :), &
+         metric_inverse(:, :, :), interpolation_factors(:, :, :, :)
+      INTEGER, ALLOCATABLE, INTENT(OUT), OPTIONAL        :: interpolation_ranks(:, :)
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: interpolation_ready
 
       COMPLEX(dp), ALLOCATABLE                           :: inverse(:, :), native(:, :, :), &
                                                             native_metric(:, :, :), &
@@ -410,6 +893,8 @@ CONTAINS
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: auxiliary, primary
 
+      CPASSERT(PRESENT(interpolation_factors) .EQV. PRESENT(interpolation_ranks))
+      CPASSERT(PRESENT(interpolation_factors) .EQV. PRESENT(interpolation_ready))
       CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm)
       CPASSERT(ASSOCIATED(admm))
       CALL get_ks_env(ks_env, upf_inverse=primary)
@@ -479,7 +964,276 @@ CONTAINS
             metric_inverse(:, :, 1) = CMPLX(real_metric, 0.0_dp, dp)
          END IF
       END IF
+      IF (PRESENT(interpolation_factors)) THEN
+         CALL auxiliary_orbital_factors(qs_env, admm, primary, projection, &
+                                        interpolation_factors, interpolation_ranks, interpolation_ready)
+      END IF
    END SUBROUTINE qs_upf_inverse_aux_projection
+
+! **************************************************************************************************
+!> \brief Project the current native occupied MOs without replacing the actual RI build density.
+!>        Primary coefficients and A use original atom coordinates. Apply the same physical star
+!>        to both before multiplication. No mesh weight enters a per-k interpolation factor.
+!> \param qs_env Native MO and communicator owners.
+!> \param admm Current independent auxiliary basis and charge convention.
+!> \param primary Original-coordinate primary fields and physical symmetry map.
+!> \param projection Complete physical A(k), including independent row/column folding phases.
+!> \param factors New auxiliary factors, padded to the maximum occupied rank.
+!> \param ranks Number of occupied columns, indexed by physical k and spin.
+!> \param ready All native factors are available. Failure returns no usable interpolation space.
+! **************************************************************************************************
+   SUBROUTINE auxiliary_orbital_factors(qs_env, admm, primary, projection, factors, ranks, ready)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(admm_type), INTENT(IN)                        :: admm
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: primary
+      COMPLEX(dp), INTENT(IN)                            :: projection(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: factors(:, :, :, :)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: ranks(:, :)
+      LOGICAL, INTENT(OUT)                               :: ready
+
+      COMPLEX(dp), ALLOCATABLE                           :: block(:, :), coefficients(:, :, :, :), &
+                                                            expanded(:, :, :)
+      INTEGER                                            :: count, failed, ik, local, max_rank, na, &
+                                                            nk, nl, no, nr, ns, spin
+      INTEGER, ALLOCATABLE                               :: native_ranks(:, :)
+      LOGICAL                                            :: available, bloch, complex_mos, owner
+      REAL(dp)                                           :: scale
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(mo_set_type), POINTER                         :: mos(:), native
+      TYPE(mp_para_env_type), POINTER                    :: para
+
+      CALL get_qs_env(qs_env, dft_control=control, mos=mos, para_env=para)
+      na = SIZE(projection, 1)
+      no = SIZE(projection, 2)
+      nk = SIZE(projection, 3)
+      ns = control%nspins
+      ALLOCATE (ranks(nk, ns))
+      ranks = 0
+      ready = .FALSE.
+      IF (.NOT. admm%upf_density%valid) THEN
+         ALLOCATE (factors(na, 0, nk, ns))
+         RETURN
+      END IF
+      bloch = ASSOCIATED(primary%bloch%kpoints)
+      nr = 1
+      nl = 1
+      complex_mos = .FALSE.
+      IF (bloch) THEN
+         kpoints => primary%bloch%kpoints
+         nr = kpoints%nkp
+         nl = SIZE(kpoints%kp_env)
+         complex_mos = .NOT. kpoints%use_real_wfn
+         CPASSERT(nk == SIZE(primary%bloch%weights))
+      END IF
+      ALLOCATE (native_ranks(nr, ns))
+      native_ranks = 0
+      failed = 0
+      IF (.NOT. bloch) THEN
+         IF (.NOT. ASSOCIATED(mos)) THEN
+            failed = 1
+         ELSE IF (SIZE(mos) < ns) THEN
+            failed = 1
+         END IF
+      END IF
+      CALL para%max(failed)
+      IF (failed /= 0) THEN
+         ALLOCATE (factors(na, 0, nk, ns))
+         RETURN
+      END IF
+      DO spin = 1, ns
+         DO local = 1, nl
+            ik = 1
+            owner = para%is_source()
+            IF (bloch) THEN
+               kp => kpoints%kp_env(local)%kpoint_env
+               ik = kp%nkpoint
+               IF (.NOT. ASSOCIATED(kp%mos)) THEN
+                  failed = 1
+                  CYCLE
+               END IF
+               IF (SIZE(kp%mos) < ns) THEN
+                  failed = 1
+                  CYCLE
+               END IF
+               native => kp%mos(spin)
+               owner = kpoints%para_env_kp%is_source()
+            ELSE
+               native => mos(spin)
+            END IF
+            available = occupied_mos_available(native, no, complex_mos, count)
+            IF (.NOT. available) failed = 1
+            IF (available .AND. owner) native_ranks(ik, spin) = count
+         END DO
+      END DO
+      CALL para%max(failed)
+      CALL para%sum(native_ranks)
+      IF (failed /= 0) THEN
+         ALLOCATE (factors(na, 0, nk, ns))
+         RETURN
+      END IF
+      max_rank = MAXVAL(native_ranks)
+      ALLOCATE (factors(na, max_rank, nk, ns), coefficients(no, max_rank, nr, ns))
+      factors = CMPLX(0.0_dp, 0.0_dp, dp)
+      coefficients = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (max_rank == 0) THEN
+         ready = .TRUE.
+         RETURN
+      END IF
+      DO spin = 1, ns
+         DO local = 1, nl
+            ik = 1
+            owner = para%is_source()
+            IF (bloch) THEN
+               kp => kpoints%kp_env(local)%kpoint_env
+               ik = kp%nkpoint
+               native => kp%mos(spin)
+               owner = kpoints%para_env_kp%is_source()
+            ELSE
+               native => mos(spin)
+            END IF
+            count = native_ranks(ik, spin)
+            CALL gather_occupied_mos(native, complex_mos, block, available)
+            IF (.NOT. available) failed = 1
+            IF (available .AND. owner) coefficients(:, :count, ik, spin) = block
+         END DO
+      END DO
+      CALL para%max(failed)
+      IF (failed /= 0) RETURN
+      CALL para%sum(coefficients)
+      DO spin = 1, ns
+         scale = 1.0_dp
+         IF (admm%do_admmq .OR. admm%do_admms) THEN
+            IF (.NOT. ieee_is_finite(admm%gsi(spin))) RETURN
+            IF (admm%gsi(spin) <= 0.0_dp) RETURN
+            scale = SQRT(admm%gsi(spin))
+         END IF
+         IF (bloch) THEN
+            CALL kpoint_star_orbitals(primary%bloch%star, coefficients(:, :, :, spin), expanded)
+            ranks(:, spin) = native_ranks(primary%bloch%star%representative, spin)
+         ELSE
+            ALLOCATE (expanded, SOURCE=coefficients(:, :, :, spin))
+            ranks(1, spin) = native_ranks(1, spin)
+         END IF
+         DO ik = 1, nk
+            count = ranks(ik, spin)
+            factors(:, :count, ik, spin) = scale*MATMUL(projection(:, :, ik), expanded(:, :count, ik))
+         END DO
+         DEALLOCATE (expanded)
+      END DO
+      ready = .TRUE.
+   END SUBROUTINE auxiliary_orbital_factors
+
+! **************************************************************************************************
+!> \brief Inspect native occupation and coefficient availability before collective MO gathering.
+!> \param native Actual primary MO owner.
+!> \param nao Expected primary AO dimension.
+!> \param complex_mos Whether the native complex FM owner is used.
+!> \param occupied Number of strictly positive occupations, without a truncation threshold.
+!> \return Whether all occupied columns can be gathered without changing native storage.
+! **************************************************************************************************
+   LOGICAL FUNCTION occupied_mos_available(native, nao, complex_mos, occupied) RESULT(available)
+      TYPE(mo_set_type), INTENT(IN)                      :: native
+      INTEGER, INTENT(IN)                                :: nao
+      LOGICAL, INTENT(IN)                                :: complex_mos
+      INTEGER, INTENT(OUT)                               :: occupied
+
+      available = .FALSE.
+      occupied = 0
+      IF (native%nao /= nao .OR. native%nmo < 0 .OR. native%nmo > nao) RETURN
+      IF (native%nmo == 0) THEN
+         available = .TRUE.
+         RETURN
+      END IF
+      IF (.NOT. ASSOCIATED(native%occupation_numbers)) RETURN
+      IF (SIZE(native%occupation_numbers) < native%nmo) RETURN
+      IF (.NOT. ALL(ieee_is_finite(native%occupation_numbers(:native%nmo)))) RETURN
+      IF (ANY(native%occupation_numbers(:native%nmo) < 0.0_dp)) RETURN
+      occupied = COUNT(native%occupation_numbers(:native%nmo) > 0.0_dp)
+      IF (occupied > 0) THEN
+         IF (complex_mos) THEN
+            IF (.NOT. ASSOCIATED(native%cmo_coeff)) RETURN
+            IF (.NOT. ASSOCIATED(native%cmo_coeff%matrix_struct)) RETURN
+         ELSE
+            IF (.NOT. ASSOCIATED(native%mo_coeff)) RETURN
+            IF (.NOT. ASSOCIATED(native%mo_coeff%matrix_struct)) RETURN
+            IF (native%use_mo_coeff_b) THEN
+               IF (.NOT. ASSOCIATED(native%mo_coeff_b)) RETURN
+            END IF
+         END IF
+      END IF
+      available = .TRUE.
+   END FUNCTION occupied_mos_available
+
+! **************************************************************************************************
+!> \brief Gather C sqrt(f), preserving both native FM and DBCSR MO storage.
+!> \param native Prepared primary MO owner with nonnegative occupations.
+!> \param complex_mos Whether the complex FM owner is used.
+!> \param factors New occupied interpolation columns, without k or auxiliary charge scaling.
+!> \param available Whether every occupied coefficient is finite.
+! **************************************************************************************************
+   SUBROUTINE gather_occupied_mos(native, complex_mos, factors, available)
+      TYPE(mo_set_type), INTENT(IN)                      :: native
+      LOGICAL, INTENT(IN)                                :: complex_mos
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: factors(:, :)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      COMPLEX(dp), ALLOCATABLE                           :: coefficients(:, :)
+      INTEGER                                            :: column, first, last, occupied, orbital
+      LOGICAL                                            :: temporary_used
+      REAL(dp), ALLOCATABLE                              :: real_part(:, :)
+      TYPE(cp_fm_type)                                   :: temporary
+
+      available = occupied_mos_available(native, native%nao, complex_mos, occupied)
+      CPASSERT(available)
+      ALLOCATE (factors(native%nao, occupied))
+      factors = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (occupied == 0) RETURN
+      temporary_used = .FALSE.
+      IF (.NOT. complex_mos .AND. native%use_mo_coeff_b) THEN
+         CALL cp_fm_create(temporary, native%mo_coeff%matrix_struct, name='Auxiliary occupied interpolation')
+         CALL copy_dbcsr_to_fm(native%mo_coeff_b, temporary)
+         temporary_used = .TRUE.
+      END IF
+      column = 0
+      orbital = 1
+      DO WHILE (orbital <= native%nmo)
+         IF (native%occupation_numbers(orbital) == 0.0_dp) THEN
+            orbital = orbital + 1
+            CYCLE
+         END IF
+         first = orbital
+         last = orbital
+         DO WHILE (last < native%nmo)
+            IF (native%occupation_numbers(last + 1) == 0.0_dp) EXIT
+            last = last + 1
+         END DO
+         ! Unoccupied native columns may be unset. Gather only populated contiguous spans.
+         ALLOCATE (coefficients(native%nao, last - first + 1))
+         IF (complex_mos) THEN
+            CALL cp_cfm_get_submatrix(native%cmo_coeff, coefficients, start_col=first, n_cols=last - first + 1)
+         ELSE
+            ALLOCATE (real_part(native%nao, last - first + 1))
+            IF (temporary_used) THEN
+               CALL cp_fm_get_submatrix(temporary, real_part, start_col=first, n_cols=last - first + 1)
+            ELSE
+               CALL cp_fm_get_submatrix(native%mo_coeff, real_part, start_col=first, n_cols=last - first + 1)
+            END IF
+            coefficients(:, :) = CMPLX(real_part, 0.0_dp, dp)
+            DEALLOCATE (real_part)
+         END IF
+         available = ALL(ieee_is_finite(REAL(coefficients, dp))) .AND. ALL(ieee_is_finite(AIMAG(coefficients)))
+         IF (.NOT. available) EXIT
+         DO orbital = first, last
+            column = column + 1
+            factors(:, column) = SQRT(native%occupation_numbers(orbital))*coefficients(:, orbital - first + 1)
+         END DO
+         DEALLOCATE (coefficients)
+         orbital = last + 1
+      END DO
+      IF (temporary_used) CALL cp_fm_release(temporary)
+   END SUBROUTINE gather_occupied_mos
 
 ! **************************************************************************************************
 !> \brief Compose original auxiliary Fock/XC and transfer their complete electronic derivative.
@@ -503,9 +1257,12 @@ CONTAINS
 !> \param exchange Optional actual native HF interactions. The supplied Fock operator excludes PAW core exchange.
 !> \param core_energy Optional PAW core-core and core-valence HF energy, required with exchange.
 !>        These terms use the auxiliary density and contribute once to its transferred operator.
+!> \param valence_spin_energy Optional physical valence energies, including eta**2 and k weights.
+!>        The explicit ADMMP ratio derivative then retains constant affine energy terms.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_operator_evaluate(qs_env, xc_section, fock, grid_energy, atom_energy, operators, &
-                                                   mixed_covector, auxiliary_covector, primary_covector, exchange, core_energy)
+                                                   mixed_covector, auxiliary_covector, primary_covector, exchange, core_energy, &
+                                                   valence_spin_energy)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       COMPLEX(dp), INTENT(IN)                            :: fock(:, :, :, :)
@@ -516,6 +1273,7 @@ CONTAINS
                                                             primary_covector(:, :, :, :)
       TYPE(hfx_type), INTENT(IN), OPTIONAL               :: exchange(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: core_energy
+      REAL(dp), INTENT(IN), OPTIONAL                     :: valence_spin_energy(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: auxiliary_operator(:, :, :, :), &
                                                             core_operator(:, :, :, :)
@@ -533,7 +1291,7 @@ CONTAINS
          auxiliary_operator(:, :, :, :) = auxiliary_operator + core_operator
       END IF
       auxiliary_operator(:, :, :, :) = auxiliary_operator + fock
-      CALL hf_ratio_response(qs_env, fock, eta_derivative)
+      CALL hf_ratio_response(qs_env, fock, eta_derivative, valence_spin_energy)
       CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector, &
                              eta_derivative)
    END SUBROUTINE qs_upf_inverse_aux_operator_evaluate
@@ -543,11 +1301,14 @@ CONTAINS
 !> \param qs_env Actual native auxiliary density and full physical-k weights.
 !> \param fock Valence RI operator, including eta**2 for ADMMP and no mesh weights.
 !> \param derivative Accumulated partial_eta F at fixed native auxiliary density.
+!> \param valence_spin_energy Optional eta**2-scaled physical valence energies with k weights.
+!>        Without these values the supplied operator is assumed to define a quadratic functional.
 ! **************************************************************************************************
-   SUBROUTINE hf_ratio_response(qs_env, fock, derivative)
+   SUBROUTINE hf_ratio_response(qs_env, fock, derivative, valence_spin_energy)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       COMPLEX(dp), INTENT(IN)                            :: fock(:, :, :, :)
       REAL(dp), INTENT(INOUT)                            :: derivative(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: valence_spin_energy(:)
 
       INTEGER                                            :: ik, spin
       LOGICAL                                            :: valid
@@ -559,12 +1320,21 @@ CONTAINS
       valid = ALL(SHAPE(fock) == SHAPE(admm%upf_density%matrices))
       CPASSERT(valid)
       CPASSERT(SIZE(derivative) == SIZE(fock, 4))
+      IF (PRESENT(valence_spin_energy)) THEN
+         valid = SIZE(valence_spin_energy) == SIZE(derivative) .AND. ALL(ieee_is_finite(valence_spin_energy))
+         CPASSERT(valid)
+      END IF
       DO spin = 1, SIZE(fock, 4)
          CPASSERT(admm%gsi(spin) > 0.0_dp)
-         DO ik = 1, SIZE(fock, 3)
-            derivative(spin) = derivative(spin) + admm%upf_aux_metric%weights(ik)* &
-                               REAL(SUM(CONJG(fock(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)/admm%gsi(spin)
-         END DO
+         IF (PRESENT(valence_spin_energy)) THEN
+            derivative(spin) = derivative(spin) + 2.0_dp*valence_spin_energy(spin)/admm%gsi(spin)
+         ELSE
+            DO ik = 1, SIZE(fock, 3)
+               derivative(spin) = derivative(spin) + admm%upf_aux_metric%weights(ik)* &
+                                  REAL(SUM(CONJG(fock(:, :, ik, spin))* &
+                                           admm%upf_density%matrices(:, :, ik, spin)), dp)/admm%gsi(spin)
+            END DO
+         END IF
       END DO
    END SUBROUTINE hf_ratio_response
 
@@ -973,10 +1743,11 @@ CONTAINS
 !> \param operators Complete primary AO derivative through the actual projection and charge constraint.
 !> \param response Complete directional derivative at fixed original-coordinate primary occupations.
 !> \param components Optional RI valence HF, PAW core HF, grid XC and atomic XC energies.
+!> \param valence_spin_energy Optional physical valence energies with eta**2 and k weights, as supplied by RI.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
                                           ri_atom_gradient, ri_strain_gradient, atom_response, cell_response, &
-                                          energy, operators, response, components)
+                                          energy, operators, response, components, valence_spin_energy)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
@@ -990,6 +1761,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       REAL(dp), INTENT(OUT)                              :: response
       REAL(dp), INTENT(OUT), OPTIONAL                    :: components(4)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: valence_spin_energy(:)
 
       COMPLEX(dp), ALLOCATABLE :: auxiliary_covector(:, :, :, :), auxiliary_operator(:, :, :, :), &
          core_operator(:, :, :, :), mixed_covector(:, :, :, :), primary_covector(:, :, :, :)
@@ -1016,7 +1788,7 @@ CONTAINS
       CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator, &
                                             atom_response, cell_response, core_response, eta_derivative=core_derivative)
       eta_derivative(:) = eta_derivative + core_derivative
-      CALL hf_ratio_response(qs_env, ri_operator, eta_derivative)
+      CALL hf_ratio_response(qs_env, ri_operator, eta_derivative, valence_spin_energy)
       auxiliary_operator(:, :, :, :) = auxiliary_operator + core_operator
       auxiliary_operator(:, :, :, :) = auxiliary_operator + ri_operator
       CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector, &

@@ -255,6 +255,7 @@ list(
   hartree_local_types.F
   header.F
   hfx_admm_utils.F
+  hfx_ace_affine.F
   hfx_ace_methods.F
   hfx_communication.F
   hfx_compression_methods.F

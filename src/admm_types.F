@@ -27,6 +27,7 @@ MODULE admm_types
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_release,&
                                               cp_fm_type
+   USE hfx_ace_affine,                  ONLY: hfx_ace_affine_type
    USE input_constants,                 ONLY: do_admm_aux_exch_func_none,&
                                               do_admm_blocked_projection,&
                                               do_admm_blocking_purify_full,&
@@ -36,6 +37,7 @@ MODULE admm_types
                                               do_admm_purify_none
    USE input_section_types,             ONLY: section_vals_release,&
                                               section_vals_type
+   USE integral_library_types,          ONLY: coulomb_operator_type
    USE kinds,                           ONLY: dp
    USE kpoint_transitional,             ONLY: get_1d_pointer,&
                                               get_2d_pointer,&
@@ -69,6 +71,7 @@ MODULE admm_types
    PRIVATE
    PUBLIC :: admm_env_create, admm_env_release, admm_type, admm_gapw_r3d_rs_type, set_admm_env, get_admm_env
    PUBLIC :: admm_upf_density_type, admm_upf_center_density_type
+   PUBLIC :: admm_upf_ace_search_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'admm_types'
 
@@ -106,6 +109,14 @@ MODULE admm_types
       TYPE(admm_upf_center_density_type), ALLOCATABLE :: centers(:)
       REAL(dp), ALLOCATABLE :: valence_charge(:)
    END TYPE admm_upf_density_type
+
+   TYPE admm_upf_ace_search_type
+      ! One immutable inner functional, independently owned from the ordinary SCF ACE cache.
+      LOGICAL :: active = .FALSE., initialized = .FALSE., compressed = .FALSE.
+      TYPE(hfx_ace_affine_type), ALLOCATABLE :: references(:, :, :)
+      TYPE(coulomb_operator_type), ALLOCATABLE :: potentials(:)
+      REAL(dp), ALLOCATABLE :: fractions(:)
+   END TYPE admm_upf_ace_search_type
 
 ! **************************************************************************************************
 !> \brief stores some data used in wavefunction fitting
@@ -217,6 +228,7 @@ MODULE admm_types
       TYPE(qs_upf_inverse_scf_type), POINTER :: upf_inverse => NULL()
       TYPE(qs_upf_inverse_charge_metric_type) :: upf_aux_metric, upf_mixed_metric
       TYPE(admm_upf_density_type) :: upf_density
+      TYPE(admm_upf_ace_search_type) :: upf_ace_search
       TYPE(cp_fm_type), DIMENSION(:), &
          POINTER                               :: mo_derivs_aux_fit => NULL()
 
@@ -454,6 +466,7 @@ CONTAINS
       INTEGER                                            :: ispin
 
       CPASSERT(ASSOCIATED(admm_env))
+      admm_env%upf_ace_search = admm_upf_ace_search_type()
       admm_env%upf_density = admm_upf_density_type()
       CALL qs_upf_inverse_charge_metric_release(admm_env%upf_aux_metric)
       CALL qs_upf_inverse_charge_metric_release(admm_env%upf_mixed_metric)

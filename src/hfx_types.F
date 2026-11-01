@@ -35,6 +35,8 @@ MODULE hfx_types
    USE cp_files,                        ONLY: close_file,&
                                               file_exists,&
                                               open_file
+   USE cp_fm_types,                     ONLY: cp_fm_release,&
+                                              cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
@@ -51,6 +53,8 @@ MODULE hfx_types
                                               hfx_pgf_list => eri4_pgf_pair_type,&
                                               hfx_pgf_product_list => eri4_pgf_product_type,&
                                               hfx_screen_coeff_type => eri4_screen_coeff_type
+   USE hfx_ace_affine,                  ONLY: hfx_ace_affine_release,&
+                                              hfx_ace_affine_type
    USE hfx_helpers,                     ONLY: count_cells_perd,&
                                               next_image_cell_perd
    USE input_constants,                 ONLY: &
@@ -114,7 +118,7 @@ MODULE hfx_types
              alloc_containers, dealloc_containers, hfx_task_list_type, init_t_c_g0_lmax, &
              hfx_create_neighbor_cells, hfx_create_basis_types, hfx_release_basis_types, &
              hfx_ri_type, hfx_compression_type, block_ind_type, hfx_ri_init, hfx_ri_release, &
-             compare_hfx_sections
+             compare_hfx_sections, hfx_ace_state_type, hfx_ace_release_state
 
 #define CACHE_SIZE 1024
 #define BITS_MAX_VAL 6
@@ -435,6 +439,20 @@ MODULE hfx_types
    END TYPE hfx_ri_type
 
 ! **************************************************************************************************
+!> \brief Projectors and iteration history owned by one exchange repetition.
+! **************************************************************************************************
+   TYPE hfx_ace_state_type
+      TYPE(cp_fm_type), ALLOCATABLE :: projectors(:, :)
+      ! Original-UPF auxiliary affine states, indexed by physical k point and spin.
+      TYPE(hfx_ace_affine_type), ALLOCATABLE :: auxiliary(:, :)
+      TYPE(hfx_potential_type) :: auxiliary_potential = hfx_potential_type()
+      REAL(dp) :: auxiliary_fraction = 0.0_dp
+      LOGICAL :: built = .FALSE., convergence_rebuild = .FALSE., dynamic_mode = .FALSE.
+      INTEGER :: step_counter = 0, geometry_step = 0
+      REAL(dp) :: reference_norm = 0.0_dp
+   END TYPE hfx_ace_state_type
+
+! **************************************************************************************************
 !> \brief stores some data used in construction of Kohn-Sham matrix
 !> \param potential_parameter stores information on the potential (1/r, erfc(wr)/r
 !> \param screening_parameter stores screening infos such as epsilon
@@ -527,12 +545,53 @@ MODULE hfx_types
       LOGICAL  :: use_ace = .FALSE.
       INTEGER  :: ace_rebuild_freq = 20
 
-      ! ACE pprojectors will be declared in hfx_admm_utils.F
-      LOGICAL  :: ace_is_built = .FALSE.
-      INTEGER  :: ace_build_counter = 0
+      ! The first thread owns this repetition's distributed ACE projectors and SCF history.
+      TYPE(hfx_ace_state_type) :: ace
    END TYPE hfx_type
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Release the ACE projectors and auxiliary affine states owned by one exchange repetition.
+!> \param state Owned projector matrices and iteration history.
+!> \param keep_motion Retain the motion flag and completed geometry-step count when rebuilding.
+! **************************************************************************************************
+   SUBROUTINE hfx_ace_release_state(state, keep_motion)
+      TYPE(hfx_ace_state_type), INTENT(INOUT)            :: state
+      LOGICAL, INTENT(IN), OPTIONAL                      :: keep_motion
+
+      INTEGER                                            :: i, j
+      LOGICAL                                            :: retain_motion
+
+      retain_motion = .FALSE.
+      IF (PRESENT(keep_motion)) retain_motion = keep_motion
+      IF (ALLOCATED(state%projectors)) THEN
+         DO j = 1, SIZE(state%projectors, 2)
+            DO i = 1, SIZE(state%projectors, 1)
+               IF (ASSOCIATED(state%projectors(i, j)%matrix_struct)) CALL cp_fm_release(state%projectors(i, j))
+            END DO
+         END DO
+         DEALLOCATE (state%projectors)
+      END IF
+      IF (ALLOCATED(state%auxiliary)) THEN
+         DO j = 1, SIZE(state%auxiliary, 2)
+            DO i = 1, SIZE(state%auxiliary, 1)
+               CALL hfx_ace_affine_release(state%auxiliary(i, j))
+            END DO
+         END DO
+         DEALLOCATE (state%auxiliary)
+      END IF
+      state%built = .FALSE.
+      state%step_counter = 0
+      state%convergence_rebuild = .FALSE.
+      state%reference_norm = 0.0_dp
+      state%auxiliary_potential = hfx_potential_type()
+      state%auxiliary_fraction = 0.0_dp
+      IF (.NOT. retain_motion) THEN
+         state%geometry_step = 0
+         state%dynamic_mode = .FALSE.
+      END IF
+   END SUBROUTINE hfx_ace_release_state
 
 ! **************************************************************************************************
 !> \brief - This routine allocates and initializes all types in hfx_data
@@ -2042,10 +2101,8 @@ CONTAINS
                DEALLOCATE (actual_x_data%ri_data)
             END IF
 
-            ! ACE cleanup — just reset scalars, ace_W is managed elsewhere
+            CALL hfx_ace_release_state(actual_x_data%ace)
             actual_x_data%use_ace = .FALSE.
-            actual_x_data%ace_is_built = .FALSE.
-            actual_x_data%ace_build_counter = 0
          END DO
 
       END DO
