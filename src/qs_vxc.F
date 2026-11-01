@@ -62,6 +62,7 @@ MODULE qs_vxc
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_paw_composite
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_evaluate
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_density_constraints,       ONLY: skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
@@ -110,6 +111,9 @@ CONTAINS
 !> \param native_gapw_composite_override ...
 !> \param native_skala_defer_to_atom_composite prepare VXC storage while deferring the
 !>        native SKALA evaluation to the atom-centered GAPW composite path
+!> \param upf_context Independent original-UPF basis state, leaving primary XC caches unchanged.
+!> \param upf_density Unweighted occupation matrices of that state, in physical k and spin order.
+!> \param upf_atomic_energy Independent atom XC residual, required with upf_context.
 !> \par History
 !>      - 05.2002 modified to use the mp_allgather function each pe
 !>        computes only part of the grid and this is broadcasted to all
@@ -123,7 +127,8 @@ CONTAINS
    SUBROUTINE qs_vxc_create(ks_env, rho_struct, xc_section, vxc_rho, vxc_tau, exc, &
                             just_energy, edisp, dispersion_env, adiabatic_rescale_factor, &
                             pw_env_external, native_skala_atom_force, qs_env_external, &
-                            native_gapw_composite_override, native_skala_defer_to_atom_composite)
+                            native_gapw_composite_override, native_skala_defer_to_atom_composite, &
+                            upf_context, upf_density, upf_atomic_energy)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_struct
@@ -140,15 +145,19 @@ CONTAINS
       TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env_external
       LOGICAL, INTENT(in), OPTIONAL :: native_gapw_composite_override, &
          native_skala_defer_to_atom_composite
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: upf_context
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: upf_density(:, :, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: upf_atomic_energy
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_vxc_create'
 
       INTEGER                                            :: handle, i, ispin, j, k, mspin, myfun, &
                                                             nelec_spin(2), np, output_unit, vdw
       LOGICAL :: compute_virial, defer_native_skala_to_atom_composite, do_adiabatic_rescaling, &
-         my_just_energy, native_gapw_composite_direct_ao, native_gapw_composite_reference, &
-         native_grid_diagnostics, native_skala_grid, rho_g_valid, sic_scaling_b_zero, tau_g_valid, &
-         tau_r_valid, uf_grid, vdW_nl
+         inverse_active, inverse_composite, my_just_energy, native_gapw_composite_direct_ao, &
+         native_gapw_composite_reference, native_grid_diagnostics, native_skala_grid, rho_g_valid, &
+         sic_scaling_b_zero, tau_g_valid, tau_r_valid, uf_grid, vdW_nl
       REAL(KIND=dp) :: composite_hard_integral, composite_rho_max, composite_rho_min, &
          composite_rho_r_integral, composite_soft_integral, composite_tau_max, composite_tau_min, &
          composite_tau_r_integral, delta, direct_rho_integral, direct_tau_integral, exc_m, factor, &
@@ -198,6 +207,7 @@ CONTAINS
                tau_smooth_model_g, tau_smooth_model_r, tau_smooth_r, gauxc_section)
 
       exc = 0.0_dp
+      IF (PRESENT(upf_atomic_energy)) upf_atomic_energy = 0.0_dp
       my_just_energy = .FALSE.
       IF (PRESENT(just_energy)) my_just_energy = just_energy
       my_adiabatic_rescale_factor = 1.0_dp
@@ -220,6 +230,17 @@ CONTAINS
       rho_nlcc_use => rho_nlcc
       rho_nlcc_g_use => rho_nlcc_g
       weights_use => weights
+      inverse_active = qs_upf_inverse_scf_active(ks_env)
+      inverse_composite = qs_upf_inverse_scf_paw_composite(ks_env)
+      IF (PRESENT(upf_context)) THEN
+         CPASSERT(PRESENT(upf_density))
+         CPASSERT(PRESENT(upf_atomic_energy))
+         inverse_active = .TRUE.
+         inverse_composite = ALLOCATED(upf_context%paw_reconstruction)
+         NULLIFY (skala_constraints)
+      ELSE
+         CPASSERT(.NOT. PRESENT(upf_density))
+      END IF
 
       CALL qs_rho_get(rho_struct, &
                       tau_r_valid=tau_r_valid, &
@@ -235,6 +256,7 @@ CONTAINS
       tau_smooth_g => tau_struct_g
 
       compute_virial = virial%pv_calculate .AND. (.NOT. virial%pv_numer) .AND. (.NOT. my_just_energy)
+      IF (PRESENT(upf_context)) compute_virial = .FALSE.
       IF (compute_virial) THEN
          virial%pv_xc = 0.0_dp
       END IF
@@ -268,6 +290,8 @@ CONTAINS
                                            (dft_control%qs_control%gapw .OR. &
                                             dft_control%qs_control%gapw_xc)
       END IF
+      ! Independent UPF reconstruction supplies its own composite through the atom residual.
+      IF (PRESENT(upf_context)) native_gapw_composite_reference = .FALSE.
       native_gapw_composite_direct_ao = native_gapw_composite_reference .AND. &
                                         native_skala_gapw_composite_direct_ao(xc_section)
       native_grid_diagnostics = .FALSE.
@@ -635,7 +659,7 @@ CONTAINS
                CALL pw_axpy(rho_nlcc_g_use, rho_g(ispin), factor)
             END DO
          END IF
-         IF (ASSOCIATED(tau)) CALL qs_upf_inverse_core_kinetic(ks_env, tau, 1.0_dp)
+         IF (ASSOCIATED(tau)) CALL qs_upf_inverse_core_kinetic(ks_env, tau, 1.0_dp, context=upf_context)
 
          !
          ! here the rho_r, rho_g, tau is what it should be
@@ -682,21 +706,31 @@ CONTAINS
                                   weights=weights_use, pw_pool=xc_pw_pool, &
                                   compute_virial=compute_virial, &
                                   virial_xc=virial%pv_xc, density_constraints=skala_constraints, &
-                                  project_density_potential=.NOT. qs_upf_inverse_scf_active(ks_env))
+                                  project_density_potential=.NOT. inverse_active)
          END IF
 
          IF ((dft_control%qs_control%gapw_xc .OR. dft_control%qs_control%gapw .OR. &
-              qs_upf_inverse_scf_paw_composite(ks_env)) .AND. &
-             qs_upf_inverse_scf_active(ks_env)) THEN
+              inverse_composite) .AND. inverse_active) THEN
             IF (do_adiabatic_rescaling .OR. my_scaling /= 1.0_dp) THEN
                CPABORT("Inverse atom XC functional rescaling is not implemented")
             END IF
-            CALL get_ks_env(ks_env, energy=inverse_energy)
-            IF (my_just_energy) THEN
-               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, kinetic=tau)
+            IF (PRESENT(upf_context)) THEN
+               IF (my_just_energy) THEN
+                  CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, upf_atomic_energy, kinetic=tau, &
+                                                      context=upf_context, density_matrices=upf_density)
+               ELSE
+                  CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, upf_atomic_energy, my_vxc_rho, &
+                                                      kinetic=tau, kinetic_potential=my_vxc_tau, &
+                                                      context=upf_context, density_matrices=upf_density)
+               END IF
             ELSE
-               CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, my_vxc_rho, &
-                                                   kinetic=tau, kinetic_potential=my_vxc_tau)
+               CALL get_ks_env(ks_env, energy=inverse_energy)
+               IF (my_just_energy) THEN
+                  CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, kinetic=tau)
+               ELSE
+                  CALL qs_upf_inverse_scf_xc_evaluate(ks_env, rho_r, xc_section, inverse_energy%exc1, my_vxc_rho, &
+                                                      kinetic=tau, kinetic_potential=my_vxc_tau)
+               END IF
             END IF
          END IF
 
@@ -811,7 +845,7 @@ CONTAINS
          END IF
 
          ! remove the nlcc densities (keep stuff in original state)
-         IF (ASSOCIATED(tau)) CALL qs_upf_inverse_core_kinetic(ks_env, tau, -1.0_dp)
+         IF (ASSOCIATED(tau)) CALL qs_upf_inverse_core_kinetic(ks_env, tau, -1.0_dp, context=upf_context)
          IF (ASSOCIATED(rho_nlcc_use)) THEN
             factor = -1.0_dp
             DO ispin = 1, mspin

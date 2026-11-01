@@ -140,11 +140,14 @@ CONTAINS
 !> \param ks_env Prepared inverse geometry with independently owned core tau.
 !> \param kinetic XC kinetic fields, one per spin.
 !> \param scale Plus one before XC evaluation, minus one afterwards.
+!> \param context Optional independent basis state. Its frozen core tau is prepared on its own grid.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_core_kinetic(ks_env, kinetic, scale)
+   SUBROUTINE qs_upf_inverse_core_kinetic(ks_env, kinetic, scale, context)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: kinetic(:)
       REAL(dp), INTENT(IN)                               :: scale
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: context
 
       INTEGER                                            :: spin
       TYPE(pw_c1d_gs_type)                               :: field_g
@@ -152,6 +155,10 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL get_ks_env(ks_env, upf_inverse=state)
+      IF (PRESENT(context)) THEN
+         state => context
+         CALL prepare_core_kinetic(ks_env, state)
+      END IF
       IF (.NOT. ASSOCIATED(state)) RETURN
       IF (.NOT. state%has_core_tau) RETURN
       CPASSERT(SIZE(kinetic) > 0)
@@ -166,6 +173,67 @@ CONTAINS
       CALL field_r%release()
       CALL field_g%release()
    END SUBROUTINE qs_upf_inverse_core_kinetic
+
+! **************************************************************************************************
+!> \brief Prepare independent fixed core tau without changing primary partial-core fields.
+!>        Preserve original PAW PS core and the specified USPP model core. NC and GTH retain
+!>        their native density-only core convention. Reference preparation checks data availability.
+!> \param ks_env Original potentials, positions and spin convention.
+!> \param state Independent basis state, with its own source grid and reference-wave caches.
+! **************************************************************************************************
+   SUBROUTINE prepare_core_kinetic(ks_env, state)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
+
+      COMPLEX(dp), ALLOCATABLE                           :: values(:)
+      INTEGER                                            :: atom, kind
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_r3d_rs_type), POINTER                      :: core_density
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      IF (.NOT. ALLOCATED(state%kinetic_cache)) RETURN
+      IF (ASSOCIATED(state%core_tau_g%pw_grid)) RETURN
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, dft_control=control, rho_nlcc=core_density)
+      IF (.NOT. ASSOCIATED(core_density)) RETURN
+      CPASSERT(ALLOCATED(state%paw))
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         IF (state%paw(kind)%active) THEN
+            state%has_core_tau = state%has_core_tau .OR. ANY(state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2) /= 0.0_dp)
+         ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
+            IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data%tau_nlcc)) CYCLE
+            state%has_core_tau = state%has_core_tau .OR. ANY(kinds(kind)%sgp_potential%upf_data%tau_nlcc /= 0.0_dp)
+         END IF
+      END DO
+      IF (.NOT. state%has_core_tau) RETURN
+      CPASSERT(ASSOCIATED(state%source_grid))
+      CALL state%core_tau_r%create(state%source_grid)
+      CALL state%core_tau_g%create(state%source_grid)
+      state%core_tau_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+      ALLOCATE (values(SIZE(state%core_tau_g%array)))
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         IF (state%paw(kind)%active) THEN
+            CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, state%source_grid%g, atoms(atom)%r, &
+                                          state%source_grid%vol, values, &
+                                          core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
+         ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
+            CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, state%source_grid%g, atoms(atom)%r, &
+                                          state%source_grid%vol, values)
+         ELSE
+            CYCLE
+         END IF
+         state%core_tau_g%array = state%core_tau_g%array + values/REAL(control%nspins, dp)
+      END DO
+      CALL pw_transfer(state%core_tau_g, state%core_tau_r)
+      CALL pw_transfer(state%core_tau_r, state%core_tau_g)
+   END SUBROUTINE prepare_core_kinetic
 
 ! **************************************************************************************************
 !> \brief Apply the adjoint of the original partial-core Fourier source to native XC potentials.

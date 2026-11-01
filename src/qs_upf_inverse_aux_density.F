@@ -169,6 +169,8 @@ CONTAINS
          DEALLOCATE (radial)
       END DO
       CALL qs_rho_set(admm%rho_aux_fit, rho_r_valid=.TRUE., rho_g_valid=.TRUE.)
+      state%density_evaluations = state%density_evaluations + 1
+      state%orbital_factors%density_evaluation = -1
       admm%upf_density%valid = .TRUE.
    END SUBROUTINE qs_upf_inverse_aux_density_build
 

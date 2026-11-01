@@ -970,6 +970,7 @@ list(
   qs_upf_inverse_atom_grid.F
   qs_upf_inverse_augmentation.F
   qs_upf_inverse_aux_density.F
+  qs_upf_inverse_aux_xc.F
   qs_upf_inverse_background.F
   qs_upf_inverse_basis.F
   qs_upf_inverse_charge_metric.F
