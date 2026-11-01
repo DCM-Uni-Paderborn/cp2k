@@ -2149,7 +2149,7 @@ CONTAINS
          selected = qs_upf_inverse_basis_select(qs_env, selected_basis, inverse)
          CPASSERT(selected)
       END IF
-      IF (ASSOCIATED(inverse%bloch%kpoints)) THEN
+      IF (.NOT. control%do_admm .AND. ASSOCIATED(inverse%bloch%kpoints)) THEN
          CPASSERT(SIZE(inverse%bloch%frames) > 0)
          DO contribution = 1, inverse%bloch%kpoints%nkp
             IF (inverse%bloch%kpoints%kp_sym(contribution)%kpoint_sym%apply_symmetry) THEN

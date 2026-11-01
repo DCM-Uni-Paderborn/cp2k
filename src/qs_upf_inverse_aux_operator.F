@@ -227,7 +227,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), saved_exchange(:, :, :, :)
       INTEGER                                            :: contribution, ik, image, natom, ns, spin
-      LOGICAL                                            :: bloch, valid
+      LOGICAL                                            :: bloch, spatial_symmetry, valid
       REAL(dp)                                           :: fraction, native_energy, part, &
                                                             raw_energy, spin_energy, term_energy, &
                                                             term_strain(3, 3)
@@ -253,13 +253,14 @@ CONTAINS
       END IF
       ! An unallocated optional spin_weights argument is absent for the other variants.
       bloch = ASSOCIATED(state%bloch%kpoints)
+      spatial_symmetry = .FALSE.
       IF (bloch) THEN
          DO ik = 1, state%bloch%kpoints%nkp
-            IF (state%bloch%kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry) THEN
-               CPABORT('Auxiliary RI spatial symmetry is not implemented yet')
-            END IF
+            spatial_symmetry = spatial_symmetry .OR. state%bloch%kpoints%kp_sym(ik)%kpoint_sym%apply_symmetry
          END DO
       END IF
+      ! RI image densities include every physical star contribution. The returned
+      ! image adjoint has no mesh weights; transfer_operator applies the matching star adjoint.
       DO contribution = 1, SIZE(exchange, 1)
          fraction = exchange(contribution, 1)%general_parameter%fraction
          CPASSERT(ieee_is_finite(fraction))
@@ -314,9 +315,9 @@ CONTAINS
             CPASSERT(ALLOCATED(state%exchange_k))
             valid = ALL(SHAPE(state%exchange_k) == SHAPE(operators))
             CPASSERT(valid)
-            IF (admm%do_admmp) THEN
+            IF (admm%do_admmp .OR. spatial_symmetry) THEN
                raw_energy = 0.0_dp
-               term_energy = 0.0_dp
+               IF (admm%do_admmp) term_energy = 0.0_dp
                DO spin = 1, ns
                   spin_energy = 0.0_dp
                   DO ik = 1, SIZE(operators, 3)
@@ -324,18 +325,17 @@ CONTAINS
                                    REAL(SUM(CONJG(state%exchange_k(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
                   END DO
                   raw_energy = raw_energy + spin_energy
-                  term_energy = term_energy + spin_weights(spin)*spin_energy
-                  operators(:, :, :, spin) = operators(:, :, :, spin) + spin_weights(spin)*state%exchange_k(:, :, :, spin)
+                  IF (admm%do_admmp) THEN
+                     term_energy = term_energy + spin_weights(spin)*spin_energy
+                     operators(:, :, :, spin) = operators(:, :, :, spin) + spin_weights(spin)*state%exchange_k(:, :, :, spin)
+                  END IF
                END DO
-            ELSE
-               operators(:, :, :, :) = operators + state%exchange_k
-            END IF
-            IF (admm%do_admmp) THEN
                valid = ABS(raw_energy - native_energy) <= 1.e-9_dp*MAX(1.0_dp, ABS(native_energy))
                IF (.NOT. valid) THEN
                   CPABORT('Auxiliary RI energy/operator mismatch')
                END IF
             END IF
+            IF (.NOT. admm%do_admmp) operators(:, :, :, :) = operators + state%exchange_k
             IF (geometry) THEN
                CALL hfx_ri_update_forces_kp(qs_env, exchange(contribution, 1)%ri_data, ns, fraction, density, &
                                             use_virial=use_virial, atom_gradient=term_gradient, strain_gradient=term_strain, &
