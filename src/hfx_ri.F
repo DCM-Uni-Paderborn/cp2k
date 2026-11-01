@@ -935,8 +935,10 @@ CONTAINS
 !> \param kinds Original radial data and atomic quadrature controls.
 !> \param covector Complete native energy derivative in (RI,AO,AO) order.
 !> \param use_virial Include affine cell response with the defining inverse measure retained.
+!> \param force Selected native or independently owned force accumulators.
+!> \param fock_virial Selected local dE/dstrain accumulator.
 ! **************************************************************************************************
-   SUBROUTINE inverse_3c_forces(qs_env, ri_data, basis_set_RI, atoms, kinds, covector, use_virial)
+   SUBROUTINE inverse_3c_forces(qs_env, ri_data, basis_set_RI, atoms, kinds, covector, use_virial, force, fock_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
       TYPE(gto_basis_set_p_type), INTENT(IN)             :: basis_set_RI(:)
@@ -944,6 +946,8 @@ CONTAINS
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(dbt_type), INTENT(INOUT)                      :: covector
       LOGICAL, INTENT(IN)                                :: use_virial
+      TYPE(qs_force_type), INTENT(INOUT)                 :: force(:)
+      REAL(dp), INTENT(INOUT)                            :: fock_virial(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: beta_delta(:, :), beta_gaussian(:, :), &
                                                             factors(:), left(:, :), right(:, :)
@@ -962,13 +966,10 @@ CONTAINS
       TYPE(cell_type), POINTER                           :: cell
       TYPE(gto_basis_set_p_type), ALLOCATABLE            :: bases(:)
       TYPE(mp_para_env_type), POINTER                    :: para_env
-      TYPE(qs_force_type), POINTER                       :: force(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
-      TYPE(virial_type), POINTER                         :: virial
 
-      CALL get_qs_env(qs_env, ks_env=ks_env, force=force, para_env=para_env, atomic_kind_set=atomic_kinds, &
-                      cell=cell, virial=virial)
+      CALL get_qs_env(qs_env, ks_env=ks_env, para_env=para_env, atomic_kind_set=atomic_kinds, cell=cell)
       BLOCK
          LOGICAL :: active
          active = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
@@ -1059,7 +1060,7 @@ CONTAINS
       END IF
       ! Native HFX stores dE/dstrain here. hfx_exx subtracts this tensor from the
       ! pressure-positive virial together with the Gaussian and metric contributions.
-      IF (use_virial .AND. para_env%mepos == 0) virial%pv_fock_4c(:, :) = virial%pv_fock_4c + inverse_virial
+      IF (use_virial .AND. para_env%mepos == 0) fock_virial(:, :) = fock_virial + inverse_virial
    END SUBROUTINE inverse_3c_forces
 
 ! **************************************************************************************************
@@ -2140,9 +2141,10 @@ CONTAINS
 !> \param hf_fraction ...
 !> \param mo_coeff ...
 !> \param use_virial ...
+!> \param force_target Optional independently owned native force structure.
 !> \note There is no response code for forces with the MO flavor
 ! **************************************************************************************************
-   SUBROUTINE hfx_ri_forces_mo(qs_env, ri_data, nspins, hf_fraction, mo_coeff, use_virial)
+   SUBROUTINE hfx_ri_forces_mo(qs_env, ri_data, nspins, hf_fraction, mo_coeff, use_virial, force_target)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
@@ -2150,6 +2152,8 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: hf_fraction
       TYPE(dbcsr_type), DIMENSION(:), INTENT(IN)         :: mo_coeff
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_virial
+      TYPE(qs_force_type), INTENT(INOUT), OPTIONAL, &
+         TARGET                                          :: force_target(:)
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'hfx_ri_forces_mo'
 
@@ -2209,6 +2213,7 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, cell=cell, force=force, &
                       matrix_s=matrix_s, para_env=para_env, dft_control=dft_control, &
                       qs_kind_set=qs_kind_set)
+      IF (PRESENT(force_target)) force => force_target
 
       pdims(:) = 0
       CALL dbt_pgrid_create(para_env, pdims, pgrid_1, tensor_dims=[SIZE(ri_data%bsizes_AO_split), &
@@ -2832,9 +2837,11 @@ CONTAINS
 !> \param use_virial ...
 !> \param resp_only ...
 !> \param rescale_factor ...
+!> \param force_target Optional independently owned native force structure.
+!> \param virial_target Its local dE/dstrain accumulator, required with force_target.
 ! **************************************************************************************************
    SUBROUTINE hfx_ri_forces_Pmat(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, &
-                                 use_virial, resp_only, rescale_factor)
+                                 use_virial, resp_only, rescale_factor, force_target, virial_target)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
@@ -2844,6 +2851,9 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:), OPTIONAL         :: rho_ao_resp
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_virial, resp_only
       REAL(dp), INTENT(IN), OPTIONAL                     :: rescale_factor
+      TYPE(qs_force_type), INTENT(INOUT), OPTIONAL, &
+         TARGET                                          :: force_target(:)
+      REAL(dp), INTENT(INOUT), OPTIONAL, TARGET          :: virial_target(3, 3)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_forces_Pmat'
 
@@ -2863,6 +2873,7 @@ CONTAINS
                                                             resp_only_prv, use_virial_prv
       REAL(dp)                                           :: pref, spin_fac, t1, t2
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
+      REAL(dp), POINTER                                  :: fock_virial(:, :)
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(block_ind_type), ALLOCATABLE, DIMENSION(:, :) :: t_3c_der_AO_ind, t_3c_der_RI_ind
       TYPE(cell_type), POINTER                           :: cell
@@ -2922,6 +2933,12 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, virial=virial, &
                       cell=cell, force=force, para_env=para_env, dft_control=dft_control, &
                       qs_kind_set=qs_kind_set, dbcsr_dist=dbcsr_dist, ks_env=ks_env)
+      fock_virial => virial%pv_fock_4c
+      CPASSERT(PRESENT(force_target) .EQV. PRESENT(virial_target))
+      IF (PRESENT(force_target)) THEN
+         force => force_target
+         fock_virial => virial_target
+      END IF
       inverse_exchange = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       IF (inverse_exchange) THEN
          IF (do_resp) THEN
@@ -3323,8 +3340,8 @@ CONTAINS
             DO k_xyz = 1, 3
                DO j_xyz = 1, 3
                   DO i_xyz = 1, 3
-                     virial%pv_fock_4c(i_xyz, j_xyz) = virial%pv_fock_4c(i_xyz, j_xyz) &
-                                                       + work_virial(i_xyz, k_xyz)*cell%hmat(j_xyz, k_xyz)
+                     fock_virial(i_xyz, j_xyz) = fock_virial(i_xyz, j_xyz) &
+                                                 + work_virial(i_xyz, k_xyz)*cell%hmat(j_xyz, k_xyz)
                   END DO
                END DO
             END DO
@@ -3334,7 +3351,7 @@ CONTAINS
       IF (inverse_exchange) THEN
          CALL dbt_scale(t_3c_inverse_covector, -hf_fraction*spin_fac)
          CALL inverse_3c_forces(qs_env, ri_data, basis_set_RI, particle_set, qs_kind_set, t_3c_inverse_covector, &
-                                use_virial_prv)
+                                use_virial_prv, force, fock_virial)
          CALL dbt_destroy(t_3c_inverse_covector)
       END IF
       CALL dbt_batched_contract_finalize(t_3c_int)
@@ -3416,9 +3433,13 @@ CONTAINS
 !> \param use_virial ...
 !> \param resp_only ...
 !> \param rescale_factor ...
+!> \param atom_gradient Optional independent Cartesian energy gradients, in physical atom order.
+!> \param strain_gradient Optional independent dE/dstrain, evaluated when use_virial is true.
+!>        Supply both outputs together to leave native force and virial accumulators unchanged.
+!>        Outputs are globally reduced once. RI working tensors retain their normal updates.
 ! **************************************************************************************************
    SUBROUTINE hfx_ri_update_forces(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, &
-                                   mos, use_virial, resp_only, rescale_factor)
+                                   mos, use_virial, resp_only, rescale_factor, atom_gradient, strain_gradient)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
@@ -3430,17 +3451,36 @@ CONTAINS
          OPTIONAL                                        :: mos
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_virial, resp_only
       REAL(dp), INTENT(IN), OPTIONAL                     :: rescale_factor
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_update_forces'
 
-      INTEGER                                            :: handle, ispin
+      INTEGER                                            :: atom, handle, ispin, kind, natom
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       INTEGER, DIMENSION(2)                              :: homo
+      REAL(dp), TARGET                                   :: independent_strain(3, 3)
       REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
+      TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_type), DIMENSION(2)                     :: mo_coeff_b
       TYPE(dbcsr_type), POINTER                          :: mo_coeff_b_tmp
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(qs_force_type), ALLOCATABLE, TARGET           :: independent_force(:)
 
       CALL timeset(routineN, handle)
+      CPASSERT(PRESENT(atom_gradient) .EQV. PRESENT(strain_gradient))
+      IF (PRESENT(atom_gradient)) THEN
+         CALL get_qs_env(qs_env, atomic_kind_set=atomic_kinds, para_env=para_env)
+         CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
+         CPASSERT(ALL(SHAPE(atom_gradient) == [3, SIZE(kind_of)]))
+         ALLOCATE (independent_force(SIZE(atomic_kinds)))
+         DO kind = 1, SIZE(atomic_kinds)
+            CALL get_atomic_kind(atomic_kinds(kind), natom=natom)
+            ALLOCATE (independent_force(kind)%fock_4c(3, natom), SOURCE=0.0_dp)
+         END DO
+         independent_strain = 0.0_dp
+      END IF
 
       SELECT CASE (ri_data%flavor)
       CASE (ri_mo)
@@ -3459,17 +3499,38 @@ CONTAINS
             homo(ispin) = mos(ispin)%homo
          END DO
 
-         CALL hfx_ri_forces_mo(qs_env, ri_data, nspins, hf_fraction, mo_coeff_b, use_virial)
+         IF (PRESENT(atom_gradient)) THEN
+            CALL hfx_ri_forces_mo(qs_env, ri_data, nspins, hf_fraction, mo_coeff_b, use_virial, &
+                                  force_target=independent_force)
+         ELSE
+            CALL hfx_ri_forces_mo(qs_env, ri_data, nspins, hf_fraction, mo_coeff_b, use_virial)
+         END IF
 
       CASE (ri_pmat)
 
-         CALL hfx_ri_forces_Pmat(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, use_virial, &
-                                 resp_only, rescale_factor)
+         IF (PRESENT(atom_gradient)) THEN
+            CALL hfx_ri_forces_Pmat(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, use_virial, &
+                                    resp_only, rescale_factor, independent_force, independent_strain)
+         ELSE
+            CALL hfx_ri_forces_Pmat(qs_env, ri_data, nspins, hf_fraction, rho_ao, rho_ao_resp, use_virial, &
+                                    resp_only, rescale_factor)
+         END IF
       END SELECT
 
       DO ispin = 1, nspins
          CALL dbcsr_release(mo_coeff_b(ispin))
       END DO
+      IF (PRESENT(atom_gradient)) THEN
+         DO atom = 1, SIZE(kind_of)
+            atom_gradient(:, atom) = independent_force(kind_of(atom))%fock_4c(:, atom_of_kind(atom))
+         END DO
+         strain_gradient = independent_strain
+         CALL para_env%sum(atom_gradient)
+         CALL para_env%sum(strain_gradient)
+         DO kind = 1, SIZE(independent_force)
+            DEALLOCATE (independent_force(kind)%fock_4c)
+         END DO
+      END IF
 
       CALL timestop(handle)
 

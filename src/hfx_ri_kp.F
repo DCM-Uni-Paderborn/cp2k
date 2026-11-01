@@ -13,6 +13,7 @@
 MODULE hfx_ri_kp
    USE admm_types,                      ONLY: get_admm_env
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
+                                              get_atomic_kind,&
                                               get_atomic_kind_set
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
                                               gto_basis_set_p_type
@@ -1006,10 +1007,15 @@ CONTAINS
 !> \param hf_fraction ...
 !> \param rho_ao ...
 !> \param use_virial ...
+!> \param atom_gradient Optional independent Cartesian energy gradients in physical atom order.
+!> \param strain_gradient Optional independent dE/dstrain, evaluated when use_virial is true.
+!>        Supply both outputs together to leave native force and virial accumulators unchanged.
+!>        Outputs include each subgroup once and are globally reduced. RI workspaces still update.
 !> \note Because this routine uses stored quantities calculated in the energy calculation, they should
 !>       always be called by pairs, and with the same input densities
 ! **************************************************************************************************
-   SUBROUTINE hfx_ri_update_forces_kp(qs_env, ri_data, nspins, hf_fraction, rho_ao, use_virial)
+   SUBROUTINE hfx_ri_update_forces_kp(qs_env, ri_data, nspins, hf_fraction, rho_ao, use_virial, &
+                                      atom_gradient, strain_gradient)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(INOUT)                   :: ri_data
@@ -1017,11 +1023,14 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: hf_fraction
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: rho_ao
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_virial
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'hfx_ri_update_forces_kp'
 
       INTEGER :: b_img, batch_size, group_size, handle, handle2, i_batch, i_img, i_loop, i_spin, &
-         i_xyz, iatom, iblk, igroup, j_xyz, jatom, k_xyz, n_batch, natom, ngroups, nimg, nimg_nze
+         i_xyz, iatom, iblk, igroup, j_xyz, jatom, k_xyz, kind, n_batch, natom, natom_of_kind, &
+         ngroups, nimg, nimg_nze
       INTEGER(int_8)                                     :: nflop, nze
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: atom_of_kind, batch_ranges_at, &
                                                             batch_ranges_nze, dist1, dist2, &
@@ -1033,6 +1042,8 @@ CONTAINS
       LOGICAL                                            :: inverse_transition, use_virial_prv
       REAL(dp)                                           :: fac, occ, pref, t1, t2
       REAL(dp), DIMENSION(3, 3)                          :: work_virial
+      REAL(dp), POINTER                                  :: fock_virial(:, :)
+      REAL(dp), TARGET                                   :: independent_strain(3, 3)
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env_sub
@@ -1050,6 +1061,7 @@ CONTAINS
          t_3c_der_RI_sub
       TYPE(mp_para_env_type), POINTER                    :: para_env, para_env_sub
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(qs_force_type), ALLOCATABLE, TARGET           :: independent_force(:)
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(section_vals_type), POINTER                   :: hfx_section
@@ -1073,6 +1085,19 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, particle_set=particle_set)
       inverse_transition = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
       CALL get_atomic_kind_set(atomic_kind_set, kind_of=kind_of, atom_of_kind=atom_of_kind)
+      fock_virial => virial%pv_fock_4c
+      CPASSERT(PRESENT(atom_gradient) .EQV. PRESENT(strain_gradient))
+      IF (PRESENT(atom_gradient)) THEN
+         CPASSERT(ALL(SHAPE(atom_gradient) == [3, natom]))
+         ALLOCATE (independent_force(SIZE(atomic_kind_set)))
+         DO kind = 1, SIZE(atomic_kind_set)
+            CALL get_atomic_kind(atomic_kind_set(kind), natom=natom_of_kind)
+            ALLOCATE (independent_force(kind)%fock_4c(3, natom_of_kind), SOURCE=0.0_dp)
+         END DO
+         independent_strain = 0.0_dp
+         force => independent_force
+         fock_virial => independent_strain
+      END IF
 
       ALLOCATE (idx_to_at_AO(SIZE(ri_data%bsizes_AO_split)))
       CALL get_idx_to_atom(idx_to_at_AO, ri_data%bsizes_AO_split, ri_data%bsizes_AO)
@@ -1558,7 +1583,7 @@ CONTAINS
          DO i_img = 1, nimg
             CALL dbt_finalize(inverse_covectors(i_img))
          END DO
-         CALL inverse_lattice_forces(qs_env, ri_data, inverse_covectors, para_env_sub, use_virial_prv)
+         CALL inverse_lattice_forces(qs_env, ri_data, inverse_covectors, para_env_sub, use_virial_prv, force, fock_virial)
          DO i_img = 1, nimg
             CALL dbt_destroy(inverse_covectors(i_img))
          END DO
@@ -1568,8 +1593,8 @@ CONTAINS
          DO k_xyz = 1, 3
             DO j_xyz = 1, 3
                DO i_xyz = 1, 3
-                  virial%pv_fock_4c(i_xyz, j_xyz) = virial%pv_fock_4c(i_xyz, j_xyz) &
-                                                    + work_virial(i_xyz, k_xyz)*cell%hmat(j_xyz, k_xyz)
+                  fock_virial(i_xyz, j_xyz) = fock_virial(i_xyz, j_xyz) &
+                                              + work_virial(i_xyz, k_xyz)*cell%hmat(j_xyz, k_xyz)
                END DO
             END DO
          END DO
@@ -1636,6 +1661,17 @@ CONTAINS
          END DO
       END DO
 
+      IF (PRESENT(atom_gradient)) THEN
+         DO iatom = 1, natom
+            atom_gradient(:, iatom) = independent_force(kind_of(iatom))%fock_4c(:, atom_of_kind(iatom))
+         END DO
+         strain_gradient = independent_strain
+         CALL para_env%sum(atom_gradient)
+         CALL para_env%sum(strain_gradient)
+         DO kind = 1, SIZE(independent_force)
+            DEALLOCATE (independent_force(kind)%fock_4c)
+         END DO
+      END IF
       CALL timestop(handle)
 
    END SUBROUTINE hfx_ri_update_forces_kp
@@ -1691,13 +1727,17 @@ CONTAINS
 !> \param covectors Complete derivatives in physical AO image order.
 !> \param subgroup Communicator used by the covectors.
 !> \param use_virial Include the physical affine-strain response.
+!> \param force Selected native or independently owned force accumulators.
+!> \param fock_virial Selected local dE/dstrain accumulator.
 ! **************************************************************************************************
-   SUBROUTINE inverse_lattice_forces(qs_env, ri_data, covectors, subgroup, use_virial)
+   SUBROUTINE inverse_lattice_forces(qs_env, ri_data, covectors, subgroup, use_virial, force, fock_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_ri_type), INTENT(IN)                      :: ri_data
       TYPE(dbt_type), INTENT(INOUT)                      :: covectors(:)
       TYPE(mp_para_env_type), INTENT(IN)                 :: subgroup
       LOGICAL, INTENT(IN)                                :: use_virial
+      TYPE(qs_force_type), INTENT(INOUT)                 :: force(:)
+      REAL(dp), INTENT(INOUT)                            :: fock_virial(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: coefficients_covector(:, :, :)
       INTEGER                                            :: atom, axis, defining_owner, info, kind
@@ -1716,15 +1756,13 @@ CONTAINS
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), POINTER                       :: atoms(:)
-      TYPE(qs_force_type), POINTER                       :: force(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
       TYPE(uspp_augmentation_type), POINTER              :: augmentation(:)
-      TYPE(virial_type), POINTER                         :: virial
 
       CALL get_qs_env(qs_env, kpoints=kpoints, qs_kind_set=kinds, particle_set=atoms, &
-                      atomic_kind_set=atomic_kinds, force=force, virial=virial, para_env=para_env)
+                      atomic_kind_set=atomic_kinds, para_env=para_env)
       BLOCK
          LOGICAL :: active
          active = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
@@ -1780,13 +1818,13 @@ CONTAINS
                                                             + defining_atoms(:, atom)
             END DO
             IF (use_virial) THEN
-               virial%pv_fock_4c(:, :) = virial%pv_fock_4c &
-                                         + MATMUL(defining_atoms, TRANSPOSE(frame%positions)) &
-                                         + MATMUL(defining_cell, TRANSPOSE(frame%cell)) &
-                                         + MATMUL(defining_points, TRANSPOSE(frame%points))
+               fock_virial(:, :) = fock_virial &
+                                   + MATMUL(defining_atoms, TRANSPOSE(frame%positions)) &
+                                   + MATMUL(defining_cell, TRANSPOSE(frame%cell)) &
+                                   + MATMUL(defining_points, TRANSPOSE(frame%points))
                DO axis = 1, 3
-                  virial%pv_fock_4c(axis, axis) = virial%pv_fock_4c(axis, axis) &
-                                                  + SUM(defining_weights*frame%weights)
+                  fock_virial(axis, axis) = fock_virial(axis, axis) &
+                                            + SUM(defining_weights*frame%weights)
                END DO
             END IF
          END IF
@@ -1808,7 +1846,7 @@ CONTAINS
             kind = kind_of(atom)
             force(kind)%fock_4c(:, atom_of_kind(atom)) = force(kind)%fock_4c(:, atom_of_kind(atom)) + atom_gradient(:, atom)
          END DO
-         IF (use_virial) virial%pv_fock_4c(:, :) = virial%pv_fock_4c + strain_gradient
+         IF (use_virial) fock_virial(:, :) = fock_virial + strain_gradient
       END IF
    END SUBROUTINE inverse_lattice_forces
 
