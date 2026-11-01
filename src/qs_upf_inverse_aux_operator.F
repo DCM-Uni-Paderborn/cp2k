@@ -7,9 +7,12 @@
 !> \brief Original-coordinate auxiliary operators and physical projection/charge adjoints.
 MODULE qs_upf_inverse_aux_operator
    USE admm_types,                      ONLY: admm_type
+   USE cell_types,                      ONLY: cell_type
    USE cp_cfm_types,                    ONLY: cp_cfm_get_submatrix
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE cp_fm_types,                     ONLY: cp_fm_get_submatrix
+   USE hfx_types,                       ONLY: hfx_type
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_admm_exch_scaling_none,&
                                               do_admm_purify_none
    USE input_section_types,             ONLY: section_vals_type
@@ -21,10 +24,13 @@ MODULE qs_upf_inverse_aux_operator
                                               kpoint_type
    USE mathlib,                         ONLY: invert_matrix,&
                                               invmat
+   USE particle_types,                  ONLY: particle_type
+   USE paw_types,                       ONLY: paw_potential_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
@@ -38,6 +44,9 @@ MODULE qs_upf_inverse_aux_operator
                                               qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_original_operator
+   USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_core_prepare,&
+                                              qs_upf_inverse_paw_evaluate,&
+                                              qs_upf_inverse_paw_response
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_scf_type
 #include "./base/base_uses.f90"
@@ -46,6 +55,7 @@ MODULE qs_upf_inverse_aux_operator
    PRIVATE
    PUBLIC :: qs_upf_inverse_aux_projection, qs_upf_inverse_aux_operator_evaluate
    PUBLIC :: qs_upf_inverse_aux_metric_response
+   PUBLIC :: qs_upf_inverse_aux_core_exchange, qs_upf_inverse_aux_response
 
 CONTAINS
 
@@ -166,9 +176,12 @@ CONTAINS
 !> \param mixed_covector Optional original-coordinate covectors of G_AO, required with both below.
 !> \param auxiliary_covector Combined projection and normalization covectors of G_AA.
 !> \param primary_covector Normalization covectors of the actual primary solver metric G_OO.
+!> \param exchange Optional actual native HF interactions. The supplied Fock operator excludes PAW core exchange.
+!> \param core_energy Optional PAW core-core and core-valence HF energy, required with exchange.
+!>        These terms use the auxiliary density and contribute once to its transferred operator.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_operator_evaluate(qs_env, xc_section, fock, grid_energy, atom_energy, operators, &
-                                                   mixed_covector, auxiliary_covector, primary_covector)
+                                                   mixed_covector, auxiliary_covector, primary_covector, exchange, core_energy)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       COMPLEX(dp), INTENT(IN)                            :: fock(:, :, :, :)
@@ -177,10 +190,46 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: mixed_covector(:, :, :, :), &
                                                             auxiliary_covector(:, :, :, :), &
                                                             primary_covector(:, :, :, :)
+      TYPE(hfx_type), INTENT(IN), OPTIONAL               :: exchange(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: core_energy
 
-      COMPLEX(dp), ALLOCATABLE :: auxiliary_operator(:, :, :, :), auxiliary_reduced(:, :, :), &
-         corrected(:, :), corrected_k(:, :, :), density(:, :, :, :), expanded(:, :, :), &
-         gamma(:, :), matrix(:, :, :), metric_inverse(:, :, :), mixed_reduced(:, :, :), &
+      COMPLEX(dp), ALLOCATABLE                           :: auxiliary_operator(:, :, :, :), &
+                                                            core_operator(:, :, :, :)
+      LOGICAL                                            :: valid
+
+      CPASSERT(PRESENT(exchange) .EQV. PRESENT(core_energy))
+      CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator)
+      valid = ALL(SHAPE(fock) == SHAPE(auxiliary_operator))
+      CPASSERT(valid)
+      IF (PRESENT(exchange)) THEN
+         CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator)
+         auxiliary_operator(:, :, :, :) = auxiliary_operator + core_operator
+      END IF
+      auxiliary_operator(:, :, :, :) = auxiliary_operator + fock
+      CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector)
+   END SUBROUTINE qs_upf_inverse_aux_operator_evaluate
+
+! **************************************************************************************************
+!> \brief Transfer the derivative of the same auxiliary energy through the actual A and eta.
+!> \param qs_env ...
+!> \param auxiliary_operator Complete unweighted original-coordinate derivative at fixed auxiliary density.
+!> \param operators ...
+!> \param mixed_covector ...
+!> \param auxiliary_covector ...
+!> \param primary_covector ...
+! **************************************************************************************************
+   SUBROUTINE transfer_operator(qs_env, auxiliary_operator, operators, &
+                                mixed_covector, auxiliary_covector, primary_covector)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      COMPLEX(dp), INTENT(IN)                            :: auxiliary_operator(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: mixed_covector(:, :, :, :), &
+                                                            auxiliary_covector(:, :, :, :), &
+                                                            primary_covector(:, :, :, :)
+
+      COMPLEX(dp), ALLOCATABLE :: auxiliary_reduced(:, :, :), corrected(:, :), &
+         corrected_k(:, :, :), density(:, :, :, :), expanded(:, :, :), gamma(:, :), &
+         matrix(:, :, :), metric_inverse(:, :, :), mixed_reduced(:, :, :), &
          primary_metric(:, :, :), projection(:, :, :), reduced_corrected(:, :, :), &
          reduced_density(:, :, :), reduced_projection(:, :, :), unscaled(:, :), work(:, :), z(:, :)
       INTEGER                                            :: ik, na, nk, no, ns, spin
@@ -223,11 +272,9 @@ CONTAINS
       no = SIZE(projection, 2)
       nk = SIZE(projection, 3)
       ns = SIZE(admm%upf_density%matrices, 4)
-      valid = ALL(SHAPE(fock) == [na, na, nk, ns])
+      valid = ALL(SHAPE(auxiliary_operator) == [na, na, nk, ns])
       CPASSERT(valid)
       CPASSERT(SIZE(admm%upf_aux_metric%weights) == nk)
-      CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator)
-      auxiliary_operator(:, :, :, :) = auxiliary_operator + fock
       ALLOCATE (density(no, no, nk, ns), primary_metric(no, no, nk))
       IF (ASSOCIATED(primary%bloch%kpoints)) THEN
          valid = ALL(SHAPE(primary%metric_k) == [no, no, nk])
@@ -319,7 +366,166 @@ CONTAINS
             END IF
          END IF
       END DO
-   END SUBROUTINE qs_upf_inverse_aux_operator_evaluate
+   END SUBROUTINE transfer_operator
+
+! **************************************************************************************************
+!> \brief Original PAW closed-core HF energy and its auxiliary AO and geometry derivatives.
+!>        Core-core exchange is constant. Core-valence exchange is linear in the original
+!>        projector occupations, without a further factor one half. Sum native HF repetitions
+!>        once and ignore thread replicas. Valence-valence exchange remains in the RI producer.
+!>        No PAW Hartree, semilocal XC or fixed dataset reference energy is added here.
+!> \param qs_env Valid current auxiliary occupations and their independent original-UPF representation.
+!> \param exchange The same native HF interactions, fractions and physical range parameters as RI.
+!> \param energy Selected frozen-core HF energy, including each actual PAW atom once.
+!> \param operators Original physical-k/spin auxiliary AO derivative, without mesh weights.
+!> \param atom_response Optional total atomic motion, including affine cell motion.
+!> \param cell_response Optional physical lattice derivative at fixed reduced k coordinates.
+!> \param response Optional fixed-auxiliary-occupation directional derivative. Supply all three geometry arguments.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_core_exchange(qs_env, exchange, energy, operators, &
+                                               atom_response, cell_response, response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+
+      INTEGER                                            :: kind, nk, ns
+      LOGICAL                                            :: geometry
+      REAL(dp)                                           :: energies(3)
+      REAL(dp), ALLOCATABLE                              :: core_energy(:), reduced_k_response(:, :)
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(paw_potential_type), ALLOCATABLE              :: core_potential(:), potential(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(section_vals_type), POINTER                   :: no_functional
+
+      CALL get_qs_env(qs_env, admm_env=admm, qs_kind_set=kinds)
+      CPASSERT(ASSOCIATED(admm))
+      CPASSERT(admm%upf_density%valid)
+      state => admm%upf_inverse
+      CPASSERT(ASSOCIATED(state))
+      CPASSERT(state%basis_type == 'AUX_FIT')
+      CPASSERT(SIZE(exchange, 2) > 0)
+      geometry = PRESENT(response)
+      CPASSERT(geometry .EQV. PRESENT(atom_response))
+      CPASSERT(geometry .EQV. PRESENT(cell_response))
+      energy = 0.0_dp
+      ALLOCATE (operators, MOLD=admm%upf_density%matrices)
+      operators = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (geometry) response = 0.0_dp
+      IF (.NOT. ANY(state%paw%active)) RETURN
+      ns = SIZE(admm%upf_density%matrices, 4)
+      nk = SIZE(admm%upf_density%matrices, 3)
+      ALLOCATE (core_energy(SIZE(kinds)), SOURCE=0.0_dp)
+      ALLOCATE (core_potential(SIZE(kinds)))
+      DO kind = 1, SIZE(kinds)
+         IF (.NOT. state%paw(kind)%active) CYCLE
+         ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data, projectors => kinds(kind)%sgp_potential%upf_projectors)
+            ALLOCATE (core_potential(kind)%matrix(projectors%nproj, projectors%nproj, 1))
+            CALL qs_upf_inverse_paw_core_prepare(pot, projectors, state%paw(kind), exchange, ns, &
+                                                 core_energy(kind), core_potential(kind)%matrix(:, :, 1))
+         END ASSOCIATE
+      END DO
+      NULLIFY (no_functional)
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         CALL qs_upf_inverse_paw_evaluate(state%paw, state%bloch%frames, admm%upf_density%matrices, state%bloch%weights, &
+                                          no_functional, 0.0_dp, 0.0_dp, energies, operators, potential, &
+                                      semilocal_xc=.FALSE., core_energy=core_energy, core_potential=core_potential, hartree=.FALSE.)
+      ELSE
+         CPASSERT(nk == 1)
+         CALL qs_upf_inverse_paw_evaluate(state%paw, [state%frame], admm%upf_density%matrices, [1.0_dp], &
+                                          no_functional, 0.0_dp, 0.0_dp, energies, operators, potential, &
+                                      semilocal_xc=.FALSE., core_energy=core_energy, core_potential=core_potential, hartree=.FALSE.)
+      END IF
+      energy = energies(2)
+      IF (geometry) THEN
+         ALLOCATE (reduced_k_response(3, nk), SOURCE=0.0_dp)
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_paw_response(state%bloch%frames, admm%upf_density%matrices, state%bloch%weights, potential, &
+                                             atom_response, cell_response, reduced_k_response, response)
+         ELSE
+            CALL qs_upf_inverse_paw_response([state%frame], admm%upf_density%matrices, [1.0_dp], potential, &
+                                             atom_response, cell_response, reduced_k_response, response)
+         END IF
+      END IF
+   END SUBROUTINE qs_upf_inverse_aux_core_exchange
+
+! **************************************************************************************************
+!> \brief Compose auxiliary RI, original PAW core, XC and projection/normalization geometry.
+!>        Native RI supplies energy, its auxiliary AO derivative and globally reduced Cartesian
+!>        and affine-strain derivatives at the current fixed auxiliary occupation matrices.
+!>        All RI quantities include their HF fractions. Energy and geometry include physical
+!>        mesh weights once, while the supplied AO derivative has no mesh weights.
+!>        The energy and primary AO operator use exactly the same auxiliary functional. Its
+!>        explicit geometry is combined with the implicit response of the native A and eta.
+!>        This component does not activate the complete native ADMM SCF calculation.
+!> \param qs_env The actual native primary and auxiliary density/projection owners.
+!> \param xc_section The selected auxiliary XC correction with its actual exchange scaling.
+!> \param exchange The same native HF interactions as the supplied RI contribution.
+!> \param ri_energy Native valence-valence RI exchange energy at the current auxiliary density.
+!> \param ri_operator Its unweighted original-coordinate auxiliary AO derivative (AO,AO,k,spin).
+!> \param ri_atom_gradient Globally reduced positive Cartesian RI energy gradients (3,atom).
+!> \param ri_strain_gradient Globally reduced positive dE_RI/dstrain, including affine atomic motion.
+!> \param atom_response Total physical atomic motion, including affine cell motion.
+!> \param cell_response Physical lattice derivative, keeping reduced k coordinates fixed.
+!> \param energy Complete auxiliary RI plus core-HF and XC correction energy.
+!> \param operators Complete primary AO derivative through the actual projection and charge constraint.
+!> \param response Complete directional derivative at fixed original-coordinate primary occupations.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
+                                          ri_atom_gradient, ri_strain_gradient, atom_response, cell_response, &
+                                          energy, operators, response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
+      REAL(dp), INTENT(IN)                               :: ri_energy
+      COMPLEX(dp), INTENT(IN)                            :: ri_operator(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: ri_atom_gradient(:, :), &
+                                                            ri_strain_gradient(3, 3), &
+                                                            atom_response(:, :), &
+                                                            cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      REAL(dp), INTENT(OUT)                              :: response
+
+      COMPLEX(dp), ALLOCATABLE :: auxiliary_covector(:, :, :, :), auxiliary_operator(:, :, :, :), &
+         core_operator(:, :, :, :), mixed_covector(:, :, :, :), primary_covector(:, :, :, :)
+      INTEGER                                            :: atom
+      LOGICAL                                            :: valid
+      REAL(dp) :: atom_energy, core_energy, core_response, grid_energy, projection_response, &
+         ri_response, strain(3, 3), xc_response
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(particle_type), POINTER                       :: atoms(:)
+
+      CALL get_qs_env(qs_env, cell=cell, particle_set=atoms)
+      valid = ALL(SHAPE(atom_response) == [3, SIZE(atoms)]) .AND. &
+              ALL(SHAPE(ri_atom_gradient) == SHAPE(atom_response))
+      CPASSERT(valid)
+      valid = ieee_is_finite(ri_energy) .AND. ALL(ieee_is_finite(ri_atom_gradient)) .AND. &
+              ALL(ieee_is_finite(ri_strain_gradient))
+      CPASSERT(valid)
+      CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator, &
+                                          atom_response=atom_response, cell_response=cell_response, response=xc_response)
+      valid = ALL(SHAPE(ri_operator) == SHAPE(auxiliary_operator))
+      CPASSERT(valid)
+      CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator, &
+                                            atom_response, cell_response, core_response)
+      auxiliary_operator(:, :, :, :) = auxiliary_operator + core_operator
+      auxiliary_operator(:, :, :, :) = auxiliary_operator + ri_operator
+      CALL transfer_operator(qs_env, auxiliary_operator, operators, mixed_covector, auxiliary_covector, primary_covector)
+      CALL qs_upf_inverse_aux_metric_response(qs_env, mixed_covector, auxiliary_covector, primary_covector, &
+                                              atom_response, cell_response, projection_response)
+      strain = MATMUL(cell_response, cell%h_inv)
+      ri_response = SUM(ri_strain_gradient*strain)
+      DO atom = 1, SIZE(atoms)
+         ri_response = ri_response + SUM(ri_atom_gradient(:, atom)* &
+                                         (atom_response(:, atom) - MATMUL(strain, atoms(atom)%r)))
+      END DO
+      energy = ri_energy + core_energy + grid_energy + atom_energy
+      response = ri_response + core_response + xc_response + projection_response
+   END SUBROUTINE qs_upf_inverse_aux_response
 
 ! **************************************************************************************************
 !> \brief Contract projection and charge-normalization covectors with the actual moving metrics.
