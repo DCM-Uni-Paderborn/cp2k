@@ -19,7 +19,10 @@ MODULE qs_upf_inverse_aux_operator
    USE kpoint_transitional,             ONLY: get_1d_pointer
    USE kpoint_types,                    ONLY: kpoint_env_type,&
                                               kpoint_type
-   USE mathlib,                         ONLY: invert_matrix
+   USE mathlib,                         ONLY: invert_matrix,&
+                                              invmat
+   USE pw_types,                        ONLY: pw_c1d_gs_type,&
+                                              pw_r3d_rs_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
@@ -27,15 +30,22 @@ MODULE qs_upf_inverse_aux_operator
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_upf_inverse_aux_xc,           ONLY: qs_upf_inverse_aux_xc_evaluate
-   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
+                                              qs_upf_inverse_background_geometry
+   USE qs_upf_inverse_charge_metric,    ONLY: qs_upf_inverse_charge_metric_contract
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_metric_response
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_metric_dense,&
+                                              qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_original_operator
-   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type,&
+                                              qs_upf_inverse_scf_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_aux_projection, qs_upf_inverse_aux_operator_evaluate
+   PUBLIC :: qs_upf_inverse_aux_metric_response
 
 CONTAINS
 
@@ -310,4 +320,148 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE qs_upf_inverse_aux_operator_evaluate
+
+! **************************************************************************************************
+!> \brief Contract projection and charge-normalization covectors with the actual moving metrics.
+!>        Each native metric service applies its defining quadrature and k weights once. The
+!>        primary normalization uses the installed solver metric, including the complete GAPW
+!>        density metric where present. Frozen core charges never enter these valence metrics.
+!>        This is the implicit projection/normalization response. Explicit auxiliary Fock and
+!>        XC geometry derivatives at fixed auxiliary occupation matrices remain separate terms.
+!> \param qs_env Same native primary and auxiliary owners used to obtain the covectors.
+!> \param mixed_covector Original-coordinate G_AO covectors, without mesh weights.
+!> \param auxiliary_covector Combined projection and normalization G_AA covectors.
+!> \param primary_covector Normalization G_OO covectors in the actual solver basis.
+!> \param atom_response Total atomic motion, including any affine cell motion.
+!> \param cell_response Lattice-vector derivative at fixed reduced k coordinates.
+!> \param response Real directional energy derivative, without a force or virial minus sign.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_metric_response(qs_env, mixed_covector, auxiliary_covector, primary_covector, &
+                                                 atom_response, cell_response, response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      COMPLEX(dp), INTENT(IN)                            :: mixed_covector(:, :, :, :), &
+                                                            auxiliary_covector(:, :, :, :), &
+                                                            primary_covector(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response
+
+      COMPLEX(dp), ALLOCATABLE                           :: auxiliary(:, :, :), mixed(:, :, :), &
+                                                            orbital(:, :, :)
+      INTEGER                                            :: na, nk, no, ns
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: auxiliary_response, mixed_response, &
+                                                            orbital_response
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: primary
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      CPASSERT(ASSOCIATED(admm%upf_inverse))
+      CPASSERT(admm%upf_aux_metric%ready .AND. admm%upf_mixed_metric%ready)
+      CALL get_ks_env(ks_env, upf_inverse=primary)
+      CPASSERT(ASSOCIATED(primary))
+      na = SIZE(admm%upf_aux_metric%values, 1)
+      no = SIZE(admm%upf_mixed_metric%values, 2)
+      nk = SIZE(admm%upf_aux_metric%weights)
+      ns = SIZE(mixed_covector, 4)
+      valid = ALL(SHAPE(mixed_covector) == [na, no, nk, ns]) .AND. &
+              ALL(SHAPE(auxiliary_covector) == [na, na, nk, ns]) .AND. &
+              ALL(SHAPE(primary_covector) == [no, no, nk, ns])
+      CPASSERT(valid .AND. ns > 0)
+      ALLOCATE (auxiliary(na, na, nk), mixed(na, no, nk), orbital(no, no, nk))
+      auxiliary(:, :, :) = SUM(auxiliary_covector, DIM=4)
+      mixed(:, :, :) = SUM(mixed_covector, DIM=4)
+      orbital(:, :, :) = SUM(primary_covector, DIM=4)
+      CALL qs_upf_inverse_charge_metric_contract(qs_env, admm%upf_inverse, primary, admm%upf_mixed_metric, &
+                                                 mixed, atom_response, cell_response, mixed_response)
+      CALL qs_upf_inverse_charge_metric_contract(qs_env, admm%upf_inverse, admm%upf_inverse, admm%upf_aux_metric, &
+                                                 auxiliary, atom_response, cell_response, auxiliary_response)
+      orbital_response = 0.0_dp
+      IF (ANY(orbital /= CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+         IF (ASSOCIATED(primary%coulomb)) THEN
+            CALL qs_upf_inverse_coulomb_metric_response(qs_env, primary, primary%coulomb, orbital, &
+                                                        atom_response, cell_response, orbital_response)
+         ELSE
+            CALL primary_grid_metric_response(qs_env, primary, orbital, atom_response, cell_response, orbital_response)
+         END IF
+      END IF
+      response = mixed_response + auxiliary_response + orbital_response
+   END SUBROUTINE qs_upf_inverse_aux_metric_response
+
+! **************************************************************************************************
+!> \brief Contract the primary solver's original grid metric before a complete metric is installed.
+!>        Match its native Gaussian reference and inverse/Q remainder. Grid and Gaussian source
+!>        measures enter once. A later complete density metric uses its own service above.
+!> \param qs_env Native geometry and primary Gaussian task owner.
+!> \param state Primary inverse representation without an installed complete Coulomb metric.
+!> \param matrix Hermitian valence metric covector, without mesh weights, summed over spins.
+!> \param atom_response Total atomic motion.
+!> \param cell_response Lattice response at fixed reduced k.
+!> \param response Directional metric contraction, without a Pulay minus sign.
+! **************************************************************************************************
+   SUBROUTINE primary_grid_metric_response(qs_env, state, matrix, atom_response, cell_response, response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         TARGET                                          :: state
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response
+
+      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), metric(:, :)
+      INTEGER                                            :: info, k, nk
+      REAL(dp)                                           :: charge, inverse_cell(3, 3), &
+                                                            strain(3, 3), trace_strain, &
+                                                            virial(3, 3), weight
+      REAL(dp), ALLOCATABLE                              :: forces(:, :), point_response(:, :)
+      TYPE(pw_c1d_gs_type)                               :: density_g
+      TYPE(pw_r3d_rs_type)                               :: density, one
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_grid_type), POINTER            :: frame
+
+      nk = 1
+      frame => state%frame
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         nk = SIZE(state%bloch%weights)
+         frame => state%bloch%frames(1)
+      END IF
+      CPASSERT(SIZE(matrix, 3) == nk)
+      CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%ao%positions)))
+      inverse_cell = frame%ao%cell
+      CALL invmat(inverse_cell, info)
+      CPASSERT(info == 0)
+      strain = MATMUL(cell_response, inverse_cell)
+      trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
+      response = 0.0_dp
+      IF (state%native_gaussian) THEN
+         CALL get_qs_env(qs_env, ks_env=ks_env)
+         CALL one%create(state%source_grid)
+         CALL density%create(state%source_grid)
+         CALL density_g%create(state%source_grid)
+         one%array = 1.0_dp
+         CALL qs_upf_inverse_background_collocate(state%gaussian, ks_env, matrix, density, density_g, total_rho=charge)
+         ALLOCATE (forces, MOLD=atom_response)
+         CALL qs_upf_inverse_background_geometry(state%gaussian, qs_env, matrix, one, forces, virial)
+         response = trace_strain*charge - SUM(virial*strain) - &
+                    SUM(forces*(atom_response - MATMUL(strain, frame%ao%positions)))
+         CALL one%release()
+         CALL density%release()
+         CALL density_g%release()
+      END IF
+      DO k = 1, nk
+         weight = 1.0_dp
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            frame => state%bloch%frames(k)
+            weight = state%bloch%weights(k)
+         END IF
+         ALLOCATE (point_response, SOURCE=MATMUL(strain, frame%ao%points))
+         CALL qs_upf_inverse_grid_metric_dense(frame, frame%ao%radial_q, metric, &
+                                               orbital_fields=.NOT. state%native_gaussian, response=derivative, &
+                                               atom_response=atom_response, cell_response=cell_response, &
+                                               reduced_k_response=[0.0_dp, 0.0_dp, 0.0_dp], point_response=point_response, &
+                                               weights_response=trace_strain*frame%ao%weights)
+         response = response + weight*REAL(SUM(CONJG(matrix(:, :, k))*derivative), dp)
+         DEALLOCATE (point_response)
+      END DO
+   END SUBROUTINE primary_grid_metric_response
 END MODULE qs_upf_inverse_aux_operator
