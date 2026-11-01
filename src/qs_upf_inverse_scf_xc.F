@@ -20,6 +20,7 @@ MODULE qs_upf_inverse_scf_xc
                                               init_lebedev_grids,&
                                               lebedev_grid
    USE mathconstants,                   ONLY: fourpi
+   USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_para_env_type
    USE particle_types,                  ONLY: particle_type
@@ -31,6 +32,8 @@ MODULE qs_upf_inverse_scf_xc
    USE pw_methods,                      ONLY: pw_transfer
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
+   USE qs_environment_types,            ONLY: get_qs_env,&
+                                              qs_environment_type
    USE qs_grid_atom,                    ONLY: allocate_grid_atom,&
                                               create_grid_atom,&
                                               grid_atom_type
@@ -49,11 +52,13 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_atom_grid_ref_type,&
                                               qs_upf_inverse_atom_grid_response
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
+                                              qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
                                               qs_upf_inverse_background_release,&
                                               qs_upf_inverse_background_scratch
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate_dense,&
                                               qs_upf_inverse_grid_integrate_dense,&
+                                              qs_upf_inverse_grid_response,&
                                               qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_init
@@ -88,6 +93,7 @@ MODULE qs_upf_inverse_scf_xc
    PUBLIC :: qs_upf_inverse_scf_xc_reference
    PUBLIC :: qs_upf_inverse_scf_xc_model_response
    PUBLIC :: qs_upf_inverse_scf_xc_source_direction, qs_upf_inverse_scf_xc_source_adjoint
+   PUBLIC :: qs_upf_inverse_scf_xc_source_geometry
 
    INTEGER(KIND=int_8), PARAMETER :: max_xc_field_bytes = 64_int_8*1024*1024
 
@@ -563,6 +569,139 @@ CONTAINS
          CALL gradient(axis)%release()
       END DO
    END SUBROUTINE qs_upf_inverse_scf_xc_source_adjoint
+
+! **************************************************************************************************
+!> \brief Geometry transpose of the original valence density and kinetic-density source maps.
+!>        Potentials are unweighted covectors at fixed fractional grid rows, after any spectral
+!>        gradient transpose. Transfer them to the defining source grid before differentiating
+!>        its native Gaussian, inverse and original-Q fields. Mesh weights enter once.
+!>        Return integral(v_n delta n + v_tau delta tau) with the reference integration measure.
+!>        The explicit functional measure, spectral-gradient strain and frozen-core responses
+!>        remain separate. Density matrices and accepted primary XC caches are unchanged.
+!> \param qs_env Native Gaussian geometry and task owners.
+!> \param matrices Fixed original-coordinate Hermitian AO occupation matrices (AO,AO,k,spin).
+!> \param potential Density covectors on their actual XC grid.
+!> \param kinetic_potential Matching kinetic-density covectors, zero without a kinetic source.
+!> \param atom_response Total Cartesian atomic motion, including affine cell motion.
+!> \param cell_response Lattice derivative at fixed reduced k coordinates and image topology.
+!> \param response Globally reduced directional source contraction, without a force minus sign.
+!> \param context Optional independent original-UPF basis and source grid.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_scf_xc_source_geometry(qs_env, matrices, potential, kinetic_potential, atom_response, &
+                                                    cell_response, response, context)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential(:), kinetic_potential(:)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: context
+
+      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), metric(:, :), &
+                                                            qzero(:, :)
+      INTEGER                                            :: axis, ik, info, n, nk, ns, spin
+      LOGICAL                                            :: valid
+      REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
+                                                            trace_strain, virial(3, 3)
+      REAL(dp), ALLOCATABLE                              :: forces(:, :), relative_motion(:, :), &
+                                                            weights(:)
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: density, density_response, gradient(3), &
+                                                            kinetic, kinetic_response
+      TYPE(pw_r3d_rs_type), POINTER                      :: native_density(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_background_type)               :: gaussian
+      TYPE(qs_upf_inverse_grid_type), POINTER            :: frame
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_qs_env(qs_env, ks_env=ks_env)
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
+      IF (PRESENT(context)) THEN
+         state => context
+         grid => state%source_grid
+      ELSE
+         CPASSERT(ASSOCIATED(state))
+         CPASSERT(state%enabled)
+         CALL qs_rho_get(rho, rho_r=native_density)
+         CPASSERT(ASSOCIATED(native_density))
+         grid => native_density(1)%pw_grid
+      END IF
+      CPASSERT(ASSOCIATED(grid))
+      CALL source_frames(state, weights, augmentation)
+      nk = SIZE(weights)
+      ns = SIZE(potential)
+      frame => source_frame(state, 1)
+      n = SIZE(frame%ao%coefficients, 2)
+      valid = ALL(SHAPE(matrices) == [n, n, nk, ns]) .AND. SIZE(kinetic_potential) == ns .AND. ns > 0
+      CPASSERT(valid)
+      CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%ao%positions)))
+      inverse_cell = frame%ao%cell
+      CALL invmat(inverse_cell, info)
+      CPASSERT(info == 0)
+      strain = MATMUL(cell_response, inverse_cell)
+      trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
+      CALL source_gaussian(state, gaussian)
+      CALL density%create(grid)
+      CALL kinetic%create(grid)
+      CALL density_response%create(grid)
+      CALL kinetic_response%create(grid)
+      DO axis = 1, 3
+         CALL gradient(axis)%create(grid)
+         gradient(axis)%array = 0.0_dp
+      END DO
+      IF (.NOT. state%gaussian_background) THEN
+         ALLOCATE (qzero(SIZE(frame%ao%coefficients, 1), SIZE(frame%ao%coefficients, 1)))
+         qzero = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (state%gaussian_background .OR. state%native_gaussian) THEN
+         ALLOCATE (forces, MOLD=atom_response)
+         ALLOCATE (relative_motion, SOURCE=atom_response - MATMUL(strain, frame%ao%positions))
+      END IF
+      response = 0.0_dp
+      DO spin = 1, ns
+         CPASSERT(ASSOCIATED(potential(spin)%pw_grid))
+         valid = ASSOCIATED(kinetic_potential(spin)%pw_grid, potential(spin)%pw_grid)
+         CPASSERT(valid)
+         CALL source_transfer(potential(spin), density)
+         CALL source_transfer(kinetic_potential(spin), kinetic)
+         IF (.NOT. ALLOCATED(state%kinetic_cache)) THEN
+            CPASSERT(ALL(kinetic%array == 0.0_dp))
+         END IF
+         IF (.NOT. state%gaussian_background) THEN
+            ! The operator derivative includes the moving quadrature. Compensating
+            ! potential directions remove that measure without changing the source map.
+            density_response%array = -trace_strain*density%array
+            kinetic_response%array = -trace_strain*kinetic%array
+            DO ik = 1, nk
+               frame => source_frame(state, ik)
+               CALL qs_upf_inverse_grid_response(frame, augmentation, qzero, density, gradient, kinetic, &
+                                                 atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], density_response, &
+                                                 gradient, kinetic_response, derivative, metric, kinetic=state%kinetic_cache, &
+                                                 orbital_fields=.NOT. state%native_gaussian)
+               response = response + weights(ik)*REAL(SUM(CONJG(matrices(:, :, ik, spin))*derivative), dp)
+            END DO
+         END IF
+         IF (state%gaussian_background .OR. state%native_gaussian) THEN
+            CALL qs_upf_inverse_background_geometry(gaussian, qs_env, matrices(:, :, :, spin), density, forces, virial)
+            response = response - SUM(forces*relative_motion) - SUM(virial*strain)
+            IF (ALLOCATED(state%kinetic_cache)) THEN
+               CALL qs_upf_inverse_background_geometry(gaussian, qs_env, matrices(:, :, :, spin), kinetic, &
+                                                       forces, virial, kinetic=.TRUE.)
+               response = response - SUM(forces*relative_motion) - SUM(virial*strain)
+            END IF
+         END IF
+      END DO
+      CALL qs_upf_inverse_background_release(gaussian)
+      CALL density%release()
+      CALL kinetic%release()
+      CALL density_response%release()
+      CALL kinetic_response%release()
+      DO axis = 1, 3
+         CALL gradient(axis)%release()
+      END DO
+   END SUBROUTINE qs_upf_inverse_scf_xc_source_geometry
 
 ! **************************************************************************************************
 !> \brief Borrow the original density-source frame for one globally indexed k point.

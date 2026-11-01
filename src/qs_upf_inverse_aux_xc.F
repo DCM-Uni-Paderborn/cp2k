@@ -47,12 +47,15 @@ CONTAINS
 !> \param grid_energy Native smooth-grid XC energy.
 !> \param atom_energy Original reconstruction residual plus the selected PAW one-center XC.
 !> \param operators Optional complete Hermitian AO derivative, without Brillouin-zone weights.
+!> \param grid_virial Optional independently evaluated native grid XC virial.
+!>        Atomic residual and frozen-core geometry contractions remain separate.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, operators)
+   SUBROUTINE qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, operators, grid_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(dp), INTENT(OUT)                              :: grid_energy, atom_energy
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: operators(:, :, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: grid_virial(3, 3)
 
       INTEGER                                            :: functional_id, ns, spin
       LOGICAL                                            :: atomic, have_functional, valid
@@ -83,8 +86,8 @@ CONTAINS
       CALL qs_rho_get(admm%rho_aux_fit, rho_r=density)
       NULLIFY (v_rho, v_tau)
       CALL qs_vxc_create(ks_env, admm%rho_aux_fit, xc_section, v_rho, v_tau, grid_energy, &
-                         just_energy=.NOT. PRESENT(operators), upf_context=state, &
-                         upf_density=admm%upf_density%matrices, upf_atomic_energy=atom_energy)
+                         just_energy=.NOT. (PRESENT(operators) .OR. PRESENT(grid_virial)), upf_context=state, &
+                         upf_density=admm%upf_density%matrices, upf_atomic_energy=atom_energy, upf_grid_virial=grid_virial)
 
       IF (PRESENT(operators)) THEN
          ALLOCATE (potential(ns), kinetic_potential(ns))

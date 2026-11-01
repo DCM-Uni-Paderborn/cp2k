@@ -114,6 +114,8 @@ CONTAINS
 !> \param upf_context Independent original-UPF basis state, leaving primary XC caches unchanged.
 !> \param upf_density Unweighted occupation matrices of that state, in physical k and spin order.
 !> \param upf_atomic_energy Independent atom XC residual, required with upf_context.
+!> \param upf_grid_virial Optional native grid XC virial for that independent context.
+!>        It neither reads nor replaces the primary accepted XC virial.
 !> \par History
 !>      - 05.2002 modified to use the mp_allgather function each pe
 !>        computes only part of the grid and this is broadcasted to all
@@ -128,7 +130,7 @@ CONTAINS
                             just_energy, edisp, dispersion_env, adiabatic_rescale_factor, &
                             pw_env_external, native_skala_atom_force, qs_env_external, &
                             native_gapw_composite_override, native_skala_defer_to_atom_composite, &
-                            upf_context, upf_density, upf_atomic_energy)
+                            upf_context, upf_density, upf_atomic_energy, upf_grid_virial)
 
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_struct
@@ -148,7 +150,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
          OPTIONAL, TARGET                                :: upf_context
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: upf_density(:, :, :, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: upf_atomic_energy
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: upf_atomic_energy, upf_grid_virial(3, 3)
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_vxc_create'
 
@@ -158,6 +160,8 @@ CONTAINS
          inverse_active, inverse_composite, my_just_energy, native_gapw_composite_direct_ao, &
          native_gapw_composite_reference, native_grid_diagnostics, native_skala_grid, rho_g_valid, &
          sic_scaling_b_zero, tau_g_valid, tau_r_valid, uf_grid, vdW_nl
+      REAL(dp), POINTER                                  :: xc_virial(:, :)
+      REAL(dp), TARGET                                   :: independent_virial(3, 3)
       REAL(KIND=dp) :: composite_hard_integral, composite_rho_max, composite_rho_min, &
          composite_rho_r_integral, composite_soft_integral, composite_tau_max, composite_tau_min, &
          composite_tau_r_integral, delta, direct_rho_integral, direct_tau_integral, exc_m, factor, &
@@ -240,6 +244,7 @@ CONTAINS
          NULLIFY (skala_constraints)
       ELSE
          CPASSERT(.NOT. PRESENT(upf_density))
+         CPASSERT(.NOT. PRESENT(upf_grid_virial))
       END IF
 
       CALL qs_rho_get(rho_struct, &
@@ -256,9 +261,14 @@ CONTAINS
       tau_smooth_g => tau_struct_g
 
       compute_virial = virial%pv_calculate .AND. (.NOT. virial%pv_numer) .AND. (.NOT. my_just_energy)
-      IF (PRESENT(upf_context)) compute_virial = .FALSE.
+      xc_virial => virial%pv_xc
+      IF (PRESENT(upf_context)) THEN
+         independent_virial = 0.0_dp
+         xc_virial => independent_virial
+         compute_virial = PRESENT(upf_grid_virial) .AND. .NOT. my_just_energy
+      END IF
       IF (compute_virial) THEN
-         virial%pv_xc = 0.0_dp
+         xc_virial = 0.0_dp
       END IF
 
       CALL section_vals_val_get(xc_section, "XC_FUNCTIONAL%_SECTION_PARAMETERS_", &
@@ -690,7 +700,7 @@ CONTAINS
                                    rho_r=rho_r, rho_g=rho_g, tau=tau, xc_section=xc_section, &
                                    weights=weights_use, pw_pool=xc_pw_pool, &
                                    particle_set=particle_set, cell=cell, &
-                                   compute_virial=compute_virial, virial_xc=virial%pv_xc, &
+                                   compute_virial=compute_virial, virial_xc=xc_virial, &
                                    just_energy=.FALSE., atom_force=native_skala_atom_force, &
                                    density_constraints=skala_constraints)
             END IF
@@ -705,7 +715,7 @@ CONTAINS
                                   xc_section=xc_section, &
                                   weights=weights_use, pw_pool=xc_pw_pool, &
                                   compute_virial=compute_virial, &
-                                  virial_xc=virial%pv_xc, density_constraints=skala_constraints, &
+                                  virial_xc=xc_virial, density_constraints=skala_constraints, &
                                   project_density_potential=.NOT. inverse_active)
          END IF
 
@@ -1117,6 +1127,7 @@ CONTAINS
 
       END IF
 
+      IF (PRESENT(upf_grid_virial)) upf_grid_virial = xc_virial
       CALL timestop(handle)
 
    END SUBROUTINE qs_vxc_create
