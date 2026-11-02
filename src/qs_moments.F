@@ -93,7 +93,8 @@ MODULE qs_moments
                            kpoint_create, &
                            kpoint_release, &
                            read_kpoint_section
-   USE mathconstants, ONLY: pi, &
+   USE mathconstants, ONLY: fourpi, &
+                            pi, &
                             twopi, &
                             gaussi, &
                             z_one, &
@@ -107,6 +108,7 @@ MODULE qs_moments
    USE particle_methods, ONLY: get_particle_set
    USE particle_types, ONLY: particle_type
    USE physcon, ONLY: angstrom
+   USE pw_types, ONLY: pw_r3d_rs_type
    USE qs_environment_types, ONLY: get_qs_env, &
                                    qs_environment_type
    USE qs_kind_types, ONLY: get_qs_kind, &
@@ -127,6 +129,9 @@ MODULE qs_moments
    USE qs_overlap, ONLY: build_overlap_matrix
    USE qs_rho_types, ONLY: qs_rho_get, &
                            qs_rho_type
+   USE qs_upf_inverse_coulomb, ONLY: qs_upf_inverse_local_field
+   USE qs_upf_inverse_scf, ONLY: qs_upf_inverse_scf_active
+   USE qs_upf_inverse_types, ONLY: qs_upf_inverse_scf_type
    USE rt_propagation_types, ONLY: get_rtp, &
                                    rt_prop_type
    USE soc_pseudopotential_methods, ONLY: V_SOC_xyz_from_pseudopotential
@@ -2001,6 +2006,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       my_velreprs = .FALSE.
+      my_com_nl = .FALSE.
       IF (PRESENT(vel_reprs)) my_velreprs = vel_reprs
       IF (PRESENT(com_nl)) my_com_nl = com_nl
       IF (my_velreprs) CALL cite_reference(Mattiat2019)
@@ -2292,6 +2298,8 @@ CONTAINS
          CALL dbcsr_deallocate_matrix_set(moments_der)
       END IF
 
+      CALL local_upf_electric_moments(qs_env, rcc, rmom, rlab)
+
       description = "[DIPOLE]"
       CALL cp_results_erase(results=results, description=description)
       CALL put_results(results=results, description=description, &
@@ -2361,6 +2369,80 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE qs_moment_locop
+
+! **************************************************************************************************
+!> \brief Evaluate local electric multipoles from the complete physical UPF density.
+!>        Retain the original moment origin and minimum-image convention. PAW frozen-core
+!>        density and its point countercharge enter once. Magnetic and velocity operators
+!>        retain their separate consumers.
+!> \param qs_env Native environment with a prepared physical density.
+!> \param origin Cartesian origin of the reported moments.
+!> \param moments Electronic, ionic and total Cartesian multipoles, including charge.
+!> \param labels Cartesian labels in the existing moment ordering.
+! **************************************************************************************************
+   SUBROUTINE local_upf_electric_moments(qs_env, origin, moments, labels)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      REAL(dp), INTENT(IN)                               :: origin(3)
+      REAL(dp), INTENT(INOUT)                            :: moments(:, :)
+      CHARACTER(LEN=*), INTENT(INOUT)                    :: labels(:)
+
+      INTEGER                                            :: atom, axis, component, i, j, k, kind, &
+                                                            powers(3)
+      LOGICAL                                            :: valid_shape
+      REAL(dp)                                           :: charge, point(3), value
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_r3d_rs_type)                               :: field
+      TYPE(pw_r3d_rs_type), POINTER                      :: density(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_qs_env(qs_env, ks_env=ks_env)
+      IF (.NOT. qs_upf_inverse_scf_active(ks_env)) RETURN
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      CALL get_qs_env(qs_env, cell=cell, particle_set=atoms, qs_kind_set=kinds, rho=rho)
+      CALL qs_rho_get(rho, rho_r=density)
+      valid_shape = SIZE(moments, 2) == 3 .AND. SIZE(moments, 1) == SIZE(labels)
+      CPASSERT(valid_shape)
+      CALL field%create(density(1)%pw_grid)
+      DO component = 1, SIZE(moments, 1)
+         powers = indco(:, component)
+         DO k = field%pw_grid%bounds_local(1, 3), field%pw_grid%bounds_local(2, 3)
+            DO j = field%pw_grid%bounds_local(1, 2), field%pw_grid%bounds_local(2, 2)
+               DO i = field%pw_grid%bounds_local(1, 1), field%pw_grid%bounds_local(2, 1)
+                  point = pbc(MATMUL(field%pw_grid%dh, REAL([i, j, k] - field%pw_grid%bounds(1, :), dp)) - origin, cell)
+                  value = 1.0_dp
+                  DO axis = 1, 3
+                     IF (powers(axis) > 0) value = value*point(axis)**powers(axis)
+                  END DO
+                  field%array(i, j, k) = value
+               END DO
+            END DO
+         END DO
+         CALL qs_upf_inverse_local_field(qs_env, field, moments(component, 1))
+         moments(component, 1) = -moments(component, 1)
+         moments(component, 2) = 0.0_dp
+         DO atom = 1, SIZE(atoms)
+            CALL get_atomic_kind(atoms(atom)%atomic_kind, kind_number=kind)
+            IF (kinds(kind)%ghost) CYCLE
+            CALL get_qs_kind(kinds(kind), zeff=charge)
+            IF (state%paw(kind)%active) THEN
+               charge = charge + fourpi*SUM(state%paw(kind)%xcgrid%wr*state%paw(kind)%xcgrid%core(:, 1))
+            END IF
+            point = pbc(atoms(atom)%r - origin, cell)
+            value = 1.0_dp
+            DO axis = 1, 3
+               IF (powers(axis) > 0) value = value*point(axis)**powers(axis)
+            END DO
+            moments(component, 2) = moments(component, 2) + charge*value
+         END DO
+         moments(component, 3) = moments(component, 1) + moments(component, 2)
+         IF (component > 1) CALL set_label(labels(component), powers(1), powers(2), powers(3))
+      END DO
+      CALL field%release()
+   END SUBROUTINE local_upf_electric_moments
 
 ! **************************************************************************************************
 !> \brief ...
