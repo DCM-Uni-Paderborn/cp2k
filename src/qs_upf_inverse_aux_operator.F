@@ -573,7 +573,9 @@ CONTAINS
          IF (active .AND. .NOT. geometry) THEN
             DO contribution = 1, SIZE(exchange, 1)
                IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
-               IF (.NOT. exchange(contribution, 1)%ace%convergence_rebuild) CYCLE
+               ! Full RI outside an OT inner search supersedes its compressed reference.
+               IF (.NOT. qs_env%scf_control%use_ot .AND. &
+                   .NOT. exchange(contribution, 1)%ace%convergence_rebuild) CYCLE
                exchange(contribution, 1)%ace%built = .FALSE.
                exchange(contribution, 1)%ace%step_counter = 0
             END DO
