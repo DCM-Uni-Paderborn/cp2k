@@ -67,16 +67,20 @@ CONTAINS
 !> \param atom_response Optional total atomic motion, including affine cell motion.
 !> \param cell_response Optional lattice derivative at fixed reduced k coordinates.
 !> \param response Optional explicit geometry derivative at fixed native density and eta.
+!> \param atom_gradient Optional complete Cartesian gradients using one XC evaluation per spin component.
+!> \param strain_gradient Optional complete affine strain derivatives with the same prepared potentials.
+!>        Do not combine these outputs with a single requested response direction.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_xc_rescale(qs_env, xc_section, grid_energy, atom_energy, operators, eta_derivative, &
-                                            atom_response, cell_response, response)
+                                            atom_response, cell_response, response, atom_gradient, strain_gradient)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(dp), INTENT(OUT)                              :: grid_energy, atom_energy
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       REAL(dp), INTENT(OUT)                              :: eta_derivative(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response, atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: matrices(:, :, :, :), &
                                                             part_operator(:, :, :, :), &
@@ -85,6 +89,8 @@ CONTAINS
       LOGICAL                                            :: geometry, valid
       REAL(dp) :: atom_part, atom_sum, atom_zero, eta, exponent, grid_part, grid_sum, grid_zero, &
          partial, response_zero, restored_atom, restored_grid, weight
+      REAL(dp), ALLOCATABLE                              :: part_gradient(:, :), part_strain(:, :), &
+                                                            zero_gradient(:, :), zero_strain(:, :)
       TYPE(admm_type), POINTER                           :: admm
 
       CALL get_qs_env(qs_env, admm_env=admm)
@@ -93,6 +99,8 @@ CONTAINS
       ns = SIZE(admm%upf_density%matrices, 4)
       CPASSERT(SIZE(eta_derivative) == ns)
       geometry = PRESENT(response)
+      valid = .NOT. (geometry .AND. (PRESENT(atom_gradient) .OR. PRESENT(strain_gradient)))
+      CPASSERT(valid)
       valid = geometry .EQV. PRESENT(atom_response)
       CPASSERT(valid)
       valid = geometry .EQV. PRESENT(cell_response)
@@ -100,8 +108,16 @@ CONTAINS
       eta_derivative = 0.0_dp
       IF (.NOT. (admm%do_admmp .OR. admm%do_admms)) THEN
          CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, operators, &
-                                             atom_response=atom_response, cell_response=cell_response, response=response)
+                                             atom_response=atom_response, cell_response=cell_response, response=response, &
+                                             atom_gradient=atom_gradient, strain_gradient=strain_gradient)
          RETURN
+      END IF
+      IF (PRESENT(atom_gradient)) THEN
+         ALLOCATE (zero_gradient, MOLD=atom_gradient)
+         ALLOCATE (part_gradient, MOLD=atom_gradient)
+      END IF
+      IF (PRESENT(strain_gradient)) THEN
+         ALLOCATE (zero_strain(3, 3), part_strain(3, 3))
       END IF
       CPASSERT(ns == 1 .OR. ns == 2)
       exponent = MERGE(2.0_dp, 2.0_dp/3.0_dp, admm%do_admmp)
@@ -116,17 +132,19 @@ CONTAINS
       ALLOCATE (matrices, MOLD=admm%upf_density%matrices)
       matrices = CMPLX(0.0_dp, 0.0_dp, dp)
       CALL xc_component(qs_env, xc_section, matrices, grid_zero, atom_zero, part_operator, &
-                        atom_response, cell_response, response_zero)
+                        atom_response, cell_response, response_zero, zero_gradient, zero_strain)
       grid_energy = grid_zero
       atom_energy = atom_zero
       IF (geometry) response = response_zero
+      IF (PRESENT(atom_gradient)) atom_gradient(:, :) = zero_gradient
+      IF (PRESENT(strain_gradient)) strain_gradient(:, :) = zero_strain
       grid_sum = grid_zero
       atom_sum = atom_zero
       DO spin = 1, ns
          matrices = CMPLX(0.0_dp, 0.0_dp, dp)
          matrices(:, :, :, spin) = admm%upf_density%matrices(:, :, :, spin)
          CALL xc_component(qs_env, xc_section, matrices, grid_part, atom_part, part_operator, &
-                           atom_response, cell_response, partial)
+                           atom_response, cell_response, partial, part_gradient, part_strain)
          grid_part = grid_part - grid_zero
          atom_part = atom_part - atom_zero
          grid_sum = grid_sum + grid_part
@@ -139,6 +157,8 @@ CONTAINS
          operators(:, :, :, spin) = weight*part_operator(:, :, :, spin)
          eta_derivative(spin) = exponent*weight*(grid_part + atom_part)/eta
          IF (geometry) response = response + weight*(partial - response_zero)
+         IF (PRESENT(atom_gradient)) atom_gradient(:, :) = atom_gradient + weight*(part_gradient - zero_gradient)
+         IF (PRESENT(strain_gradient)) strain_gradient(:, :) = strain_gradient + weight*(part_strain - zero_strain)
       END DO
       ! Restore native-density XC scratch data and verify the spin decomposition.
       CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, restored_grid, restored_atom, restored_operator)
@@ -160,7 +180,7 @@ CONTAINS
 !> \param response Zero without a requested geometry direction.
 ! **************************************************************************************************
    SUBROUTINE xc_component(qs_env, xc_section, matrices, grid_energy, atom_energy, operators, &
-                           atom_response, cell_response, response)
+                           atom_response, cell_response, response, atom_gradient, strain_gradient)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -168,6 +188,8 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: response
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
 
       response = 0.0_dp
       IF (PRESENT(atom_response)) THEN
@@ -176,7 +198,8 @@ CONTAINS
                                              density_matrices=matrices)
       ELSE
          CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, operators, &
-                                             density_matrices=matrices)
+                                             density_matrices=matrices, atom_gradient=atom_gradient, &
+                                             strain_gradient=strain_gradient)
       END IF
    END SUBROUTINE xc_component
 
@@ -203,9 +226,14 @@ CONTAINS
 !> \param density_matrices Optional original-coordinate auxiliary density for a separate XC evaluation.
 !>        Build owned grid and kinetic fields without changing the native auxiliary density,
 !>        MOs or RI history. Atomic XC scratch data then refer to these supplied matrices.
+!> \param atom_gradient Optional complete Cartesian derivatives at fixed auxiliary occupations.
+!> \param strain_gradient Optional complete affine derivatives with atoms moving with the cell.
+!>        The energy, native model potential and atomic XC fields are prepared once.
+!>        Each geometry direction retains its original analytic source and measure derivatives.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_aux_xc_evaluate(qs_env, xc_section, grid_energy, atom_energy, operators, grid_virial, &
-                                             atom_response, cell_response, response, density_matrices)
+                                             atom_response, cell_response, response, density_matrices, &
+                                             atom_gradient, strain_gradient)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(dp), INTENT(OUT)                              :: grid_energy, atom_energy
@@ -214,14 +242,19 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: response
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: density_matrices(:, :, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_gradient(:, :), &
+                                                            strain_gradient(3, 3)
 
       COMPLEX(dp), POINTER                               :: matrices(:, :, :, :)
-      INTEGER                                            :: functional_id, ns, spin
+      INTEGER                                            :: atom, axis, functional_id, ns, other, &
+                                                            spin
       LOGICAL                                            :: atomic, geometry, have_functional, valid
       REAL(dp)                                           :: density_cutoff, energies(3), &
-                                                            gradient_cutoff, native_virial(3, 3)
-      REAL(dp), ALLOCATABLE                              :: atom_gradient(:, :)
+                                                            gradient_cutoff, native_virial(3, 3), &
+                                                            strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: model_gradient(:, :), motion(:, :)
       TYPE(admm_type), POINTER                           :: admm
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
@@ -247,6 +280,9 @@ CONTAINS
       geometry = PRESENT(response)
       CPASSERT(geometry .EQV. PRESENT(atom_response))
       CPASSERT(geometry .EQV. PRESENT(cell_response))
+      valid = .NOT. (geometry .AND. (PRESENT(atom_gradient) .OR. PRESENT(strain_gradient)))
+      CPASSERT(valid)
+      geometry = geometry .OR. PRESENT(atom_gradient) .OR. PRESENT(strain_gradient)
       functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
       CALL section_vals_val_get(xc_section, 'XC_FUNCTIONAL%_SECTION_PARAMETERS_', i_val=functional_id)
       have_functional = functional_id /= xc_none
@@ -266,12 +302,18 @@ CONTAINS
       NULLIFY (v_rho, v_tau)
       IF (geometry) THEN
          CALL get_ks_env(ks_env, particle_set=atoms)
-         valid = ALL(SHAPE(atom_response) == [3, SIZE(atoms)])
-         CPASSERT(valid)
-         ALLOCATE (atom_gradient(3, SIZE(atoms)), SOURCE=0.0_dp)
+         IF (PRESENT(response)) THEN
+            valid = ALL(SHAPE(atom_response) == [3, SIZE(atoms)])
+            CPASSERT(valid)
+         END IF
+         IF (PRESENT(atom_gradient)) THEN
+            valid = ALL(SHAPE(atom_gradient) == [3, SIZE(atoms)])
+            CPASSERT(valid)
+         END IF
+         ALLOCATE (model_gradient(3, SIZE(atoms)), SOURCE=0.0_dp)
          CALL weight_potential%create(density(1)%pw_grid)
          CALL qs_vxc_create(ks_env, rho, xc_section, v_rho, v_tau, grid_energy, &
-                            just_energy=.FALSE., native_skala_atom_force=atom_gradient, upf_context=state, &
+                            just_energy=.FALSE., native_skala_atom_force=model_gradient, upf_context=state, &
                             upf_density=matrices, upf_atomic_energy=atom_energy, &
                             upf_grid_virial=native_virial, upf_weight_potential=weight_potential)
          IF (PRESENT(grid_virial)) grid_virial = native_virial
@@ -334,10 +376,46 @@ CONTAINS
          state%paw_density_evaluation = state%density_evaluations
       END IF
       IF (geometry) THEN
-         response = 0.0_dp
-         IF (have_functional) THEN
-            CALL xc_geometry(qs_env, state, matrices, potential, kinetic_potential, weight_potential, grid_energy, &
-                             native_virial, atom_gradient, atom_response, cell_response, response)
+         IF (PRESENT(response)) THEN
+            response = 0.0_dp
+            IF (have_functional) THEN
+               CALL xc_geometry(qs_env, state, matrices, potential, kinetic_potential, weight_potential, grid_energy, &
+                                native_virial, model_gradient, atom_response, cell_response, response)
+            END IF
+         END IF
+         IF (PRESENT(atom_gradient) .OR. PRESENT(strain_gradient)) THEN
+            CALL get_qs_env(qs_env, cell=cell)
+            ALLOCATE (motion(3, SIZE(atoms)))
+         END IF
+         IF (PRESENT(atom_gradient)) THEN
+            atom_gradient = 0.0_dp
+            IF (have_functional) THEN
+               DO atom = 1, SIZE(atoms)
+                  DO axis = 1, 3
+                     motion = 0.0_dp
+                     motion(axis, atom) = 1.0_dp
+                     CALL xc_geometry(qs_env, state, matrices, potential, kinetic_potential, weight_potential, grid_energy, &
+                                      native_virial, model_gradient, motion, 0.0_dp*cell%hmat, atom_gradient(axis, atom))
+                  END DO
+               END DO
+            END IF
+         END IF
+         IF (PRESENT(strain_gradient)) THEN
+            strain_gradient = 0.0_dp
+            IF (have_functional) THEN
+               DO other = 1, 3
+                  DO axis = 1, 3
+                     strain = 0.0_dp
+                     strain(axis, other) = 1.0_dp
+                     DO atom = 1, SIZE(atoms)
+                        motion(:, atom) = MATMUL(strain, atoms(atom)%r)
+                     END DO
+                     CALL xc_geometry(qs_env, state, matrices, potential, kinetic_potential, weight_potential, grid_energy, &
+                                      native_virial, model_gradient, motion, MATMUL(strain, cell%hmat), &
+                                      strain_gradient(axis, other))
+                  END DO
+               END DO
+            END IF
          END IF
          CALL weight_potential%release()
       END IF

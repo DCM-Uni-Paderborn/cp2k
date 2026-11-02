@@ -157,7 +157,8 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
       INTEGER                                            :: contribution, ik, nk, ns, spin
       LOGICAL                                            :: compressible, ready
-      REAL(dp)                                           :: fraction, part, scale, unused_strain(3, 3)
+      REAL(dp)                                           :: fraction, part, scale, &
+                                                            unused_strain(3, 3)
       REAL(dp), ALLOCATABLE                              :: unused_gradient(:, :)
       TYPE(admm_type), POINTER                           :: admm
 
@@ -269,10 +270,8 @@ CONTAINS
                                                             spin
       INTEGER, ALLOCATABLE                               :: ranks(:, :)
       LOGICAL                                            :: available, selected, term_ready
-      REAL(dp)                                           :: anchor_shift, covariance_defect, &
-                                                            covariance_scale, fraction, &
-                                                            reference_energy, scale, term_energy, &
-                                                            unused_strain(3, 3), weight
+      REAL(dp) :: anchor_shift, covariance_defect, covariance_scale, fraction, reference_energy, &
+         scale, term_energy, unused_strain(3, 3), weight
       REAL(dp), ALLOCATABLE                              :: term_spin_energy(:), &
                                                             unused_gradient(:, :)
       TYPE(admm_type), POINTER                           :: admm
@@ -506,8 +505,8 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: ri_operator(:, :, :, :)
       INTEGER                                            :: contribution, natom
-      LOGICAL                                            :: active, frozen_search, full_exchange, geometry, ready, &
-                                                            rebuild, use_virial
+      LOGICAL                                            :: active, frozen_search, full_exchange, &
+                                                            geometry, ready, rebuild, use_virial
       REAL(dp)                                           :: energy, ri_energy, ri_strain(3, 3)
       REAL(dp), ALLOCATABLE                              :: ri_gradient(:, :), ri_spin_energy(:)
       TYPE(admm_type), POINTER                           :: admm
@@ -553,11 +552,11 @@ CONTAINS
          ready = .FALSE.
          IF (.NOT. rebuild) THEN
             CALL qs_upf_inverse_aux_ace_evaluate(qs_env, exchange, geometry_changed, &
-                                                ri_energy, ri_operator, ri_spin_energy, ready)
+                                                 ri_energy, ri_operator, ri_spin_energy, ready)
          END IF
          IF (.NOT. ready) THEN
             CALL qs_upf_inverse_aux_ace_build(qs_env, exchange, geometry_changed, &
-                                             ri_energy, ri_operator, ri_spin_energy, ready)
+                                              ri_energy, ri_operator, ri_spin_energy, ready)
          ELSE
             DO contribution = 1, SIZE(exchange, 1)
                IF (exchange(contribution, 1)%use_ace .AND. exchange(contribution, 1)%ace%built) &
@@ -631,10 +630,14 @@ CONTAINS
                                                             strain_gradient(3, 3)
       REAL(dp), INTENT(IN)                               :: ri_spin_energy(:)
 
-      COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :, :), &
+                                                            xc_operator(:, :, :, :)
       INTEGER                                            :: atom, axis, other
-      REAL(dp)                                           :: energy, response, strain(3, 3)
-      REAL(dp), ALLOCATABLE                              :: motion(:, :), positions(:, :)
+      REAL(dp)                                           :: atom_energy, energy, grid_energy, &
+                                                            response, strain(3, 3)
+      REAL(dp), ALLOCATABLE                              :: eta_derivative(:), motion(:, :), &
+                                                            positions(:, :), xc_gradient(:, :), &
+                                                            xc_strain(:, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), POINTER                       :: atoms(:)
 
@@ -643,15 +646,21 @@ CONTAINS
       DO atom = 1, SIZE(atoms)
          positions(:, atom) = atoms(atom)%r
       END DO
+      ALLOCATE (eta_derivative(SIZE(ri_operator, 4)))
+      IF (PRESENT(atom_gradient)) ALLOCATE (xc_gradient, MOLD=atom_gradient)
+      IF (PRESENT(strain_gradient)) ALLOCATE (xc_strain(3, 3))
+      CALL qs_upf_inverse_aux_xc_rescale(qs_env, xc_section, grid_energy, atom_energy, xc_operator, eta_derivative, &
+                                         atom_gradient=xc_gradient, strain_gradient=xc_strain)
       IF (PRESENT(atom_gradient)) THEN
          CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(motion)))
          DO atom = 1, SIZE(atoms)
             DO axis = 1, 3
                motion = 0.0_dp
                motion(axis, atom) = 1.0_dp
-               CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
-                                                ri_gradient, ri_strain, motion, 0.0_dp*cell%hmat, &
-                                                energy, operators, response, valence_spin_energy=ri_spin_energy)
+               CALL compose_auxiliary_response(qs_env, exchange, ri_energy, ri_operator, ri_gradient, ri_strain, &
+                                               motion, 0.0_dp*cell%hmat, grid_energy, atom_energy, xc_operator, &
+                                               eta_derivative, xc_gradient(axis, atom), energy, operators, response, &
+                                               valence_spin_energy=ri_spin_energy)
                atom_gradient(axis, atom) = response
             END DO
          END DO
@@ -662,9 +671,10 @@ CONTAINS
                strain = 0.0_dp
                strain(axis, other) = 1.0_dp
                motion(:, :) = MATMUL(strain, positions)
-               CALL qs_upf_inverse_aux_response(qs_env, xc_section, exchange, ri_energy, ri_operator, &
-                                                ri_gradient, ri_strain, motion, MATMUL(strain, cell%hmat), &
-                                                energy, operators, response, valence_spin_energy=ri_spin_energy)
+               CALL compose_auxiliary_response(qs_env, exchange, ri_energy, ri_operator, ri_gradient, ri_strain, &
+                                               motion, MATMUL(strain, cell%hmat), grid_energy, atom_energy, xc_operator, &
+                                               eta_derivative, xc_strain(axis, other), energy, operators, response, &
+                                               valence_spin_energy=ri_spin_energy)
                strain_gradient(axis, other) = response
             END DO
          END DO
@@ -703,7 +713,8 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), saved_exchange(:, :, :, :)
       INTEGER                                            :: contribution, ik, image, natom, ns, spin
-      LOGICAL                                            :: bloch, permitted, reference, rescale, valid
+      LOGICAL                                            :: bloch, permitted, reference, rescale, &
+                                                            valid
       REAL(dp)                                           :: fraction, native_energy, part, &
                                                             raw_energy, term_energy, &
                                                             term_strain(3, 3)
@@ -800,7 +811,7 @@ CONTAINS
                   ! Screened native contractions can retain a small anti-Hermitian numerical residue.
                   ! Hermitian occupations couple only to the Hermitian energy covector.
                   state%exchange_k(:, :, ik, spin) = 0.5_dp*(state%exchange_k(:, :, ik, spin) + &
-                                                           CONJG(TRANSPOSE(state%exchange_k(:, :, ik, spin))))
+                                                             CONJG(TRANSPOSE(state%exchange_k(:, :, ik, spin))))
                   term_spin_energy(spin) = term_spin_energy(spin) + 0.5_dp*admm%upf_aux_metric%weights(ik)* &
                                     REAL(SUM(CONJG(state%exchange_k(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
                END DO
@@ -1773,12 +1784,48 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: components(4)
       REAL(dp), INTENT(IN), OPTIONAL                     :: valence_spin_energy(:)
 
+      COMPLEX(dp), ALLOCATABLE                           :: xc_operator(:, :, :, :)
+      REAL(dp)                                           :: atom_energy, grid_energy, xc_response
+      REAL(dp), ALLOCATABLE                              :: eta_derivative(:)
+
+      ALLOCATE (eta_derivative(SIZE(ri_operator, 4)))
+      CALL qs_upf_inverse_aux_xc_rescale(qs_env, xc_section, grid_energy, atom_energy, xc_operator, eta_derivative, &
+                                         atom_response=atom_response, cell_response=cell_response, response=xc_response)
+      CALL compose_auxiliary_response(qs_env, exchange, ri_energy, ri_operator, ri_atom_gradient, ri_strain_gradient, &
+                                      atom_response, cell_response, grid_energy, atom_energy, xc_operator, eta_derivative, &
+                                      xc_response, energy, operators, response, components, valence_spin_energy)
+   END SUBROUTINE qs_upf_inverse_aux_response
+
+! **************************************************************************************************
+!> \brief Compose one analytic geometry direction from already evaluated auxiliary XC quantities.
+!>        The XC energy, operator and ratio derivative are independent of this direction.
+!>        RI, original core, projection and normalization responses keep their original meanings.
+! **************************************************************************************************
+   SUBROUTINE compose_auxiliary_response(qs_env, exchange, ri_energy, ri_operator, &
+                                         ri_atom_gradient, ri_strain_gradient, atom_response, cell_response, &
+                                         grid_energy, atom_energy, xc_operator, xc_eta, xc_response, &
+                                         energy, operators, response, components, valence_spin_energy)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
+      REAL(dp), INTENT(IN)                               :: ri_energy
+      COMPLEX(dp), INTENT(IN)                            :: ri_operator(:, :, :, :)
+      REAL(dp), INTENT(IN) :: ri_atom_gradient(:, :), ri_strain_gradient(3, 3), &
+         atom_response(:, :), cell_response(3, 3), grid_energy, atom_energy
+      COMPLEX(dp), INTENT(IN)                            :: xc_operator(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: xc_eta(:), xc_response
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      REAL(dp), INTENT(OUT)                              :: response
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: components(4)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: valence_spin_energy(:)
+
       COMPLEX(dp), ALLOCATABLE :: auxiliary_covector(:, :, :, :), auxiliary_operator(:, :, :, :), &
          core_operator(:, :, :, :), mixed_covector(:, :, :, :), primary_covector(:, :, :, :)
       INTEGER                                            :: atom
       LOGICAL                                            :: valid
-      REAL(dp) :: atom_energy, core_energy, core_response, grid_energy, projection_response, &
-         ri_response, strain(3, 3), xc_response
+      REAL(dp)                                           :: core_energy, core_response, &
+                                                            projection_response, ri_response, &
+                                                            strain(3, 3)
       REAL(dp), ALLOCATABLE                              :: core_derivative(:), eta_derivative(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), POINTER                       :: atoms(:)
@@ -1791,10 +1838,10 @@ CONTAINS
               ALL(ieee_is_finite(ri_strain_gradient))
       CPASSERT(valid)
       ALLOCATE (eta_derivative(SIZE(ri_operator, 4)), core_derivative(SIZE(ri_operator, 4)))
-      CALL qs_upf_inverse_aux_xc_rescale(qs_env, xc_section, grid_energy, atom_energy, auxiliary_operator, eta_derivative, &
-                                         atom_response=atom_response, cell_response=cell_response, response=xc_response)
-      valid = ALL(SHAPE(ri_operator) == SHAPE(auxiliary_operator))
-      CPASSERT(valid)
+      valid = ALL(SHAPE(ri_operator) == SHAPE(xc_operator))
+      CPASSERT(valid .AND. SIZE(xc_eta) == SIZE(eta_derivative))
+      ALLOCATE (auxiliary_operator, SOURCE=xc_operator)
+      eta_derivative(:) = xc_eta
       CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator, &
                                             atom_response, cell_response, core_response, eta_derivative=core_derivative)
       eta_derivative(:) = eta_derivative + core_derivative
@@ -1814,7 +1861,7 @@ CONTAINS
       energy = ri_energy + core_energy + grid_energy + atom_energy
       IF (PRESENT(components)) components = [ri_energy, core_energy, grid_energy, atom_energy]
       response = ri_response + core_response + xc_response + projection_response
-   END SUBROUTINE qs_upf_inverse_aux_response
+   END SUBROUTINE compose_auxiliary_response
 
 ! **************************************************************************************************
 !> \brief Contract projection and charge-normalization covectors with the actual moving metrics.
