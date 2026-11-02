@@ -305,8 +305,8 @@ CONTAINS
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: gapw, my_kpgrp, pmat_from_rs, &
-                                                            use_real_wfn
+      LOGICAL                                            :: gapw, my_kpgrp, pmat_from_native, &
+                                                            pmat_from_rs, use_real_wfn
       REAL(dp)                                           :: maxval_mos, nelec_aux(2), nelec_orb(2), &
                                                             tmp
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occ_num, occ_num_aux, tot_rho_r_aux
@@ -436,6 +436,10 @@ CONTAINS
 
       pmat_from_rs = .FALSE.
       IF (maxval_mos < EPSILON(0.0_dp)) pmat_from_rs = .TRUE.
+      ! The accepted native density survives restarts and density mixing, whereas
+      ! the current MO coefficients need not represent that same state.
+      pmat_from_native = admm_env%upf_aux_metric%ready .AND. ALLOCATED(kpoints%native_density)
+      IF (pmat_from_native) pmat_from_rs = .FALSE.
 
       !TODO: issue a warning when doing ADMM with ATOMIC guess. If small number of K-points => leads to bad things
 
@@ -524,7 +528,10 @@ CONTAINS
 
                occ_num_aux(1:nmo) = occ_num(1:nmo)
 
-               IF (pmat_from_rs) THEN
+               IF (pmat_from_rs .OR. pmat_from_native) THEN
+                  IF (pmat_from_native) THEN
+                     CALL cp_cfm_to_fm(kpoints%native_density(ikp, ispin), mtargetr=work_orb_orb)
+                  END IF
                   !We project on the AUX basis: P_aux = A * P *A^T
                   CALL parallel_gemm('N', 'N', nao_aux_fit, nao_orb, nao_orb, 1.0_dp, kp%amat, &
                                      work_orb_orb, 0.0_dp, work_aux_orb)
@@ -549,7 +556,10 @@ CONTAINS
                CALL get_mo_set(mos_aux_fit_kp(ispin), occupation_numbers=occ_num_aux)
                occ_num_aux(:) = occ_num(:)
 
-               IF (pmat_from_rs) THEN
+               IF (pmat_from_rs .OR. pmat_from_native) THEN
+                  IF (pmat_from_native) THEN
+                     CALL cp_cfm_to_cfm(kpoints%native_density(ikp, ispin), cpmatrix)
+                  END IF
                   CALL parallel_gemm('N', 'N', nao_aux_fit, nao_orb, nao_orb, z_one, kp%camat, &
                                      cpmatrix, z_zero, cwork_aux_orb)
                   CALL parallel_gemm('N', 'C', nao_aux_fit, nao_aux_fit, nao_orb, z_one, cwork_aux_orb, &
@@ -566,7 +576,7 @@ CONTAINS
       ! Symmetry is handled by the reduced-grid transform: one P_aux(k) per
       ! irreducible k-point is expanded with the stored operations and weighted
       ! by wkp, instead of computing every symmetry-equivalent k-point.
-      IF (.NOT. pmat_from_rs) CALL kpoint_density_matrices(kpoints, for_aux_fit=.TRUE.)
+      IF (.NOT. (pmat_from_rs .OR. pmat_from_native)) CALL kpoint_density_matrices(kpoints, for_aux_fit=.TRUE.)
       CALL kpoint_density_transform(kpoints, rho_ao_aux, .FALSE., &
                                     matrix_s_aux_fit(1, 1)%matrix, sab_aux_fit, &
                                     admm_env%scf_work_aux_fit, for_aux_fit=.TRUE., &

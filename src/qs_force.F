@@ -467,7 +467,8 @@ CONTAINS
                virial%pv_virial(i, i) = virial%pv_virial(i, i) - energy%exc &
                                         - hartree_measure
                virial%pv_exc(i, i) = virial%pv_exc(i, i) - energy%exc
-               IF (dft_control%do_admm) THEN
+               ! The complete original-UPF auxiliary response already includes this measure.
+               IF (dft_control%do_admm .AND. .NOT. qs_upf_inverse_scf_active(ks_env)) THEN
                   virial%pv_exc(i, i) = virial%pv_exc(i, i) - energy%exc_aux_fit
                   virial%pv_virial(i, i) = virial%pv_virial(i, i) - energy%exc_aux_fit
                END IF
