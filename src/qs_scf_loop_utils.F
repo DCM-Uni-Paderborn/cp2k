@@ -121,7 +121,7 @@ MODULE qs_scf_loop_utils
         qs_ot_density_secant_projected_hessian, qs_ot_density_tangent, &
         qs_ot_finite_rotation_response, qs_ot_fixed_n_energy_gradient, &
         qs_ot_fixed_n_multigroup_schur_block, qs_ot_get_orbitals_complex, &
-        qs_ot_get_orbitals_local_batch, qs_ot_get_orbitals_ref_complex, &
+        qs_ot_get_orbitals_local_batch, qs_ot_get_orbitals_ref_complex, qs_ot_local_channels, &
         qs_ot_projected_response_update, qs_ot_symmetric_abs_solve
    USE qs_ot_minimizer,                 ONLY: ot_mermin_response_preparation_needed,&
                                               ot_mermin_secant_curvature,&
@@ -1205,7 +1205,7 @@ CONTAINS
       energy_only = local_ot_env(1)%energy_only
 
       ! Borrow cached overlaps and physical MO storage; no matrix ownership changes in workers.
-      local_orbitals = kpoints%para_env_kp%num_pe == 1
+      local_orbitals = qs_ot_local_channels(local_ot_env)
       IF (local_orbitals) THEN
          ALLOCATE (local_s(2, nlocal_channels), local_c(nlocal_channels))
          DO local_kpoint = 1, SIZE(kpoints%kp_env)
