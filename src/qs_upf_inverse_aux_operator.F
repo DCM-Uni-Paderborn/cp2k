@@ -102,6 +102,7 @@ CONTAINS
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(OUT)                               :: active
 
+      INTEGER                                            :: contribution
       TYPE(admm_type), POINTER                           :: admm
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(hfx_type), POINTER                            :: exchange(:, :)
@@ -113,6 +114,11 @@ CONTAINS
       IF (SIZE(exchange, 1) == 0 .OR. SIZE(exchange, 2) == 0) RETURN
       IF (.NOT. ANY(exchange(:, 1)%use_ace)) RETURN
       CPASSERT(.NOT. admm%upf_ace_search%active)
+      DO contribution = 1, SIZE(exchange, 1)
+         IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
+         ! Honor the native final full-exchange phase across orbital-chart rebuilds.
+         IF (exchange(contribution, 1)%ace%convergence_rebuild) RETURN
+      END DO
       admm%upf_ace_search = admm_upf_ace_search_type()
       admm%upf_ace_search%active = .TRUE.
       active = .TRUE.
@@ -122,16 +128,28 @@ CONTAINS
 !> \brief End the inner functional and release its independently owned projectors.
 !>        The caller must reevaluate the complete original functional before physical acceptance.
 !> \param qs_env Same native environment used to begin the search.
+!> \param finish_scf Enter the native full-exchange finishing phase after inner stationarity.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_aux_ace_search_end(qs_env)
+   SUBROUTINE qs_upf_inverse_aux_ace_search_end(qs_env, finish_scf)
       TYPE(qs_environment_type), POINTER                 :: qs_env
+      LOGICAL, INTENT(IN), OPTIONAL                      :: finish_scf
 
+      INTEGER                                            :: contribution
       TYPE(admm_type), POINTER                           :: admm
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
 
-      CALL get_qs_env(qs_env, admm_env=admm)
+      CALL get_qs_env(qs_env, admm_env=admm, x_data=exchange)
       CPASSERT(ASSOCIATED(admm))
       CPASSERT(admm%upf_ace_search%active)
       admm%upf_ace_search = admm_upf_ace_search_type()
+      IF (PRESENT(finish_scf)) THEN
+         IF (finish_scf) THEN
+            CPASSERT(ASSOCIATED(exchange))
+            DO contribution = 1, SIZE(exchange, 1)
+               IF (exchange(contribution, 1)%use_ace) exchange(contribution, 1)%ace%convergence_rebuild = .TRUE.
+            END DO
+         END IF
+      END IF
    END SUBROUTINE qs_upf_inverse_aux_ace_search_end
 
 ! **************************************************************************************************

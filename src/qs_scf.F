@@ -255,7 +255,8 @@ MODULE qs_scf
         qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_release_cusp, &
         qs_skala_scf_retained_symmetry, qs_skala_scf_selected, qs_skala_scf_size, &
         qs_skala_scf_stationarity, qs_skala_scf_type
-   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_core
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE qs_vxc_atom,                     ONLY: gapw_cdft_one_center
    USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
@@ -300,7 +301,8 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL                     :: has_converged
       INTEGER, INTENT(OUT), OPTIONAL                     :: total_scf_steps
 
-      INTEGER                                            :: ihistory, max_scf_tmp, tsteps
+      INTEGER                                            :: contribution, ihistory, max_scf_tmp, &
+                                                            tsteps
       LOGICAL                                            :: converged, outer_scf_loop, should_stop
       LOGICAL, SAVE                                      :: first_step_flag = .TRUE.
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: gradient_history, variable_history
@@ -355,6 +357,15 @@ CONTAINS
 
          qs_env%scf_convergence_available = .TRUE.
          qs_env%scf_converged = converged
+         IF (converged .AND. dft_control%do_admm) THEN
+            IF (qs_upf_inverse_scf_active(qs_env%ks_env) .AND. ASSOCIATED(qs_env%x_data)) THEN
+               ! End the original-UPF auxiliary full-exchange finishing phase.
+               DO contribution = 1, SIZE(qs_env%x_data, 1)
+                  IF (qs_env%x_data(contribution, 1)%use_ace) &
+                     qs_env%x_data(contribution, 1)%ace%convergence_rebuild = .FALSE.
+               END DO
+            END IF
+         END IF
 
          ! If SCF has not converged, then we should not start MP2
          IF (ASSOCIATED(qs_env%mp2_env)) qs_env%mp2_env%hf_fail = .NOT. converged

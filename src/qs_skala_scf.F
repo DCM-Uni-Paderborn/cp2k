@@ -2605,6 +2605,7 @@ CONTAINS
       INTEGER                                            :: i, m
       LOGICAL                                            :: coupled_curvature, frozen_exchange, &
                                                             inner_converged, valid
+      REAL(dp)                                           :: search_tolerance
       REAL(dp), ALLOCATABLE :: combined_floors(:), coordinate_scales(:), density_floors(:), &
          gradient(:), origin(:), reference_gradient(:), response(:), zero(:), zero_multipliers(:)
       TYPE(mp_comm_type)                                 :: comm
@@ -2619,6 +2620,7 @@ CONTAINS
       CPASSERT(valid)
       context%state => state
       context%gradient_tolerance = gradient_tolerance
+      search_tolerance = gradient_tolerance
       IF (PRESENT(output_unit)) context%iteration_unit = output_unit
       IF (PRESENT(iteration_offset)) context%iteration_offset = iteration_offset
       IF (PRESENT(admit_crossings)) context%admit_crossings = admit_crossings
@@ -2678,6 +2680,10 @@ CONTAINS
          ! Reevaluate the origin with the same compressed operator used by every later trial.
          ALLOCATE (reference_gradient(SIZE(coordinate)))
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient=reference_gradient)
+         ! Reduce the intermediate-model gradient before the full-exchange finishing phase.
+         ! Final acceptance below retains the original physical gradient tolerance.
+         search_tolerance = MAX(gradient_tolerance, 0.1_dp*NORM2(reference_gradient))
+         context%gradient_tolerance = search_tolerance
       END IF
       coupled_curvature = state%thermal
       IF (.NOT. coupled_curvature) THEN
@@ -2695,7 +2701,7 @@ CONTAINS
       ALLOCATE (coordinate_scales(SIZE(coordinate)))
       CALL qs_skala_scf_coordinate_scales(state, coordinate_scales)
       CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
-                                          coordinate, physical_tolerances, gradient_tolerance, converged, &
+                                          coordinate, physical_tolerances, search_tolerance, converged, &
                                           max_iterations=max_iterations, max_step=max_step, &
                                           verify_stationarity=evaluate_native_stationarity, iterations=iterations, &
                                           check_stop=check_native_stop, stopped=stopped, &
@@ -2705,6 +2711,7 @@ CONTAINS
                                           precondition=evaluate_native_preconditioner, apply_hessian=evaluate_native_hessian, &
                                           apply_lagrangian_hessian=evaluate_native_lagrangian_hessian, &
                                           report_iteration=report_native_iteration)
+      context%gradient_tolerance = gradient_tolerance
       IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) THEN
          IF (context%crossings%resolved) THEN
             ! Classification has already verified this downhill root in the native fields.
@@ -2720,11 +2727,11 @@ CONTAINS
          CALL evaluate_limiting_state(state, coordinate, energy, gradient, at_native_coordinate(state, coordinate))
       END IF
       IF (frozen_exchange) THEN
-         CALL qs_upf_inverse_aux_ace_search_end(state%qs_env)
+         inner_converged = converged
+         CALL qs_upf_inverse_aux_ace_search_end(state%qs_env, finish_scf=inner_converged)
          state%evaluated = .FALSE.
          state%operator_current = .FALSE.
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient=reference_gradient)
-         inner_converged = converged
          IF (inner_converged) THEN
             ! A stationary affine inner model does not establish original RI stationarity.
             CALL evaluate_native_stationarity(coordinate, context, converged)
