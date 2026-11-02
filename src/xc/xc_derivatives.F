@@ -1104,7 +1104,8 @@ CONTAINS
       CPASSERT(ALL(rows >= 0 .AND. rows <= n))
       CALL skala_density_constraints_get(state, points, spins, weights, probe, tolerance, &
                                          descriptors=descriptors, domain=domain, targets=targets)
-      IF (ANY(targets <= 0.0_dp) .OR. ANY(descriptors /= skala_density_descriptor)) RETURN
+      IF (ANY(targets < 0.0_dp) .OR. ANY(descriptors /= skala_density_descriptor)) RETURN
+      ! Zero targets have no selected floor row and retain complete KS limiting evaluations.
       IF (ANY(spins < 1 .OR. spins > 2)) RETURN
       IF (ALLOCATED(rho_set%spin_floor_slopes)) THEN
          IF (ANY(rho_set%spin_floor_slopes >= 0.0_dp .AND. rho_set%spin_floor_slopes /= 1.0_dp)) RETURN

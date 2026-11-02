@@ -1108,7 +1108,7 @@ CONTAINS
       END DO
       CALL xc_rho_set_release(fields)
       ! Compare a batched jump with independent one-slope evaluations. Two spins share
-      ! one point, another point is distinct, and the fourth constraint is not owned.
+      ! one point, another point is distinct, and an unowned zero target must not disable them.
       bounds(1, :) = 1
       bounds(2, :) = [4, 1, 1]
       needs = xc_functionals_get_needs(combination, .TRUE., calc_potential=.TRUE.)
@@ -1140,7 +1140,7 @@ CONTAINS
                                             1.e-14_dp, 1.e-20_dp, 2, [4, 1, 1], bounds, hmat, &
                                             RESHAPE([REAL(dp)::0, 0, 0, 1, 0, 0], [3, 2]), &
                                             domains=SPREAD(skala_background_domain, 1, 4), &
-                                            atomic_sizes=[0, 6], targets=SPREAD(level, 1, 4))
+                                            atomic_sizes=[0, 6], targets=[level, level, level, 0.0_dp])
          CALL xc_functionals_select_floor_limits(combination, constraints, fields, 2, skala_background_domain, &
                                                  keys, selected_rows=selected_rows)
          IF (ANY(selected_rows /= [1, 1, 3, 0])) ERROR STOP 'Coupled floor rows changed'

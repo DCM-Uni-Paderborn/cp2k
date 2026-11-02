@@ -2941,11 +2941,14 @@ CONTAINS
       ! Primitive readouts must cover the complete active functional combination.
       ! Unsupported combinations and nonunique owners retain complete KS evaluations.
       capture_jumps = ALL(targets == 0.0_dp) .AND. skala_only_functional(state)
-      IF (ALL(targets > 0.0_dp) .AND. ALL(descriptors == skala_density_descriptor)) THEN
+      IF (ALL(targets >= 0.0_dp) .AND. ANY(targets > 0.0_dp) .AND. &
+          ALL(descriptors == skala_density_descriptor)) THEN
          functionals => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC%XC_FUNCTIONAL")
          capture_jumps = xc_functionals_floor_jumps_available(functionals)
       END IF
       IF (PRESENT(assemble_jumps)) capture_jumps = capture_jumps .AND. assemble_jumps
+      ! A zero-density constraint can coexist with positive spin floors. Its absent local
+      ! owner keeps the complete KS fallback without discarding the other primitive jumps.
       IF (capture_jumps) CALL skala_density_jumps_begin(state%constraints)
       CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)
       IF (capture_jumps) THEN
