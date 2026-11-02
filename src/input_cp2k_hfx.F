@@ -855,13 +855,12 @@ CONTAINS
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, &
                           name="ACE", &
-                          description="Parameters for the Adaptively Compressed Exchange (ACE) "// &
-                          "operator. ACE replaces the full exchange matrix with a "// &
-                          "low-rank projector K_ACE = -W*W^T after an initial "// &
-                          "full HFX build, reducing cost of subsequent SCF steps. "// &
-                          "NOTE: ACE requires diagonalization-based SCF. "// &
-                          "It is incompatible with orbital transformation (OT) methods "// &
-                          "because OT does not construct MO coefficients.", &
+                          description="Parameters for adaptively compressed exchange (ACE). "// &
+                          "The exchange matrix is approximated using occupied-orbital projectors. "// &
+                          "Conventional HFX requires diagonalization-based SCF. "// &
+                          "Original-UPF ADMM with RI also supports native orbital minimization "// &
+                          "using one fixed affine exchange functional for each inner search. "// &
+                          "Final convergence and geometry derivatives use full original exchange.", &
                           n_keywords=2, &
                           n_subsections=0, &
                           repeats=.FALSE., &
@@ -884,10 +883,11 @@ CONTAINS
       ! --- REBUILD_FREQUENCY ---
       CALL keyword_create(keyword, __LOCATION__, &
                           name="REBUILD_FREQUENCY", &
-                          description="Rebuild the ACE projectors W every N SCF steps. "// &
-                          "N=1 rebuilds at every step. Final SCF convergence uses "// &
-                          "projectors rebuilt at every step. "// &
-                          "Projectors are always rebuilt when the structure changes.", &
+                          description="Rebuild ACE projectors every N diagonalization-based SCF steps. "// &
+                          "N=1 rebuilds at every step. Structure changes invalidate the reference. "// &
+                          "For original-UPF ADMM orbital minimization, a new reference is built "// &
+                          "for each complete inner search and remains fixed throughout it. "// &
+                          "Final convergence and geometry derivatives use full exchange.", &
                           usage="REBUILD_FREQUENCY 20", &
                           default_i_val=20)
       CALL section_add_keyword(section, keyword)

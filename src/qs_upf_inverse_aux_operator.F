@@ -795,6 +795,10 @@ CONTAINS
             CPASSERT(valid)
             DO spin = 1, ns
                DO ik = 1, SIZE(operators, 3)
+                  ! Screened native contractions can retain a small anti-Hermitian numerical residue.
+                  ! Hermitian occupations couple only to the Hermitian energy covector.
+                  state%exchange_k(:, :, ik, spin) = 0.5_dp*(state%exchange_k(:, :, ik, spin) + &
+                                                           CONJG(TRANSPOSE(state%exchange_k(:, :, ik, spin))))
                   term_spin_energy(spin) = term_spin_energy(spin) + 0.5_dp*admm%upf_aux_metric%weights(ik)* &
                                     REAL(SUM(CONJG(state%exchange_k(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
                END DO
@@ -824,6 +828,7 @@ CONTAINS
             IF (rescale) term_energy = 0.0_dp
             DO spin = 1, ns
                CALL qs_upf_inverse_matrix_gather(state%frame%ao, term_ks(spin, 1)%matrix, gamma)
+               gamma(:, :) = 0.5_dp*(gamma + CONJG(TRANSPOSE(gamma)))
                part = 0.5_dp*REAL(SUM(CONJG(gamma)*admm%upf_density%matrices(:, :, 1, spin)), dp)
                term_spin_energy(spin) = part
                IF (rescale) THEN
@@ -1489,6 +1494,9 @@ CONTAINS
                   primary_covector(:, :, ik, spin) = CMPLX(0.0_dp, 0.0_dp, dp)
                END IF
             END IF
+            ! Publish the Hermitian covector after the congruence and charge correction.
+            operators(:, :, ik, spin) = 0.5_dp*(operators(:, :, ik, spin) + &
+                                                CONJG(TRANSPOSE(operators(:, :, ik, spin))))
             IF (geometry) THEN
                corrected_k(:, :, ik) = corrected
                auxiliary_covector(:, :, ik, spin) = auxiliary_covector(:, :, ik, spin) - eta*lambda*unscaled
