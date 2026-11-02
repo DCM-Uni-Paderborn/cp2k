@@ -1701,6 +1701,12 @@ CONTAINS
                   start = MAX(first, start_i(block_i))
                   finish = MIN(last, start_i(block_i + 1) - 1)
                   IF (start <= finish) THEN
+                     ! An absent RI covector slice contributes no value or geometry derivative.
+                     IF (ALL(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :) == &
+                             CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+                        first = last + 1
+                        CYCLE
+                     END IF
                      CALL prepare_auxiliary_fields(auxiliary_bases(site)%gto_basis_set, iset, fields, metric)
                      ALLOCATE (local(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
                      local(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors(site))* &
