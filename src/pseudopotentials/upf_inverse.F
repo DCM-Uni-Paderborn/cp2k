@@ -574,12 +574,12 @@ CONTAINS
       END IF
       IF (pot%is_paw .OR. TRIM(pot%pseudo_type) == "PAW") THEN
          IF (.NOT. ALLOCATED(pot%paw)) THEN
-            CPABORT("Inverse PAW requires original AE/PS full waves for every projector")
+            CPABORT("PAW requires AE/PS reference-wave pairs for every projector")
          END IF
          waves => pot%paw
       ELSE
          IF (.NOT. ALLOCATED(pot%partial_waves)) THEN
-            CPABORT("Inverse UPF requires original AE/PS full waves for every projector")
+            CPABORT("Reconstruction or kinetic density needs AE/PS pairs per projector")
          END IF
          waves => pot%partial_waves
       END IF
