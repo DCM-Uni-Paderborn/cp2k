@@ -67,7 +67,9 @@ MODULE qs_upf_inverse_coulomb
                                               qs_upf_inverse_density_gapw_integrate
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_has_derivatives,&
                                               qs_upf_inverse_gaussian_pairs_prepare
-   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_integrate_dense,&
+                                              qs_upf_inverse_grid_response,&
+                                              qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_density_adjoint,&
                                               qs_upf_inverse_paw_density_fourier
@@ -103,7 +105,7 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_density
    PUBLIC :: qs_upf_inverse_coulomb_charges
    PUBLIC :: qs_upf_inverse_paw_density
-   PUBLIC :: qs_upf_inverse_local_potential
+   PUBLIC :: qs_upf_inverse_local_potential, qs_upf_inverse_local_field
 
 CONTAINS
 
@@ -335,6 +337,160 @@ CONTAINS
       END IF
       CALL field%release()
    END SUBROUTINE qs_upf_inverse_local_potential
+
+! **************************************************************************************************
+!> \brief Couple a scalar field to the complete original-UPF electronic density.
+!>        Add the native global source and its transpose to the signed-center and PAW correction.
+!>        The frozen AE core is included once. Ionic counterterms remain with the caller.
+!>        Geometry is differentiated at fixed AO occupations and fixed reduced Bloch vectors.
+!> \param qs_env Current density, defining inverse coefficients and native Gaussian task lists.
+!> \param potential Scalar field on the native auxiliary grid, without volume weights.
+!> \param energy Complete electronic field energy, including the frozen PAW core.
+!> \param operators Optional unweighted spin-independent AO operators in global k order.
+!> \param response Optional joint atomic and cell derivative at fixed AO occupations.
+!> \param atom_response Physical atomic motion, required with response.
+!> \param cell_response Physical cell motion, required with response.
+!> \param coefficients_response Defining inverse coefficient motion, required with response.
+!> \param potential_response Optional derivative of the field sampled on the moving grid.
+!> \param core_energy Optional frozen-core field energy, supplied with operators.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_local_field(qs_env, potential, energy, operators, response, atom_response, &
+                                         cell_response, coefficients_response, potential_response, core_energy)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: operators(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response, core_energy
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: potential_response
+
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :), global_operator(:, :, :), &
+                                                            matrix(:, :), metric_response(:, :), part(:, :, :)
+      INTEGER                                            :: axis, info, k, nao, nk, spin
+      REAL(dp)                                           :: background_energy, inverse_cell(3, 3), &
+                                                            strain(3, 3), trace_strain, virial(3, 3)
+      REAL(dp), ALLOCATABLE                              :: forces(:, :), relative_motion(:, :), weights(:)
+      TYPE(dbcsr_p_type), POINTER                        :: ao_density(:, :)
+      TYPE(pw_r3d_rs_type)                               :: field_response, zero, zeros(3)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_background_type), POINTER     :: background
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+
+      CALL qs_upf_inverse_local_potential(qs_env, potential, energy, operators, response, atom_response, &
+                                           cell_response, coefficients_response, potential_response, core_energy)
+      CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho)
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      IF (.NOT. ASSOCIATED(state)) RETURN
+      IF (.NOT. state%enabled) RETURN
+      CALL select_frame(state, 1, frame, augmentation)
+      nao = SIZE(frame%coefficients, 2)
+      nk = 1
+      IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
+      ALLOCATE (density(nao, nao, nk), global_operator(nao, nao, nk), weights(nk))
+      density = CMPLX(0.0_dp, 0.0_dp, dp)
+      global_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      weights = 1.0_dp
+      IF (ASSOCIATED(state%bloch%kpoints)) weights(:) = state%bloch%weights
+      CALL qs_rho_get(rho, rho_ao_kp=ao_density)
+      DO spin = 1, SIZE(ao_density, 1)
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            CALL qs_upf_inverse_kpoints_density(state%bloch, spin, part)
+            density(:, :, :) = density + part
+         ELSE
+            CALL qs_upf_inverse_matrix_gather(frame, ao_density(spin, 1)%matrix, matrix)
+            density(:, :, 1) = density(:, :, 1) + matrix
+         END IF
+      END DO
+      NULLIFY (background)
+      IF (state%gaussian_background) THEN
+         background => state%coulomb%background
+      ELSE IF (state%native_gaussian) THEN
+         background => state%gaussian
+      END IF
+      background_energy = 0.0_dp
+      IF (ASSOCIATED(background)) THEN
+         CALL qs_upf_inverse_background_integrate(background, potential=potential, &
+                                                  ao_operators=global_operator, ks_env=ks_env)
+         DO k = 1, nk
+            background_energy = background_energy + weights(k)* &
+                                REAL(SUM(CONJG(global_operator(:, :, k))*density(:, :, k)), dp)
+         END DO
+      END IF
+      CALL zero%create(potential%pw_grid)
+      zero%array = 0.0_dp
+      DO axis = 1, 3
+         CALL zeros(axis)%create(potential%pw_grid)
+         zeros(axis)%array = 0.0_dp
+      END DO
+      IF (.NOT. state%gaussian_background) THEN
+         DO k = 1, nk
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(k), potential, zeros, zero, matrix, &
+                                                        augmentation=state%bloch%augmentation, fourier_charge=.TRUE., &
+                                                        orbital_fields=.NOT. state%native_gaussian)
+            ELSE
+               CALL qs_upf_inverse_grid_integrate_dense(state%frame, potential, zeros, zero, matrix, &
+                                                        augmentation=state%augmentation, fourier_charge=.TRUE., &
+                                                        orbital_fields=.NOT. state%native_gaussian)
+            END IF
+            global_operator(:, :, k) = global_operator(:, :, k) + matrix
+         END DO
+      END IF
+      DO k = 1, nk
+         energy = energy + weights(k)*REAL(SUM(CONJG(global_operator(:, :, k))*density(:, :, k)), dp)
+      END DO
+      IF (PRESENT(operators)) operators(:, :, :) = operators + global_operator
+      IF (PRESENT(response)) THEN
+         CALL field_response%create(potential%pw_grid)
+         field_response%array = 0.0_dp
+         IF (PRESENT(potential_response)) field_response%array = potential_response%array
+         inverse_cell = frame%cell
+         CALL invmat(inverse_cell, info)
+         CPASSERT(info == 0)
+         strain = MATMUL(cell_response, inverse_cell)
+         trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
+         IF (ASSOCIATED(background)) THEN
+            ALLOCATE (forces(3, SIZE(atom_response, 2)), relative_motion(3, SIZE(atom_response, 2)))
+            relative_motion(:, :) = atom_response - MATMUL(strain, frame%positions)
+            CALL qs_upf_inverse_background_geometry(background, matrix=density, potential=potential, &
+                                                     forces=forces, virial=virial, ks_env=ks_env)
+            response = response - SUM(forces*relative_motion) - SUM(virial*strain) + trace_strain*background_energy
+            CALL qs_upf_inverse_background_integrate(background, potential=field_response, &
+                                                     ao_operators=global_operator, ks_env=ks_env)
+            DO k = 1, nk
+               response = response + weights(k)*REAL(SUM(CONJG(global_operator(:, :, k))*density(:, :, k)), dp)
+            END DO
+         END IF
+         IF (.NOT. state%gaussian_background) THEN
+            DO k = 1, nk
+               IF (ASSOCIATED(state%bloch%kpoints)) THEN
+                  CALL qs_upf_inverse_grid_response(state%bloch%frames(k), state%bloch%augmentation, &
+                                                     state%bloch%frames(k)%ao%radial_q, potential, zeros, zero, &
+                                                     atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
+                                                     field_response, zeros, zero, matrix, metric_response, &
+                                                     orbital_fields=.NOT. state%native_gaussian, &
+                                                     known_coefficients_response=coefficients_response(:, :, k))
+               ELSE
+                  CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, frame%radial_q, potential, zeros, zero, &
+                                                     atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
+                                                     field_response, zeros, zero, matrix, metric_response, &
+                                                     orbital_fields=.NOT. state%native_gaussian, &
+                                                     known_coefficients_response=coefficients_response(:, :, k))
+               END IF
+               response = response + weights(k)*REAL(SUM(CONJG(matrix)*density(:, :, k)), dp)
+            END DO
+         END IF
+         CALL field_response%release()
+      END IF
+      CALL zero%release()
+      DO axis = 1, 3
+         CALL zeros(axis)%release()
+      END DO
+   END SUBROUTINE qs_upf_inverse_local_field
 
 ! **************************************************************************************************
 !> \brief Complete spin valence densities projected onto the existing auxiliary grid.
