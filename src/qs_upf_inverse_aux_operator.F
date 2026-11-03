@@ -744,6 +744,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
+      NULLIFY (term_ks)
       CALL get_qs_env(qs_env, admm_env=admm, natom=natom)
       CPASSERT(ASSOCIATED(admm))
       CPASSERT(admm%upf_density%valid)
