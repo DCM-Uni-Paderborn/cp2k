@@ -65,6 +65,10 @@ PROGRAM upf_inverse_unittest
                                               qs_upf_inverse_prepare,&
                                               qs_upf_inverse_response,&
                                               qs_upf_inverse_soft_projectors
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_prepare,&
+                                              qs_upf_inverse_atom_grid_ref_type,&
+                                              qs_upf_inverse_atom_grid_response,&
+                                              qs_upf_inverse_atom_grid_type
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_radial,&
                                               qs_upf_inverse_density_radial_adjoint,&
                                               qs_upf_inverse_kinetic_center,&
@@ -159,6 +163,7 @@ PROGRAM upf_inverse_unittest
    CALL check_radial_coulomb()
    CALL check_pair_coulomb()
    CALL check_periodic_coulomb()
+   CALL check_atomic_background_measure()
    CALL check_center_angular()
    CALL check_fourier_coulomb()
    CALL check_core_fourier()
@@ -170,6 +175,87 @@ PROGRAM upf_inverse_unittest
    CALL mp_world_finalize()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
+! **************************************************************************************************
+!> \brief Count a periodic FFT background once in each physical boundary geometry.
+! **************************************************************************************************
+   SUBROUTINE check_atomic_background_measure()
+      INTEGER                                            :: boundary, i, info, j, k, sample, side
+      REAL(dp)                                           :: analytic, coordinates(3, 1), dh(3, 3), &
+                                                            fractional(3), h(3, 3), motion(3, 1), &
+                                                            total, value, values(-1:1)
+      REAL(dp), ALLOCATABLE                              :: background_response(:), &
+                                                            points_response(:, :), &
+                                                            weights_response(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(grid_atom_type), POINTER                      :: grid
+      TYPE(qs_upf_inverse_atom_grid_ref_type)            :: refs(1)
+      TYPE(qs_upf_inverse_atom_grid_type)                :: state
+
+      ALLOCATE (cell, grid)
+      grid%nr = 1
+      grid%ng_sphere = 1
+      ALLOCATE (grid%rad(1), grid%weight(1, 1), grid%sin_pol(1), grid%cos_pol(1), grid%sin_azi(1), grid%cos_azi(1))
+      grid%rad = 0.0_dp
+      grid%weight = 1.0_dp
+      grid%sin_pol = 0.0_dp
+      grid%cos_pol = 1.0_dp
+      grid%sin_azi = 0.0_dp
+      grid%cos_azi = 1.0_dp
+      refs(1)%grid => grid
+      h = RESHAPE([7.0_dp, 0.0_dp, 0.3_dp, 0.5_dp, 8.1_dp, 0.0_dp, 0.0_dp, 0.4_dp, 9.2_dp], [3, 3])
+      dh = RESHAPE([0.11_dp, 0.03_dp, 0.02_dp, 0.03_dp, -0.08_dp, 0.01_dp, 0.02_dp, 0.01_dp, 0.04_dp], [3, 3])
+      dh = MATMUL(dh, h)
+      motion(:, 1) = [0.13_dp, -0.07_dp, 0.05_dp]
+      DO boundary = 0, 3
+         cell%perd = 0
+         IF (boundary > 0) cell%perd(1:boundary) = 1
+         DO sample = 1, 2
+            fractional = [0.1_dp, 0.9_dp, 1.1_dp]
+            IF (sample == 2) fractional = [-0.5_dp, 1.5_dp, 2.0_dp]
+            cell%hmat = h
+            cell%h_inv = h
+            CALL invmat(cell%h_inv, info)
+            CPASSERT(info == 0)
+            total = 0.0_dp
+            DO i = -2*(1 - cell%perd(1)), 2*(1 - cell%perd(1))
+               DO j = -2*(1 - cell%perd(2)), 2*(1 - cell%perd(2))
+                  DO k = -2*(1 - cell%perd(3)), 2*(1 - cell%perd(3))
+                     coordinates(:, 1) = MATMUL(h, fractional + REAL([i, j, k], dp))
+                     CALL qs_upf_inverse_atom_grid_prepare(coordinates, cell, [1], refs, [0.1_dp], comm, state)
+                     value = SUM(state%weights)
+                     IF (ALLOCATED(state%background_weights)) value = SUM(state%background_weights)
+                     total = total + value
+                  END DO
+               END DO
+            END DO
+            CALL comm%sum(total)
+            CALL check(ABS(total - 1.0_dp), 'Auxiliary-cell partition', 5.e-14_dp)
+            DO side = -1, 1
+               cell%hmat = h + side*step*dh
+               cell%h_inv = cell%hmat
+               CALL invmat(cell%h_inv, info)
+               CPASSERT(info == 0)
+               coordinates(:, 1) = MATMUL(h, fractional) + side*step*motion(:, 1)
+               CALL qs_upf_inverse_atom_grid_prepare(coordinates, cell, [1], refs, [0.1_dp], comm, state)
+               IF (boundary < 3 .AND. .NOT. ALLOCATED(state%background_weights)) ERROR STOP 'Missing auxiliary cell measure'
+               values(side) = SUM(state%weights)
+               IF (ALLOCATED(state%background_weights)) values(side) = SUM(state%background_weights)
+               IF (side /= 0) CYCLE
+               ALLOCATE (points_response(3, SIZE(state%weights)), weights_response(SIZE(state%weights)), &
+                         background_response(SIZE(state%weights)))
+               CALL qs_upf_inverse_atom_grid_response(state, motion, dh, points_response, weights_response, background_response)
+               analytic = SUM(background_response)
+               DEALLOCATE (points_response, weights_response, background_response)
+            END DO
+            CALL comm%sum(values)
+            CALL comm%sum(analytic)
+            CALL check(ABS((values(1) - values(-1))/(2*step) - analytic), 'Atomic auxiliary-cell response', 2.e-8_dp)
+         END DO
+      END DO
+      DEALLOCATE (grid%rad, grid%weight, grid%sin_pol, grid%cos_pol, grid%sin_azi, grid%cos_azi)
+      DEALLOCATE (grid, cell)
+   END SUBROUTINE check_atomic_background_measure
+
 ! **************************************************************************************************
 !> \brief Preserve symmetry and occupations while retaining the orbital differential and curvature.
 ! **************************************************************************************************

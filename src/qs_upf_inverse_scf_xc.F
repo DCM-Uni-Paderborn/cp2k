@@ -936,8 +936,9 @@ CONTAINS
       INTEGER                                            :: axis, ik, nao, nk, np, nproj, ns, other, &
                                                             stride, timing_handle
       REAL(dp)                                           :: strain(3, 3)
-      REAL(dp), ALLOCATABLE :: core(:, :), core_gradient(:, :, :), core_tau(:, :), &
-         defining_points(:, :), defining_weights(:), fields(:, :, :, :), points(:, :), weights(:)
+      REAL(dp), ALLOCATABLE :: background_weights(:), core(:, :), core_gradient(:, :, :), &
+         core_tau(:, :), defining_points(:, :), defining_weights(:), fields(:, :, :, :), &
+         points(:, :), weights(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(mp_comm_type)                                 :: comm
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -962,9 +963,10 @@ CONTAINS
       ns = SIZE(state%xc_matrices, 4)
       stride = 4
       IF (state%xc%kinetic) stride = 5
-      ALLOCATE (points(3, np), weights(np), core(np, ns), core_gradient(np, 3, ns))
+      ALLOCATE (points(3, np), weights(np), background_weights(np), core(np, ns), core_gradient(np, 3, ns))
       IF (state%xc%kinetic) ALLOCATE (core_tau(np, ns))
-      CALL qs_upf_inverse_atom_grid_response(state%atom_grid, atom_response, cell_response, points, weights)
+      CALL qs_upf_inverse_atom_grid_response(state%atom_grid, atom_response, cell_response, points, weights, &
+                                             background_weights)
       strain = MATMUL(cell_response, cell%h_inv)
       IF (PRESENT(coefficients_response)) THEN
          CPASSERT(ALL(SHAPE(coefficients_response) == [nproj, nao, nk]))
@@ -997,7 +999,7 @@ CONTAINS
                                            state%atom_grid%points, state%atom_grid%weights, state%xc, state%xc_fields, &
                                            fields, state%xc_grid, cell, points, weights, atom_response, cell_response, &
                                            reduced_k_response, coefficients, core, core_gradient, comm, response, &
-                                           state%kinetic_cache, core_tau, state%paw_reconstruction)
+                                           state%kinetic_cache, core_tau, state%paw_reconstruction, background_weights)
       CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_scf_xc_response
 

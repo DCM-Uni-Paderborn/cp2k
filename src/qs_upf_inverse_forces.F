@@ -27,6 +27,7 @@ MODULE qs_upf_inverse_forces
                                               ANALYTIC2D,&
                                               pw_poisson_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
+   USE qs_efield_local,                 ONLY: qs_efield_upf_evaluate
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_external_potential,           ONLY: external_upf_potential
@@ -171,6 +172,9 @@ CONTAINS
             CALL external_upf_potential(qs_env, external_energy, response=external_response, &
                            atom_response=atom_response, cell_response=0.0_dp*cell%hmat, coefficients_response=coefficients_response)
             response = response + external_response
+            CALL qs_efield_upf_evaluate(qs_env, external_energy, response=external_response, &
+                           atom_response=atom_response, cell_response=0.0_dp*cell%hmat, coefficients_response=coefficients_response)
+            response = response + external_response
             IF (para_env%is_source()) THEN
                force(kind)%all_potential(axis, index) = force(kind)%all_potential(axis, index) + response - metric_response
                force(kind)%overlap(axis, index) = force(kind)%overlap(axis, index) + metric_response
@@ -223,6 +227,10 @@ CONTAINS
                response = response + xc_response
                IF (axis == other .AND. .NOT. complete_coulomb) response = response - field_measure
                CALL external_upf_potential(qs_env, external_energy, response=external_response, &
+                                           atom_response=atom_response, cell_response=MATMUL(strain, cell%hmat), &
+                                           coefficients_response=coefficients_response)
+               response = response + external_response
+               CALL qs_efield_upf_evaluate(qs_env, external_energy, response=external_response, &
                                            atom_response=atom_response, cell_response=MATMUL(strain, cell%hmat), &
                                            coefficients_response=coefficients_response)
                response = response + external_response

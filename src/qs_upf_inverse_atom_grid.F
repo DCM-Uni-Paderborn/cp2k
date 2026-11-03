@@ -32,6 +32,10 @@ MODULE qs_upf_inverse_atom_grid
       ! Row within the complete atom quadrature, independent of MPI distribution.
       INTEGER, ALLOCATABLE :: atom_rows(:)
       REAL(dp), ALLOCATABLE :: points(:, :), weights(:), base_weights(:)
+      ! The FFT background is integrated once per auxiliary cell also for isolated electrostatics.
+      REAL(dp), ALLOCATABLE :: background_weights(:)
+      REAL(dp) :: inverse_cell(3, 3) = 0.0_dp
+      INTEGER :: background_axes(3) = 0
       ! Native inverse frames and this quadrature share one geometry lifetime.
       COMPLEX(dp), ALLOCATABLE :: inverse_values(:, :, :), inverse_gradients(:, :, :, :)
       TYPE(atom_image_layout_type), ALLOCATABLE :: layouts(:)
@@ -73,7 +77,8 @@ CONTAINS
       INTEGER                                            :: atom, atom_row, ia, idir, ir, kind, &
                                                             nlocal, row, shell(3)
       LOGICAL                                            :: complete_atoms, owned
-      REAL(dp)                                           :: radius, taper, u, weight
+      REAL(dp)                                           :: radius, taper, u, weight, window, &
+                                                            window_gradient(3)
       TYPE(grid_atom_type), POINTER                      :: grid
 
       CPASSERT(ASSOCIATED(cell))
@@ -142,6 +147,16 @@ CONTAINS
             END DO
          END DO
       END DO
+      IF (ANY(cell%perd == 0)) THEN
+         state%inverse_cell = cell%h_inv
+         state%background_axes = 1 - cell%perd
+         ALLOCATE (state%background_weights(nlocal))
+         DO row = 1, nlocal
+            CALL auxiliary_cell_window(MATMUL(state%inverse_cell, state%points(:, row)), &
+                                       state%background_axes, window, window_gradient)
+            state%background_weights(row) = state%weights(row)*window
+         END DO
+      END IF
    END SUBROUTINE qs_upf_inverse_atom_grid_prepare
 
 ! **************************************************************************************************
@@ -153,16 +168,21 @@ CONTAINS
 !> \param cell_response Response of the cell's lattice columns.
 !> \param points_response Local point response, indexed (axis,row).
 !> \param weights_response Local response of the complete quadrature measure.
+!> \param background_weights_response Optional response of the once-per-cell FFT background measure.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_atom_grid_response(state, atom_response, cell_response, points_response, weights_response)
+   SUBROUTINE qs_upf_inverse_atom_grid_response(state, atom_response, cell_response, points_response, weights_response, &
+                                                background_weights_response)
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: state
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: points_response(:, :), &
                                                             weights_response(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: background_weights_response(:)
 
       INTEGER                                            :: atom, image, row
-      REAL(dp)                                           :: dpoint(3), image_response(3), value, &
-                                                            weight
+      REAL(dp)                                           :: dpoint(3), fractional(3), &
+                                                            fractional_response(3), &
+                                                            image_response(3), value, weight, &
+                                                            window, window_gradient(3)
       REAL(dp), ALLOCATABLE                              :: dimage(:, :)
 
       CPASSERT(ALL(SHAPE(atom_response) == [3, SIZE(state%layouts)]))
@@ -185,6 +205,67 @@ CONTAINS
          END DO
          DEALLOCATE (dimage)
       END DO
+      IF (PRESENT(background_weights_response)) THEN
+         CPASSERT(SIZE(background_weights_response) == SIZE(state%weights))
+         background_weights_response(:) = weights_response
+         IF (ALLOCATED(state%background_weights)) THEN
+            DO row = 1, SIZE(state%weights)
+               fractional = MATMUL(state%inverse_cell, state%points(:, row))
+               fractional_response = MATMUL(state%inverse_cell, points_response(:, row) - &
+                                            MATMUL(cell_response, fractional))
+               CALL auxiliary_cell_window(fractional, state%background_axes, window, window_gradient)
+               background_weights_response(row) = weights_response(row)*window + &
+                                                  state%weights(row)*DOT_PRODUCT(window_gradient, fractional_response)
+            END DO
+         END IF
+      END IF
    END SUBROUTINE qs_upf_inverse_atom_grid_response
+
+! **************************************************************************************************
+!> \brief C2 partition of one FFT cell along the physically nonperiodic directions.
+!>        Each one-dimensional factor is one on [1/4,3/4], vanishes outside [-1/4,5/4],
+!>        and sums to one over integer translates. The product therefore counts a periodic
+!>        auxiliary field once without imposing a discontinuous physical-cell boundary.
+!> \param fractional Point in the defining cell's fractional coordinates, without wrapping.
+!> \param axes Directions needing an auxiliary-cell partition.
+!> \param window Product of the selected one-dimensional factors.
+!> \param gradient Derivative with respect to the fractional point.
+! **************************************************************************************************
+   PURE SUBROUTINE auxiliary_cell_window(fractional, axes, window, gradient)
+      REAL(dp), INTENT(IN)                               :: fractional(3)
+      INTEGER, INTENT(IN)                                :: axes(3)
+      REAL(dp), INTENT(OUT)                              :: window, gradient(3)
+
+      INTEGER                                            :: axis, other
+      REAL(dp)                                           :: derivatives(3), factors(3), sign, u
+
+      factors = 1.0_dp
+      derivatives = 0.0_dp
+      DO axis = 1, 3
+         IF (axes(axis) == 0) CYCLE
+         IF (fractional(axis) < 0.25_dp) THEN
+            u = 2.0_dp*(fractional(axis) + 0.25_dp)
+            sign = 2.0_dp
+         ELSE IF (fractional(axis) > 0.75_dp) THEN
+            u = 2.0_dp*(1.25_dp - fractional(axis))
+            sign = -2.0_dp
+         ELSE
+            CYCLE
+         END IF
+         IF (u <= 0.0_dp) THEN
+            factors(axis) = 0.0_dp
+         ELSE
+            factors(axis) = u**3*(10.0_dp - 15.0_dp*u + 6.0_dp*u*u)
+            derivatives(axis) = sign*30.0_dp*u*u*(1.0_dp - u)**2
+         END IF
+      END DO
+      window = PRODUCT(factors)
+      gradient = derivatives
+      DO axis = 1, 3
+         DO other = 1, 3
+            IF (axis /= other) gradient(axis) = gradient(axis)*factors(other)
+         END DO
+      END DO
+   END SUBROUTINE auxiliary_cell_window
 
 END MODULE qs_upf_inverse_atom_grid

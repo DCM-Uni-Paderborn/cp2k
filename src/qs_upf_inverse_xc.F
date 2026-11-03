@@ -204,6 +204,11 @@ CONTAINS
             IF (skala_density_samples_only(density_constraints)) store_fields = .FALSE.
          END IF
       END IF
+      IF (PRESENT(atom_grid)) THEN
+         IF (ALLOCATED(atom_grid%background_weights)) THEN
+            ALLOCATE (state%background_weights, SOURCE=atom_grid%background_weights)
+         END IF
+      END IF
       IF (store_fields) ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
       ALLOCATE (state%operators(nao, nao, nk, nspin), state%density(np, nspin), &
                 state%density_gradient(np, 3, nspin), state%energy_density(np), &
@@ -265,11 +270,18 @@ CONTAINS
                                  ebackground, state%background_vdensity, state%background_vgradient, &
                                  kinetic_density=background_tau, vkinetic=state%background_vtau, &
                                  density_constraints=density_constraints, atom_grid=atom_grid)
-         state%energy_density(:) = state%energy_density - ebackground
+         IF (ALLOCATED(state%background_weights)) THEN
+            ALLOCATE (state%background_energy_density, SOURCE=ebackground)
+         ELSE
+            state%energy_density(:) = state%energy_density - ebackground
+         END IF
          state%background_vdensity = -state%background_vdensity
          state%background_vgradient = -state%background_vgradient
          state%background_vtau = -state%background_vtau
          energy = SUM(weights*state%energy_density)
+         IF (ALLOCATED(state%background_weights)) THEN
+            energy = energy - SUM(state%background_weights*state%background_energy_density)
+         END IF
          CALL comm%sum(energy)
       END IF
       IF (energy_only) THEN
@@ -394,6 +406,9 @@ CONTAINS
       response%kinetic = state%kinetic
       response%paw_reconstruction = PRESENT(paw_reconstruction)
       response%weighted_adjoint = model
+      IF (ALLOCATED(state%background_weights)) THEN
+         ALLOCATE (response%background_weights, SOURCE=state%background_weights)
+      END IF
       ALLOCATE (response%density(np, ns), response%density_gradient(np, 3, ns), response%tau(np, ns), &
                 response%vdensity(np, ns), response%vgradient(np, 3, ns), response%vtau(np, ns), &
                 response%background_vdensity(np, ns), response%background_vgradient(np, 3, ns), &
@@ -407,6 +422,9 @@ CONTAINS
                                response%density_gradient, response%tau, kinetic, paw_reconstruction, atom_grid, &
                                cached_soft, cached_gradient, orbital_factors=orbital_factors, &
                                orbital_direction=orbital_direction)
+      IF (ALLOCATED(state%background_weights)) THEN
+         ALLOCATE (fields%background_weights, SOURCE=state%background_weights)
+      END IF
       ALLOCATE (fields%density, SOURCE=state%density)
       ALLOCATE (fields%density_gradient, SOURCE=state%density_gradient)
       ALLOCATE (fields%tau(np, ns), SOURCE=0.0_dp)
@@ -903,6 +921,7 @@ CONTAINS
          gradient(:, :, spin) = scale*background_gradient(:, :, MIN(spin, ns))
          tau(:, spin) = scale*background_tau(:, MIN(spin, ns))
       END DO
+      IF (ALLOCATED(state%background_weights)) grid_weights(:) = state%background_weights
       IF (just_energy) THEN
          CALL skala_gapw_atom_composite_energy(xc_section, comm, density, gradient, tau, coords, grid_weights, &
                                                base_weights, sizes, atom_coords, background_energy)
@@ -964,7 +983,12 @@ CONTAINS
          RETURN
       END IF
       state%point_derivative(:, :) = point_derivative - background_point_derivative
-      state%weight_derivative(:) = weight_derivative - background_weight_derivative
+      IF (ALLOCATED(state%background_weights)) THEN
+         state%weight_derivative(:) = weight_derivative
+         ALLOCATE (state%background_weight_derivative, SOURCE=-background_weight_derivative)
+      ELSE
+         state%weight_derivative(:) = weight_derivative - background_weight_derivative
+      END IF
       state%atom_derivative = 0.0_dp
       DO atom = 1, SIZE(local_atoms)
          state%atom_derivative(:, local_atoms(atom)) = atom_derivative(:, atom) - background_atom_derivative(:, atom)
@@ -973,8 +997,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Joint geometry response of the same XC residual at fixed occupation density matrices.
-!>        Use e_exact-e_background for the quadrature response, rather than the potential-density
-!>        contraction. The defining PW quadrature supplies dW, including its own measure response.
+!>        Pair the physical and background measure responses with their respective energy densities.
+!>        The defining PW quadrature supplies dW, including its own measure response.
 !> \param frames ...
 !> \param augmentation ...
 !> \param matrices ...
@@ -998,12 +1022,14 @@ CONTAINS
 !> \param background_tau_response Complete background kinetic-density response.
 !> \param core_tau_response Prescribed frozen-core kinetic-density response.
 !> \param paw_reconstruction Same optional PAW-only reconstruction caches as in the evaluation.
+!> \param background_weights_response Response of the independently weighted FFT background.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_response(frames, augmentation, matrices, kweights, points, weights, state, &
                                          point_response, weights_response, atom_response, cell_response, &
                                          reduced_k_response, coefficients_response, background_response, &
                                          background_gradient_response, core_response, core_gradient_response, comm, response, &
-                                         kinetic, background_tau_response, core_tau_response, paw_reconstruction)
+                                         kinetic, background_tau_response, core_tau_response, paw_reconstruction, &
+                                         background_weights_response)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -1022,15 +1048,17 @@ CONTAINS
                                                             core_tau_response(:, :)
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: background_weights_response(:)
 
       COMPLEX(dp), ALLOCATABLE :: dgradient(:, :, :), dqoperator(:, :), dsoft(:, :), &
          gradient(:, :, :), matrix(:, :), qoperator(:, :), soft(:, :)
       INTEGER                                            :: block, hi, ik, lo, m, nao, np, nproj, &
                                                             spin
       REAL(dp)                                           :: kinetic_response, local_response
-      REAL(dp), ALLOCATABLE :: dtau(:), integration_weights(:), reconstruction_density(:), &
-         reconstruction_gradient(:, :), reconstruction_gradient_response(:, :), &
-         reconstruction_response(:), tau(:), zero(:), zeros(:, :)
+      REAL(dp), ALLOCATABLE :: background_integration_weights(:), dtau(:), integration_weights(:), &
+         reconstruction_density(:), reconstruction_gradient(:, :), &
+         reconstruction_gradient_response(:, :), reconstruction_response(:), tau(:), zero(:), &
+         zeros(:, :)
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
       np = SIZE(points, 2)
@@ -1057,22 +1085,39 @@ CONTAINS
                                               reconstruction_response(np), reconstruction_gradient_response(np, 3))
       zero = 0.0_dp
       zeros = 0.0_dp
-      ALLOCATE (integration_weights(np))
+      ALLOCATE (integration_weights(np), background_integration_weights(np))
       integration_weights(:) = weights
+      background_integration_weights(:) = weights
+      IF (ALLOCATED(state%background_weights)) THEN
+         CPASSERT(PRESENT(background_weights_response))
+         CPASSERT(SIZE(background_weights_response) == np)
+         background_integration_weights(:) = state%background_weights
+      END IF
       IF (state%weighted_adjoint) THEN
          integration_weights = 1.0_dp
+         background_integration_weights = 1.0_dp
          response = SUM(state%weight_derivative*weights_response) + SUM(state%point_derivative*point_response) + &
                     SUM(state%atom_derivative*atom_response)
+         IF (ALLOCATED(state%background_weight_derivative)) THEN
+            response = response + SUM(state%background_weight_derivative*background_weights_response)
+         END IF
       ELSE
          response = SUM(weights_response*state%energy_density)
+         IF (ALLOCATED(state%background_energy_density)) THEN
+            response = response - SUM(background_weights_response*state%background_energy_density)
+         END IF
       END IF
       DO spin = 1, SIZE(matrices, 4)
          response = response + SUM(integration_weights*(state%vdensity(:, spin)*core_response(:, spin) + &
-                                                      SUM(state%vgradient(:, :, spin)*core_gradient_response(:, :, spin), DIM=2) + &
-                                                        state%background_vdensity(:, spin)*background_response(:, spin) + &
-                                       SUM(state%background_vgradient(:, :, spin)*background_gradient_response(:, :, spin), DIM=2)))
-         IF (state%kinetic) response = response + SUM(integration_weights*(state%vtau(:, spin)*core_tau_response(:, spin) + &
-                                                                   state%background_vtau(:, spin)*background_tau_response(:, spin)))
+                                                        SUM(state%vgradient(:, :, spin)*core_gradient_response(:, :, spin), DIM=2)))
+         response = response + SUM(background_integration_weights*( &
+                                   state%background_vdensity(:, spin)*background_response(:, spin) + &
+                                   SUM(state%background_vgradient(:, :, spin)*background_gradient_response(:, :, spin), DIM=2)))
+         IF (state%kinetic) THEN
+            response = response + SUM(integration_weights*state%vtau(:, spin)*core_tau_response(:, spin))
+            response = response + SUM(background_integration_weights* &
+                                      state%background_vtau(:, spin)*background_tau_response(:, spin))
+         END IF
       END DO
       CALL comm%sum(response)
       DO ik = 1, SIZE(frames)
@@ -1395,8 +1440,13 @@ CONTAINS
                CPASSERT(PRESENT(atom_grid))
                jump_sign = 1.0_dp
                IF (domain == skala_background_domain) jump_sign = -1.0_dp
-               CALL xc_functionals_collect_floor_jumps(functional, density_constraints, fields, derivatives, &
-                                                       floor_rows, domain, jump_sign, RESHAPE(atom_grid%weights, [np, 1, 1]))
+               IF (domain == skala_background_domain .AND. ALLOCATED(atom_grid%background_weights)) THEN
+                  CALL xc_functionals_collect_floor_jumps(functional, density_constraints, fields, derivatives, &
+                                                   floor_rows, domain, jump_sign, RESHAPE(atom_grid%background_weights, [np, 1, 1]))
+               ELSE
+                  CALL xc_functionals_collect_floor_jumps(functional, density_constraints, fields, derivatives, &
+                                                          floor_rows, domain, jump_sign, RESHAPE(atom_grid%weights, [np, 1, 1]))
+               END IF
             END IF
          END IF
       END IF
@@ -1677,6 +1727,7 @@ CONTAINS
       CPASSERT(SIZE(fields, 4) == stride*ns)
       ALLOCATE (integration_weights(np), covectors(np, stride*ns))
       integration_weights(:) = weights
+      IF (ALLOCATED(state%background_weights)) integration_weights(:) = state%background_weights
       IF (state%weighted_adjoint) integration_weights = 1.0_dp
       DO spin = 1, ns
          covectors(:, stride*(spin - 1) + 1) = integration_weights*state%background_vdensity(:, spin)
@@ -1761,7 +1812,7 @@ CONTAINS
                                               fields, fields_response, grid, cell, point_response, weights_response, &
                                               atom_response, cell_response, reduced_k_response, coefficients_response, &
                                               core_response, core_gradient_response, comm, response, kinetic, core_tau_response, &
-                                              paw_reconstruction)
+                                              paw_reconstruction, background_weights_response)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
@@ -1782,6 +1833,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: core_tau_response(:, :)
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: paw_reconstruction(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: background_weights_response(:)
 
       INTEGER                                            :: axis, np, ns, spin, stride
       REAL(dp)                                           :: lattice_error, lattice_tolerance
@@ -1815,7 +1867,7 @@ CONTAINS
                                       point_response, weights_response, atom_response, cell_response, &
                                       reduced_k_response, coefficients_response, background, gradient, &
                                       core_response, core_gradient_response, comm, response, kinetic, tau, core_tau_response, &
-                                      paw_reconstruction)
+                                      paw_reconstruction, background_weights_response)
    END SUBROUTINE qs_upf_inverse_xc_grid_response
 
 ! **************************************************************************************************

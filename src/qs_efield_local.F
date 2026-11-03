@@ -29,9 +29,13 @@ MODULE qs_efield_local
                                               dbcsr_set
    USE cp_dbcsr_contrib,                ONLY: dbcsr_dot
    USE kinds,                           ONLY: dp
+   USE kpoint_methods,                  ONLY: kpoint_star_operator_defect
+   USE mathconstants,                   ONLY: fourpi
+   USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: ncoset
    USE particle_types,                  ONLY: particle_type
+   USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
@@ -39,6 +43,8 @@ MODULE qs_efield_local
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_moments,                      ONLY: build_local_moment_matrix
    USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
                                               neighbor_list_iterate,&
@@ -51,6 +57,10 @@ MODULE qs_efield_local
                                               set_efield_matrices
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_local_field
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
+                                              qs_upf_inverse_scf_integrate_background
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -61,7 +71,7 @@ MODULE qs_efield_local
 
    ! *** Public subroutines ***
 
-   PUBLIC :: qs_efield_local_operator
+   PUBLIC :: qs_efield_local_operator, qs_efield_upf_evaluate
 
 ! **************************************************************************************************
 
@@ -82,26 +92,142 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_efield_local_operator'
 
-      INTEGER                                            :: handle
+      COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :)
+      INTEGER                                            :: handle, spin
       LOGICAL                                            :: s_mstruct_changed
       REAL(dp), DIMENSION(3)                             :: rpoint
+      TYPE(dbcsr_p_type), POINTER                        :: matrix_ks(:)
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_energy_type), POINTER                      :: energy
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
 
       CALL timeset(routineN, handle)
 
       NULLIFY (dft_control)
       CALL get_qs_env(qs_env, s_mstruct_changed=s_mstruct_changed, &
-                      dft_control=dft_control)
+                      dft_control=dft_control, ks_env=ks_env)
 
       IF (dft_control%apply_efield) THEN
-         rpoint = 0.0_dp
-         IF (s_mstruct_changed) CALL qs_efield_integrals(qs_env, rpoint)
-         CALL qs_efield_mo_derivatives(qs_env, rpoint, just_energy, calculate_forces)
+         IF (qs_upf_inverse_scf_active(ks_env)) THEN
+            CALL get_qs_env(qs_env, energy=energy, matrix_ks=matrix_ks)
+            CALL qs_efield_upf_evaluate(qs_env, energy%efield, operators)
+            IF (.NOT. just_energy) THEN
+               DO spin = 1, SIZE(matrix_ks)
+                  CALL qs_upf_inverse_scf_integrate_background(ks_env, operators, matrix_ks(spin)%matrix, &
+                                                               spin, additive=.TRUE.)
+               END DO
+            END IF
+            ! The common inverse force callback owns the complete electronic and ionic response.
+         ELSE
+            rpoint = 0.0_dp
+            IF (s_mstruct_changed) CALL qs_efield_integrals(qs_env, rpoint)
+            CALL qs_efield_mo_derivatives(qs_env, rpoint, just_energy, calculate_forces)
+         END IF
       END IF
 
       CALL timestop(handle)
 
    END SUBROUTINE qs_efield_local_operator
+
+! **************************************************************************************************
+!> \brief Couple a nonperiodic electric field to the complete UPF charge and its geometry response.
+!>        The electronic map includes reconstruction, augmentation and frozen PAW core contributions.
+!>        The point countercharge uses the same tabulated frozen-core charge exactly once.
+!> \param qs_env Native environment with a prepared physical UPF density.
+!> \param energy Electronic and ionic electric-field energy.
+!> \param operators Optional valence AO operators, one matrix per physical Bloch slice.
+!> \param response Optional total directional derivative at fixed AO density coefficients.
+!> \param atom_response Atomic Cartesian displacements.
+!> \param cell_response Cell-matrix displacement, including the moving sampling grid.
+!> \param coefficients_response Response of the inverse reconstruction coefficients.
+! **************************************************************************************************
+   SUBROUTINE qs_efield_upf_evaluate(qs_env, energy, operators, response, atom_response, &
+                                     cell_response, coefficients_response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: operators(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: field_operator(:, :, :)
+      INTEGER                                            :: atom, i, info, j, k, kind
+      LOGICAL                                            :: check_symmetry, little_group
+      REAL(dp)                                           :: charge, defect, fieldpol(3), &
+                                                            inverse_cell(3, 3), point(3), scale, &
+                                                            strain(3, 3), tolerance
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_r3d_rs_type)                               :: field, field_response
+      TYPE(pw_r3d_rs_type), POINTER                      :: density(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      energy = 0.0_dp
+      IF (PRESENT(response)) response = 0.0_dp
+      CALL get_qs_env(qs_env, dft_control=control, ks_env=ks_env)
+      IF (.NOT. control%apply_efield) RETURN
+      IF (.NOT. qs_upf_inverse_scf_active(ks_env)) RETURN
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      CALL get_qs_env(qs_env, rho=rho, cell=cell, particle_set=atoms, qs_kind_set=kinds)
+      CALL qs_rho_get(rho, rho_r=density)
+      fieldpol = control%efield_fields(1)%efield%polarisation*control%efield_fields(1)%efield%strength
+      CALL field%create(density(1)%pw_grid)
+      CALL field_response%create(density(1)%pw_grid)
+      field_response%array = 0.0_dp
+      strain = 0.0_dp
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(atom_response))
+         CPASSERT(PRESENT(cell_response))
+         CPASSERT(PRESENT(coefficients_response))
+         inverse_cell = cell%hmat
+         CALL invmat(inverse_cell, info)
+         CPASSERT(info == 0)
+         strain = MATMUL(cell_response, inverse_cell)
+      END IF
+      DO k = field%pw_grid%bounds_local(1, 3), field%pw_grid%bounds_local(2, 3)
+         DO j = field%pw_grid%bounds_local(1, 2), field%pw_grid%bounds_local(2, 2)
+            DO i = field%pw_grid%bounds_local(1, 1), field%pw_grid%bounds_local(2, 1)
+               point = MATMUL(field%pw_grid%dh, REAL([i, j, k] - field%pw_grid%bounds(1, :), dp))
+               field%array(i, j, k) = SUM(fieldpol*point)
+               IF (PRESENT(response)) field_response%array(i, j, k) = SUM(fieldpol*MATMUL(strain, point))
+            END DO
+         END DO
+      END DO
+      CALL qs_upf_inverse_local_field(qs_env, field, energy, field_operator, response, atom_response, &
+                                      cell_response, coefficients_response, potential_response=field_response)
+      DO atom = 1, SIZE(atoms)
+         CALL get_atomic_kind(atoms(atom)%atomic_kind, kind_number=kind)
+         IF (kinds(kind)%ghost) CYCLE
+         CALL get_qs_kind(kinds(kind), zeff=charge)
+         IF (state%paw(kind)%active) THEN
+            charge = charge + fourpi*SUM(state%paw(kind)%xcgrid%wr*state%paw(kind)%xcgrid%core(:, 1))
+         END IF
+         energy = energy - charge*SUM(fieldpol*atoms(atom)%r)
+         IF (PRESENT(response)) response = response - charge*SUM(fieldpol*atom_response(:, atom))
+      END DO
+      check_symmetry = ASSOCIATED(state%bloch%kpoints)
+      little_group = .NOT. control%use_gauxc
+      IF (check_symmetry) THEN
+         check_symmetry = .NOT. state%bloch%kpoints%full_grid
+         IF (SIZE(state%bloch%weights) == state%bloch%kpoints%nkp .AND. .NOT. little_group) check_symmetry = .FALSE.
+      END IF
+      IF (check_symmetry) THEN
+         CALL kpoint_star_operator_defect(state%bloch%star, field_operator, defect, scale, little_group=little_group)
+         tolerance = MAX(1024.0_dp*EPSILON(1.0_dp), 32.0_dp*control%qs_control%eps_rho_gspace)*MAX(1.0_dp, scale)
+         IF (defect > tolerance) THEN
+            CALL cp_abort(__LOCATION__, &
+                          "The electric field is incompatible with the k-point symmetry reduction. "// &
+                          "Use FULL_GRID TRUE and SYMMETRY FALSE.")
+         END IF
+      END IF
+      IF (PRESENT(operators)) CALL MOVE_ALLOC(field_operator, operators)
+      CALL field%release()
+      CALL field_response%release()
+   END SUBROUTINE qs_efield_upf_evaluate
 
 ! **************************************************************************************************
 !> \brief ...
