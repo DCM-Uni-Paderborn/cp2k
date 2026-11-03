@@ -939,16 +939,15 @@ CONTAINS
                   just_energy = .FALSE.
                END IF
             END IF
-            IF (.NOT. just_energy .AND. .NOT. should_stop .AND. &
-                scf_env%iter_delta < MAX(scf_control%eps_scf, SQRT(scf_control%eps_scf))) THEN
-               IF (hfx_ace_requires_refresh(qs_env)) THEN
-                  ! Finish a nearly stationary frozen-operator iteration with full exchange.
-                  ! The final SCF tolerance is unchanged.
-                  ! Keep the ordinary SCF iteration limit and external-stop handling below.
-                  scf_env%iter_delta = MAX(scf_env%iter_delta, scf_control%eps_scf)
-                  IF (output_unit > 0) WRITE (output_unit, '(T3,A)') &
-                     "ACE | A fresh exchange operator is required for SCF convergence"
-               END IF
+            ! Local convergence and energy-only decisions can differ between k-point groups.
+            ! Every rank must enter the collective refresh decision in the same SCF step.
+            IF (hfx_ace_requires_refresh(qs_env,.NOT. just_energy .AND. .NOT. should_stop .AND. &
+                                         scf_env%iter_delta < MAX(scf_control%eps_scf, SQRT(scf_control%eps_scf)))) THEN
+               ! Finish a nearly stationary frozen-operator iteration with full exchange.
+               ! Keep the original SCF tolerance, iteration limit and external-stop handling.
+               scf_env%iter_delta = MAX(scf_env%iter_delta, scf_control%eps_scf)
+               IF (output_unit > 0) WRITE (output_unit, '(T3,A)') &
+                  "ACE | A fresh exchange operator is required for SCF convergence"
             END IF
             scf_env%step_norm = scf_env%iter_delta
 

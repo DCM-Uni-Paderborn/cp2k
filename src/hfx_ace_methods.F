@@ -124,20 +124,25 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Require complete exchange for every ACE repetition before accepting SCF convergence.
+!>        Collective over the QS communicator, including ranks without exchange data.
 !> \param qs_env Current SCF environment and ACE input.
+!> \param candidate Local SCF state is eligible for a convergence refresh.
 !> \return Whether the next SCF step must rebuild the projector.
 ! **************************************************************************************************
-   FUNCTION hfx_ace_requires_refresh(qs_env) RESULT(refresh)
+   FUNCTION hfx_ace_requires_refresh(qs_env, candidate) RESULT(refresh)
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
+      LOGICAL, INTENT(IN)                                :: candidate
       LOGICAL                                            :: refresh
 
-      INTEGER                                            :: contribution, exchange_state(2)
+      INTEGER                                            :: contribution, exchange_state(4)
       TYPE(hfx_type), POINTER                            :: exchange(:, :)
       TYPE(mp_para_env_type), POINTER                    :: para_env
 
       refresh = .FALSE.
       exchange => qs_env%x_data
       exchange_state = 0
+      exchange_state(3) = MERGE(0, 1, candidate)
+      exchange_state(4) = MERGE(0, 1, qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf)
       IF (ASSOCIATED(exchange)) THEN
          CPASSERT(SIZE(exchange, 2) > 0)
          DO contribution = 1, SIZE(exchange, 1)
@@ -150,9 +155,10 @@ CONTAINS
       ! must agree whether to continue the SCF loop or enter its finalization.
       CALL get_qs_env(qs_env, para_env=para_env)
       CALL para_env%max(exchange_state)
+      IF (exchange_state(3) /= 0) RETURN
       IF (exchange_state(1) /= 0) THEN
          IF (.NOT. ASSOCIATED(exchange)) RETURN
-         IF (qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf) THEN
+         IF (exchange_state(4) == 0) THEN
             DO contribution = 1, SIZE(exchange, 1)
                IF (exchange(contribution, 1)%use_ace) exchange(contribution, 1)%ace%convergence_rebuild = .FALSE.
             END DO
