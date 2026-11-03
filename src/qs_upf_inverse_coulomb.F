@@ -22,7 +22,8 @@ MODULE qs_upf_inverse_coulomb
                                               pw_env_type
    USE pw_grid_types,                   ONLY: FULLSPACE,&
                                               HALFSPACE,&
-                                              PW_MODE_LOCAL
+                                              PW_MODE_LOCAL,&
+                                              pw_grid_type
    USE pw_methods,                      ONLY: pw_integral_ab,&
                                               pw_integrate_function,&
                                               pw_scale,&
@@ -104,7 +105,7 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_operator_response
    PUBLIC :: qs_upf_inverse_coulomb_density
    PUBLIC :: qs_upf_inverse_coulomb_charges
-   PUBLIC :: qs_upf_inverse_paw_density
+   PUBLIC :: qs_upf_inverse_paw_density, qs_upf_inverse_electronic_density
    PUBLIC :: qs_upf_inverse_local_potential, qs_upf_inverse_local_field
 
 CONTAINS
@@ -360,28 +361,33 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
       REAL(dp), INTENT(OUT)                              :: energy
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: operators(:, :, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: response, core_energy
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: response
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: potential_response
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: core_energy
 
-      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :), global_operator(:, :, :), &
-                                                            matrix(:, :), metric_response(:, :), part(:, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :), &
+                                                            global_operator(:, :, :), &
+                                                            matrix(:, :), metric_response(:, :), &
+                                                            part(:, :, :)
       INTEGER                                            :: axis, info, k, nao, nk, spin
       REAL(dp)                                           :: background_energy, inverse_cell(3, 3), &
-                                                            strain(3, 3), trace_strain, virial(3, 3)
-      REAL(dp), ALLOCATABLE                              :: forces(:, :), relative_motion(:, :), weights(:)
+                                                            strain(3, 3), trace_strain, &
+                                                            virial(3, 3)
+      REAL(dp), ALLOCATABLE                              :: forces(:, :), relative_motion(:, :), &
+                                                            weights(:)
       TYPE(dbcsr_p_type), POINTER                        :: ao_density(:, :)
       TYPE(pw_r3d_rs_type)                               :: field_response, zero, zeros(3)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho
-      TYPE(qs_upf_inverse_background_type), POINTER     :: background
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_background_type), POINTER      :: background
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
-      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
 
       CALL qs_upf_inverse_local_potential(qs_env, potential, energy, operators, response, atom_response, &
-                                           cell_response, coefficients_response, potential_response, core_energy)
+                                          cell_response, coefficients_response, potential_response, core_energy)
       CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho)
       CALL get_ks_env(ks_env, upf_inverse=state)
       IF (.NOT. ASSOCIATED(state)) RETURN
@@ -457,7 +463,7 @@ CONTAINS
             ALLOCATE (forces(3, SIZE(atom_response, 2)), relative_motion(3, SIZE(atom_response, 2)))
             relative_motion(:, :) = atom_response - MATMUL(strain, frame%positions)
             CALL qs_upf_inverse_background_geometry(background, matrix=density, potential=potential, &
-                                                     forces=forces, virial=virial, ks_env=ks_env)
+                                                    forces=forces, virial=virial, ks_env=ks_env)
             response = response - SUM(forces*relative_motion) - SUM(virial*strain) + trace_strain*background_energy
             CALL qs_upf_inverse_background_integrate(background, potential=field_response, &
                                                      ao_operators=global_operator, ks_env=ks_env)
@@ -469,17 +475,17 @@ CONTAINS
             DO k = 1, nk
                IF (ASSOCIATED(state%bloch%kpoints)) THEN
                   CALL qs_upf_inverse_grid_response(state%bloch%frames(k), state%bloch%augmentation, &
-                                                     state%bloch%frames(k)%ao%radial_q, potential, zeros, zero, &
-                                                     atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
-                                                     field_response, zeros, zero, matrix, metric_response, &
-                                                     orbital_fields=.NOT. state%native_gaussian, &
-                                                     known_coefficients_response=coefficients_response(:, :, k))
+                                                    state%bloch%frames(k)%ao%radial_q, potential, zeros, zero, &
+                                                    atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
+                                                    field_response, zeros, zero, matrix, metric_response, &
+                                                    orbital_fields=.NOT. state%native_gaussian, &
+                                                    known_coefficients_response=coefficients_response(:, :, k))
                ELSE
                   CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, frame%radial_q, potential, zeros, zero, &
-                                                     atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
-                                                     field_response, zeros, zero, matrix, metric_response, &
-                                                     orbital_fields=.NOT. state%native_gaussian, &
-                                                     known_coefficients_response=coefficients_response(:, :, k))
+                                                    atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
+                                                    field_response, zeros, zero, matrix, metric_response, &
+                                                    orbital_fields=.NOT. state%native_gaussian, &
+                                                    known_coefficients_response=coefficients_response(:, :, k))
                END IF
                response = response + weights(k)*REAL(SUM(CONJG(matrix)*density(:, :, k)), dp)
             END DO
@@ -624,19 +630,9 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: rho_hard, rho_soft
       LOGICAL, INTENT(OUT)                               :: active
 
-      COMPLEX(dp), ALLOCATABLE                           :: correction(:, :), gamma(:, :), &
-                                                            matrices(:, :, :, :), matrix(:, :, :), &
-                                                            projected(:, :, :)
-      INTEGER                                            :: center, first, k, kind, last, nao, nk, &
-                                                            ns, spin
-      LOGICAL                                            :: valid
-      REAL(dp), ALLOCATABLE                              :: weights(:)
-      TYPE(dbcsr_p_type), POINTER                        :: ao_density(:, :)
-      TYPE(pw_c1d_gs_type)                               :: work
+      INTEGER                                            :: center, spin
       TYPE(pw_c1d_gs_type), ALLOCATABLE                  :: complete(:)
-      TYPE(pw_c1d_gs_type), POINTER                      :: soft(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
-      TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
@@ -644,7 +640,7 @@ CONTAINS
       active = .FALSE.
       rho_hard = 0.0_dp
       rho_soft = 0.0_dp
-      CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho)
+      CALL get_qs_env(qs_env, ks_env=ks_env)
       IF (.NOT. ASSOCIATED(ks_env)) RETURN
       CALL get_ks_env(ks_env, upf_inverse=state)
       IF (.NOT. ASSOCIATED(state)) RETURN
@@ -656,12 +652,108 @@ CONTAINS
             CPABORT("All-electron X-ray density for inverse UPF requires PAW data for every atom")
          END IF
       END DO
+      CALL electronic_density_fourier(qs_env, density%pw_grid, complete, rho_soft, .FALSE., q_max)
+      density%array = CMPLX(0.0_dp, 0.0_dp, dp)
+      DO spin = 1, SIZE(complete)
+         density%array = density%array + complete(spin)%array
+         CALL complete(spin)%release()
+      END DO
+      rho_hard = pw_integrate_function(density, isign=-1) - rho_soft
+      CALL pw_scale(density, density%pw_grid%vol)
+   END SUBROUTINE qs_upf_inverse_paw_density
+
+! **************************************************************************************************
+!> \brief Complete electronic spin densities conjugate to the native scalar-potential service.
+!>        Retain the original USPP augmentation and full-GAPW centers. PAW also contributes its
+!>        AE-minus-PS-minus-Q density and the frozen AE core, split over physical spin channels.
+!>        These are electron-number densities, not total electrostatic sources. Ionic charges
+!>        and the PAW core countercharge remain separate. NLCC model cores are XC inputs only.
+!>        Native grid projection is retained without normalization to the charge metric.
+!> \param qs_env Native owner of the accepted occupation matrices and original atomic data.
+!> \param density Owned Fourier spin fields in electron-number per volume units.
+!> \param active False with unallocated density when no original-UPF state is enabled.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_electronic_density(qs_env, density, active)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_c1d_gs_type), ALLOCATABLE, INTENT(OUT)     :: density(:)
+      LOGICAL, INTENT(OUT)                               :: active
+
+      REAL(dp)                                           :: soft_charge
+      TYPE(pw_c1d_gs_type), POINTER                      :: soft(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      active = .FALSE.
+      CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho)
+      IF (.NOT. ASSOCIATED(ks_env)) RETURN
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      IF (.NOT. ASSOCIATED(state)) RETURN
+      IF (.NOT. state%enabled) RETURN
+      CALL qs_rho_get(rho, rho_g=soft)
+      CPASSERT(ASSOCIATED(soft))
+      CALL electronic_density_fourier(qs_env, soft(1)%pw_grid, density, soft_charge, .TRUE.)
+      active = .TRUE.
+   END SUBROUTINE qs_upf_inverse_electronic_density
+
+! **************************************************************************************************
+!> \brief Shared Fourier assembly with the requested native-grid or X-ray convention.
+!> \param qs_env ...
+!> \param grid ...
+!> \param density ...
+!> \param soft_charge Signed compensated-valence charge before the PAW AE reconstruction.
+!> \param grid_convention Retain native Nyquist projection for a scalar grid-potential consumer.
+!> \param q_max Optional PAW correction cutoff used by the existing X-ray observable.
+! **************************************************************************************************
+   SUBROUTINE electronic_density_fourier(qs_env, grid, density, soft_charge, grid_convention, q_max)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_c1d_gs_type), ALLOCATABLE, INTENT(OUT)     :: density(:)
+      REAL(dp), INTENT(OUT)                              :: soft_charge
+      LOGICAL, INTENT(IN)                                :: grid_convention
+      REAL(dp), INTENT(IN), OPTIONAL                     :: q_max
+
+      COMPLEX(dp), ALLOCATABLE                           :: correction(:, :), gamma(:, :), &
+                                                            matrices(:, :, :, :), matrix(:, :, :), &
+                                                            projected(:, :, :)
+      INTEGER                                            :: center, first, k, kind, last, nao, nk, &
+                                                            ns, spin
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: weights(:)
+      TYPE(dbcsr_p_type), POINTER                        :: ao_density(:, :)
+      TYPE(pw_c1d_gs_type), ALLOCATABLE                  :: complete(:)
+      TYPE(pw_c1d_gs_type), POINTER                      :: soft(:)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+
+      soft_charge = 0.0_dp
+      CALL get_qs_env(qs_env, ks_env=ks_env, rho=rho)
+      CALL get_ks_env(ks_env, upf_inverse=state)
+      CPASSERT(ASSOCIATED(state))
+      CPASSERT(state%enabled)
+      CALL select_frame(state, 1, frame, augmentation)
       CALL qs_rho_get(rho, rho_ao_kp=ao_density, rho_g=soft, rho_g_valid=valid)
       CPASSERT(valid .AND. ASSOCIATED(soft))
       ns = SIZE(soft)
       nao = SIZE(frame%coefficients, 2)
       nk = 1
       IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
+      CALL coulomb_density_fourier(qs_env, complete)
+      ALLOCATE (density(ns))
+      DO spin = 1, ns
+         CALL density(spin)%create(grid)
+         IF (ALLOCATED(complete)) THEN
+            CALL pw_transfer(complete(spin), density(spin))
+            CALL complete(spin)%release()
+         ELSE
+            CALL pw_transfer(soft(spin), density(spin))
+         END IF
+         soft_charge = soft_charge + pw_integrate_function(density(spin), isign=-1)
+      END DO
+      IF (.NOT. ANY(state%paw%active)) RETURN
       ALLOCATE (matrices(nao, nao, nk, ns), weights(nk))
       weights = 1.0_dp
       IF (ASSOCIATED(state%bloch%kpoints)) weights(:) = state%bloch%weights
@@ -676,23 +768,10 @@ CONTAINS
             DEALLOCATE (gamma)
          END IF
       END DO
-      CALL coulomb_density_fourier(qs_env, complete)
-      CALL work%create(density%pw_grid)
-      density%array = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO spin = 1, ns
-         IF (ALLOCATED(complete)) THEN
-            CALL pw_transfer(complete(spin), work)
-            CALL complete(spin)%release()
-         ELSE
-            CALL pw_transfer(soft(spin), work)
-         END IF
-         density%array = density%array + work%array
-      END DO
-      CALL work%release()
-      rho_soft = pw_integrate_function(density, isign=-1)
-      ALLOCATE (correction(SIZE(density%array), ns))
+      ALLOCATE (correction(SIZE(density(1)%array), ns))
       DO center = 1, SIZE(frame%center_kinds)
          kind = frame%center_kinds(center)
+         IF (.NOT. state%paw(kind)%active) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          ALLOCATE (projected(last - first + 1, last - first + 1, ns), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
@@ -705,17 +784,24 @@ CONTAINS
                                                      CONJG(TRANSPOSE(frame%coefficients(first:last, :)))))
             END DO
          END DO
-         CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, density%pw_grid%g, &
-                                                 frame%positions(:, frame%center_atoms(center)), &
-                                                 density%pw_grid%vol, correction)
+         IF (grid_convention) THEN
+            CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, grid%g, &
+                                                    frame%positions(:, frame%center_atoms(center)), grid%vol, &
+                                                    correction, pw_grid=grid)
+         ELSE
+            CALL qs_upf_inverse_paw_density_fourier(state%paw(kind), projected, grid%g, &
+                                                    frame%positions(:, frame%center_atoms(center)), grid%vol, correction)
+         END IF
          DO spin = 1, ns
-            WHERE (density%pw_grid%gsq <= q_max*q_max) density%array = density%array + correction(:, spin)
+            IF (PRESENT(q_max)) THEN
+               WHERE (grid%gsq <= q_max*q_max) density(spin)%array = density(spin)%array + correction(:, spin)
+            ELSE
+               density(spin)%array = density(spin)%array + correction(:, spin)
+            END IF
          END DO
          DEALLOCATE (projected)
       END DO
-      rho_hard = pw_integrate_function(density, isign=-1) - rho_soft
-      CALL pw_scale(density, density%pw_grid%vol)
-   END SUBROUTINE qs_upf_inverse_paw_density
+   END SUBROUTINE electronic_density_fourier
 
 ! **************************************************************************************************
 !> \brief Complete electronic metric counts and the original ionic Gaussian grid charge.
