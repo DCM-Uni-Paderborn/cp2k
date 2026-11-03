@@ -131,20 +131,27 @@ CONTAINS
       TYPE(qs_environment_type), INTENT(IN), POINTER     :: qs_env
       LOGICAL                                            :: refresh
 
-      INTEGER                                            :: contribution
-      LOGICAL                                            :: full_exchange
+      INTEGER                                            :: contribution, exchange_state(2)
       TYPE(hfx_type), POINTER                            :: exchange(:, :)
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       refresh = .FALSE.
       exchange => qs_env%x_data
-      IF (.NOT. ASSOCIATED(exchange)) RETURN
-      CPASSERT(SIZE(exchange, 2) > 0)
-      full_exchange = .FALSE.
-      DO contribution = 1, SIZE(exchange, 1)
-         IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
-         full_exchange = full_exchange .OR. exchange(contribution, 1)%ace%convergence_rebuild
-      END DO
-      IF (full_exchange) THEN
+      exchange_state = 0
+      IF (ASSOCIATED(exchange)) THEN
+         CPASSERT(SIZE(exchange, 2) > 0)
+         DO contribution = 1, SIZE(exchange, 1)
+            IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
+            IF (exchange(contribution, 1)%ace%convergence_rebuild) exchange_state(1) = 1
+            IF (exchange(contribution, 1)%ace%built) exchange_state(2) = 1
+         END DO
+      END IF
+      ! Exchange data and ACE caches need not be present on every rank. All ranks
+      ! must agree whether to continue the SCF loop or enter its finalization.
+      CALL get_qs_env(qs_env, para_env=para_env)
+      CALL para_env%max(exchange_state)
+      IF (exchange_state(1) /= 0) THEN
+         IF (.NOT. ASSOCIATED(exchange)) RETURN
          IF (qs_env%scf_env%iter_delta < qs_env%scf_control%eps_scf) THEN
             DO contribution = 1, SIZE(exchange, 1)
                IF (exchange(contribution, 1)%use_ace) exchange(contribution, 1)%ace%convergence_rebuild = .FALSE.
@@ -152,15 +159,16 @@ CONTAINS
          END IF
          RETURN
       END IF
+      IF (exchange_state(2) == 0) RETURN
+      refresh = .TRUE.
+      IF (.NOT. ASSOCIATED(exchange)) RETURN
       DO contribution = 1, SIZE(exchange, 1)
          IF (.NOT. exchange(contribution, 1)%use_ace) CYCLE
          ASSOCIATE (ace => exchange(contribution, 1)%ace)
-            IF (.NOT. ace%built) CYCLE
             ace%built = .FALSE.
             ace%step_counter = 0
             ! Every compressed contribution enters the same full-exchange convergence phase.
             ace%convergence_rebuild = .TRUE.
-            refresh = .TRUE.
          END ASSOCIATE
       END DO
    END FUNCTION hfx_ace_requires_refresh

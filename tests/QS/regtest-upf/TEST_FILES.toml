@@ -67,3 +67,7 @@
   {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 2.78743420},
   {matcher = "M031", tol = 1e-10, ref = -24626.9095050},
 ]
+# Auxiliary ACE refresh must agree across MPI ranks.
+"H_USPP_ADMM_ACE.inp"              = [
+  {matcher = "M011", tol = 1e-10, ref = 3.218788922604786},
+]
