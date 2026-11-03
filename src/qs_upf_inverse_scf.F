@@ -1018,10 +1018,11 @@ CONTAINS
 !> \param metric_response New response of the same radial-Q metric used by inverse SCF.
 !> \param orbital_fields Include soft-orbital grid responses. False retains only augmentation and kinetic corrections.
 !> \param coefficients_response Optional owned coefficient response for this frame and geometry variation.
+!> \param include_atomic_kinetic Include the atom-local kinetic response, unless contracted separately.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_core_response(ks_env, frame, augmentation, grid, atom_response, cell_response, &
                                                reduced_k_response, core_response, metric_response, orbital_fields, &
-                                               coefficients_response)
+                                               coefficients_response, include_atomic_kinetic)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
@@ -1034,13 +1035,14 @@ CONTAINS
                                                             metric_response(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: coefficients_response(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: include_atomic_kinetic
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_scf_core_response'
 
       COMPLEX(dp), ALLOCATABLE                           :: atomic_m(:, :), atomic_t(:, :), &
                                                             dm(:, :), dt(:, :), dw(:, :)
       INTEGER                                            :: axis, info, timing_handle
-      LOGICAL                                            :: use_orbitals
+      LOGICAL                                            :: use_atomic_kinetic, use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3)
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(pw_r3d_rs_type)                               :: local_r, local_response, unit_tau, zero, &
@@ -1051,6 +1053,8 @@ CONTAINS
       CALL timeset(routineN, timing_handle)
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
+      use_atomic_kinetic = .TRUE.
+      IF (PRESENT(include_atomic_kinetic)) use_atomic_kinetic = include_atomic_kinetic
       cell_inverse = frame%ao%cell
       CALL invmat(cell_inverse, info)
       CPASSERT(info == 0)
@@ -1071,7 +1075,7 @@ CONTAINS
                                         atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
                                         core_response, metric_response, frame%ao%dion, orbital_fields=orbital_fields, &
                                         saved_coefficients_response=dw)
-      IF (frame%ao%atom_local) THEN
+      IF (frame%ao%atom_local .AND. use_atomic_kinetic) THEN
          CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, atomic_t, atomic_m, dt, dm, &
                                               atom_response, cell_response, reduced_k_response, dw)
          core_response(:, :) = core_response + dt
@@ -1128,7 +1132,8 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_scf_response'
 
-      COMPLEX(dp), ALLOCATABLE :: core(:, :, :), density(:, :, :), dw(:, :), dw_all(:, :, :), &
+      COMPLEX(dp), ALLOCATABLE :: atomic_core(:, :, :), atomic_m(:, :), atomic_t(:, :), &
+         core(:, :, :), density(:, :, :), dm(:, :), dt(:, :), dw(:, :), dw_all(:, :, :), &
          energy_weighted(:, :, :), matrix(:, :), metric(:, :, :), metric_part(:, :)
       INTEGER                                            :: active_potential, axis, component, ik, &
                                                             info, nk, nspin, timing_handle
@@ -1183,7 +1188,8 @@ CONTAINS
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_scf_core_response(ks_env, state%bloch%frames(ik), state%bloch%augmentation, grid, &
                                                   atom_response, cell_response, reduced_k_response(:, ik), matrix, metric_part, &
-                                                  orbital_fields=.NOT. state%native_gaussian, coefficients_response=dw)
+                                                  orbital_fields=.NOT. state%native_gaussian, coefficients_response=dw, &
+                                                  include_atomic_kinetic=.FALSE.)
          ELSE
             CALL qs_upf_inverse_scf_core_response(ks_env, state%frame, state%augmentation, grid, atom_response, &
                                                   cell_response, reduced_k_response(:, ik), matrix, metric_part, &
@@ -1195,6 +1201,25 @@ CONTAINS
          core(:, :, ik) = matrix
          metric(:, :, ik) = metric_part
       END DO
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         IF (ALLOCATED(state%gaussian_kinetic)) THEN
+            ! The defining coefficient responses above require collective grid operations.
+            ! Their atomic kinetic corrections contain no collectives and are independent
+            ! between physical k-points. Each correction contributes on exactly one rank.
+            ALLOCATE (atomic_core, MOLD=core)
+            atomic_core = CMPLX(0.0_dp, 0.0_dp, dp)
+            DO ik = 1, nk
+               IF (MOD(ik - 1, state%bloch%frames(1)%ao%point_comm%num_pe) /= &
+                   state%bloch%frames(1)%ao%point_comm%mepos) CYCLE
+               CALL qs_upf_inverse_atomic_operators(state%bloch%frames(ik)%ao, state%bloch%frames(ik)%ao%radial_q, &
+                                                    atomic_t, atomic_m, dt, dm, atom_response, cell_response, &
+                                                    reduced_k_response(:, ik), dw_all(:, :, ik))
+               atomic_core(:, :, ik) = dt
+            END DO
+            CALL state%bloch%frames(1)%ao%point_comm%sum(atomic_core)
+            core(:, :, :) = core + atomic_core
+         END IF
+      END IF
       response = 0.0_dp
       metric_response = 0.0_dp
       IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN

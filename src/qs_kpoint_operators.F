@@ -2537,28 +2537,38 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: width
       INTEGER(KIND=int_8), INTENT(OUT)                   :: work_size
 
-      INTEGER                                            :: first, igroup, nc, nk
+      INTEGER                                            :: first, igroup, nc, nk, slot
       INTEGER(KIND=int_8)                                :: max_pack, max_per_k, nelem, nimages, &
-                                                            output_bytes, per_k_bytes
+                                                            output_bytes, output_elements, &
+                                                            per_k_bytes
 
       CPASSERT(ctx%kpoints%para_env_kp%num_pe == 1)
       CPASSERT(nmatrices >= 0 .AND. nworkers > 0)
       max_pack = 0_int_8
       max_per_k = 0_int_8
-      IF (SIZE(ctx%rs_route%entry, 2) > 0) THEN
-         DO igroup = 1, SIZE(ctx%rs_route%block_first) - 1
-            first = ctx%rs_route%block_first(igroup)
-            nelem = INT(ctx%rs_route%entry(3, first), int_8)*ctx%rs_route%entry(4, first)
-            nimages = ctx%rs_route%block_first(igroup + 1) - first
-            max_pack = MAX(max_pack, nelem*nimages)
-            max_per_k = MAX(max_per_k, nelem + nimages)
-         END DO
+      output_elements = 0_int_8
+      IF (ALLOCATED(ctx%rs_route)) THEN
+         IF (SIZE(ctx%rs_route%entry, 2) > 0) THEN
+            DO igroup = 1, SIZE(ctx%rs_route%block_first) - 1
+               first = ctx%rs_route%block_first(igroup)
+               nelem = INT(ctx%rs_route%entry(3, first), int_8)*ctx%rs_route%entry(4, first)
+               nimages = ctx%rs_route%block_first(igroup + 1) - first
+               max_pack = MAX(max_pack, nelem*nimages)
+               max_per_k = MAX(max_per_k, nelem + nimages)
+            END DO
+         END IF
+         output_elements = INT(ctx%rs_route%matrix_struct%local_leading_dimension, int_8)* &
+                           MAX(1, ctx%rs_route%ncol)
       END IF
-      output_bytes = 16_int_8*nmatrices*ctx%rs_route%matrix_struct%local_leading_dimension* &
-                     MAX(1, ctx%rs_route%ncol)
+      ! Complete complex operators need no real-space route or contraction scratch.
+      DO slot = 1, kpoint_num_slots
+         IF (.NOT. ASSOCIATED(ctx%native(slot)%source)) CYCLE
+         output_elements = MAX(output_elements, SIZE(ctx%native(slot)%matrices(1, 1)%local_data, KIND=int_8))
+      END DO
+      output_bytes = 16_int_8*nmatrices*output_elements
       nc = 2
       IF (nmatrices == 0) nc = MERGE(1, 2, ctx%kpoints%use_real_wfn)
-      per_k_bytes = 8_int_8*nc*max_per_k + output_bytes
+      per_k_bytes = MAX(1_int_8, 8_int_8*nc*max_per_k + output_bytes)
       nk = SIZE(ctx%kpoints%kp_env)
       IF (nmatrices > 0) nworkers = MIN(nworkers, nk)
       nworkers = MIN(nworkers, INT(MAX(1_int_8, rs_batch_bytes/(8_int_8*max_pack + per_k_bytes))))
@@ -2585,9 +2595,9 @@ CONTAINS
 
       CHARACTER(len=*), PARAMETER :: routineN = 'kpoint_operator_evaluate_batch'
 
-      INTEGER                                            :: c0, col, first, handle, igroup, j, last, &
-                                                            nc, nelem, nimages, nr, r0, row, spin, &
-                                                            width
+      INTEGER                                            :: c0, col, first, handle, igroup, ikp, j, &
+                                                            last, nc, nelem, nimages, nr, r0, row, &
+                                                            spin, width
       INTEGER(KIND=int_8)                                :: nfactor, npack
       REAL(KIND=dp), CONTIGUOUS, POINTER                 :: factors(:, :, :), RESULT(:, :, :), &
                                                             values(:, :)
@@ -2595,16 +2605,30 @@ CONTAINS
 
       CALL timeset(routineN, handle)
       CPASSERT(ctx%kpoints%para_env_kp%num_pe == 1)
-      CPASSERT(SIZE(batch, 1) >= ctx%rs_route%nrow)
-      CPASSERT(SIZE(batch, 2) >= ctx%rs_route%ncol)
       width = SIZE(batch, 3)
       CPASSERT(first_k >= ctx%kpoints%kp_range(1))
       CPASSERT(first_k + width - 1 <= ctx%kpoints%kp_range(2))
+      batch(:, :, :) = z_zero
+      IF (ASSOCIATED(ctx%native(slot)%source)) THEN
+         spin = ispin
+         IF (ctx%native(slot)%matrix_row > 0) spin = ctx%native(slot)%matrix_row
+         DO j = 1, width
+            ikp = first_k - ctx%kpoints%kp_range(1) + j
+            nr = SIZE(ctx%native(slot)%matrices(ikp, spin)%local_data, 1)
+            nc = SIZE(ctx%native(slot)%matrices(ikp, spin)%local_data, 2)
+            CPASSERT(SIZE(batch, 1) >= nr .AND. SIZE(batch, 2) >= nc)
+            batch(1:nr, 1:nc, j) = ctx%native(slot)%matrices(ikp, spin)%local_data
+         END DO
+         CALL timestop(handle)
+         RETURN
+      END IF
+      CPASSERT(ALLOCATED(ctx%rs_route))
+      CPASSERT(SIZE(batch, 1) >= ctx%rs_route%nrow)
+      CPASSERT(SIZE(batch, 2) >= ctx%rs_route%ncol)
       spin = ispin
       IF (.NOT. ASSOCIATED(ctx%rs(spin, slot)%source)) spin = 1
       CPASSERT(ASSOCIATED(ctx%rs(spin, slot)%source))
       xkp => ctx%kpoints%xkp
-      batch(:, :, :) = z_zero
       IF (SIZE(ctx%rs_route%entry, 2) == 0) THEN
          CALL timestop(handle)
          RETURN
