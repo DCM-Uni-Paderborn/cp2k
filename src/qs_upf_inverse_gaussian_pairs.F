@@ -427,10 +427,16 @@ CONTAINS
 
       INTEGER                                            :: axis
 
-      CALL add_density(left(:, :, 1), right(:, :, 1), matrix, factor*dphase, response, ordered)
+      IF (dphase /= CMPLX(0.0_dp, 0.0_dp, dp)) THEN
+         CALL add_density(left(:, :, 1), right(:, :, 1), matrix, factor*dphase, response, ordered)
+      END IF
       DO axis = 1, 3
-         CALL add_density(left(:, :, axis + 1), right(:, :, 1), matrix, factor*phase*dl(axis), response, ordered)
-         CALL add_density(left(:, :, 1), right(:, :, axis + 1), matrix, factor*phase*dr(axis), response, ordered)
+         IF (dl(axis) /= 0.0_dp) THEN
+            CALL add_density(left(:, :, axis + 1), right(:, :, 1), matrix, factor*phase*dl(axis), response, ordered)
+         END IF
+         IF (dr(axis) /= 0.0_dp) THEN
+            CALL add_density(left(:, :, 1), right(:, :, axis + 1), matrix, factor*phase*dr(axis), response, ordered)
+         END IF
       END DO
    END SUBROUTINE add_response
 
