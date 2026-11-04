@@ -142,6 +142,11 @@ occupations and normalization before and after natural cubic interpolation onto 
 radial mesh. The atomic-state hash is recorded in the output. A new generator run is unnecessary
 when this state is already available.
 
+An incomplete GIPAW table can instead be completed with `--qe-ae-wfc /path/to/ld1.wfc`. The radial
+nodes must agree to the QE text format's rounding. Shared orbitals must agree up to phase within a
+relative radial L2 difference of `1e-6`. Keep occupations in GIPAW index order, then append those
+for missing QE columns in header order, including zeros for unoccupied states.
+
 The common rescaling of the selected core orbitals reproduces the supplied nonnegative NLCC density.
 It defines `tau_model = tau_W[n_model] + n_model * (tau_AE - tau_W[n_AE]) / n_AE`, where
 `tau_W[n] = |grad(n)|^2/(8*n)`. The Pauli remainder is evaluated as positive orbital squares. This

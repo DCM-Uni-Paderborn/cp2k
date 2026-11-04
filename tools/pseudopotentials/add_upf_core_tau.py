@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Add an explicitly chosen orbital-rescaling NLCC kinetic model to a USPP.
 
-GIPAW radial core orbitals or a retained Vanderbilt atom.ae file and closed-shell
-occupations define the reference core. A common radial rescaling reproduces
+GIPAW radial core orbitals, optionally completed by matching QE atomic waves,
+or a retained Vanderbilt atom.ae file and closed-shell occupations define the
+reference core. A common radial rescaling reproduces
 the supplied nonnegative NLCC charge. This defines auxiliary model orbitals,
 not recovered generator core tau or normalized atomic core eigenstates.
 Original sections are retained, apart from the kinetic-data availability flag.
@@ -198,7 +199,41 @@ def vanderbilt_orbitals(data, z, occupations, target):
     return orbitals
 
 
-def reference_orbitals(tree, r, rab, occupations, vanderbilt=None):
+def qe_atomic_orbitals(data, target):
+    """Read scalar ld1.wfc columns on the original grid, printed to 12 decimals."""
+    lines = data.decode("utf8").splitlines()
+    if not lines or lines[0].split()[:2] != ["#", "r"]:
+        raise ValueError("Requires the QE atomic wavefunction column header")
+    labels = lines[0].split()[2:]
+    shells = []
+    for label in labels:
+        match = re.fullmatch(r"([0-9]+)([SPDFGH])", label.upper())
+        if match is None:
+            raise ValueError("Invalid QE atomic orbital label")
+        n, l = int(match[1]), "SPDFGH".index(match[2])
+        if n <= l or (n, l) in shells:
+            raise ValueError("Invalid or repeated QE atomic orbital")
+        shells.append((n, l))
+    rows = [[real(x) for x in line.split()] for line in lines[1:] if line.strip()]
+    if (
+        not shells
+        or len(rows) != len(target)
+        or any(
+            len(row) != len(shells) + 1 or not all(map(math.isfinite, row))
+            for row in rows
+        )
+    ):
+        raise ValueError("Incomplete or nonfinite QE atomic wavefunction table")
+    # Retain the exact UPF nodes. Only the radial column's decimal rounding is allowed.
+    if any(
+        abs(row[0] - radius) > 5.01e-13 + 4 * math.ulp(radius)
+        for row, radius in zip(rows, target)
+    ):
+        raise ValueError("QE atomic wavefunctions use a different radial mesh")
+    return [(n, l, [row[i + 1] for row in rows]) for i, (n, l) in enumerate(shells)]
+
+
+def reference_orbitals(tree, r, rab, occupations, vanderbilt=None, qe_wfc=None):
     header = tree.find("PP_HEADER")
     symbol = header.get("element", "").strip()
     if symbol not in ELEMENTS:
@@ -208,6 +243,8 @@ def reference_orbitals(tree, r, rab, occupations, vanderbilt=None):
         raise ValueError(
             "Core occupations must sum to Z minus the explicit valence charge"
         )
+    if vanderbilt is not None and qe_wfc is not None:
+        raise ValueError("Select one external atomic reference format")
     if vanderbilt is not None:
         orbitals = vanderbilt_orbitals(
             vanderbilt, ELEMENTS.index(symbol) + 1, occupations, r
@@ -217,10 +254,8 @@ def reference_orbitals(tree, r, rab, occupations, vanderbilt=None):
         if table is None:
             raise ValueError("Missing original GIPAW core orbital table")
         count = int(table.get("number_of_core_orbitals", "-1"))
-        if len(occupations) != count or len(table) != count:
-            raise ValueError(
-                "Supply one core occupation for every original GIPAW index"
-            )
+        if len(table) != count:
+            raise ValueError("Incomplete original GIPAW orbital table")
         orbitals = []
         for i in range(1, count + 1):
             node = table.find(f"PP_GIPAW_CORE_ORBITAL.{i}")
@@ -232,6 +267,37 @@ def reference_orbitals(tree, r, rab, occupations, vanderbilt=None):
                     integer(node.get("l", "-1")),
                     values(node),
                 )
+            )
+        if qe_wfc is not None:
+            original = {(n, l): u for n, l, u in orbitals}
+            common = 0
+            w = weights(rab)
+            for n, l, u in qe_atomic_orbitals(qe_wfc, r):
+                if (n, l) not in original:
+                    orbitals.append((n, l, u))
+                    continue
+                a = original[n, l]
+                if len(a) != len(r):
+                    raise ValueError("Incomplete original GIPAW orbital")
+                norm = math.fsum(weight * x * x for weight, x in zip(w, a))
+                error = min(
+                    math.fsum(
+                        weight * (x - sign * y) ** 2 for weight, x, y in zip(w, a, u)
+                    )
+                    for sign in (-1, 1)
+                )
+                if not math.isfinite(norm) or not math.isfinite(error):
+                    raise ValueError("Nonfinite original GIPAW orbital")
+                if norm == 0 and error == 0:
+                    continue
+                if norm <= 0 or error > 1e-12 * norm:
+                    raise ValueError("QE and original GIPAW orbitals disagree")
+                common += 1
+            if not common:
+                raise ValueError("QE atomic waves have no shared GIPAW reference")
+        if len(occupations) != len(orbitals):
+            raise ValueError(
+                "Supply occupations in GIPAW order, then missing QE header order"
             )
     valence = set()
     for wave in tree.findall("PP_PSWFC/*"):
@@ -323,7 +389,7 @@ def model_kinetic(r, density, orbitals):
     return kinetic
 
 
-def enrich(data, occupations, vanderbilt=None):
+def enrich(data, occupations, vanderbilt=None, qe_wfc=None):
     tree = ET.fromstring(data)
     header = tree.find("PP_HEADER")
     if tree.tag != "UPF" or tree.get("version") != "2.0.1" or header is None:
@@ -360,7 +426,7 @@ def enrich(data, occupations, vanderbilt=None):
             "This orbital-rescaling model requires a nonzero nonnegative NLCC density"
         )
     kinetic = model_kinetic(
-        r, density, reference_orbitals(tree, r, rab, occupations, vanderbilt)
+        r, density, reference_orbitals(tree, r, rab, occupations, vanderbilt, qe_wfc)
     )
     spans, end = top_level_spans(data)
     first, last = spans["PP_HEADER"]
@@ -378,6 +444,8 @@ def enrich(data, occupations, vanderbilt=None):
         if vanderbilt is None
         else f"Vanderbilt atom.ae SHA256 {sha256(vanderbilt).hexdigest()}\nVanderbilt"
     )
+    if qe_wfc is not None:
+        source = f"QE ld1.wfc SHA256 {sha256(qe_wfc).hexdigest()}\nGIPAW plus QE"
     provenance = (
         "\n<!-- CP2K auxiliary NLCC core kinetic model ORBITAL_RESCALE\n"
         f"Source SHA256 {sha256(data).hexdigest()}\n"
@@ -406,16 +474,24 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--model", choices=["orbital-rescale"], required=True)
     parser.add_argument("--core-occupations", nargs="+", type=int, required=True)
-    parser.add_argument(
+    reference = parser.add_mutually_exclusive_group()
+    reference.add_argument(
         "--vanderbilt-ae",
         type=Path,
         help="Use a retained Vanderbilt atom.ae file instead of UPF GIPAW core orbitals",
+    )
+    reference.add_argument(
+        "--qe-ae-wfc",
+        type=Path,
+        help="Complete GIPAW with missing scalar ld1.wfc columns on the original mesh; "
+        "append occupations in missing QE header order",
     )
     args = parser.parse_args()
     try:
         original = args.original.read_bytes()
         vanderbilt = args.vanderbilt_ae.read_bytes() if args.vanderbilt_ae else None
-        output = enrich(original, args.core_occupations, vanderbilt)
+        qe_wfc = args.qe_ae_wfc.read_bytes() if args.qe_ae_wfc else None
+        output = enrich(original, args.core_occupations, vanderbilt, qe_wfc)
         with args.output.open("xb") as stream:
             stream.write(output)
     except (OSError, ValueError, OverflowError, AttributeError, ET.ParseError) as error:
