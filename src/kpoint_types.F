@@ -189,6 +189,7 @@ MODULE kpoint_types
 !> \param full_grid           [input] don't reduce kpoints at all
 !> \param lattice_fft         [input] lattice FFT selection mode
 !> \param cartesian_half_turns [input] restrict spatial symmetry to Cartesian proper half-turns
+!> \param integration_grids [internal] active uniform integration grids for spatial symmetry
 !> \param inversion_symmetry_only [input] reduce kpoints only by inversion symmetry
 !> \param symmetry_backend [input] k-point symmetry backend
 !> \param symmetry_reduction_method [input] k-point symmetry reduction method
@@ -224,6 +225,7 @@ MODULE kpoint_types
       INTEGER                                 :: lattice_fft = lattice_fft_auto
       LOGICAL                                 :: inversion_symmetry_only = .FALSE.
       LOGICAL                                 :: cartesian_half_turns = .FALSE.
+      INTEGER, ALLOCATABLE                    :: integration_grids(:, :)
       INTEGER                                 :: symmetry_backend = use_k290_kpoint_backend
       INTEGER                                 :: symmetry_reduction_method = use_k290_kpoint_symmetry
       LOGICAL                                 :: verbose = .FALSE.

@@ -8,6 +8,7 @@ PROGRAM kpsym_unittest
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
    USE cryssym,                         ONLY: crys_sym_cartesian_halfturn,&
                                               crys_sym_gen,&
+                                              crys_sym_grid_compatible,&
                                               csym_type,&
                                               kpoint_gen,&
                                               release_csym_type
@@ -24,6 +25,7 @@ PROGRAM kpsym_unittest
                                               kpoint_type
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
+   USE mathlib,                         ONLY: inv_3x3
    USE physcon,                         ONLY: bohr
    USE spglib_f08,                      ONLY: spg_get_major_version
 
@@ -65,12 +67,13 @@ PROGRAM kpsym_unittest
                                                   0.095744_dp, 0.904256_dp, 0.250000_dp, &
                                                   0.904256_dp, 0.095744_dp, 0.750000_dp, &
                                                   0.595744_dp, 0.595744_dp, 0.500000_dp], [3, 36])
-   REAL(dp) :: cell(3, 3), coords(3, 36), halfturn_cell(3, 3), shifted(3, 36)
+   REAL(dp) :: cell(3, 3), coords(3, 36), halfturn_cell(3, 3), ne_coords(3, 2), shifted(3, 36)
    INTEGER :: i, io_unit
    INTEGER :: types(36)
 
    CALL cp2k_init()
    CALL check_star_adjoint()
+   CALL check_grid_operations()
    io_unit = cp_logger_get_default_io_unit()
    cell = 0.0_dp
    cell(1, 1) = 6.784903_dp*bohr
@@ -112,7 +115,34 @@ PROGRAM kpsym_unittest
                       use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE.)
    END IF
 
+   ! A displaced mirror plane can preserve the atoms while failing to permute the grid.
+   cell = 0.0_dp
+   DO i = 1, 3
+      cell(i, i) = 12.0_dp
+   END DO
+   ne_coords = RESHAPE([1.5_dp, 0.5_dp, 1.0_dp/3.0_dp, 0.5_dp, 0.5_dp, 2.0_dp/3.0_dp], [3, 2])
+   CALL check_mesh(ne_coords, cell, 1.e-8_dp, 6, .FALSE., .TRUE., &
+                   integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=16)
+   ne_coords(3, :) = ne_coords(3, :) - 2.e-4_dp*[0.13_dp, -0.07_dp]/12.0_dp
+   CALL check_mesh(ne_coords, cell, 1.e-8_dp, 6, .FALSE., .TRUE., &
+                   integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8)
+   ! A rounded backend translation must not turn an approximate atom map into exact grid symmetry.
+   CALL check_mesh(ne_coords, cell, 1.e-6_dp, 6, .FALSE., .TRUE., &
+                   integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8)
+   IF (spg_get_major_version() > 0) THEN
+      CALL check_mesh(ne_coords, cell, 1.e-6_dp, 6, .FALSE., .TRUE., &
+                      integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8, &
+                      use_spglib_reduction=.TRUE.)
+      CALL check_mesh(ne_coords, cell, 1.e-6_dp, 6, .FALSE., .TRUE., &
+                      integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8, &
+                      use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE.)
+   END IF
+
    ! Genuine tolerance-induced nonclosure must still trigger the orbit guard.
+   cell = 0.0_dp
+   cell(1, 1) = 6.784903_dp*bohr
+   cell(2, 2) = 6.784903_dp*bohr
+   cell(3, 3) = 6.807916_dp*bohr
    coords = ice_ix
    coords(3, 27) = coords(3, 27) + 1.0e-6_dp
    coords(3, 33) = coords(3, 33) + 0.75e-6_dp
@@ -122,6 +152,32 @@ PROGRAM kpsym_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+   SUBROUTINE check_grid_operations()
+      INTEGER                                            :: axis
+      REAL(dp)                                           :: rotation(3, 3), translation(3)
+
+      rotation = 0.0_dp
+      DO axis = 1, 3
+         rotation(axis, axis) = 1.0_dp
+      END DO
+      translation = [0.5_dp, 0.0_dp, 0.0_dp]
+      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4], [3, 1]))) &
+         ERROR STOP 'Grid-compatible fractional translation rejected'
+      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([3, 4, 4], [3, 1]))) &
+         ERROR STOP 'Grid-incompatible fractional translation retained'
+      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4, 3, 4, 4], [3, 2]))) &
+         ERROR STOP 'Incompatible secondary integration grid ignored'
+      translation = [1.0_dp, -2.0_dp, 3.0_dp]
+      rotation(1, 1) = 0.0_dp
+      rotation(2, 2) = 0.0_dp
+      rotation(1, 2) = 1.0_dp
+      rotation(2, 1) = 1.0_dp
+      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 6], [3, 1]))) &
+         ERROR STOP 'Grid-compatible axis exchange rejected'
+      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 6, 6], [3, 1]))) &
+         ERROR STOP 'Grid-incompatible axis exchange retained'
+   END SUBROUTINE check_grid_operations
 
 ! **************************************************************************************************
 !> \brief Check native symmetry phases, nonorthogonal AO rotations and the weighted trace adjoint.
@@ -500,17 +556,19 @@ CONTAINS
 !> \param use_spglib_backend ...
 ! **************************************************************************************************
    SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid, cartesian_half_turns, &
-                         use_spglib_reduction, use_spglib_backend)
+                         use_spglib_reduction, use_spglib_backend, integration_grids, expected_operations)
       REAL(dp), INTENT(IN)                               :: x(:, :), h(3, 3), delta
       INTEGER, INTENT(IN)                                :: expected
       LOGICAL, INTENT(IN)                                :: fallback, closed
       LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid, cartesian_half_turns, &
                                                             use_spglib_reduction, &
                                                             use_spglib_backend
+      INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :), &
+                                                            expected_operations
 
       INTEGER                                            :: a, i, j, k
       LOGICAL                                            :: found, spglib
-      REAL(dp)                                           :: product(3, 3)
+      REAL(dp)                                           :: product(3, 3), rotation(3, 3)
       TYPE(csym_type)                                    :: csym
 
       spglib = .FALSE.
@@ -519,16 +577,21 @@ CONTAINS
       IF (PRESENT(full_grid)) THEN
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., full_grid=full_grid, &
                          cartesian_half_turns=cartesian_half_turns, &
-                         use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend)
+                         use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
+                         integration_grids=integration_grids)
       ELSE
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp], &
                          cartesian_half_turns=cartesian_half_turns, &
-                         use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend)
+                         use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
+                         integration_grids=integration_grids)
       END IF
       IF (csym%nkpoint /= expected) ERROR STOP "Incorrect irreducible mesh size"
       IF (csym%inversion_only .NEQV. fallback) ERROR STOP "Incorrect orbit-guard decision"
       IF (ABS(SUM(csym%wkpoint) - 27.0_dp) > 1.0e-12_dp) ERROR STOP "Incorrect weight sum"
       IF (ANY(csym%kplink <= 0)) ERROR STOP "Incomplete mesh mapping"
+      IF (PRESENT(expected_operations)) THEN
+         IF (csym%nrtot /= expected_operations) ERROR STOP 'Incorrect integration-grid symmetry group size'
+      END IF
       IF (PRESENT(full_grid)) THEN
          IF (full_grid) THEN
             DO i = 1, 27
@@ -547,6 +610,11 @@ CONTAINS
          END IF
       END IF
       DO k = 1, csym%nrtot
+         IF (PRESENT(integration_grids)) THEN
+            rotation = MATMUL(inv_3x3(h), MATMUL(csym%rt(:, :, k), h))
+            IF (.NOT. crys_sym_grid_compatible(rotation, csym%vt(:, k), integration_grids)) &
+               ERROR STOP 'Retained operation does not preserve the integration grid'
+         END IF
          DO a = 1, SIZE(x, 2)
             IF (COUNT(csym%f0(:, k) == a) /= 1) ERROR STOP "Nonbijective atom mapping"
          END DO

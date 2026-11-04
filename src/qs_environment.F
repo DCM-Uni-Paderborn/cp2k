@@ -154,7 +154,8 @@ MODULE qs_environment
                                               qs_write_dispersion
    USE qs_energy_types,                 ONLY: allocate_qs_energy,&
                                               qs_energy_type
-   USE qs_environment_methods,          ONLY: qs_env_setup
+   USE qs_environment_methods,          ONLY: qs_env_setup,&
+                                              qs_env_symmetry_grids
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
@@ -603,6 +604,13 @@ CONTAINS
                           subsys_section, silent=silent, multip=multip, charge=charge)
 
       CALL get_qs_env(qs_env, dft_control=dft_control)
+      final_kpoint_reinit = .FALSE.
+      IF (kpoints%symmetry .AND. .NOT. kpoints%full_grid .AND. .NOT. kpoints%inversion_symmetry_only) THEN
+         ! PW grids are available only after qs_init_subsys. Select their common spatial group
+         ! before allocating per-k-point matrices, orbitals and distributions.
+         CALL qs_env_symmetry_grids(qs_env, kpoints%integration_grids)
+         final_kpoint_reinit = ALLOCATED(kpoints%integration_grids)
+      END IF
       IF (owned_kpoints) THEN
          do_dftb_scc_high_l = .FALSE.
          IF (method_id == do_method_dftb .AND. do_dftb_scc) THEN
@@ -617,12 +625,14 @@ CONTAINS
                                                           do_wfc_low_scaling, do_wfc_low_scaling_kpoints, &
                                                           do_xtb_tblite, do_dftb_scc_high_l, &
                                                           restricted=dftb_kpoint_sym_restricted)
-         final_kpoint_reinit = dftb_kpoint_sym_restricted .OR. kpoint_verbose
-         IF (final_kpoint_reinit) THEN
-            CALL kpoint_reset_initialization(kpoints)
-            CALL set_kpoint_info(kpoints, verbose=kpoint_verbose)
-            CALL kpoint_initialize(kpoints, particle_set, my_cell)
-         END IF
+         final_kpoint_reinit = final_kpoint_reinit .OR. dftb_kpoint_sym_restricted .OR. kpoint_verbose
+      END IF
+      IF (final_kpoint_reinit) THEN
+         CALL kpoint_reset_initialization(kpoints)
+         IF (owned_kpoints) CALL set_kpoint_info(kpoints, verbose=kpoint_verbose)
+         CALL kpoint_initialize(kpoints, particle_set, my_cell)
+      END IF
+      IF (owned_kpoints) THEN
          dft_section => section_vals_get_subs_vals(qs_env%input, "DFT")
          CALL write_kpoint_info(kpoints, dft_section=dft_section)
       END IF

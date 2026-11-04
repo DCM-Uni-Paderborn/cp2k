@@ -32,6 +32,7 @@ MODULE cryssym
    PRIVATE
    PUBLIC :: csym_type, release_csym_type, print_crys_symmetry, print_kp_symmetry
    PUBLIC :: crys_sym_gen, kpoint_gen, kpoint_gen_general, crys_sym_cartesian_halfturn
+   PUBLIC :: crys_sym_grid_compatible
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cryssym'
 
@@ -45,6 +46,7 @@ MODULE cryssym
       LOGICAL                                     :: fullgrid = .FALSE.
       LOGICAL                                     :: inversion_only = .FALSE.
       LOGICAL                                     :: cartesian_half_turns = .FALSE.
+      INTEGER, ALLOCATABLE                        :: integration_grids(:, :)
       LOGICAL                                     :: spglib_reduction = .FALSE.
       LOGICAL                                     :: spglib_backend = .FALSE.
       LOGICAL                                     :: spglib_requested = .TRUE.
@@ -102,6 +104,78 @@ CONTAINS
    END FUNCTION crys_sym_cartesian_halfturn
 
 ! **************************************************************************************************
+!> \brief Whether a fractional Seitz operation permutes every uniform integration grid.
+!>        Grid points are hmat*diag(1/npts)*j, modulo the lattice. Both the scaled
+!>        rotation and translation must be integer in grid-index coordinates.
+!> \param rotation Fractional direct-space rotation.
+!> \param translation Fractional direct-space translation, modulo lattice vectors.
+!> \param grids Three positive point counts for each active integration grid.
+!> \return Whether all grid nodes and their uniform weights are preserved to roundoff.
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION crys_sym_grid_compatible(rotation, translation, grids) RESULT(allowed)
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3), translation(3)
+      INTEGER, INTENT(IN)                                :: grids(:, :)
+
+      REAL(dp), PARAMETER :: tolerance = 256.0_dp*EPSILON(1.0_dp)
+
+      INTEGER                                            :: column, grid, row
+      REAL(dp)                                           :: mapped(3, 3), shifted(3)
+
+      allowed = .FALSE.
+      IF (SIZE(grids, 1) /= 3) RETURN
+      IF (ANY(grids <= 0)) RETURN
+      DO grid = 1, SIZE(grids, 2)
+         DO column = 1, 3
+            DO row = 1, 3
+               mapped(row, column) = REAL(grids(row, grid), dp)*rotation(row, column)/REAL(grids(column, grid), dp)
+            END DO
+         END DO
+         IF (MAXVAL(ABS(mapped - ANINT(mapped))) > tolerance*MAX(1.0_dp, MAXVAL(ABS(mapped)))) RETURN
+         shifted = REAL(grids(:, grid), dp)*(translation - ANINT(translation))
+         IF (MAXVAL(ABS(shifted - ANINT(shifted))) > tolerance*REAL(MAXVAL(grids(:, grid)), dp)) RETURN
+      END DO
+      allowed = .TRUE.
+   END FUNCTION crys_sym_grid_compatible
+
+! **************************************************************************************************
+!> \brief Refine a candidate translation from the actual atoms before testing grid covariance.
+!>        A symmetry backend can round translations within its geometric tolerance. Such a
+!>        rounded operation must not acquire exact finite-grid symmetry by that rounding.
+!> \param csym Original fractional coordinates and active integration grids
+!> \param rotation Fractional direct-space rotation
+!> \param translation Candidate translation, replaced by its atom-consistent value on success
+!> \param permutation Candidate atom mapping
+!> \param valid Whether the actual atoms and all integration grids share the operation
+! **************************************************************************************************
+   PURE SUBROUTINE refine_grid_operation(csym, rotation, translation, permutation, valid)
+      TYPE(csym_type), INTENT(IN)                        :: csym
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3)
+      REAL(dp), INTENT(INOUT)                            :: translation(3)
+      INTEGER, INTENT(IN)                                :: permutation(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      INTEGER                                            :: atom
+      REAL(dp)                                           :: actual(3), difference(3), rotated(3), &
+                                                            tolerance
+
+      valid = .FALSE.
+      IF (csym%nat < 1 .OR. SIZE(permutation) /= csym%nat) RETURN
+      IF (ANY(permutation < 1) .OR. ANY(permutation > csym%nat)) RETURN
+      rotated = MATMUL(rotation, csym%scoord(:, 1))
+      difference = rotated + translation - csym%scoord(:, permutation(1))
+      actual = csym%scoord(:, permutation(1)) + ANINT(difference) - rotated
+      IF (.NOT. crys_sym_grid_compatible(rotation, actual, csym%integration_grids)) RETURN
+      tolerance = 512.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(csym%scoord)))* &
+                  MAX(1.0_dp, MAXVAL(ABS(rotation)))
+      DO atom = 1, csym%nat
+         difference = MATMUL(rotation, csym%scoord(:, atom)) + actual - csym%scoord(:, permutation(atom))
+         IF (MAXVAL(ABS(difference - ANINT(difference))) > tolerance) RETURN
+      END DO
+      translation = actual
+      valid = .TRUE.
+   END SUBROUTINE refine_grid_operation
+
+! **************************************************************************************************
 !> \brief Release the CSYM type
 !> \param csym  The CSYM type
 ! **************************************************************************************************
@@ -147,6 +221,7 @@ CONTAINS
       IF (ALLOCATED(csym%ibrot)) THEN
          DEALLOCATE (csym%ibrot)
       END IF
+      IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
 
    END SUBROUTINE release_csym_type
 
@@ -267,15 +342,18 @@ CONTAINS
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
+!> \param integration_grids Point counts of the active uniform integration grids.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen(csym, nk, symm, shift, full_grid, gamma_centered, &
-                         inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns)
+                         inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns, &
+                         integration_grids)
       TYPE(csym_type)                                    :: csym
       INTEGER, INTENT(IN)                                :: nk(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: symm
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: shift(3)
       LOGICAL, INTENT(IN), OPTIONAL :: full_grid, gamma_centered, inversion_symmetry_only, &
          use_spglib_reduction, use_spglib_backend, cartesian_half_turns
+      INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :)
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'kpoint_gen'
 
@@ -320,6 +398,8 @@ CONTAINS
       csym%inversion_only = inversion_only
       csym%cartesian_half_turns = .FALSE.
       IF (PRESENT(cartesian_half_turns)) csym%cartesian_half_turns = cartesian_half_turns
+      IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
+      IF (PRESENT(integration_grids)) ALLOCATE (csym%integration_grids, SOURCE=integration_grids)
 
       IF (PRESENT(use_spglib_reduction)) THEN
          spglib_reduction = use_spglib_reduction
@@ -463,9 +543,11 @@ CONTAINS
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
+!> \param integration_grids Point counts of the active uniform integration grids.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen_general(csym, xkp_in, wkp_in, symm, full_grid, &
-                                 inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns)
+                                 inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns, &
+                                 integration_grids)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_in
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp_in
@@ -474,6 +556,7 @@ CONTAINS
                                                             use_spglib_reduction, &
                                                             use_spglib_backend, &
                                                             cartesian_half_turns
+      INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_gen_general'
 
@@ -506,6 +589,8 @@ CONTAINS
       csym%inversion_only = inversion_only
       csym%cartesian_half_turns = .FALSE.
       IF (PRESENT(cartesian_half_turns)) csym%cartesian_half_turns = cartesian_half_turns
+      IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
+      IF (PRESENT(integration_grids)) ALLOCATE (csym%integration_grids, SOURCE=integration_grids)
       csym%spglib_reduction = spglib_reduction
       csym%spglib_backend = spglib_backend
       csym%nkpoint = 0
@@ -697,6 +782,8 @@ CONTAINS
                                                             ntvec
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: isc, retained, selected_ibrot, ty
       INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: f0, selected_f0
+      LOGICAL                                            :: grid_valid, retained_mask(48)
+      REAL(dp)                                           :: h_inv(3, 3), rfrac(3, 3)
       REAL(KIND=dp), ALLOCATABLE                         :: selected_rt(:, :, :)
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: rx, selected_vt, tvec, xkapa
       REAL(KIND=dp), DIMENSION(3)                        :: origin
@@ -744,8 +831,18 @@ CONTAINS
       END DO
       csym%ibrot(1:nc) = ib(1:nc)
 
-      IF (csym%cartesian_half_turns) THEN
-         ALLOCATE (retained, SOURCE=PACK([(i, i=1, nc)], [(crys_sym_cartesian_halfturn(csym%rt(:, :, i)), i=1, nc)]))
+      IF (csym%cartesian_half_turns .OR. ALLOCATED(csym%integration_grids)) THEN
+         retained_mask = .TRUE.
+         h_inv = inv_3x3(csym%hmat)
+         DO i = 1, nc
+            IF (csym%cartesian_half_turns) retained_mask(i) = crys_sym_cartesian_halfturn(csym%rt(:, :, i))
+            IF (ALLOCATED(csym%integration_grids)) THEN
+               rfrac = MATMUL(h_inv, MATMUL(csym%rt(:, :, i), csym%hmat))
+               CALL refine_grid_operation(csym, rfrac, csym%vt(:, i), csym%f0(:, i), grid_valid)
+               retained_mask(i) = retained_mask(i) .AND. grid_valid
+            END IF
+         END DO
+         ALLOCATE (retained, SOURCE=PACK([(i, i=1, nc)], retained_mask(:nc)))
          CPASSERT(SIZE(retained) > 0)
          ALLOCATE (selected_rt(3, 3, SIZE(retained)), selected_vt(3, SIZE(retained)))
          ALLOCATE (selected_f0(nat, SIZE(retained)), selected_ibrot(SIZE(retained)))
@@ -820,6 +917,7 @@ CONTAINS
       INTEGER, DIMENSION(3, 3)                           :: eye, frot, irot
       LOGICAL                                            :: duplicate, identity, valid, &
                                                             zero_translation
+      REAL(dp)                                           :: translation(3)
       REAL(KIND=dp)                                      :: eps
       REAL(KIND=dp), DIMENSION(3, 3)                     :: h_inv, rfrac
 
@@ -854,6 +952,13 @@ CONTAINS
          DO iop = 1, csym%n_operations
             irot(1:3, 1:3) = csym%rotations(1:3, 1:3, iop)
             frot(1:3, 1:3) = TRANSPOSE(irot(1:3, 1:3))
+            translation = csym%translations(:, iop)
+            CALL spglib_atom_permutation(csym, frot, translation, perm, valid)
+            IF (.NOT. valid) CYCLE
+            IF (ALLOCATED(csym%integration_grids)) THEN
+               CALL refine_grid_operation(csym, REAL(frot, dp), translation, perm, valid)
+               IF (.NOT. valid) CYCLE
+            END IF
             IF (csym%cartesian_half_turns) THEN
                rfrac = REAL(frot, dp)
                IF (.NOT. crys_sym_cartesian_halfturn(MATMUL(csym%hmat, MATMUL(rfrac, h_inv)))) CYCLE
@@ -875,15 +980,12 @@ CONTAINS
             END DO
             IF (duplicate) CYCLE
 
-            CALL spglib_atom_permutation(csym, frot, csym%translations(:, iop), perm, valid)
-            IF (.NOT. valid) CYCLE
-
             nrot = nrot + 1
 
             srot(1:3, 1:3, nrot) = frot(1:3, 1:3)
             rfrac(1:3, 1:3) = REAL(frot(1:3, 1:3), KIND=dp)
             csym%rt(1:3, 1:3, nrot) = MATMUL(csym%hmat, MATMUL(rfrac, h_inv))
-            csym%vt(1:3, nrot) = csym%translations(1:3, iop)
+            csym%vt(1:3, nrot) = translation
             csym%ibrot(nrot) = nrot
             csym%f0(1:csym%nat, nrot) = perm(1:csym%nat)
          END DO
@@ -907,9 +1009,10 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: nrot
 
       INTEGER                                            :: iop, jop, pass
+      INTEGER, ALLOCATABLE                               :: perm(:)
       INTEGER, DIMENSION(3, 3)                           :: eye, frot, irot
-      LOGICAL                                            :: duplicate, identity
-      REAL(dp)                                           :: h_inv(3, 3)
+      LOGICAL                                            :: duplicate, identity, valid
+      REAL(dp)                                           :: h_inv(3, 3), translation(3)
 
       CPASSERT(csym%symlib)
 
@@ -921,11 +1024,19 @@ CONTAINS
       eye(3, 3) = 1
 
       nrot = 0
+      ALLOCATE (perm(csym%nat))
       ! Keep the identity first, matching the representative k-point operation.
       DO pass = 1, 2
          DO iop = 1, csym%n_operations
             irot(1:3, 1:3) = csym%rotations(1:3, 1:3, iop)
             frot(1:3, 1:3) = TRANSPOSE(irot(1:3, 1:3))
+            IF (ALLOCATED(csym%integration_grids)) THEN
+               translation = csym%translations(:, iop)
+               CALL spglib_atom_permutation(csym, frot, translation, perm, valid)
+               IF (.NOT. valid) CYCLE
+               CALL refine_grid_operation(csym, REAL(frot, dp), translation, perm, valid)
+               IF (.NOT. valid) CYCLE
+            END IF
             IF (csym%cartesian_half_turns) THEN
                IF (.NOT. crys_sym_cartesian_halfturn(MATMUL(csym%hmat, MATMUL(REAL(frot, dp), h_inv)))) CYCLE
             END IF

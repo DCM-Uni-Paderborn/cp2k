@@ -64,9 +64,50 @@ MODULE qs_environment_methods
 
    PUBLIC :: qs_env_rebuild_pw_env, &
              qs_env_setup, &
+             qs_env_symmetry_grids, &
              qs_env_time_update
 !***
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Return the active uniform quadratures used with original UPF operators.
+!>        Spatial operations must preserve every grid, including a distinct XC or vdW grid.
+!> \param qs_env Initialized Quickstep environment
+!> \param grids Grid dimensions, unallocated when no physical UPF kind is present
+! **************************************************************************************************
+   SUBROUTINE qs_env_symmetry_grids(qs_env, grids)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: grids(:, :)
+
+      INTEGER                                            :: kind, level, ngrid
+      LOGICAL                                            :: has_upf
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_qs_env(qs_env, qs_kind_set=kinds, pw_env=pw_env)
+      has_upf = .FALSE.
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         has_upf = has_upf .OR. ALLOCATED(kinds(kind)%sgp_potential%upf_data)
+      END DO
+      IF (.NOT. has_upf) RETURN
+      CPASSERT(ASSOCIATED(pw_env))
+      CPASSERT(ASSOCIATED(pw_env%pw_pools))
+      ngrid = SIZE(pw_env%pw_pools)
+      IF (ASSOCIATED(pw_env%xc_pw_pool)) ngrid = ngrid + 1
+      IF (ASSOCIATED(pw_env%vdw_pw_pool)) ngrid = ngrid + 1
+      ALLOCATE (grids(3, ngrid))
+      DO level = 1, SIZE(pw_env%pw_pools)
+         grids(:, level) = pw_env%pw_pools(level)%pool%pw_grid%npts
+      END DO
+      level = SIZE(pw_env%pw_pools)
+      IF (ASSOCIATED(pw_env%xc_pw_pool)) THEN
+         level = level + 1
+         grids(:, level) = pw_env%xc_pw_pool%pw_grid%npts
+      END IF
+      IF (ASSOCIATED(pw_env%vdw_pw_pool)) grids(:, level + 1) = pw_env%vdw_pw_pool%pw_grid%npts
+   END SUBROUTINE qs_env_symmetry_grids
 
 ! **************************************************************************************************
 !> \brief initializes various components of the qs_env, that need only

@@ -163,6 +163,8 @@ MODULE force_env_methods
    USE qs_apt_fdiff_methods,            ONLY: apt_fdiff
    USE qs_basis_rotation_methods,       ONLY: qs_basis_rotation
    USE qs_energy_types,                 ONLY: qs_energy_type
+   USE qs_environment_methods,          ONLY: qs_env_rebuild_pw_env,&
+                                              qs_env_symmetry_grids
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
@@ -648,6 +650,11 @@ CONTAINS
       CALL set_kpoint_info(kpoints, full_grid=use_full_grid, &
                            inversion_symmetry_only=use_inversion_symmetry_only)
 
+      IF (dynamic_symmetry) THEN
+         ! A changed cell can change the PW grids as well as the geometric space group.
+         CALL qs_env_rebuild_pw_env(force_env%qs_env)
+         CALL qs_env_symmetry_grids(force_env%qs_env, kpoints%integration_grids)
+      END IF
       CALL kpoint_reset_initialization(kpoints)
       CALL kpoint_initialize(kpoints, particle_set, cell)
       CALL kpoint_env_initialize(kpoints, para_env, blacs_env, with_aux_fit=dft_control%do_admm)
