@@ -260,7 +260,7 @@ CONTAINS
       ALLOCATE (relative, SOURCE=previous_metric)
       CALL ztrsm('L', 'U', 'C', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, relative, n)
       CALL ztrsm('R', 'U', 'N', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, relative, n)
-      relative = 0.5_dp*(relative + CONJG(TRANSPOSE(relative)))
+      relative(:, :) = 0.5_dp*(relative + CONJG(TRANSPOSE(relative)))
       IF (.NOT. ALL(ieee_is_finite(REAL(relative, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(relative)))) THEN
          info = -1
          RETURN
