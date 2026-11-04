@@ -2058,6 +2058,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)::result(:)
       TYPE(twofold_real_type), INTENT(IN) :: sigma_precise(3)
       INTEGER::nvar, n, spin, off, r, s, t, i, axis
+      LOGICAL :: kinetic_curvature(2)
       REAL(dp)::gradient(9), hessian(9, 9)
       TYPE(twofold_real_type) :: jacobian(9, 10), map_regular(10, 10, 2), &
                                  lower_vectors(10, 2), final_vectors(10, 2), lower_factors(2), final_factors(2), &
@@ -2071,6 +2072,7 @@ CONTAINS
       gradient = 0.0_dp; hessian = 0.0_dp; jacobian = zero
       map_regular = zero; lower_vectors = zero; final_vectors = zero
       lower_factors = zero; final_factors = zero
+      kinetic_curvature = .FALSE.
       DO i = 1, n
          v(i) = twofold_real_type(direction(i), 0.0_dp)
       END DO
@@ -2121,6 +2123,12 @@ CONTAINS
          tw = sigma_precise(2*spin - 1)/(eight*den)
          CALL libxc_c2_maximum_precise(tw, twofold_real_type(MAX(epsilon_tau, EPSILON(0.0_dp)), 0.0_dp), lower, lf, ls)
          CALL libxc_c2_maximum_precise(twofold_real_type(fields(off + 5), 0.0_dp), lower, projected, ff, fs)
+         jacobian(t, off + 5) = ff(1)
+         ! The identity branch has no kinetic projection curvature. Elsewhere
+         ! retain its compensated response within the same physical spin block.
+         IF (ff(2)%hi == 0.0_dp .AND. ff(2)%lo == 0.0_dp .AND. &
+             fs(1, 1)%hi == 0.0_dp .AND. fs(1, 1)%lo == 0.0_dp) CYCLE
+         kinetic_curvature(spin) = .TRUE.
          gw = zero; hw = zero
          IF (w%rho(spin, point) >= libxc_density_floor(epsilon_rho)) THEN
             gw(off + 1) = -tw/den; hw(off + 1, off + 1) = two*tw/(den*den)
@@ -2135,9 +2143,8 @@ CONTAINS
             gw(i) = twofold_real_type(fields(i), 0.0_dp)/(four*den)
             hw(i, i) = one/(four*den)
          END DO
-         jacobian(t, :) = ff(2)*lf(1)*gw
-         jacobian(t, off + 5) = ff(1)
-         map_regular(:, :, spin) = ff(2)*lf(1)*hw
+         jacobian(t, off + 1:off + 4) = ff(2)*lf(1)*gw(off + 1:off + 4)
+         map_regular(off + 1:off + 4, off + 1:off + 4, spin) = ff(2)*lf(1)*hw(off + 1:off + 4, off + 1:off + 4)
          lower_vectors(:, spin) = gw; lower_factors(spin) = ff(2)*ls(1, 1)
          IF (twofold_value(fs(1, 1)) > 0.0_dp) THEN
             ratio = twofold_real_type(fields(off + 5), 0.0_dp)/lower
@@ -2160,11 +2167,11 @@ CONTAINS
          IF (ns == 2) THEN
             s = 2*spin + 1; t = 7 + spin
          END IF
-         IF (mgga) THEN
-            lower_dot = libxc_twofold_dot(lower_vectors(:n, spin), v(:n))
-            final_dot = libxc_twofold_dot(final_vectors(:n, spin), v(:n))
-            DO i = 1, n
-               a = libxc_twofold_dot(map_regular(i, :n, spin), v(:n))
+         IF (mgga .AND. kinetic_curvature(spin)) THEN
+            lower_dot = libxc_twofold_dot(lower_vectors(off + 1:off + 4, spin), v(off + 1:off + 4))
+            final_dot = libxc_twofold_dot(final_vectors(off + 1:off + 5, spin), v(off + 1:off + 5))
+            DO i = off + 1, off + 5
+               a = libxc_twofold_dot(map_regular(i, off + 1:off + 4, spin), v(off + 1:off + 4))
                b = lower_factors(spin)*lower_dot
                b = lower_vectors(i, spin)*b
                a = twofold_add(a, b)
