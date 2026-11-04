@@ -32,7 +32,8 @@ MODULE qs_upf_inverse_scf
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
-   USE kpoint_methods,                  ONLY: kpoint_star_operator
+   USE kpoint_methods,                  ONLY: kpoint_star_matrix,&
+                                              kpoint_star_operator
    USE kpoint_transitional,             ONLY: set_1d_pointer,&
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: kpoint_native_operator_clear
@@ -96,6 +97,7 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_gth_local_residual
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_collocate,&
                                               qs_upf_inverse_kpoints_density,&
+                                              qs_upf_inverse_kpoints_density_representative,&
                                               qs_upf_inverse_kpoints_integrate,&
                                               qs_upf_inverse_kpoints_metric,&
                                               qs_upf_inverse_kpoints_release_operators
@@ -146,8 +148,8 @@ CONTAINS
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       REAL(dp), INTENT(OUT)                              :: populations(:, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :)
-      INTEGER                                            :: ik, spin
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :), representative(:, :)
+      INTEGER                                            :: ik, rep, spin
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL get_ks_env(ks_env, upf_inverse=state)
@@ -156,13 +158,17 @@ CONTAINS
       CPASSERT(ALLOCATED(state%metric_k))
       CPASSERT(SIZE(populations, 1) == SIZE(state%metric_k, 1))
       populations = 0.0_dp
+      ALLOCATE (density(state%bloch%nao, state%bloch%nao))
       DO spin = 1, SIZE(populations, 2)
-         CALL qs_upf_inverse_kpoints_density(state%bloch, spin, density)
-         CPASSERT(ALL(SHAPE(density) == SHAPE(state%metric_k)))
-         IF (.NOT. state%bloch%kpoints%para_env%is_source()) CYCLE
-         DO ik = 1, SIZE(state%bloch%weights)
-            populations(:, spin) = populations(:, spin) + state%bloch%weights(ik)* &
-                                   SUM(REAL(density(:, :, ik)*CONJG(state%metric_k(:, :, ik)), dp), DIM=2)
+         DO rep = 1, state%bloch%kpoints%nkp
+            CALL qs_upf_inverse_kpoints_density_representative(state%bloch, spin, rep, representative)
+            IF (.NOT. state%bloch%kpoints%para_env%is_source()) CYCLE
+            DO ik = 1, SIZE(state%bloch%weights)
+               IF (state%bloch%star%representative(ik) /= rep) CYCLE
+               CALL kpoint_star_matrix(state%bloch%star, ik, representative, density, .FALSE.)
+               populations(:, spin) = populations(:, spin) + state%bloch%weights(ik)* &
+                                      SUM(REAL(density*CONJG(state%metric_k(:, :, ik)), dp), DIM=2)
+            END DO
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_scf_mulliken
@@ -1850,8 +1856,8 @@ CONTAINS
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       REAL(dp), INTENT(OUT)                              :: core, kinetic
 
-      COMPLEX(dp), ALLOCATABLE                           :: density(:, :, :)
-      INTEGER                                            :: ik, spin
+      COMPLEX(dp), ALLOCATABLE                           :: density(:, :), representative(:, :)
+      INTEGER                                            :: ik, rep, spin
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL get_ks_env(ks_env, upf_inverse=state)
@@ -1860,11 +1866,16 @@ CONTAINS
       CPASSERT(ASSOCIATED(state%bloch%kpoints))
       core = 0.0_dp
       kinetic = 0.0_dp
+      ALLOCATE (density(state%bloch%nao, state%bloch%nao))
       DO spin = 1, SIZE(state%bloch%kpoints%native_density, 2)
-         CALL qs_upf_inverse_kpoints_density(state%bloch, spin, density)
-         DO ik = 1, SIZE(state%bloch%weights)
-            core = core + state%bloch%weights(ik)*REAL(SUM(density(:, :, ik)*TRANSPOSE(state%core_k(:, :, ik))), dp)
-            kinetic = kinetic + state%bloch%weights(ik)*REAL(SUM(density(:, :, ik)*TRANSPOSE(state%kinetic_k(:, :, ik))), dp)
+         DO rep = 1, state%bloch%kpoints%nkp
+            CALL qs_upf_inverse_kpoints_density_representative(state%bloch, spin, rep, representative)
+            DO ik = 1, SIZE(state%bloch%weights)
+               IF (state%bloch%star%representative(ik) /= rep) CYCLE
+               CALL kpoint_star_matrix(state%bloch%star, ik, representative, density, .FALSE.)
+               core = core + state%bloch%weights(ik)*REAL(SUM(density*TRANSPOSE(state%core_k(:, :, ik))), dp)
+               kinetic = kinetic + state%bloch%weights(ik)*REAL(SUM(density*TRANSPOSE(state%kinetic_k(:, :, ik))), dp)
+            END DO
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_scf_traces

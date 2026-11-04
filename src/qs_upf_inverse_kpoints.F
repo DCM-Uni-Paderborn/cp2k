@@ -63,6 +63,7 @@ MODULE qs_upf_inverse_kpoints
 
    PUBLIC :: qs_upf_inverse_kpoints_type, qs_upf_inverse_kpoints_prepare, qs_upf_inverse_kpoints_release
    PUBLIC :: qs_upf_inverse_kpoints_density, qs_upf_inverse_kpoints_collocate
+   PUBLIC :: qs_upf_inverse_kpoints_density_representative
    PUBLIC :: qs_upf_inverse_kpoints_images
    PUBLIC :: qs_upf_inverse_kpoints_image_operator
    PUBLIC :: qs_upf_inverse_kpoints_integrate, qs_upf_inverse_kpoints_metric, qs_upf_inverse_kpoints_distribute
@@ -216,42 +217,17 @@ CONTAINS
       INTEGER                                            :: ik, local
       LOGICAL                                            :: use_energy_weighted
       REAL(dp)                                           :: defect, tolerance
-      REAL(dp), ALLOCATABLE                              :: imaginary(:, :), real_part(:, :)
       TYPE(kpoint_env_p_type), POINTER                   :: environments(:)
-      TYPE(kpoint_env_type), POINTER                     :: kp
 
       CALL check_live(frame)
       CALL native_environments(frame, environments)
       use_energy_weighted = .FALSE.
       IF (PRESENT(energy_weighted)) use_energy_weighted = energy_weighted
-      ALLOCATE (density(frame%nao, frame%nao, frame%kpoints%nkp), &
-                real_part(frame%nao, frame%nao), imaginary(frame%nao, frame%nao))
+      ALLOCATE (density(frame%nao, frame%nao, frame%kpoints%nkp))
       density = CMPLX(0.0_dp, 0.0_dp, dp)
       DO local = 1, SIZE(environments)
-         CPASSERT(ASSOCIATED(environments(local)%kpoint_env))
-         kp => environments(local)%kpoint_env
          ik = frame%kp_range(1) + local - 1
-         CPASSERT(kp%nkpoint == ik)
-         CPASSERT(ASSOCIATED(kp%pmat))
-         CPASSERT(spin >= 1 .AND. spin <= SIZE(kp%pmat, 2))
-         CPASSERT(kp%pmat(1, spin)%matrix_struct%nrow_global == frame%nao)
-         CPASSERT(kp%pmat(1, spin)%matrix_struct%ncol_global == frame%nao)
-         IF (use_energy_weighted) THEN
-            CPASSERT(ASSOCIATED(kp%wmat))
-            CPASSERT(ALL(SHAPE(kp%wmat) == SHAPE(kp%pmat)))
-            CALL cp_fm_get_submatrix(kp%wmat(1, spin), real_part)
-            imaginary = 0.0_dp
-            IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%wmat(2, spin), imaginary)
-            IF (frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(real_part, imaginary, dp)
-         ELSE IF (.NOT. frame%star%for_aux_fit .AND. ALLOCATED(frame%kpoints%native_density)) THEN
-            CALL cp_cfm_get_submatrix(frame%kpoints%native_density(local, spin), density(:, :, ik))
-            IF (.NOT. frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(0.0_dp, 0.0_dp, dp)
-         ELSE
-            CALL cp_fm_get_submatrix(kp%pmat(1, spin), real_part)
-            imaginary = 0.0_dp
-            IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%pmat(2, spin), imaginary)
-            IF (frame%kpoints%para_env_kp%is_source()) density(:, :, ik) = CMPLX(real_part, imaginary, dp)
-         END IF
+         CALL owned_density(frame, local, spin, use_energy_weighted, density(:, :, ik))
       END DO
       DO ik = 1, frame%kpoints%nkp
          CALL frame%kpoints%para_env%sum(density(:, :, ik))
@@ -263,6 +239,88 @@ CONTAINS
       CALL MOVE_ALLOC(density, representatives)
       CALL kpoint_star_density(frame%star, representatives, density)
    END SUBROUTINE qs_upf_inverse_kpoints_density
+
+! **************************************************************************************************
+!> \brief Gather one unweighted representative density in the original atom coordinates.
+!>        Collective over the world communicator. Only the owning group gathers its native tiles.
+!>        Callers can expand its physical partners without storing all k-point density matrices.
+!> \param frame Native Bloch map.
+!> \param spin Physical spin index.
+!> \param representative Global irreducible k-point index.
+!> \param density New replicated AO matrix, without its k-point weight.
+!> \param energy_weighted Use the native energy-weighted matrix instead of the accepted density.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_kpoints_density_representative(frame, spin, representative, density, energy_weighted)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
+      INTEGER, INTENT(IN)                                :: spin, representative
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: energy_weighted
+
+      INTEGER                                            :: local
+      LOGICAL                                            :: weighted
+      REAL(dp)                                           :: defect, tolerance
+
+      CALL check_live(frame)
+      CPASSERT(representative >= 1 .AND. representative <= frame%kpoints%nkp)
+      weighted = .FALSE.
+      IF (PRESENT(energy_weighted)) weighted = energy_weighted
+      ALLOCATE (density(frame%nao, frame%nao), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      IF (representative >= frame%kp_range(1) .AND. representative <= frame%kp_range(2)) THEN
+         local = representative - frame%kp_range(1) + 1
+         CALL owned_density(frame, local, spin, weighted, density)
+      END IF
+      CALL frame%kpoints%para_env%sum(density)
+      IF (frame%star%for_aux_fit) CALL unfold_auxiliary_density(frame, representative, density)
+      defect = MAXVAL(ABS(density - CONJG(TRANSPOSE(density))))
+      tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(density)))
+      CPASSERT(defect <= tolerance)
+   END SUBROUTINE qs_upf_inverse_kpoints_density_representative
+
+! **************************************************************************************************
+!> \brief Gather one group-owned density; only its source rank contributes outside that group.
+!> \param frame Native Bloch map.
+!> \param local Group-local k-point index.
+!> \param spin Physical spin index.
+!> \param weighted Select the native energy-weighted density.
+!> \param density Group contribution, without its k-point weight.
+! **************************************************************************************************
+   SUBROUTINE owned_density(frame, local, spin, weighted, density)
+      TYPE(qs_upf_inverse_kpoints_type), INTENT(IN)      :: frame
+      INTEGER, INTENT(IN)                                :: local, spin
+      LOGICAL, INTENT(IN)                                :: weighted
+      COMPLEX(dp), INTENT(OUT)                           :: density(:, :)
+
+      REAL(dp), ALLOCATABLE                              :: imaginary(:, :), real_part(:, :)
+      TYPE(kpoint_env_p_type), POINTER                   :: environments(:)
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      CALL native_environments(frame, environments)
+      CPASSERT(local >= 1 .AND. local <= SIZE(environments))
+      kp => environments(local)%kpoint_env
+      CPASSERT(ASSOCIATED(kp))
+      CPASSERT(kp%nkpoint == frame%kp_range(1) + local - 1)
+      CPASSERT(ASSOCIATED(kp%pmat))
+      CPASSERT(spin >= 1 .AND. spin <= SIZE(kp%pmat, 2))
+      CPASSERT(kp%pmat(1, spin)%matrix_struct%nrow_global == frame%nao)
+      CPASSERT(kp%pmat(1, spin)%matrix_struct%ncol_global == frame%nao)
+      IF (.NOT. weighted .AND. .NOT. frame%star%for_aux_fit .AND. ALLOCATED(frame%kpoints%native_density)) THEN
+         CALL cp_cfm_get_submatrix(frame%kpoints%native_density(local, spin), density)
+      ELSE
+         ALLOCATE (real_part(frame%nao, frame%nao), imaginary(frame%nao, frame%nao))
+         imaginary = 0.0_dp
+         IF (weighted) THEN
+            CPASSERT(ASSOCIATED(kp%wmat))
+            CPASSERT(ALL(SHAPE(kp%wmat) == SHAPE(kp%pmat)))
+            CALL cp_fm_get_submatrix(kp%wmat(1, spin), real_part)
+            IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%wmat(2, spin), imaginary)
+         ELSE
+            CALL cp_fm_get_submatrix(kp%pmat(1, spin), real_part)
+            IF (.NOT. frame%kpoints%use_real_wfn) CALL cp_fm_get_submatrix(kp%pmat(2, spin), imaginary)
+         END IF
+         density = CMPLX(real_part, imaginary, dp)
+      END IF
+      IF (.NOT. frame%kpoints%para_env_kp%is_source()) density = CMPLX(0.0_dp, 0.0_dp, dp)
+   END SUBROUTINE owned_density
 
 ! **************************************************************************************************
 !> \brief Express a native auxiliary density in the original unwrapped-atom Gaussian coordinates.

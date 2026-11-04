@@ -160,6 +160,7 @@ MODULE kpoint_methods
    PUBLIC :: kpoint_ot_energy_weighted_density
    PUBLIC :: kp_transform_plan_create
    PUBLIC :: kpoint_star_create, kpoint_star_density, kpoint_star_operator, kpoint_star_orbitals
+   PUBLIC :: kpoint_star_matrix
    PUBLIC :: kpoint_star_operator_defect
    PUBLIC :: rskp_transform, lowdin_kp_trans, lowdin_kp_mo_coeff
    PUBLIC :: rskp_grid_type, rskp_transform_grid_prepare, rskp_transform_grid_extract, &
