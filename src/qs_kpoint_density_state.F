@@ -13,6 +13,7 @@ MODULE qs_kpoint_density_state
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_submatrix,&
                                               cp_cfm_set_submatrix
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: uspp_method_inverse,&
                                               uspp_method_inverse_1c
    USE kinds,                           ONLY: dp
@@ -31,6 +32,7 @@ MODULE qs_kpoint_density_state
    PUBLIC :: kpoint_density_state_broyden
    PUBLIC :: kpoint_density_state_mulliken
    PUBLIC :: kpoint_density_state_write, kpoint_density_state_read
+   PUBLIC :: kpoint_density_metric_transport
 CONTAINS
 
 ! **************************************************************************************************
@@ -125,8 +127,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Restore complete Bloch densities, preserving occupations in the current physical metric.
-!>        For M = R^H R, A = R_new^-1 R_old gives P_new = A P_old A^H. This congruence
-!>        preserves positivity, all occupation eigenvalues and charge, including empty spins.
+!>        A = (M_new^-1 M_old)^1/2 gives P_new = A P_old A^H. This congruence preserves
+!>        positivity, occupation eigenvalues, charge and common metric symmetries.
 !>        The two inverse methods share reconstructed Gaussian orbital variables and can
 !>        use this transport. Direct soft-orbital densities require a separate transformation.
 !> \param kpoints ...
@@ -137,10 +139,9 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: unit
 
       COMPLEX(dp), ALLOCATABLE                           :: density(:, :), metric(:, :), &
-                                                            previous_metric(:, :), &
-                                                            transform(:, :), upper(:, :)
-      INTEGER                                            :: i, ik, info, ios, local, n, nao, nk, &
-                                                            nspin, representation, spin
+                                                            previous_metric(:, :), transform(:, :)
+      INTEGER                                            :: ik, info, ios, local, n, nao, nk, nspin, &
+                                                            representation, spin
       LOGICAL                                            :: compatible_representation, owns
       REAL(dp)                                           :: charge, tolerance
       REAL(dp), ALLOCATABLE                              :: coordinates(:, :), weights(:)
@@ -176,7 +177,7 @@ CONTAINS
          CPABORT("Native k-point restart has different coordinates or weights")
       END IF
       DEALLOCATE (coordinates, weights)
-      ALLOCATE (density(n, n), metric(n, n), previous_metric(n, n), transform(n, n), upper(n, n))
+      ALLOCATE (density(n, n), metric(n, n), previous_metric(n, n))
       DO ik = 1, nk
          local = ik - kpoints%kp_range(1) + 1
          owns = ik >= kpoints%kp_range(1) .AND. ik <= kpoints%kp_range(2)
@@ -191,16 +192,8 @@ CONTAINS
             IF (MAXVAL(ABS(previous_metric - CONJG(TRANSPOSE(previous_metric)))) > tolerance) THEN
                CPABORT("Non-Hermitian native k-point restart metric")
             END IF
-            transform(:, :) = previous_metric
-            upper(:, :) = metric
-            CALL zpotrf('U', n, transform, n, info)
-            IF (info /= 0) CPABORT("Nonpositive native k-point restart metric")
-            CALL zpotrf('U', n, upper, n, info)
-            IF (info /= 0) CPABORT("Nonpositive current native k-point metric")
-            DO i = 1, n
-               transform(i + 1:n, i) = CMPLX(0.0_dp, 0.0_dp, dp)
-            END DO
-            CALL ztrsm('L', 'U', 'N', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, transform, n)
+            CALL kpoint_density_metric_transport(previous_metric, metric, transform, info)
+            IF (info /= 0) CPABORT("Invalid native k-point restart metric transport")
          END IF
          DO spin = 1, nspin
             IF (unit > 0) THEN
@@ -209,6 +202,9 @@ CONTAINS
             END IF
             CALL kpoints%para_env%bcast(density)
             IF (owns) THEN
+               IF (.NOT. ALL(ieee_is_finite(REAL(density, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(density)))) THEN
+                  CPABORT("Nonfinite native k-point restart density")
+               END IF
                tolerance = 1.0E-10_dp*MAX(1.0_dp, MAXVAL(ABS(density)))
                IF (MAXVAL(ABS(density - CONJG(TRANSPOSE(density)))) > tolerance) THEN
                   CPABORT("Non-Hermitian native k-point restart density")
@@ -221,12 +217,67 @@ CONTAINS
                CALL cp_cfm_set_submatrix(kpoints%native_density(local, spin), density)
             END IF
          END DO
+         IF (ALLOCATED(transform)) DEALLOCATE (transform)
       END DO
-      DEALLOCATE (density, metric, previous_metric, transform, upper)
+      DEALLOCATE (density, metric, previous_metric)
       kpoints%native_density_seeded = .TRUE.
       kpoints%native_trial_valid = .FALSE.
       CALL kpoint_density_state_restore(kpoints)
    END SUBROUTINE kpoint_density_state_read
+
+! **************************************************************************************************
+!> \brief Positive relative square root A, with A^H M_new A = M_old.
+!>        As a function of M_new^-1 M_old it commutes with every common metric symmetry,
+!>        including nonunitary AO actions. A Cholesky-to-Cholesky map need not do so.
+!> \param previous_metric Hermitian positive previous charge metric M_old
+!> \param metric Hermitian positive current charge metric M_new
+!> \param transform Principal square root of M_new^-1 M_old
+!> \param info Zero on success, nonzero for invalid input or failed factorization
+! **************************************************************************************************
+   SUBROUTINE kpoint_density_metric_transport(previous_metric, metric, transform, info)
+      COMPLEX(dp), INTENT(IN)                            :: previous_metric(:, :), metric(:, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: transform(:, :)
+      INTEGER, INTENT(OUT)                               :: info
+
+      COMPLEX(dp), ALLOCATABLE                           :: relative(:, :), upper(:, :), work(:)
+      INTEGER                                            :: n
+      REAL(dp), ALLOCATABLE                              :: real_work(:), values(:)
+
+      n = SIZE(metric, 1)
+      CPASSERT(n > 0 .AND. ALL(SHAPE(metric) == [n, n]))
+      CPASSERT(ALL(SHAPE(previous_metric) == [n, n]))
+      info = -1
+      IF (.NOT. ALL(ieee_is_finite(REAL(metric, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(metric)))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(previous_metric, dp))) .OR. &
+          .NOT. ALL(ieee_is_finite(AIMAG(previous_metric)))) RETURN
+      IF (MAXVAL(ABS(metric - CONJG(TRANSPOSE(metric)))) > 1.e-10_dp*MAX(1.0_dp, MAXVAL(ABS(metric)))) RETURN
+      IF (MAXVAL(ABS(previous_metric - CONJG(TRANSPOSE(previous_metric)))) > &
+          1.e-10_dp*MAX(1.0_dp, MAXVAL(ABS(previous_metric)))) RETURN
+      ALLOCATE (upper, SOURCE=metric)
+      CALL zpotrf('U', n, upper, n, info)
+      IF (info /= 0) RETURN
+      ! M_new = R^H R. B = R^-H M_old R^-1 is Hermitian positive.
+      ALLOCATE (relative, SOURCE=previous_metric)
+      CALL ztrsm('L', 'U', 'C', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, relative, n)
+      CALL ztrsm('R', 'U', 'N', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, relative, n)
+      relative = 0.5_dp*(relative + CONJG(TRANSPOSE(relative)))
+      IF (.NOT. ALL(ieee_is_finite(REAL(relative, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(relative)))) THEN
+         info = -1
+         RETURN
+      END IF
+      ALLOCATE (values(n), work(2*n), real_work(3*n))
+      CALL zheev('V', 'U', n, relative, n, values, work, SIZE(work), real_work, info)
+      IF (info /= 0) RETURN
+      IF (.NOT. ALL(ieee_is_finite(values)) .OR. MINVAL(values) <= 0.0_dp) THEN
+         info = n + 1
+         RETURN
+      END IF
+      ALLOCATE (transform, SOURCE=MATMUL(relative*SPREAD(SQRT(values), 1, n), CONJG(TRANSPOSE(relative))))
+      ! A = R^-1 sqrt(B) R. No inverse of either dense metric is formed.
+      CALL ztrmm('R', 'U', 'N', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, transform, n)
+      CALL ztrsm('L', 'U', 'N', 'N', n, n, CMPLX(1.0_dp, 0.0_dp, dp), upper, n, transform, n)
+      IF (.NOT. ALL(ieee_is_finite(REAL(transform, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(transform)))) info = -1
+   END SUBROUTINE kpoint_density_metric_transport
 
 ! **************************************************************************************************
 !> \brief Capture the newly diagonalized density while retaining the density that built H.
