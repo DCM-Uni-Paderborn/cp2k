@@ -32,6 +32,7 @@ MODULE qs_upf_inverse_kpoints
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_star_create,&
                                               kpoint_star_density,&
+                                              kpoint_star_matrix,&
                                               kpoint_star_operator
    USE kpoint_mo_symmetry_methods,      ONLY: kpoint_halfturn_symmetry
    USE kpoint_types,                    ONLY: kpoint_env_p_type,&
@@ -588,11 +589,12 @@ CONTAINS
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
-      COMPLEX(dp), ALLOCATABLE                           :: matrices(:, :, :)
-      INTEGER                                            :: axis, ik
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), representative(:, :)
+      INTEGER                                            :: axis, ik, rep
       TYPE(pw_r3d_rs_type)                               :: dpart(3), part, tpart
 
-      CALL qs_upf_inverse_kpoints_density(frame, spin, matrices)
+      CALL check_live(frame)
+      ALLOCATE (matrix(frame%nao, frame%nao))
       CALL part%create(density%pw_grid)
       CALL tpart%create(density%pw_grid)
       density%array = 0.0_dp
@@ -601,15 +603,20 @@ CONTAINS
          CALL dpart(axis)%create(density%pw_grid)
          gradient(axis)%array = 0.0_dp
       END DO
-      DO ik = 1, SIZE(frame%weights)
-         matrices(:, :, ik) = frame%weights(ik)*matrices(:, :, ik)
-         CALL qs_upf_inverse_grid_collocate_dense(frame%frames(ik), matrices(:, :, ik), part, dpart, tpart, &
-                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic, &
-                                                  orbital_fields=orbital_fields)
-         density%array = density%array + part%array
-         tau%array = tau%array + tpart%array
-         DO axis = 1, 3
-            gradient(axis)%array = gradient(axis)%array + dpart(axis)%array
+      DO rep = 1, frame%kpoints%nkp
+         CALL qs_upf_inverse_kpoints_density_representative(frame, spin, rep, representative)
+         DO ik = 1, SIZE(frame%weights)
+            IF (frame%star%representative(ik) /= rep) CYCLE
+            CALL kpoint_star_matrix(frame%star, ik, representative, matrix, .FALSE.)
+            matrix = frame%weights(ik)*matrix
+            CALL qs_upf_inverse_grid_collocate_dense(frame%frames(ik), matrix, part, dpart, tpart, &
+                                                     augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic, &
+                                                     orbital_fields=orbital_fields)
+            density%array = density%array + part%array
+            tau%array = tau%array + tpart%array
+            DO axis = 1, 3
+               gradient(axis)%array = gradient(axis)%array + dpart(axis)%array
+            END DO
          END DO
       END DO
       CALL part%release()
