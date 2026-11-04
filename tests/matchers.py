@@ -790,3 +790,5 @@ registry["Kubo_symmetry_current_error"] = GenericMatcher(
 registry["Kubo_symmetry_points"] = GenericMatcher(
     r"KUBO_TRANSPORT| Property symmetry representatives:", col=5
 )
+
+registry["SCF_raw_map_delta"] = GenericMatcher("raw_map_delta=", col=6)
