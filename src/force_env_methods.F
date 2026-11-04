@@ -164,7 +164,8 @@ MODULE force_env_methods
    USE qs_basis_rotation_methods,       ONLY: qs_basis_rotation
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_methods,          ONLY: qs_env_rebuild_pw_env,&
-                                              qs_env_symmetry_grids
+                                              qs_env_symmetry_grids,&
+                                              qs_env_validate_xc_symmetry
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
@@ -657,6 +658,7 @@ CONTAINS
       END IF
       CALL kpoint_reset_initialization(kpoints)
       CALL kpoint_initialize(kpoints, particle_set, cell)
+      CALL qs_env_validate_xc_symmetry(force_env%qs_env, kpoints)
       CALL kpoint_env_initialize(kpoints, para_env, blacs_env, with_aux_fit=dft_control%do_admm)
       CALL kpoint_initialize_mos(kpoints, mos)
       CALL wfi_clear(wf_history)

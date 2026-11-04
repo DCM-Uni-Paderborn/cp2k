@@ -155,7 +155,8 @@ MODULE qs_environment
    USE qs_energy_types,                 ONLY: allocate_qs_energy,&
                                               qs_energy_type
    USE qs_environment_methods,          ONLY: qs_env_setup,&
-                                              qs_env_symmetry_grids
+                                              qs_env_symmetry_grids,&
+                                              qs_env_validate_xc_symmetry
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
@@ -632,6 +633,7 @@ CONTAINS
          IF (owned_kpoints) CALL set_kpoint_info(kpoints, verbose=kpoint_verbose)
          CALL kpoint_initialize(kpoints, particle_set, my_cell)
       END IF
+      CALL qs_env_validate_xc_symmetry(qs_env, kpoints)
       IF (owned_kpoints) THEN
          dft_section => section_vals_get_subs_vals(qs_env%input, "DFT")
          CALL write_kpoint_info(kpoints, dft_section=dft_section)

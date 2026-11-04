@@ -9,7 +9,6 @@ MODULE qs_upf_inverse_background
    USE admm_types,                      ONLY: admm_type,&
                                               get_admm_env
    USE cell_types,                      ONLY: cell_type
-   USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: &
         dbcsr_copy, dbcsr_get_block_p, dbcsr_get_info, dbcsr_get_matrix_type, &
         dbcsr_iterator_blocks_left, dbcsr_iterator_next_block, dbcsr_iterator_start, &
@@ -20,7 +19,6 @@ MODULE qs_upf_inverse_background
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kp_transform_plan_create,&
                                               kpoint_star_create
-   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_halfturn_symmetry
    USE kpoint_types,                    ONLY: kpoint_star_type,&
                                               kpoint_type
    USE mathconstants,                   ONLY: twopi
@@ -93,7 +91,6 @@ CONTAINS
       TYPE(admm_type), POINTER                           :: admm
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
-      TYPE(dft_control_type), POINTER                    :: control
       TYPE(kpoint_star_type)                             :: star
       TYPE(kpoint_type), POINTER                         :: kpoints, task_kpoints
       TYPE(neighbor_list_iterator_p_type), POINTER       :: iterator(:)
@@ -110,7 +107,7 @@ CONTAINS
          CPASSERT(map%orbital_basis == "AUX_FIT" .AND. map%column_basis == "ORB")
       END IF
       CPASSERT(map%orbital_basis == "ORB" .OR. map%orbital_basis == "AUX_FIT")
-      CALL get_ks_env(ks_env, matrix_s_kp=overlap, kpoints=kpoints, do_kpoints=map%bloch, sab_orb=sab, dft_control=control)
+      CALL get_ks_env(ks_env, matrix_s_kp=overlap, kpoints=kpoints, do_kpoints=map%bloch, sab_orb=sab)
       IF (map%orbital_basis == "AUX_FIT") THEN
          CPASSERT(PRESENT(qs_env))
          CPASSERT(ASSOCIATED(qs_env))
@@ -162,9 +159,6 @@ CONTAINS
       END DO
       IF (map%bloch) THEN
          CPASSERT(ASSOCIATED(kpoints))
-         IF (control%use_gauxc .AND. .NOT. kpoint_halfturn_symmetry(kpoints)) THEN
-            CPABORT("Use CARTESIAN_HALF_TURNS for learned XC spatial symmetry")
-         END IF
          ! The star retains physical AO actions for both spatial and time-reversed partners.
          CALL kp_transform_plan_create(map%plan, sab, kpoints%cell_to_index, SIZE(overlap, 2), &
                                        block_template=overlap(1, 1)%matrix)

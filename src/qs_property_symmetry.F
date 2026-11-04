@@ -23,7 +23,8 @@ MODULE qs_property_symmetry
                                               kpoint_type
    USE particle_types,                  ONLY: particle_type
    USE qs_basis_rotation_methods,       ONLY: qs_basis_rotation
-   USE qs_environment_methods,          ONLY: qs_env_symmetry_grids
+   USE qs_environment_methods,          ONLY: qs_env_symmetry_grids,&
+                                              qs_env_validate_xc_symmetry
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE topology_symmetry,               ONLY: spin_rotation,&
@@ -76,6 +77,7 @@ CONTAINS
       points%eps_geo = tolerance
       CALL qs_env_symmetry_grids(qs_env, points%integration_grids)
       CALL kpoint_initialize(points, particles, cell)
+      CALL qs_env_validate_xc_symmetry(qs_env, points)
       CALL qs_basis_rotation(qs_env, points)
       ALLOCATE (representative(nk), operation(nk))
       representative = 0

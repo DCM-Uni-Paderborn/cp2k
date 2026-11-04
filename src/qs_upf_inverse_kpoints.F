@@ -19,7 +19,6 @@ MODULE qs_upf_inverse_kpoints
                                               cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
                                               cp_cfm_type
-   USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_clear,&
                                               dbcsr_finalize,&
                                               dbcsr_get_info,&
@@ -34,7 +33,6 @@ MODULE qs_upf_inverse_kpoints
                                               kpoint_star_density,&
                                               kpoint_star_matrix,&
                                               kpoint_star_operator
-   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_halfturn_symmetry
    USE kpoint_types,                    ONLY: kpoint_env_p_type,&
                                               kpoint_env_type,&
                                               kpoint_star_type,&
@@ -106,13 +104,12 @@ CONTAINS
       REAL(dp)                                           :: folding_error
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: overlap(:, :)
-      TYPE(dft_control_type), POINTER                    :: control
       TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
-      CALL get_ks_env(ks_env, kpoints=kpoints, matrix_s_kp=overlap, dft_control=control)
+      CALL get_ks_env(ks_env, kpoints=kpoints, matrix_s_kp=overlap)
       CPASSERT(ASSOCIATED(kpoints))
       CALL get_ks_env(ks_env, cell=cell, particle_set=atoms)
       role = 'ORB'
@@ -149,9 +146,6 @@ CONTAINS
          CPASSERT(folding_error < 1.e-9_dp)
       END DO
       CPASSERT(kpoints%nkp > 0)
-      IF (control%use_gauxc .AND. .NOT. kpoint_halfturn_symmetry(kpoints)) THEN
-         CPABORT("Use CARTESIAN_HALF_TURNS for learned XC spatial symmetry")
-      END IF
       CPASSERT(ASSOCIATED(kpoints%para_env_kp))
       CPASSERT(ALL(kpoints%wkp >= 0.0_dp))
       CPASSERT(ABS(SUM(kpoints%wkp) - 1.0_dp) <= 128.0_dp*EPSILON(1.0_dp)*kpoints%nkp)
@@ -394,7 +388,7 @@ CONTAINS
 !> \brief Apply either direction of the same native basis phase convention.
 !> \param frame Row basis.
 !> \param source Irreducible matrices in the supplied coordinates.
-!> \param result New matrices in the requested coordinates.
+!> \param RESULT New matrices in the requested coordinates.
 !> \param to_native True for original to native coordinates, false for its unitary inverse.
 !> \param right_frame Optional independent column basis.
 ! **************************************************************************************************

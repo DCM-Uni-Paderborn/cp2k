@@ -19,7 +19,8 @@ PROGRAM kpsym_unittest
                                               kpoint_star_operator,&
                                               kpoint_star_operator_defect,&
                                               kpoint_star_orbitals
-   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_cell_gauge_action
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_cell_gauge_action,&
+                                              kpoint_halfturn_symmetry
    USE kpoint_types,                    ONLY: kpoint_star_type,&
                                               kpoint_sym_create,&
                                               kpoint_sym_type,&
@@ -172,6 +173,9 @@ PROGRAM kpsym_unittest
 
 CONTAINS
 
+! **************************************************************************************************
+!> \brief Require all quadratures to admit a spatial operation.
+! **************************************************************************************************
    SUBROUTINE check_grid_operations()
       INTEGER                                            :: axis
       REAL(dp)                                           :: rotation(3, 3), translation(3)
@@ -181,21 +185,26 @@ CONTAINS
          rotation(axis, axis) = 1.0_dp
       END DO
       translation = [0.5_dp, 0.0_dp, 0.0_dp]
-      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4], [3, 1]))) &
+      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4], [3, 1]))) THEN
          ERROR STOP 'Grid-compatible fractional translation rejected'
-      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([3, 4, 4], [3, 1]))) &
+      END IF
+      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([3, 4, 4], [3, 1]))) THEN
          ERROR STOP 'Grid-incompatible fractional translation retained'
-      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4, 3, 4, 4], [3, 2]))) &
+      END IF
+      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4, 3, 4, 4], [3, 2]))) THEN
          ERROR STOP 'Incompatible secondary integration grid ignored'
+      END IF
       translation = [1.0_dp, -2.0_dp, 3.0_dp]
       rotation(1, 1) = 0.0_dp
       rotation(2, 2) = 0.0_dp
       rotation(1, 2) = 1.0_dp
       rotation(2, 1) = 1.0_dp
-      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 6], [3, 1]))) &
+      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 6], [3, 1]))) THEN
          ERROR STOP 'Grid-compatible axis exchange rejected'
-      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 6, 6], [3, 1]))) &
+      END IF
+      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 6, 6], [3, 1]))) THEN
          ERROR STOP 'Grid-incompatible axis exchange retained'
+      END IF
    END SUBROUTINE check_grid_operations
 
 ! **************************************************************************************************
@@ -364,6 +373,10 @@ CONTAINS
       ! A fixed-point operation is usable independently of Brillouin-zone reduction.
       sym%apply_symmetry = .FALSE.
       sym%nwght = 1
+      IF (kpoint_halfturn_symmetry(kpoint)) ERROR STOP 'Non-half-turn little-group operation accepted'
+      sym%nwred = 1
+      IF (.NOT. kpoint_halfturn_symmetry(kpoint)) ERROR STOP 'Identity spatial group rejected'
+      sym%nwred = 4
       kpoint%xkp(:, 1) = 0.0_dp
       kpoint%wkp = [0.37_dp, 0.63_dp]
       sym%xkp = 0.0_dp
@@ -573,6 +586,8 @@ CONTAINS
 !> \param cartesian_half_turns ...
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
+!> \param integration_grids Dimensions of every active uniform quadrature
+!> \param expected_operations Expected size of the selected spatial group
 !> \param proper_rotations_only exclude determinant-negative spatial operations
 ! **************************************************************************************************
    SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid, cartesian_half_turns, &
@@ -640,8 +655,9 @@ CONTAINS
          END IF
          IF (PRESENT(integration_grids)) THEN
             rotation = MATMUL(inv_3x3(h), MATMUL(csym%rt(:, :, k), h))
-            IF (.NOT. crys_sym_grid_compatible(rotation, csym%vt(:, k), integration_grids)) &
+            IF (.NOT. crys_sym_grid_compatible(rotation, csym%vt(:, k), integration_grids)) THEN
                ERROR STOP 'Retained operation does not preserve the integration grid'
+            END IF
          END IF
          DO a = 1, SIZE(x, 2)
             IF (COUNT(csym%f0(:, k) == a) /= 1) ERROR STOP "Nonbijective atom mapping"

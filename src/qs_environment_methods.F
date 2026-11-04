@@ -26,7 +26,11 @@ MODULE qs_environment_methods
    USE ewald_pw_methods,                ONLY: ewald_pw_grid_update
    USE ewald_pw_types,                  ONLY: ewald_pw_type
    USE input_constants,                 ONLY: do_ppl_grid
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type
    USE kinds,                           ONLY: dp
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_halfturn_symmetry
+   USE kpoint_types,                    ONLY: kpoint_type
    USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: molecule_kind_type
    USE molecule_types,                  ONLY: molecule_type
@@ -54,6 +58,7 @@ MODULE qs_environment_methods
    USE qs_rho0_ggrid,                   ONLY: rho0_s_grid_create
    USE qs_rho0_types,                   ONLY: rho0_mpole_type
    USE scf_control_types,               ONLY: scf_control_type
+   USE skala_gpw_functional,            ONLY: xc_section_uses_gauxc_model
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -65,9 +70,32 @@ MODULE qs_environment_methods
    PUBLIC :: qs_env_rebuild_pw_env, &
              qs_env_setup, &
              qs_env_symmetry_grids, &
-             qs_env_time_update
+             qs_env_time_update, &
+             qs_env_validate_xc_symmetry
 !***
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check the selected spatial group against the implemented learned-XC scope.
+!> \param qs_env Quickstep environment, independent of the atomic potential type
+!> \param kpoints Initialized mesh, including operations fixing individual points
+! **************************************************************************************************
+   SUBROUTINE qs_env_validate_xc_symmetry(qs_env, kpoints)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(kpoint_type), POINTER                         :: kpoints
+
+      TYPE(section_vals_type), POINTER                   :: xc_section
+
+      CPASSERT(ASSOCIATED(kpoints))
+      IF (kpoints%kp_scheme == "NONE") RETURN
+      xc_section => section_vals_get_subs_vals(qs_env%input, "DFT%XC")
+      IF (.NOT. xc_section_uses_gauxc_model(xc_section)) RETURN
+      ! Semilocal GauXC does not have the learned model's spatial restriction.
+      IF (.NOT. kpoint_halfturn_symmetry(kpoints)) THEN
+         CALL cp_abort(__LOCATION__, &
+                       "Use FULL_GRID, time reversal, or CARTESIAN_HALF_TURNS for learned XC spatial symmetry")
+      END IF
+   END SUBROUTINE qs_env_validate_xc_symmetry
 
 ! **************************************************************************************************
 !> \brief Return the active uniform quadratures used with original UPF operators.
