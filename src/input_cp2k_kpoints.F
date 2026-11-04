@@ -174,6 +174,16 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="PROPER_ROTATIONS_ONLY", &
+                          description="Exclude spatial inversion, reflections and other determinant-negative "// &
+                          "operations from k-point reduction. Scalar time reversal remains independent. "// &
+                          "The retained rotations must also preserve the geometry, integration grids and "// &
+                          "chosen functional. CARTESIAN_HALF_TURNS further restricts this group when enabled.", &
+                          usage="PROPER_ROTATIONS_ONLY <LOGICAL>", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="CARTESIAN_HALF_TURNS", &
                           description="Restrict spatial symmetry to the identity and proper 180-degree rotations "// &
                           "about the Cartesian axes that preserve the atomic geometry. Scalar time reversal "// &

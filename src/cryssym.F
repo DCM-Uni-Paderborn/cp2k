@@ -16,7 +16,8 @@ MODULE cryssym
                                               cite_reference
    USE kinds,                           ONLY: dp
    USE kpsym,                           ONLY: group1s
-   USE mathlib,                         ONLY: inv_3x3
+   USE mathlib,                         ONLY: det_3x3,&
+                                              inv_3x3
    USE spglib_f08,                      ONLY: spg_get_international,&
                                               spg_get_major_version,&
                                               spg_get_micro_version,&
@@ -46,6 +47,7 @@ MODULE cryssym
       LOGICAL                                     :: fullgrid = .FALSE.
       LOGICAL                                     :: inversion_only = .FALSE.
       LOGICAL                                     :: cartesian_half_turns = .FALSE.
+      LOGICAL                                     :: proper_rotations_only = .FALSE.
       INTEGER, ALLOCATABLE                        :: integration_grids(:, :)
       LOGICAL                                     :: spglib_reduction = .FALSE.
       LOGICAL                                     :: spglib_backend = .FALSE.
@@ -343,10 +345,11 @@ CONTAINS
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
 !> \param integration_grids Point counts of the active uniform integration grids.
+!> \param proper_rotations_only Exclude determinant-negative spatial operations.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen(csym, nk, symm, shift, full_grid, gamma_centered, &
                          inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns, &
-                         integration_grids)
+                         integration_grids, proper_rotations_only)
       TYPE(csym_type)                                    :: csym
       INTEGER, INTENT(IN)                                :: nk(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: symm
@@ -354,6 +357,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL :: full_grid, gamma_centered, inversion_symmetry_only, &
          use_spglib_reduction, use_spglib_backend, cartesian_half_turns
       INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'kpoint_gen'
 
@@ -398,6 +402,8 @@ CONTAINS
       csym%inversion_only = inversion_only
       csym%cartesian_half_turns = .FALSE.
       IF (PRESENT(cartesian_half_turns)) csym%cartesian_half_turns = cartesian_half_turns
+      csym%proper_rotations_only = .FALSE.
+      IF (PRESENT(proper_rotations_only)) csym%proper_rotations_only = proper_rotations_only
       IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
       IF (PRESENT(integration_grids)) ALLOCATE (csym%integration_grids, SOURCE=integration_grids)
 
@@ -544,10 +550,11 @@ CONTAINS
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
 !> \param integration_grids Point counts of the active uniform integration grids.
+!> \param proper_rotations_only Exclude determinant-negative spatial operations.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen_general(csym, xkp_in, wkp_in, symm, full_grid, &
                                  inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns, &
-                                 integration_grids)
+                                 integration_grids, proper_rotations_only)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_in
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp_in
@@ -557,6 +564,7 @@ CONTAINS
                                                             use_spglib_backend, &
                                                             cartesian_half_turns
       INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_gen_general'
 
@@ -589,6 +597,8 @@ CONTAINS
       csym%inversion_only = inversion_only
       csym%cartesian_half_turns = .FALSE.
       IF (PRESENT(cartesian_half_turns)) csym%cartesian_half_turns = cartesian_half_turns
+      csym%proper_rotations_only = .FALSE.
+      IF (PRESENT(proper_rotations_only)) csym%proper_rotations_only = proper_rotations_only
       IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
       IF (PRESENT(integration_grids)) ALLOCATE (csym%integration_grids, SOURCE=integration_grids)
       csym%spglib_reduction = spglib_reduction
@@ -666,7 +676,7 @@ CONTAINS
       INTEGER, DIMENSION(:)                              :: kpop
       LOGICAL, INTENT(IN), OPTIONAL                      :: use_spglib_reduction
 
-      INTEGER                                            :: nc, nrot
+      INTEGER                                            :: i, nc, noperations, nrot
       INTEGER, ALLOCATABLE, DIMENSION(:, :, :)           :: srot
       INTEGER, DIMENSION(48)                             :: ib
       LOGICAL                                            :: spglib_reduction
@@ -683,7 +693,15 @@ CONTAINS
       CALL detect_k290_symmetry(csym, a1, a2, a3, b1, b2, b3, alat, nc, ib, r)
       IF (spglib_reduction) CALL cite_reference(Togo2018)
 
-      IF (csym%n_operations > nc .AND. .NOT. spglib_reduction .AND. .NOT. csym%cartesian_half_turns) THEN
+      ! Compare K290 coverage with the selected spatial subgroup, retaining the existing fallback.
+      noperations = csym%n_operations
+      IF (csym%proper_rotations_only) THEN
+         noperations = 0
+         DO i = 1, csym%n_operations
+            IF (det_3x3(REAL(csym%rotations(:, :, i), dp)) > 0.0_dp) noperations = noperations + 1
+         END DO
+      END IF
+      IF (noperations > nc .AND. .NOT. spglib_reduction .AND. .NOT. csym%cartesian_half_turns) THEN
          ALLOCATE (srot(3, 3, csym%n_operations))
          CALL setup_spglib_operations(csym, srot, nrot)
          CALL reduce_spglib_kpoint_mesh(csym, xkp, wkp, kpop, srot, nrot)
@@ -831,11 +849,12 @@ CONTAINS
       END DO
       csym%ibrot(1:nc) = ib(1:nc)
 
-      IF (csym%cartesian_half_turns .OR. ALLOCATED(csym%integration_grids)) THEN
+      IF (csym%cartesian_half_turns .OR. csym%proper_rotations_only .OR. ALLOCATED(csym%integration_grids)) THEN
          retained_mask = .TRUE.
          h_inv = inv_3x3(csym%hmat)
          DO i = 1, nc
             IF (csym%cartesian_half_turns) retained_mask(i) = crys_sym_cartesian_halfturn(csym%rt(:, :, i))
+            IF (csym%proper_rotations_only) retained_mask(i) = retained_mask(i) .AND. det_3x3(csym%rt(:, :, i)) > 0.0_dp
             IF (ALLOCATED(csym%integration_grids)) THEN
                rfrac = MATMUL(h_inv, MATMUL(csym%rt(:, :, i), csym%hmat))
                CALL refine_grid_operation(csym, rfrac, csym%vt(:, i), csym%f0(:, i), grid_valid)
@@ -963,6 +982,9 @@ CONTAINS
                rfrac = REAL(frot, dp)
                IF (.NOT. crys_sym_cartesian_halfturn(MATMUL(csym%hmat, MATMUL(rfrac, h_inv)))) CYCLE
             END IF
+            IF (csym%proper_rotations_only) THEN
+               IF (det_3x3(REAL(frot, dp)) < 0.0_dp) CYCLE
+            END IF
             identity = ALL(frot == eye)
             zero_translation = ALL(ABS(csym%translations(1:3, iop) - &
                                        ANINT(csym%translations(1:3, iop))) <= eps)
@@ -1039,6 +1061,9 @@ CONTAINS
             END IF
             IF (csym%cartesian_half_turns) THEN
                IF (.NOT. crys_sym_cartesian_halfturn(MATMUL(csym%hmat, MATMUL(REAL(frot, dp), h_inv)))) CYCLE
+            END IF
+            IF (csym%proper_rotations_only) THEN
+               IF (det_3x3(REAL(frot, dp)) < 0.0_dp) CYCLE
             END IF
             identity = ALL(frot == eye)
             IF (pass == 1 .AND. .NOT. identity) CYCLE

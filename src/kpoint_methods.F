@@ -835,7 +835,8 @@ CONTAINS
                          use_spglib_reduction= &
                          kpoint%symmetry_reduction_method == use_spglib_kpoint_symmetry, &
                          use_spglib_backend=kpoint%symmetry_backend == use_spglib_kpoint_backend, &
-                         cartesian_half_turns=kpoint%cartesian_half_turns, integration_grids=kpoint%integration_grids)
+                         cartesian_half_turns=kpoint%cartesian_half_turns, integration_grids=kpoint%integration_grids, &
+                         proper_rotations_only=kpoint%proper_rotations_only)
          IF (crys_sym%inversion_only) kpoint%inversion_symmetry_only = .TRUE.
          kpoint%nkp = crys_sym%nkpoint
          ALLOCATE (kpoint%xkp(3, kpoint%nkp), kpoint%wkp(kpoint%nkp))
@@ -945,7 +946,8 @@ CONTAINS
                                     use_spglib_reduction= &
                                     kpoint%symmetry_reduction_method == use_spglib_kpoint_symmetry, &
                                     use_spglib_backend=kpoint%symmetry_backend == use_spglib_kpoint_backend, &
-                                    cartesian_half_turns=kpoint%cartesian_half_turns, integration_grids=kpoint%integration_grids)
+                                    cartesian_half_turns=kpoint%cartesian_half_turns, integration_grids=kpoint%integration_grids, &
+                                    proper_rotations_only=kpoint%proper_rotations_only)
             IF (crys_sym%inversion_only) kpoint%inversion_symmetry_only = .TRUE.
             IF (ASSOCIATED(kpoint%xkp)) THEN
                DEALLOCATE (kpoint%xkp)

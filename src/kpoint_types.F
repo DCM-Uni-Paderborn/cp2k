@@ -189,6 +189,7 @@ MODULE kpoint_types
 !> \param full_grid           [input] don't reduce kpoints at all
 !> \param lattice_fft         [input] lattice FFT selection mode
 !> \param cartesian_half_turns [input] restrict spatial symmetry to Cartesian proper half-turns
+!> \param proper_rotations_only [input] exclude determinant-negative spatial operations
 !> \param integration_grids [internal] active uniform integration grids for spatial symmetry
 !> \param inversion_symmetry_only [input] reduce kpoints only by inversion symmetry
 !> \param symmetry_backend [input] k-point symmetry backend
@@ -225,6 +226,7 @@ MODULE kpoint_types
       INTEGER                                 :: lattice_fft = lattice_fft_auto
       LOGICAL                                 :: inversion_symmetry_only = .FALSE.
       LOGICAL                                 :: cartesian_half_turns = .FALSE.
+      LOGICAL                                 :: proper_rotations_only = .FALSE.
       INTEGER, ALLOCATABLE                    :: integration_grids(:, :)
       INTEGER                                 :: symmetry_backend = use_k290_kpoint_backend
       INTEGER                                 :: symmetry_reduction_method = use_k290_kpoint_symmetry
@@ -318,6 +320,7 @@ CONTAINS
       kpoint%lattice_fft = lattice_fft_auto
       kpoint%inversion_symmetry_only = .FALSE.
       kpoint%cartesian_half_turns = .FALSE.
+      kpoint%proper_rotations_only = .FALSE.
       kpoint%symmetry_backend = use_k290_kpoint_backend
       kpoint%symmetry_reduction_method = use_k290_kpoint_symmetry
       kpoint%use_real_wfn = .FALSE.
@@ -693,6 +696,7 @@ CONTAINS
 !> \param gamma_centered ...
 !> \param lattice_fft   lattice FFT selection mode
 !> \param cartesian_half_turns restrict spatial symmetry to Cartesian proper half-turns
+!> \param proper_rotations_only exclude determinant-negative spatial operations
 !> \author JGH
 ! **************************************************************************************************
    SUBROUTINE get_kpoint_info(kpoint, kp_scheme, nkp_grid, kp_shift, symmetry, verbose, &
@@ -700,7 +704,8 @@ CONTAINS
                               para_env, blacs_env_all, para_env_kp, para_env_inter_kp, blacs_env, &
                               kp_env, kp_aux_env, mpools, iogrp, nkp_groups, kp_dist, cell_to_index, index_to_cell, &
                               sab_nl, sab_nl_nosym, inversion_symmetry_only, symmetry_backend, &
-                              symmetry_reduction_method, gamma_centered, lattice_fft, cartesian_half_turns)
+                              symmetry_reduction_method, gamma_centered, lattice_fft, cartesian_half_turns, &
+                              proper_rotations_only)
       TYPE(kpoint_type), INTENT(IN)                      :: kpoint
       CHARACTER(LEN=*), OPTIONAL                         :: kp_scheme
       INTEGER, DIMENSION(3), OPTIONAL                    :: nkp_grid
@@ -732,7 +737,8 @@ CONTAINS
                                                             symmetry_reduction_method
       LOGICAL, OPTIONAL                                  :: gamma_centered
       INTEGER, OPTIONAL                                  :: lattice_fft
-      LOGICAL, OPTIONAL                                  :: cartesian_half_turns
+      LOGICAL, OPTIONAL                                  :: cartesian_half_turns, &
+                                                            proper_rotations_only
 
       IF (PRESENT(kp_scheme)) kp_scheme = kpoint%kp_scheme
       IF (PRESENT(nkp_grid)) nkp_grid = kpoint%nkp_grid
@@ -743,6 +749,7 @@ CONTAINS
       IF (PRESENT(full_grid)) full_grid = kpoint%full_grid
       IF (PRESENT(lattice_fft)) lattice_fft = kpoint%lattice_fft
       IF (PRESENT(cartesian_half_turns)) cartesian_half_turns = kpoint%cartesian_half_turns
+      IF (PRESENT(proper_rotations_only)) proper_rotations_only = kpoint%proper_rotations_only
       IF (PRESENT(inversion_symmetry_only)) inversion_symmetry_only = kpoint%inversion_symmetry_only
       IF (PRESENT(symmetry_backend)) symmetry_backend = kpoint%symmetry_backend
       IF (PRESENT(symmetry_reduction_method)) THEN
@@ -814,6 +821,7 @@ CONTAINS
 !> \param symmetry_reduction_method k-point symmetry reduction method
 !> \param gamma_centered ...
 !> \param cartesian_half_turns restrict spatial symmetry to Cartesian proper half-turns
+!> \param proper_rotations_only exclude determinant-negative spatial operations
 !> \author JGH
 ! **************************************************************************************************
    SUBROUTINE set_kpoint_info(kpoint, kp_scheme, nkp_grid, kp_shift, symmetry, verbose, &
@@ -821,7 +829,7 @@ CONTAINS
                               para_env, blacs_env_all, para_env_kp, para_env_inter_kp, blacs_env, &
                               kp_env, kp_aux_env, mpools, iogrp, nkp_groups, kp_dist, cell_to_index, index_to_cell, &
                               sab_nl, sab_nl_nosym, inversion_symmetry_only, symmetry_backend, &
-                              symmetry_reduction_method, gamma_centered, cartesian_half_turns)
+                              symmetry_reduction_method, gamma_centered, cartesian_half_turns, proper_rotations_only)
       TYPE(kpoint_type), INTENT(INOUT)                   :: kpoint
       CHARACTER(LEN=*), OPTIONAL                         :: kp_scheme
       INTEGER, DIMENSION(3), OPTIONAL                    :: nkp_grid
@@ -851,7 +859,8 @@ CONTAINS
       LOGICAL, OPTIONAL                                  :: inversion_symmetry_only
       INTEGER, OPTIONAL                                  :: symmetry_backend, &
                                                             symmetry_reduction_method
-      LOGICAL, OPTIONAL                                  :: gamma_centered, cartesian_half_turns
+      LOGICAL, OPTIONAL                                  :: gamma_centered, cartesian_half_turns, &
+                                                            proper_rotations_only
 
       IF (PRESENT(kp_scheme)) kpoint%kp_scheme = kp_scheme
       IF (PRESENT(nkp_grid)) kpoint%nkp_grid = nkp_grid
@@ -861,6 +870,7 @@ CONTAINS
       IF (PRESENT(verbose)) kpoint%verbose = verbose
       IF (PRESENT(full_grid)) kpoint%full_grid = full_grid
       IF (PRESENT(cartesian_half_turns)) kpoint%cartesian_half_turns = cartesian_half_turns
+      IF (PRESENT(proper_rotations_only)) kpoint%proper_rotations_only = proper_rotations_only
       IF (PRESENT(inversion_symmetry_only)) kpoint%inversion_symmetry_only = inversion_symmetry_only
       IF (PRESENT(symmetry_backend)) kpoint%symmetry_backend = symmetry_backend
       IF (PRESENT(symmetry_reduction_method)) THEN
@@ -1027,6 +1037,7 @@ CONTAINS
          CALL section_vals_val_get(kpoint_section, "INVERSION_SYMMETRY_ONLY", &
                                    l_val=kpoint%inversion_symmetry_only)
          CALL section_vals_val_get(kpoint_section, "CARTESIAN_HALF_TURNS", l_val=kpoint%cartesian_half_turns)
+         CALL section_vals_val_get(kpoint_section, "PROPER_ROTATIONS_ONLY", l_val=kpoint%proper_rotations_only)
          CALL section_vals_val_get(kpoint_section, "SYMMETRY_BACKEND", &
                                    i_val=kpoint%symmetry_backend, explicit=backend_explicit)
          CALL section_vals_val_get(kpoint_section, "SYMMETRY_REDUCTION_METHOD", &

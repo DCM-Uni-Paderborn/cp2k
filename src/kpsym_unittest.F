@@ -11,6 +11,7 @@ PROGRAM kpsym_unittest
                                               crys_sym_grid_compatible,&
                                               csym_type,&
                                               kpoint_gen,&
+                                              kpoint_gen_general,&
                                               release_csym_type
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_star_create,&
@@ -25,7 +26,8 @@ PROGRAM kpsym_unittest
                                               kpoint_type
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
-   USE mathlib,                         ONLY: inv_3x3
+   USE mathlib,                         ONLY: det_3x3,&
+                                              inv_3x3
    USE physcon,                         ONLY: bohr
    USE spglib_f08,                      ONLY: spg_get_major_version
 
@@ -85,9 +87,10 @@ PROGRAM kpsym_unittest
 
    ! Rounded coordinates put seven operations within a few ulps of the boundary.
    CALL check_mesh(coords, cell, 1.0e-6_dp, 6, .FALSE., .TRUE.)
+   CALL check_mesh(coords, cell, 1.0e-6_dp, 6, .FALSE., .TRUE., proper_rotations_only=.TRUE.)
    CALL check_mesh(coords, cell, 1.0e-7_dp, 14, .FALSE., .TRUE.)
    ! FULL_GRID overrides both atomic symmetry and time-reversal reduction.
-   CALL check_mesh(coords, cell, 1.0e-6_dp, 27, .FALSE., .FALSE., full_grid=.TRUE.)
+   CALL check_mesh(coords, cell, 1.0e-6_dp, 27, .FALSE., .FALSE., full_grid=.TRUE., proper_rotations_only=.TRUE.)
    shifted = coords + SPREAD([0.137_dp, -0.231_dp, 0.319_dp], 2, 36)
    CALL check_mesh(shifted, cell, 1.0e-6_dp, 6, .FALSE., .TRUE.)
    CALL check_mesh(coords, 1.3_dp*cell, 1.0e-6_dp, 6, .FALSE., .TRUE.)
@@ -112,6 +115,22 @@ PROGRAM kpsym_unittest
                       use_spglib_reduction=.TRUE.)
       CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
                       1.e-8_dp, 8, .FALSE., .TRUE., cartesian_half_turns=.TRUE., &
+                      use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE.)
+   END IF
+
+   ! Proper cubic rotations retain quarter-turns while excluding reflections.
+   halfturn_cell = 0.0_dp
+   DO i = 1, 3
+      halfturn_cell(i, i) = 7.0_dp
+   END DO
+   CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
+                   1.e-8_dp, 4, .FALSE., .TRUE., proper_rotations_only=.TRUE., expected_operations=24)
+   IF (spg_get_major_version() > 0) THEN
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
+                      1.e-8_dp, 4, .FALSE., .TRUE., proper_rotations_only=.TRUE., expected_operations=24, &
+                      use_spglib_reduction=.TRUE.)
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), halfturn_cell, &
+                      1.e-8_dp, 4, .FALSE., .TRUE., proper_rotations_only=.TRUE., expected_operations=24, &
                       use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE.)
    END IF
 
@@ -554,9 +573,11 @@ CONTAINS
 !> \param cartesian_half_turns ...
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
+!> \param proper_rotations_only exclude determinant-negative spatial operations
 ! **************************************************************************************************
    SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid, cartesian_half_turns, &
-                         use_spglib_reduction, use_spglib_backend, integration_grids, expected_operations)
+                         use_spglib_reduction, use_spglib_backend, integration_grids, expected_operations, &
+                         proper_rotations_only)
       REAL(dp), INTENT(IN)                               :: x(:, :), h(3, 3), delta
       INTEGER, INTENT(IN)                                :: expected
       LOGICAL, INTENT(IN)                                :: fallback, closed
@@ -565,10 +586,12 @@ CONTAINS
                                                             use_spglib_backend
       INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :), &
                                                             expected_operations
+      LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       INTEGER                                            :: a, i, j, k
       LOGICAL                                            :: found, spglib
-      REAL(dp)                                           :: product(3, 3), rotation(3, 3)
+      REAL(dp)                                           :: full_points(3, 27), full_weights(27), &
+                                                            PRODUCT(3, 3), rotation(3, 3)
       TYPE(csym_type)                                    :: csym
 
       spglib = .FALSE.
@@ -578,12 +601,12 @@ CONTAINS
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., full_grid=full_grid, &
                          cartesian_half_turns=cartesian_half_turns, &
                          use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
-                         integration_grids=integration_grids)
+                         integration_grids=integration_grids, proper_rotations_only=proper_rotations_only)
       ELSE
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp], &
                          cartesian_half_turns=cartesian_half_turns, &
                          use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
-                         integration_grids=integration_grids)
+                         integration_grids=integration_grids, proper_rotations_only=proper_rotations_only)
       END IF
       IF (csym%nkpoint /= expected) ERROR STOP "Incorrect irreducible mesh size"
       IF (csym%inversion_only .NEQV. fallback) ERROR STOP "Incorrect orbit-guard decision"
@@ -610,6 +633,11 @@ CONTAINS
          END IF
       END IF
       DO k = 1, csym%nrtot
+         IF (PRESENT(proper_rotations_only)) THEN
+            IF (proper_rotations_only) THEN
+               IF (det_3x3(csym%rt(:, :, k)) <= 0.0_dp) ERROR STOP 'Improper spatial operation retained'
+            END IF
+         END IF
          IF (PRESENT(integration_grids)) THEN
             rotation = MATMUL(inv_3x3(h), MATMUL(csym%rt(:, :, k), h))
             IF (.NOT. crys_sym_grid_compatible(rotation, csym%vt(:, k), integration_grids)) &
@@ -633,6 +661,27 @@ CONTAINS
                IF (.NOT. found) ERROR STOP "Operation group not closed"
             END DO
          END DO
+      END IF
+      IF (PRESENT(proper_rotations_only)) THEN
+         IF (proper_rotations_only) THEN
+            full_points = csym%kpmesh
+            full_weights = 1.0_dp
+            CALL release_csym_type(csym)
+            CALL crys_sym_gen(csym, x, types(:SIZE(x, 2)), h, delta=delta, use_spglib=spglib)
+            CALL kpoint_gen_general(csym, full_points, full_weights, symm=.TRUE., full_grid=full_grid, &
+                                    proper_rotations_only=.TRUE., cartesian_half_turns=cartesian_half_turns, &
+                                    use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
+                                    integration_grids=integration_grids)
+            IF (csym%nkpoint /= expected) ERROR STOP 'Incorrect proper GENERAL mesh size'
+            IF (ABS(SUM(csym%wkpoint) - 27.0_dp) > 1.e-12_dp) ERROR STOP 'Incorrect proper GENERAL weights'
+            IF (ANY(csym%kplink <= 0)) ERROR STOP 'Incomplete proper GENERAL mesh'
+            IF (PRESENT(expected_operations)) THEN
+               IF (csym%nrtot /= expected_operations) ERROR STOP 'Incorrect proper GENERAL group size'
+            END IF
+            DO k = 1, csym%nrtot
+               IF (det_3x3(csym%rt(:, :, k)) <= 0.0_dp) ERROR STOP 'Improper GENERAL operation retained'
+            END DO
+         END IF
       END IF
       CALL release_csym_type(csym)
    END SUBROUTINE check_mesh
