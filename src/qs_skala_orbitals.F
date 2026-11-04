@@ -29,7 +29,7 @@ MODULE qs_skala_orbitals
         skala_orbital_chart_release, skala_orbital_chart_restrict, &
         skala_orbital_chart_set_occupations, skala_orbital_chart_set_reference, &
         skala_orbital_chart_size, skala_orbital_chart_symmetry, skala_orbital_chart_type, &
-        skala_orbital_multiplets
+        skala_orbital_multiplets, skala_orbital_multiplets_refine
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -358,7 +358,7 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
 
       COMPLEX(dp), ALLOCATABLE :: action(:, :), actions(:, :, :), coefficients(:, :), gauge(:, :), &
-         original(:, :), source(:, :), weighted(:, :)
+         original(:, :), original_actions(:, :, :), source(:, :), weighted(:, :)
       INTEGER                                            :: i, n, op, status
       INTEGER, ALLOCATABLE                               :: groups(:)
       LOGICAL                                            :: valid
@@ -381,9 +381,15 @@ CONTAINS
       END DO
       chart = state%chart
       IF (state%variable_occupations) THEN
+         ALLOCATE (original_actions, SOURCE=actions)
          CALL skala_orbital_multiplets(actions, antiunitary, state%occupations, state%eigenvalues, &
                                        state%native%nmo, gauge, groups, energies, valid)
-         IF (.NOT. valid) RETURN
+         IF (.NOT. valid) THEN
+            actions = original_actions
+            CALL skala_orbital_multiplets_refine(actions, antiunitary, state%occupations, state%eigenvalues, &
+                                                 state%native%nmo, gauge, groups, energies, valid)
+            IF (.NOT. valid) RETURN
+         END IF
          coefficients(:, :) = MATMUL(state%coefficients, gauge)
          CALL skala_orbital_chart_set_reference(chart, coefficients, metric, valid)
          IF (.NOT. valid) RETURN

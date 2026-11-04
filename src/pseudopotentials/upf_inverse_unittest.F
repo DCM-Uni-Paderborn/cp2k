@@ -93,7 +93,7 @@ PROGRAM upf_inverse_unittest
         skala_orbital_chart_release, skala_orbital_chart_restrict, skala_orbital_chart_scales, &
         skala_orbital_chart_set_occupations, skala_orbital_chart_set_reference, &
         skala_orbital_chart_size, skala_orbital_chart_symmetry, skala_orbital_chart_type, &
-        skala_orbital_multiplets
+        skala_orbital_multiplets, skala_orbital_multiplets_refine
    USE t_c_g0,                          ONLY: free_C0,&
                                               init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
@@ -268,8 +268,8 @@ CONTAINS
       COMPLEX(dp) :: actions(4, 4, 12), anti(4, 4), block(2, 2), coefficients(4, 4), &
          density(4, 4), group_h(4, 4), h(4, 4), house(4), metric(4, 4), minus(4, 4), &
          mo_density(4, 4), orbital_rotation(4, 4), plus(4, 4), reference(4, 4), &
-         reference_actions(4, 4, 12), response(4, 4), rotation(4, 4), term(4, 4), weighted(4, 4), &
-         zero(4, 4)
+         reference_actions(4, 4, 12), response(4, 4), rotation(4, 4), roundoff_actions(4, 4, 12), &
+         term(4, 4), weighted(4, 4), zero(4, 4)
       COMPLEX(dp), ALLOCATABLE                           :: gauge(:, :)
       INTEGER                                            :: a, b, copy, i, j, mode, ngroup, op, &
                                                             reflection
@@ -501,6 +501,39 @@ CONTAINS
       CALL skala_orbital_chart_derivative(chart, h + 100.0_dp*metric, gtp, physical_tangent=.TRUE.)
       CALL check(MAXVAL(ABS(gtp - gt)), 'Thermal symmetry preserves potential-zero invariance')
       CALL skala_orbital_chart_release(chart)
+      ! A tiny reference rotation can amplify operator roundoff in a separated empty eigenspace.
+      rotation = 0.0_dp
+      DO i = 1, 4
+         rotation(i, i) = 1.0_dp
+      END DO
+      rotation(1, 4) = 1.e-8_dp
+      rotation(4, 1) = -1.e-8_dp
+      DO op = 1, 12
+         term = rotation
+         IF (conjugating(op)) term = CONJG(term)
+         roundoff_actions(:, :, op) = MATMUL(CONJG(TRANSPOSE(rotation)), MATMUL(reference_actions(:, :, op), term))
+      END DO
+      actions = roundoff_actions
+      CALL skala_orbital_multiplets(actions, conjugating, [1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp], &
+                                    [0.1_dp, 0.1_dp, 0.1002_dp, 0.1002_dp], 4, gauge, multiplets, auxiliary, valid)
+      IF (valid) ERROR STOP 'Roundoff-sensitive reference was not exercised'
+      DO mode = 1, 2
+         actions = roundoff_actions
+         CALL skala_orbital_multiplets_refine(actions, conjugating, [1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp], &
+                                              [0.1_dp, 0.1_dp, 0.1002_dp, 0.1002_dp] + 100.0_dp*(mode - 1), &
+                                              4, gauge, multiplets, auxiliary, valid)
+         IF (.NOT. valid) ERROR STOP 'Roundoff-stable thermal reference was rejected'
+         weighted = MATMUL(gauge*SPREAD(auxiliary - 100.0_dp*(mode - 1), 1, 4), CONJG(TRANSPOSE(gauge)))
+         weighted(1, 1) = weighted(1, 1) - 0.1_dp
+         weighted(2, 2) = weighted(2, 2) - 0.1_dp
+         weighted(3, 3) = weighted(3, 3) - 0.1002_dp
+         weighted(4, 4) = weighted(4, 4) - 0.1002_dp
+         CALL check(MAXVAL(ABS(weighted)), 'Refined original auxiliary operator and energy zero', 3.e-11_dp)
+      END DO
+      actions = roundoff_actions
+      CALL skala_orbital_multiplets_refine(actions, conjugating, [1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp], &
+                                           [0.1_dp, 0.1_dp, 0.1012_dp, 0.1002_dp], 4, gauge, multiplets, auxiliary, valid)
+      IF (valid) ERROR STOP 'A noncovariant thermal reference was repaired'
       actions = reference_actions
       house = CMPLX([1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp], [0.0_dp, 1.0_dp, -2.0_dp, 0.5_dp], dp)
       house = house/NORM2(ABS(house))

@@ -27,7 +27,7 @@ MODULE skala_orbital_constraints
 
    PUBLIC :: skala_orbital_chart_set_reference
    PUBLIC :: skala_orbital_chart_restrict
-   PUBLIC :: skala_orbital_chart_symmetry, skala_orbital_multiplets
+   PUBLIC :: skala_orbital_chart_symmetry, skala_orbital_multiplets, skala_orbital_multiplets_refine
 
    TYPE skala_orbital_chart_type
       PRIVATE
@@ -609,6 +609,127 @@ CONTAINS
       IF (MAXVAL(ABS(source)) > tolerance*MAX(1.0_dp, MAXVAL(ABS(reference_energies)))) RETURN
       valid = .TRUE.
    END SUBROUTINE skala_orbital_multiplets
+
+! **************************************************************************************************
+!> \brief Stabilize thermal reference subspaces before resolving symmetry multiplets.
+!>        Average their projectors over the group instead of resolving small energy gaps.
+!>        Preserve the original auxiliary operator and all original multiplet bounds.
+!>        Subtract a common energy zero in the final operator check.
+!> \param actions Complete unitary/antiunitary reference actions, transformed with the returned gauge
+!> \param antiunitary Whether each action conjugates orbital coefficients
+!> \param occupations Original occupations, including the empty completion
+!> \param reference_energies Original auxiliary orbital energies in hartree
+!> \param nretained Number of retained thermal orbitals
+!> \param gauge Unitary change of reference, preserving the original density within the caller's bound
+!> \param groups Irreducible occupation multiplets
+!> \param energies Auxiliary energies in the returned reference
+!> \param valid Whether the original operator and symmetry bounds remain satisfied
+! **************************************************************************************************
+   SUBROUTINE skala_orbital_multiplets_refine(actions, antiunitary, occupations, reference_energies, nretained, &
+                                              gauge, groups, energies, valid)
+      COMPLEX(dp), INTENT(INOUT)                         :: actions(:, :, :)
+      LOGICAL, INTENT(IN)                                :: antiunitary(:)
+      REAL(dp), INTENT(IN)                               :: occupations(:), reference_energies(:)
+      INTEGER, INTENT(IN)                                :: nretained
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: gauge(:, :)
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: groups(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: energies(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      REAL(dp), PARAMETER                                :: tolerance = 3.e-11_dp
+
+      COMPLEX(dp), ALLOCATABLE                           :: average(:, :), first(:, :), &
+                                                            second(:, :), source(:, :), &
+                                                            term(:, :), work(:)
+      INTEGER                                            :: i, j, m, n, op, status
+      INTEGER, ALLOCATABLE                               :: indices(:), sectors(:)
+      LOGICAL                                            :: consistent
+      REAL(dp)                                           :: energy_zero, scale
+      REAL(dp), ALLOCATABLE                              :: real_work(:), stable(:), values(:)
+
+      valid = .FALSE.
+      n = SIZE(occupations)
+      consistent = SIZE(reference_energies) == n .AND. nretained >= 0 .AND. nretained <= n
+      CPASSERT(consistent)
+      consistent = ALL(SHAPE(actions) == [n, n, SIZE(antiunitary)])
+      CPASSERT(consistent)
+      IF (n == 0 .OR. SIZE(antiunitary) == 0) RETURN
+      IF (.NOT. ALL(ieee_is_finite(occupations)) .OR. .NOT. ALL(ieee_is_finite(reference_energies))) RETURN
+      IF (.NOT. ALL(ieee_is_finite(REAL(actions, dp))) .OR. .NOT. ALL(ieee_is_finite(AIMAG(actions)))) RETURN
+      energy_zero = MINVAL(reference_energies)
+      scale = MAX(1.0_dp, MAXVAL(ABS(reference_energies)))
+      ALLOCATE (average(n, n), first(n, n), source(n, n), term(n, n), sectors(n), stable(n), &
+                values(n), work(2*n), real_work(3*n))
+      DO op = 1, SIZE(antiunitary)
+         source = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
+         DO i = 1, n
+            source(i, i) = source(i, i) - 1.0_dp
+         END DO
+         IF (MAXVAL(ABS(source)) > tolerance) RETURN
+      END DO
+      first = 0.0_dp
+      sectors = 0
+      DO i = 1, n
+         IF (sectors(i) /= 0) CYCLE
+         sectors(i) = i
+         DO j = i + 1, n
+            IF (sectors(j) /= 0) CYCLE
+            IF ((i <= nretained) .NEQV. (j <= nretained)) CYCLE
+            IF (ABS(occupations(i) - occupations(j)) > tolerance) CYCLE
+            IF (ABS(reference_energies(i) - reference_energies(j)) > &
+                tolerance*MAX(1.0_dp, ABS(reference_energies(i)), ABS(reference_energies(j)))) CYCLE
+            sectors(j) = i
+         END DO
+         ALLOCATE (indices, SOURCE=PACK([(j, j=1, n)], sectors == i))
+         m = SIZE(indices)
+         ! Averaged subspace projectors have a unit spectral gap. Nearly separated auxiliary
+         ! energies can instead amplify harmless group roundoff in their individual eigenvectors.
+         average = 0.0_dp
+         DO op = 1, SIZE(antiunitary)
+            average = average + MATMUL(actions(:, indices, op), &
+                                       CONJG(TRANSPOSE(actions(:, indices, op))))/REAL(SIZE(antiunitary), dp)
+         END DO
+         average = 0.5_dp*(average + CONJG(TRANSPOSE(average)))
+         CALL zheev('V', 'U', n, average, n, values, work, SIZE(work), real_work, status)
+         IF (status /= 0) RETURN
+         IF (MINVAL(values(n - m + 1:)) <= 0.5_dp) RETURN
+         IF (m < n) THEN
+            IF (values(n - m) >= 0.5_dp) RETURN
+         END IF
+         first(:, indices) = average(:, n - m + 1:n)
+         DEALLOCATE (indices)
+      END DO
+      ! Restore mutual orthogonality of the independently rounded invariant subspaces.
+      source = MATMUL(CONJG(TRANSPOSE(first)), first)
+      CALL zheev('V', 'U', n, source, n, values, work, SIZE(work), real_work, status)
+      IF (status /= 0 .OR. MINVAL(values) <= 0.0_dp) RETURN
+      term = source*SPREAD(1.0_dp/SQRT(values), 1, n)
+      first = MATMUL(first, MATMUL(term, CONJG(TRANSPOSE(source))))
+      stable = SUM(ABS(first)**2*SPREAD(reference_energies - energy_zero, 2, n), DIM=1) + energy_zero
+      DO i = 1, n
+         IF (sectors(i) /= i) CYCLE
+         WHERE (sectors == i) stable = SUM(PACK(stable, sectors == i))/REAL(COUNT(sectors == i), dp)
+      END DO
+      DO op = 1, SIZE(antiunitary)
+         term = first
+         IF (antiunitary(op)) term = CONJG(term)
+         actions(:, :, op) = MATMUL(CONJG(TRANSPOSE(first)), MATMUL(actions(:, :, op), term))
+      END DO
+      CALL skala_orbital_multiplets(actions, antiunitary, occupations, stable, nretained, second, groups, energies, valid)
+      IF (.NOT. valid) RETURN
+      ALLOCATE (gauge, SOURCE=MATMUL(first, second))
+      source = MATMUL(CONJG(TRANSPOSE(gauge)), gauge)
+      DO i = 1, n
+         source(i, i) = source(i, i) - 1.0_dp
+      END DO
+      valid = MAXVAL(ABS(source)) <= tolerance
+      IF (.NOT. valid) RETURN
+      source = MATMUL(gauge*SPREAD(energies - energy_zero, 1, n), CONJG(TRANSPOSE(gauge)))
+      DO i = 1, n
+         source(i, i) = source(i, i) - reference_energies(i) + energy_zero
+      END DO
+      valid = MAXVAL(ABS(source)) <= tolerance*scale
+   END SUBROUTINE skala_orbital_multiplets_refine
 
 ! **************************************************************************************************
 !> \brief Apply the real-linear group average or its exact transpose in the reference frame.

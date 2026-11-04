@@ -1333,7 +1333,11 @@ CONTAINS
                CALL qs_skala_scf_release(state)
                CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
                IF (.NOT. valid) CPABORT("Could not rebuild the released inverse orbital state.")
-               CPASSERT(qs_skala_scf_size(state) == n)
+               n = qs_skala_scf_size(state)
+               IF (SIZE(coordinate) /= n) THEN
+                  DEALLOCATE (coordinate, gradient, physical)
+                  ALLOCATE (coordinate(n), gradient(n), physical(n))
+               END IF
                coordinate = 0.0_dp
                CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
                CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid, &
@@ -1420,13 +1424,12 @@ CONTAINS
          CALL qs_skala_scf_release(state)
          CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
          IF (.NOT. valid) CPABORT("Could not rebuild the accepted inverse orbital chart.")
-         IF (space_grown) THEN
+         ! Symmetry adaptation can change chart coordinates at a fixed retained band count.
+         IF (qs_skala_scf_size(state) /= n) THEN
             n = qs_skala_scf_size(state)
             DEALLOCATE (coordinate, gradient, physical)
             ALLOCATE (coordinate(n), gradient(n), physical(n))
             IF (ALLOCATED(coordinate_bound)) DEALLOCATE (coordinate_bound)
-         ELSE
-            CPASSERT(qs_skala_scf_size(state) == n)
          END IF
          coordinate = 0.0_dp
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
