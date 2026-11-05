@@ -285,9 +285,9 @@ CONTAINS
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r, v_rspace_embed, v_rspace_new, &
                                                             v_rspace_new_aux_fit, v_tau_rspace, &
                                                             v_tau_rspace_aux_fit
-      TYPE(pw_r3d_rs_type), POINTER :: rho0_s_rs, rho_nlcc, rhoz_cneo_s_rs, v_hartree_rspace, &
-         v_sccs_rspace, v_sic_rspace, v_spin_ddapc_rest_r, vee, vppl_rspace
-      TYPE(pw_r3d_rs_type), POINTER                      :: inverse_weight_potential, inverse_weights
+      TYPE(pw_r3d_rs_type), POINTER :: inverse_weight_potential, inverse_weights, rho0_s_rs, &
+         rho_nlcc, rhoz_cneo_s_rs, v_hartree_rspace, v_sccs_rspace, v_sic_rspace, &
+         v_spin_ddapc_rest_r, vee, vppl_rspace
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
@@ -1190,7 +1190,9 @@ CONTAINS
          CALL check_inverse_exchange(qs_env)
       END IF
 
-      IF (do_hfx) THEN
+      ! Descriptor probes invalidate energy and operators. Exchange does not
+      ! contribute to their density fields and is rebuilt by the next energy call.
+      IF (do_hfx .AND. .NOT. skala_fields_only) THEN
          IF (inverse_admm) THEN
             CALL upf_admm_exchange(qs_env, calculate_forces, use_virial, just_energy, auxiliary_energies, auxiliary_operator)
             energy%ex = auxiliary_energies(1) + auxiliary_energies(2)
@@ -2138,8 +2140,9 @@ CONTAINS
             virial%pv_calculate = .FALSE.
          END IF
          DO contribution = 1, SIZE(exchange, 1)
-            IF (exchange(contribution, 1)%use_ace) &
+            IF (exchange(contribution, 1)%use_ace) THEN
                exchange(contribution, 1)%ace%geometry_step = exchange(contribution, 1)%ace%geometry_step + 1
+            END IF
          END DO
       ELSE
          CALL qs_upf_inverse_aux_evaluate(qs_env, admm%xc_section_aux, exchange, geometry_changed, components, operators, &
