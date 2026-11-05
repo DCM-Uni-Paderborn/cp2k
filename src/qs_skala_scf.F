@@ -39,7 +39,8 @@ MODULE qs_skala_scf
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
-   USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
+   USE qs_ks_methods,                   ONLY: calc_mo_derivatives,&
+                                              qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_did_change,&
                                               qs_ks_env_type,&
@@ -51,7 +52,8 @@ MODULE qs_skala_scf
                                               qs_rho_set,&
                                               qs_rho_type
    USE qs_skala_orbitals,               ONLY: &
-        qs_skala_orbitals_adapt_symmetry, qs_skala_orbitals_canonicalize, &
+        qs_skala_orbitals_adapt_symmetry, qs_skala_orbitals_canonical_gamma, &
+        qs_skala_orbitals_canonical_kpoint, qs_skala_orbitals_canonicalize, &
         qs_skala_orbitals_create, qs_skala_orbitals_evaluate, qs_skala_orbitals_install_gamma, &
         qs_skala_orbitals_install_kpoint, qs_skala_orbitals_release, &
         qs_skala_orbitals_retained_symmetry, qs_skala_orbitals_type
@@ -657,8 +659,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Publish MO factors belonging to the newly installed native density.
-!>        Use the same publication after trial installation and canonical acceptance, so the
-!>        stabilized point-density evaluation retains the factors of the actual current MOs.
+!>        Trial installation rebuilds the density first. Equal-occupation canonical rotations
+!>        retain that density while publishing factors in the current native orbital gauge.
 !> \param state Native orbital blocks with their density already rebuilt.
 ! **************************************************************************************************
    SUBROUTINE retain_native_orbital_factors(state)
@@ -3401,14 +3403,15 @@ CONTAINS
 !> \brief Accept a stationary native trial with matching canonical MOs, P, W, fields, energy and KS.
 !>        Check complete physical stationarity and the independent cusp-normal minimum conditions
 !>        before changing native eigenvalues or W. On rejection the evaluated trial remains live.
-!>        Recheck the actual canonical state in a fresh normalized chart. A rejected canonical
+!>        Retain the evaluated density under equal-occupation rotations and recheck the complete
+!>        physical covector in a fresh normalized chart. A rejected canonical
 !>        state remains in the native environment so a caller can rechart and refine it.
 !>        Success consumes the orbital charts because canonicalization changes their reference.
 !>        This does not establish tangential stability or perform an automatic SCF search.
 !> \param state Native charts, released only on successful acceptance.
 !> \param coordinate Replicated coordinates of the trial to accept.
 !> \param tolerance Bound on the complete physical orbital-gradient norm.
-!> \param accepted Whether all blocks were canonicalized and the native state was rebuilt.
+!> \param accepted Whether canonical MOs and W preserve the stationary evaluated density.
 !> \param omitted_charge Optional thermal electron count outside retained MOs, zero until checked.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_accept(state, coordinate, tolerance, accepted, omitted_charge)
@@ -3430,7 +3433,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: canonical_coordinate(:), gradient(:), &
                                                             physical_mu(:), selected_targets(:), &
                                                             selected_tolerances(:)
-      TYPE(dbcsr_p_type), POINTER                        :: densities(:, :), matrices(:, :), &
+      TYPE(dbcsr_p_type), POINTER                        :: accepted_ks(:), densities(:, :), &
+                                                            matrices(:, :), mo_derivs(:), &
                                                             weighted(:)
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(qs_skala_scf_type)                            :: canonical
@@ -3468,7 +3472,6 @@ CONTAINS
          CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=gradient)
          RETURN
       END IF
-      state%inverse%orbital_factors%density_evaluation = -1
       IF (.NOT. state%bloch) THEN
          CALL qs_rho_get(state%rho, rho_ao_kp=densities)
          CALL get_ks_env(state%ks_env, matrix_w=weighted)
@@ -3497,21 +3500,25 @@ CONTAINS
          DO local = 1, SIZE(state%orbitals, 1)
             IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
             IF (state%bloch) THEN
-               CALL qs_skala_orbitals_install_kpoint(state%orbitals(local, spin), state%kpoints, local, spin, &
-                                                     energy_weighted=.TRUE.)
+               CALL qs_skala_orbitals_canonical_kpoint(state%orbitals(local, spin), state%kpoints, local, spin)
             ELSE
-               CALL qs_skala_orbitals_install_gamma(state%orbitals(local, spin), state%inverse%frame%ao, &
-                                                    densities(spin, 1)%matrix, weighted(spin)%matrix)
+               CALL qs_skala_orbitals_canonical_gamma(state%orbitals(local, spin), state%inverse%frame%ao, &
+                                                      weighted(spin)%matrix)
             END IF
          END DO
       END DO
-      CALL qs_rho_set(state%rho, rho_r_valid=.FALSE., rho_g_valid=.FALSE., tau_r_valid=.FALSE., tau_g_valid=.FALSE.)
-      CALL qs_rho_update_rho(state%rho, state%qs_env)
+      IF (.NOT. state%bloch .AND. state%qs_env%requires_mo_derivs .AND. .NOT. state%qs_env%run_rtp) THEN
+         ! Gamma OT reconstructs W from H C. Keep that derivative cache in the
+         ! canonical MO gauge without rebuilding the invariant density or XC.
+         CALL get_qs_env(state%qs_env, mo_derivs=mo_derivs)
+         accepted_ks => matrices(:, 1)
+         CALL calc_mo_derivatives(state%qs_env, accepted_ks, mo_derivs)
+      END IF
+      ! Equal-occupation canonical rotations leave P and every physical density field invariant.
+      ! Retain their evaluated values instead of recollocating roundoff changes that
+      ! a sharply curved functional can amplify. Publish factors in the new MO gauge
+      ! so subsequent orbital responses use matching coefficients and directions.
       CALL retain_native_orbital_factors(state)
-      CALL skala_density_samples_begin(state%constraints)
-      CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
-      CALL qs_ks_update_qs_env(state%qs_env, calculate_forces=.FALSE., just_energy=.FALSE., print_active=.FALSE.)
-      CALL skala_density_samples_end(state%constraints)
       CALL qs_skala_scf_create(canonical, state%qs_env, valid, thermal=state%thermal)
       IF (valid .AND. state%thermal) THEN
          ! Keep auxiliary energies and occupations while native eigenvalues and W use H.

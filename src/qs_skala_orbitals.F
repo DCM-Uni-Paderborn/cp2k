@@ -39,6 +39,7 @@ MODULE qs_skala_orbitals
    PUBLIC :: qs_skala_orbitals_retained_symmetry
    PUBLIC :: qs_skala_orbitals_evaluate, qs_skala_orbitals_canonicalize
    PUBLIC :: qs_skala_orbitals_install_gamma, qs_skala_orbitals_install_kpoint
+   PUBLIC :: qs_skala_orbitals_canonical_gamma, qs_skala_orbitals_canonical_kpoint
 
    TYPE qs_skala_orbitals_type
       TYPE(skala_orbital_chart_type) :: chart
@@ -711,6 +712,58 @@ CONTAINS
          END IF
       END IF
    END SUBROUTINE qs_skala_orbitals_install_kpoint
+
+! **************************************************************************************************
+!> \brief Install canonical Gamma MOs and W without regenerating the invariant density.
+!> \param state Canonical rotation within equal-occupation subspaces of the accepted trial.
+!> \param frame Original inverse AO layout.
+!> \param weighted Native energy-weighted density.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_canonical_gamma(state, frame, weighted)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(dbcsr_type), INTENT(INOUT)                    :: weighted
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      TYPE(dbcsr_type)                                   :: imaginary, real_part
+
+      CPASSERT(state%canonicalized)
+      CALL write_native_mos(state)
+      CALL orbital_density(state, matrix, energy_weighted=.TRUE.)
+      CALL qs_upf_inverse_matrix_scatter(frame, matrix, weighted, real_part, imaginary)
+      CALL dbcsr_copy(weighted, real_part)
+      CALL dbcsr_release(real_part)
+      CALL dbcsr_release(imaginary)
+   END SUBROUTINE qs_skala_orbitals_canonical_gamma
+
+! **************************************************************************************************
+!> \brief Install canonical Bloch MOs and W while retaining the accepted P(k) and fields.
+!> \param state Canonical rotation within equal-occupation subspaces of the accepted trial.
+!> \param kpoints Live native group environment.
+!> \param local Local k-point index within this owning group.
+!> \param spin Native spin index.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_canonical_kpoint(state, kpoints, local, spin)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoints
+      INTEGER, INTENT(IN)                                :: local, spin
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :)
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      CPASSERT(state%canonicalized)
+      CPASSERT(ALLOCATED(kpoints%native_density))
+      CPASSERT(local >= 1 .AND. local <= SIZE(kpoints%kp_env))
+      kp => kpoints%kp_env(local)%kpoint_env
+      CPASSERT(spin >= 1 .AND. spin <= SIZE(kp%mos))
+      CPASSERT(ASSOCIATED(state%native, kp%mos(spin)))
+      CPASSERT(ASSOCIATED(kp%wmat))
+      CALL write_native_mos(state)
+      CALL orbital_density(state, matrix, energy_weighted=.TRUE.)
+      CALL cp_fm_set_submatrix(kp%wmat(1, spin), REAL(matrix, dp))
+      IF (.NOT. kpoints%use_real_wfn) CALL cp_fm_set_submatrix(kp%wmat(2, spin), AIMAG(matrix))
+      kpoints%native_trial_valid = .FALSE.
+   END SUBROUTINE qs_skala_orbitals_canonical_kpoint
 
 ! **************************************************************************************************
 !> \brief Store only the number of native MOs requested by the SCF setup.
