@@ -361,8 +361,9 @@ CONTAINS
             IF (qs_upf_inverse_scf_active(qs_env%ks_env) .AND. ASSOCIATED(qs_env%x_data)) THEN
                ! End the original-UPF auxiliary full-exchange finishing phase.
                DO contribution = 1, SIZE(qs_env%x_data, 1)
-                  IF (qs_env%x_data(contribution, 1)%use_ace) &
-                     qs_env%x_data(contribution, 1)%ace%convergence_rebuild = .FALSE.
+                  IF (qs_env%x_data(contribution, 1)%use_ace) then
+                    qs_env%x_data(contribution, 1)%ace%convergence_rebuild = .FALSE.
+                  end if
                END DO
             END IF
          END IF
@@ -1168,10 +1169,8 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), reached(:), &
                                                             release_side(:), spins(:)
-      LOGICAL                                            :: accepted, balanced, converged, &
-                                                            do_kpoints, final_stage, rechart, &
-                                                            reference_refreshed, released, &
-                                                            space_grown, valid
+      LOGICAL :: accepted, balanced, converged, do_kpoints, final_stage, rechart, &
+         reference_refreshed, released, retained_symmetry, space_grown, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy, omitted_charge, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
@@ -1214,6 +1213,28 @@ CONTAINS
          ! The input-selected reduction also constrains operations leaving a point fixed.
          ! Canonical acceptance separately checks the unrestricted physical residual.
          IF (.NOT. kpoints%full_grid) create_search_state => qs_skala_scf_create_symmetric
+         IF (scf_control%smear%do_smear .AND. .NOT. kpoints%full_grid) THEN
+            ! A restored density can bypass the initial generalized solve while
+            ! its requested MO count cuts a symmetry multiplet. Complete the
+            ! retained span before constructing a thermal reference, as for a cold start.
+            DO
+               CALL qs_skala_scf_retained_symmetry(qs_env, retained_symmetry)
+               IF (retained_symmetry) EXIT
+               IF (.NOT. ANY(scf_control%added_mos_auto(1:dft_control%nspins))) THEN
+                  CPABORT("Symmetry requires more thermal bands. Use ADDED_MOS AUTO.")
+               END IF
+               IF (remaining == 0) THEN
+                  handled = .TRUE.
+                  scf_env%iter_delta = HUGE(0.0_dp)
+                  RETURN
+               END IF
+               CALL qs_scf_grow_added_mos_auto_kp(qs_env, scf_env, scf_control, output_unit)
+               scf_section => section_vals_get_subs_vals(qs_env%input, "DFT%SCF")
+               CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_resized)
+               iterations = iterations + 1
+               remaining = remaining - 1
+            END DO
+         END IF
       END IF
       CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
       IF (.NOT. valid) THEN
