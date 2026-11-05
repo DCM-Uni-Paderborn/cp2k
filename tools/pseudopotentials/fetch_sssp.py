@@ -30,7 +30,11 @@ def download(source, root, temporary):
             with urllib.request.urlopen(source["url"], timeout=120) as response:
                 with path.open("wb") as output:
                     shutil.copyfileobj(response, output)
-    if sha256(path.read_bytes()).hexdigest() != source["sha256"]:
+    checksum = sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            checksum.update(block)
+    if checksum.hexdigest() != source["sha256"]:
         raise RuntimeError(f"Checksum mismatch: {source['file']}")
     return path
 
