@@ -1456,8 +1456,8 @@ CONTAINS
                                                             motion_tensor, response(3), scalar, &
                                                             values_tensor
 
-      values = RESHAPE([1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp], [2, 3])
-      motion = RESHAPE([0.2_dp, -0.7_dp, -0.3_dp, 0.4_dp, 0.8_dp, 0.5_dp], [2, 3])
+      ALLOCATE (values, SOURCE=RESHAPE([1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp], [2, 3]))
+      ALLOCATE (motion, SOURCE=RESHAPE([0.2_dp, -0.7_dp, -0.3_dp, 0.4_dp, 0.8_dp, 0.5_dp], [2, 3]))
       expected(:, 1) = motion(:, 2)
       expected(:, 2) = motion(:, 1)
       expected(:, 3) = 0.0_dp

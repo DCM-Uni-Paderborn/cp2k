@@ -386,7 +386,7 @@ CONTAINS
          CALL skala_orbital_multiplets(actions, antiunitary, state%occupations, state%eigenvalues, &
                                        state%native%nmo, gauge, groups, energies, valid)
          IF (.NOT. valid) THEN
-            actions = original_actions
+            actions(:, :, :) = original_actions
             CALL skala_orbital_multiplets_refine(actions, antiunitary, state%occupations, state%eigenvalues, &
                                                  state%native%nmo, gauge, groups, energies, valid)
             IF (.NOT. valid) RETURN

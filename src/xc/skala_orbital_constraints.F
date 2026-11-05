@@ -661,7 +661,7 @@ CONTAINS
       ALLOCATE (average(n, n), first(n, n), source(n, n), term(n, n), sectors(n), stable(n), &
                 values(n), work(2*n), real_work(3*n))
       DO op = 1, SIZE(antiunitary)
-         source = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
+         source(:, :) = MATMUL(CONJG(TRANSPOSE(actions(:, :, op))), actions(:, :, op))
          DO i = 1, n
             source(i, i) = source(i, i) - 1.0_dp
          END DO
@@ -686,10 +686,10 @@ CONTAINS
          ! energies can instead amplify harmless group roundoff in their individual eigenvectors.
          average = 0.0_dp
          DO op = 1, SIZE(antiunitary)
-            average = average + MATMUL(actions(:, indices, op), &
-                                       CONJG(TRANSPOSE(actions(:, indices, op))))/REAL(SIZE(antiunitary), dp)
+            average(:, :) = average + MATMUL(actions(:, indices, op), &
+                                             CONJG(TRANSPOSE(actions(:, indices, op))))/REAL(SIZE(antiunitary), dp)
          END DO
-         average = 0.5_dp*(average + CONJG(TRANSPOSE(average)))
+         average(:, :) = 0.5_dp*(average + CONJG(TRANSPOSE(average)))
          CALL zheev('V', 'U', n, average, n, values, work, SIZE(work), real_work, status)
          IF (status /= 0) RETURN
          IF (MINVAL(values(n - m + 1:)) <= 0.5_dp) RETURN
@@ -700,31 +700,31 @@ CONTAINS
          DEALLOCATE (indices)
       END DO
       ! Restore mutual orthogonality of the independently rounded invariant subspaces.
-      source = MATMUL(CONJG(TRANSPOSE(first)), first)
+      source(:, :) = MATMUL(CONJG(TRANSPOSE(first)), first)
       CALL zheev('V', 'U', n, source, n, values, work, SIZE(work), real_work, status)
       IF (status /= 0 .OR. MINVAL(values) <= 0.0_dp) RETURN
-      term = source*SPREAD(1.0_dp/SQRT(values), 1, n)
-      first = MATMUL(first, MATMUL(term, CONJG(TRANSPOSE(source))))
-      stable = SUM(ABS(first)**2*SPREAD(reference_energies - energy_zero, 2, n), DIM=1) + energy_zero
+      term(:, :) = source*SPREAD(1.0_dp/SQRT(values), 1, n)
+      first(:, :) = MATMUL(first, MATMUL(term, CONJG(TRANSPOSE(source))))
+      stable(:) = SUM(ABS(first)**2*SPREAD(reference_energies - energy_zero, 2, n), DIM=1) + energy_zero
       DO i = 1, n
          IF (sectors(i) /= i) CYCLE
          WHERE (sectors == i) stable = SUM(PACK(stable, sectors == i))/REAL(COUNT(sectors == i), dp)
       END DO
       DO op = 1, SIZE(antiunitary)
-         term = first
+         term(:, :) = first
          IF (antiunitary(op)) term = CONJG(term)
          actions(:, :, op) = MATMUL(CONJG(TRANSPOSE(first)), MATMUL(actions(:, :, op), term))
       END DO
       CALL skala_orbital_multiplets(actions, antiunitary, occupations, stable, nretained, second, groups, energies, valid)
       IF (.NOT. valid) RETURN
       ALLOCATE (gauge, SOURCE=MATMUL(first, second))
-      source = MATMUL(CONJG(TRANSPOSE(gauge)), gauge)
+      source(:, :) = MATMUL(CONJG(TRANSPOSE(gauge)), gauge)
       DO i = 1, n
          source(i, i) = source(i, i) - 1.0_dp
       END DO
       valid = MAXVAL(ABS(source)) <= tolerance
       IF (.NOT. valid) RETURN
-      source = MATMUL(gauge*SPREAD(energies - energy_zero, 1, n), CONJG(TRANSPOSE(gauge)))
+      source(:, :) = MATMUL(gauge*SPREAD(energies - energy_zero, 1, n), CONJG(TRANSPOSE(gauge)))
       DO i = 1, n
          source(i, i) = source(i, i) - reference_energies(i) + energy_zero
       END DO
