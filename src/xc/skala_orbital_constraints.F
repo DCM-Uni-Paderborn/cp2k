@@ -1408,7 +1408,9 @@ CONTAINS
             last_progress_check = iteration
          END IF
          active_preconditioner = .FALSE.
-         IF (coupled_curvature .AND. PRESENT(precondition)) THEN
+         ! The frozen search metric also applies without a complete analytical Hessian.
+         ! Its callback retains the native input settings and availability checks.
+         IF (PRESENT(precondition)) THEN
             CALL precondition(x, context, inverse_diagonal, active_preconditioner)
             IF (active_preconditioner) THEN
                CPASSERT(ALL(ieee_is_finite(inverse_diagonal)))

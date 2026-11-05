@@ -1027,11 +1027,11 @@ CONTAINS
          ERROR STOP 'Physical stationarity exceeded its budget or changed a failed trial'
       END IF
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
-                                          empty, stationarity_tolerance, converged, max_iterations=8, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
                                           verify_stationarity=scaled_physical_gradient, iterations=iterations, &
-                                          curvature_steps=.TRUE., precondition=scaled_inverse_curvature)
-      IF (.NOT. converged .OR. iterations <= 0 .OR. iterations > 8 .OR. ABS(coordinate(1)) > 1.e-12_dp) THEN
-         ERROR STOP 'Known physical minimum was not established'
+                                          precondition=scaled_inverse_curvature)
+      IF (.NOT. converged .OR. iterations /= 1 .OR. ABS(coordinate(1)) > 1.e-12_dp) THEN
+         ERROR STOP 'BFGS preconditioning without a Hessian did not establish the physical minimum'
       END IF
       coordinate = 1.0_dp
       CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
