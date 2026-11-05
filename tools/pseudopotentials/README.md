@@ -47,6 +47,15 @@ charge. It is not recovered generator core tau. The other ten SSSP USPPs need no
 Their selected occupations and reference sources are recorded in the catalog. External core
 references are installed under `inputs/core-kinetic/` for the selected files.
 
+Add `--paw-core` to install compatible complete frozen-core reference waves for the selected La, Pt,
+Pa and U PAW files from the fixed
+[PAW core prerelease](https://github.com/DCM-Uni-Paderborn/inverse-uspp/releases/tag/paw-core-v0.1.0).
+Its archives and catalog are pinned in `paw_core_release.json`. The selection index points matching
+original hashes to the supplemented files under `DIRECTORY/prepared-paw-core/v0.1.0/`. Other PAW
+files retain their original contents. Only the core-orbital table is supplemented. Original
+potentials, augmentation, valence waves and core densities remain unchanged. This supplies the core
+reference data required by tau-dependent XC without establishing every SCF or geometry combination.
+
 ## Download original collections
 
 From the CP2K repository root, choose a writable directory outside the source or installed data
