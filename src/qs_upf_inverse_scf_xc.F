@@ -882,10 +882,12 @@ CONTAINS
          NULLIFY (constraints)
       END IF
       CPASSERT(ASSOCIATED(state))
-      CPASSERT(state%enabled)
       IF (PRESENT(context)) THEN
+         CPASSERT(state%basis_type == 'AUX_FIT')
+         CPASSERT(ASSOCIATED(state%source_grid))
          CPASSERT(.NOT. state%xc%kinetic .OR. ALLOCATED(state%kinetic_cache))
       ELSE
+         CPASSERT(state%enabled)
          CPASSERT(ALLOCATED(state%kinetic_cache) .EQV. state%xc%kinetic)
       END IF
       CPASSERT(ASSOCIATED(state%xc_grid))
