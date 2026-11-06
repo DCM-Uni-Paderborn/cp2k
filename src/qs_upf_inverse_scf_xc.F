@@ -51,6 +51,7 @@ MODULE qs_upf_inverse_scf_xc
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_prepare,&
                                               qs_upf_inverse_atom_grid_ref_type,&
                                               qs_upf_inverse_atom_grid_response
+   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_integrate
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
@@ -489,9 +490,11 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), &
          OPTIONAL, TARGET                                :: context
 
-      COMPLEX(dp), ALLOCATABLE                           :: gaussian_operator(:, :, :), partial(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: augmentation_operator(:, :), &
+                                                            gaussian_operator(:, :, :), &
+                                                            partial(:, :)
       INTEGER                                            :: axis, ik, n, nk, ns, spin
-      LOGICAL                                            :: valid
+      LOGICAL                                            :: shared_augmentation, valid
       REAL(dp), ALLOCATABLE                              :: weights(:)
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: density, gradient(3), kinetic
@@ -499,7 +502,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_background_type)               :: gaussian
-      TYPE(qs_upf_inverse_grid_type), POINTER            :: frame
+      TYPE(qs_upf_inverse_grid_type), POINTER            :: frame, reference
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
@@ -521,6 +524,20 @@ CONTAINS
       nk = SIZE(weights)
       frame => source_frame(state, 1)
       n = SIZE(frame%ao%coefficients, 2)
+      reference => frame
+      shared_augmentation = nk > 1 .AND. .NOT. state%gaussian_background
+      IF (shared_augmentation) THEN
+         DO ik = 2, nk
+            frame => source_frame(state, ik)
+            IF (.NOT. same_augmentation_geometry(reference%ao, frame%ao)) THEN
+               shared_augmentation = .FALSE.
+               EXIT
+            END IF
+         END DO
+      END IF
+      IF (shared_augmentation) THEN
+         ALLOCATE (augmentation_operator(SIZE(reference%ao%coefficients, 1), SIZE(reference%ao%coefficients, 1)))
+      END IF
       CPASSERT(SIZE(potential) == ns)
       CPASSERT(SIZE(kinetic_potential) == ns)
       ALLOCATE (operators(n, n, nk, ns))
@@ -543,12 +560,25 @@ CONTAINS
          CALL source_transfer(kinetic_potential(spin), kinetic)
          operators(:, :, :, spin) = CMPLX(0.0_dp, 0.0_dp, dp)
          IF (.NOT. state%gaussian_background) THEN
+            ! Q and its potential integral have no Bloch phase. Reuse this same
+            ! projector operator with each k point's own AO transformation.
+            IF (shared_augmentation) THEN
+               CALL qs_upf_inverse_augmentation_fourier_integrate(reference%ao, augmentation, density, gradient, &
+                                                                  augmentation_operator)
+            END IF
             DO ik = 1, nk
                frame => source_frame(state, ik)
-               CALL qs_upf_inverse_grid_integrate_dense(frame, density, gradient, kinetic, partial, &
-                                                        augmentation=augmentation, fourier_charge=.TRUE., &
-                                                        kinetic=state%kinetic_cache, &
-                                                        orbital_fields=.NOT. state%native_gaussian)
+               IF (shared_augmentation) THEN
+                  CALL qs_upf_inverse_grid_integrate_dense(frame, density, gradient, kinetic, partial, &
+                                                           projector_operator=augmentation_operator, &
+                                                           kinetic=state%kinetic_cache, &
+                                                           orbital_fields=.NOT. state%native_gaussian)
+               ELSE
+                  CALL qs_upf_inverse_grid_integrate_dense(frame, density, gradient, kinetic, partial, &
+                                                           augmentation=augmentation, fourier_charge=.TRUE., &
+                                                           kinetic=state%kinetic_cache, &
+                                                           orbital_fields=.NOT. state%native_gaussian)
+               END IF
                operators(:, :, ik, spin) = partial
             END DO
          END IF
@@ -1363,5 +1393,28 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE core_fields
+
+! **************************************************************************************************
+!> \brief Whether two Bloch frames have the same original-Q geometry and projector ordering.
+!> \param first First Bloch frame.
+!> \param second Other Bloch frame.
+!> \return True for identical augmentation geometry, projector order and point ownership.
+! **************************************************************************************************
+   FUNCTION same_augmentation_geometry(first, second) RESULT(same)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: first, second
+      LOGICAL                                            :: same
+
+      same = .FALSE.
+      IF (SIZE(first%coefficients, 1) /= SIZE(second%coefficients, 1)) RETURN
+      IF (SIZE(first%center_atoms) /= SIZE(second%center_atoms)) RETURN
+      IF (ANY(SHAPE(first%positions) /= SHAPE(second%positions))) RETURN
+      IF (ANY(first%center_atoms /= second%center_atoms)) RETURN
+      IF (ANY(first%center_kinds /= second%center_kinds)) RETURN
+      IF (ANY(first%projector_first /= second%projector_first)) RETURN
+      IF (ANY(first%projector_last /= second%projector_last)) RETURN
+      IF (ANY(first%positions /= second%positions) .OR. ANY(first%cell /= second%cell)) RETURN
+      IF (first%point_comm%get_handle() /= second%point_comm%get_handle()) RETURN
+      same = .TRUE.
+   END FUNCTION same_augmentation_geometry
 
 END MODULE qs_upf_inverse_scf_xc
