@@ -105,7 +105,8 @@ CONTAINS
 
       INTEGER                                            :: atom, center, first, ikind, image, last, &
                                                             n
-      REAL(dp)                                           :: hermiticity, position(3), tolerance
+      REAL(dp)                                           :: hermiticity, lower(3), position(3), &
+                                                            tolerance, upper(3)
       REAL(dp), ALLOCATABLE                              :: displacements(:, :), g(:, :)
 
       CPASSERT(frame%atom_local .OR. frame%inverse%ready)
@@ -122,6 +123,13 @@ CONTAINS
       CPASSERT(hermiticity <= tolerance)
       ALLOCATE (displacements(3, SIZE(density)), g(3, SIZE(density)))
       g = 0.0_dp
+      IF (PRESENT(points)) THEN
+         lower = MINVAL(points, DIM=2)
+         upper = MAXVAL(points, DIM=2)
+      ELSE
+         lower = MINVAL(frame%points, DIM=2)
+         upper = MAXVAL(frame%points, DIM=2)
+      END IF
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
@@ -130,6 +138,7 @@ CONTAINS
          last = frame%projector_last(center)
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+            IF (.NOT. image_has_support(position, augmentation%kinds(ikind)%realspace_radius, lower, upper)) CYCLE
             IF (PRESENT(points)) THEN
                displacements(:, :) = points - SPREAD(position, 2, SIZE(density))
             ELSE
@@ -226,7 +235,7 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
 
       INTEGER                                            :: atom, center, first, ikind, image, last
-      REAL(dp)                                           :: position(3)
+      REAL(dp)                                           :: lower(3), position(3), upper(3)
       REAL(dp), ALLOCATABLE                              :: displacements(:, :), matrix(:, :)
 
       CALL check_operator(frame, vdensity, vgradient, projector_operator, points)
@@ -238,6 +247,13 @@ CONTAINS
       END IF
       projector_operator = CMPLX(0.0_dp, 0.0_dp, dp)
       ALLOCATE (displacements(3, SIZE(vdensity)))
+      IF (PRESENT(points)) THEN
+         lower = MINVAL(points, DIM=2)
+         upper = MAXVAL(points, DIM=2)
+      ELSE
+         lower = MINVAL(frame%points, DIM=2)
+         upper = MAXVAL(frame%points, DIM=2)
+      END IF
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
@@ -247,6 +263,7 @@ CONTAINS
          ALLOCATE (matrix(last - first + 1, last - first + 1))
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+            IF (.NOT. image_has_support(position, augmentation%kinds(ikind)%realspace_radius, lower, upper)) CYCLE
             IF (PRESENT(points)) THEN
                displacements(:, :) = points - SPREAD(position, 2, SIZE(vdensity))
                CALL uspp_augmentation_integrate_atom(augmentation%kinds(ikind), displacements, weights, &
@@ -266,6 +283,28 @@ CONTAINS
          CALL frame%point_comm%sum(projector_operator)
       END IF
    END SUBROUTINE qs_upf_inverse_augmentation_integrate
+
+! **************************************************************************************************
+!> \brief Exclude only images whose compact radial support cannot intersect the point bounds.
+!>        Empty local point sets remain empty. Retain a roundoff margin at box boundaries.
+!> \param position Image center in Cartesian coordinates.
+!> \param radius Exact compact support of the original charge kernel.
+!> \param lower Componentwise lower point bounds.
+!> \param upper Componentwise upper point bounds.
+!> \return Whether this image may contribute at a local point.
+! **************************************************************************************************
+   FUNCTION image_has_support(position, radius, lower, upper) RESULT(active)
+      REAL(dp), INTENT(IN)                               :: position(3), radius, lower(3), upper(3)
+      LOGICAL                                            :: active
+
+      REAL(dp)                                           :: margin
+
+      active = .FALSE.
+      IF (ANY(lower > upper)) RETURN
+      margin = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, radius, MAXVAL(ABS(position)), &
+                                           MAXVAL(ABS(lower)), MAXVAL(ABS(upper)))
+      active = ALL(position >= lower - radius - margin .AND. position <= upper + radius + margin)
+   END FUNCTION image_has_support
 
 ! **************************************************************************************************
 !> \brief Original Q Fourier kernel projected onto the real tensor-product grid.
