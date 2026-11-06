@@ -10,8 +10,10 @@ MODULE qs_upf_inverse_aux_xc
    USE admm_types,                      ONLY: admm_type
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE input_constants,                 ONLY: xc_none
-   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+   USE input_constants,                 ONLY: xc_none,&
+                                              xc_vdw_fun_nonloc
+   USE input_section_types,             ONLY: section_get_ival,&
+                                              section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: dp
@@ -19,6 +21,7 @@ MODULE qs_upf_inverse_aux_xc
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
+   USE pw_grids,                        ONLY: pw_grid_compare
    USE pw_methods,                      ONLY: pw_integrate_function,&
                                               pw_transfer
    USE pw_pool_types,                   ONLY: pw_pool_type
@@ -33,20 +36,29 @@ MODULE qs_upf_inverse_aux_xc
                                               qs_rho_release,&
                                               qs_rho_set,&
                                               qs_rho_type
-   USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_source_geometry
+   USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_kinetic,&
+                                              qs_upf_inverse_core_source_geometry
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_evaluate,&
-                                              qs_upf_inverse_paw_response
-   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_response,&
+                                              qs_upf_inverse_paw_response,&
+                                              qs_upf_inverse_paw_xc_kernel
+   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_model_response,&
+                                              qs_upf_inverse_scf_xc_response,&
                                               qs_upf_inverse_scf_xc_source_adjoint,&
                                               qs_upf_inverse_scf_xc_source_direction,&
                                               qs_upf_inverse_scf_xc_source_geometry
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
+   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_grid_kernel,&
+                                              qs_upf_inverse_xc_semilocal_kernel_available
    USE qs_vxc,                          ONLY: qs_vxc_create
+   USE rs_pw_interface,                 ONLY: pw_real_transfer
+   USE xc_input_constants,              ONLY: xc_deriv_pw,&
+                                              xc_rho_no_smooth
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
    PUBLIC :: qs_upf_inverse_aux_xc_evaluate, qs_upf_inverse_aux_xc_rescale
+   PUBLIC :: qs_upf_inverse_aux_xc_kernel, qs_upf_inverse_aux_xc_kernel_available
 
 CONTAINS
 
@@ -178,6 +190,8 @@ CONTAINS
 !> \param atom_response ...
 !> \param cell_response ...
 !> \param response Zero without a requested geometry direction.
+!> \param atom_gradient ...
+!> \param strain_gradient ...
 ! **************************************************************************************************
    SUBROUTINE xc_component(qs_env, xc_section, matrices, grid_energy, atom_energy, operators, &
                            atom_response, cell_response, response, atom_gradient, strain_gradient)
@@ -561,4 +575,283 @@ CONTAINS
          response = response + partial
       END IF
    END SUBROUTINE xc_geometry
+! **************************************************************************************************
+!> \brief Whether the auxiliary functional has a complete fixed-geometry semilocal kernel.
+!> \param xc Selected auxiliary XC section.
+!> \param ns Number of spin components.
+!> \return Whether the selected semilocal functional and grid support the kernel.
+! **************************************************************************************************
+   FUNCTION qs_upf_inverse_aux_xc_kernel_available(xc, ns) RESULT(available)
+      TYPE(section_vals_type), POINTER                   :: xc
+      INTEGER, INTENT(IN)                                :: ns
+      LOGICAL                                            :: available
+
+      available = qs_upf_inverse_xc_semilocal_kernel_available(xc, ns == 2)
+      available = available .AND. section_get_ival(xc, 'XC_GRID%XC_DERIV') == xc_deriv_pw .AND. &
+                  section_get_ival(xc, 'XC_GRID%XC_SMOOTH_RHO') == xc_rho_no_smooth .AND. &
+                  section_get_ival(xc, 'VDW_POTENTIAL%POTENTIAL_TYPE') /= xc_vdw_fun_nonloc
+   END FUNCTION qs_upf_inverse_aux_xc_kernel_available
+
+! **************************************************************************************************
+!> \brief Differentiate the same auxiliary XC functional at its actual density and charge ratio.
+!>        Retain the unscaled zero-valence core baseline for Merlot exchange. Density and
+!>        explicit-ratio responses are total electronic variations. Primary XC is separate.
+!> \param qs_env Native auxiliary density, reconstruction and charge ratios.
+!> \param xc Same auxiliary XC section as the accepted energy.
+!> \param direction Variation of the actual auxiliary AO density.
+!> \param eta_direction Variation of each primary-to-auxiliary charge ratio.
+!> \param operators Auxiliary XC derivative at fixed charge ratios.
+!> \param operator_direction Total electronic variation of that XC derivative.
+!> \param explicit_derivative Partial derivative of auxiliary XC with respect to each charge ratio.
+!> \param explicit_direction Total electronic variation of those partial derivatives.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_xc_kernel(qs_env, xc, direction, eta_direction, operators, operator_direction, &
+                                           explicit_derivative, explicit_direction)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(section_vals_type), POINTER                   :: xc
+      COMPLEX(dp), INTENT(IN)                            :: direction(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: eta_direction(:)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :), &
+                                                            operator_direction(:, :, :, :)
+      REAL(dp), INTENT(OUT)                              :: explicit_derivative(:), &
+                                                            explicit_direction(:)
+
+      COMPLEX(dp), ALLOCATABLE                           :: matrices(:, :, :, :), &
+                                                            part_direction(:, :, :, :), &
+                                                            part_operator(:, :, :, :), &
+                                                            part_response(:, :, :, :)
+      INTEGER                                            :: ik, ns, saved_factors, spin
+      LOGICAL                                            :: dimensions_valid
+      REAL(dp)                                           :: atom_energy, energy, eta, exponent, &
+                                                            grid_energy, pairing, weight, zero
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(qs_upf_inverse_scf_type)                      :: saved
+
+      CALL get_qs_env(qs_env, admm_env=admm)
+      CPASSERT(ASSOCIATED(admm))
+      ns = SIZE(direction, 4)
+      CPASSERT(ALL(SHAPE(direction) == SHAPE(admm%upf_density%matrices)))
+      dimensions_valid = SIZE(eta_direction) == ns .AND. SIZE(explicit_derivative) == ns .AND. &
+                         SIZE(explicit_direction) == ns
+      CPASSERT(dimensions_valid)
+      CPASSERT(qs_upf_inverse_aux_xc_kernel_available(xc, ns))
+      saved_factors = admm%upf_inverse%orbital_factors%density_evaluation
+      ! Keep accepted atomic XC fields exactly, including their compensated orbital gauge.
+      ! Independent component evaluations own the temporary density-dependent scratch.
+      ASSOCIATE (state => admm%upf_inverse)
+         saved%xc = state%xc
+         saved%xc_grid => state%xc_grid
+         saved%paw_density_evaluation = state%paw_density_evaluation
+         CALL MOVE_ALLOC(state%xc_matrices, saved%xc_matrices)
+         CALL MOVE_ALLOC(state%xc_fields, saved%xc_fields)
+         CALL MOVE_ALLOC(state%xc_kweights, saved%xc_kweights)
+         CALL MOVE_ALLOC(state%paw_density, saved%paw_density)
+         CALL MOVE_ALLOC(state%paw_operator, saved%paw_operator)
+         CALL MOVE_ALLOC(state%paw_potential, saved%paw_potential)
+      END ASSOCIATE
+      explicit_derivative = 0.0_dp
+      explicit_direction = 0.0_dp
+      IF (.NOT. (admm%do_admmp .OR. admm%do_admms)) THEN
+         CALL xc_component_kernel(qs_env, xc, admm%upf_density%matrices, direction, energy, operators, operator_direction)
+      ELSE
+         exponent = MERGE(2.0_dp, 2.0_dp/3.0_dp, admm%do_admmp)
+         ALLOCATE (operators, MOLD=direction)
+         ALLOCATE (operator_direction, MOLD=direction)
+         operators = CMPLX(0.0_dp, 0.0_dp, dp)
+         operator_direction = CMPLX(0.0_dp, 0.0_dp, dp)
+         ALLOCATE (matrices, MOLD=direction)
+         ALLOCATE (part_direction, MOLD=direction)
+         matrices = CMPLX(0.0_dp, 0.0_dp, dp)
+         CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc, grid_energy, atom_energy, density_matrices=matrices)
+         zero = grid_energy + atom_energy
+         DO spin = 1, ns
+            matrices = CMPLX(0.0_dp, 0.0_dp, dp)
+            part_direction = CMPLX(0.0_dp, 0.0_dp, dp)
+            matrices(:, :, :, spin) = admm%upf_density%matrices(:, :, :, spin)
+            part_direction(:, :, :, spin) = direction(:, :, :, spin)
+            CALL xc_component_kernel(qs_env, xc, matrices, part_direction, energy, part_operator, part_response)
+            eta = admm%gsi(spin)
+            CPASSERT(eta > 0.0_dp)
+            weight = eta**exponent
+            operators(:, :, :, spin) = weight*part_operator(:, :, :, spin)
+            operator_direction(:, :, :, spin) = weight*part_response(:, :, :, spin) + &
+                                                exponent*weight*eta_direction(spin)/eta*part_operator(:, :, :, spin)
+            pairing = 0.0_dp
+            DO ik = 1, SIZE(direction, 3)
+               pairing = pairing + admm%upf_aux_metric%weights(ik)* &
+                         REAL(SUM(CONJG(part_operator(:, :, ik, spin))*direction(:, :, ik, spin)), dp)
+            END DO
+            explicit_derivative(spin) = exponent*weight/eta*(energy - zero)
+            explicit_direction(spin) = exponent*(exponent - 1.0_dp)*weight/eta**2*eta_direction(spin)*(energy - zero) + &
+                                       exponent*weight/eta*pairing
+         END DO
+      END IF
+      ASSOCIATE (state => admm%upf_inverse)
+         state%xc = saved%xc
+         state%xc_grid => saved%xc_grid
+         state%paw_density_evaluation = saved%paw_density_evaluation
+         CALL MOVE_ALLOC(saved%xc_matrices, state%xc_matrices)
+         CALL MOVE_ALLOC(saved%xc_fields, state%xc_fields)
+         CALL MOVE_ALLOC(saved%xc_kweights, state%xc_kweights)
+         CALL MOVE_ALLOC(saved%paw_density, state%paw_density)
+         CALL MOVE_ALLOC(saved%paw_operator, state%paw_operator)
+         CALL MOVE_ALLOC(saved%paw_potential, state%paw_potential)
+         state%orbital_factors%density_evaluation = saved_factors
+      END ASSOCIATE
+   END SUBROUTINE qs_upf_inverse_aux_xc_kernel
+
+! **************************************************************************************************
+!> \brief Auxiliary XC kernel on owned global fields and the matching original atomic residual.
+!>        Frozen cores enter only the base fields. There is no auxiliary Hartree functional.
+!> \param qs_env Native geometry and independent auxiliary reconstruction.
+!> \param xc Selected auxiliary XC section.
+!> \param matrices Actual auxiliary AO density defining the base fields.
+!> \param matrices_direction Variation of that auxiliary AO density.
+!> \param energy Same grid and atomic XC energy as the native evaluation.
+!> \param operators Complete auxiliary XC first derivative.
+!> \param operators_direction Complete fixed-geometry XC operator response.
+! **************************************************************************************************
+   SUBROUTINE xc_component_kernel(qs_env, xc, matrices, matrices_direction, energy, operators, operators_direction)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(section_vals_type), POINTER                   :: xc
+      COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :), &
+                                                            matrices_direction(:, :, :, :)
+      REAL(dp), INTENT(OUT)                              :: energy
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT) :: operators(:, :, :, :), &
+         operators_direction(:, :, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: atomic(:, :, :, :), paw(:, :, :, :)
+      INTEGER                                            :: functional_id, ns, spin
+      LOGICAL                                            :: atomic_xc, fine, use_tau
+      REAL(dp)                                           :: atom_energy, grid_energy
+      REAL(dp), ALLOCATABLE                              :: kweights(:)
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(pw_c1d_gs_type)                               :: core_g, weight_source_g, weight_target_g
+      TYPE(pw_c1d_gs_type), ALLOCATABLE                  :: density_g(:), direction_g(:)
+      TYPE(pw_c1d_gs_type), POINTER                      :: native_core_g
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_pool_type), POINTER                        :: native_pool, pool
+      TYPE(pw_r3d_rs_type)                               :: transferred_core
+      TYPE(pw_r3d_rs_type), ALLOCATABLE                  :: combined(:), combined_tau(:), &
+                                                            density(:), direction(:), kinetic(:), &
+                                                            kinetic_direction(:)
+      TYPE(pw_r3d_rs_type), POINTER                      :: core, native_weights, response(:), &
+                                                            response_tau(:), weights
+      TYPE(pw_r3d_rs_type), TARGET                       :: transferred_weights
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+
+      CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm, dft_control=control)
+      state => admm%upf_inverse
+      CALL get_ks_env(ks_env, pw_env=pw_env, rho_nlcc=core, rho_nlcc_g=native_core_g, xcint_weights=native_weights)
+      CALL pw_env_get(pw_env, xc_pw_pool=pool, auxbas_pw_pool=native_pool)
+      CALL section_vals_val_get(xc, 'XC_FUNCTIONAL%_SECTION_PARAMETERS_', i_val=functional_id)
+      IF (functional_id == xc_none) THEN
+         ALLOCATE (operators, MOLD=matrices)
+         ALLOCATE (operators_direction, MOLD=matrices)
+         operators = CMPLX(0.0_dp, 0.0_dp, dp)
+         operators_direction = CMPLX(0.0_dp, 0.0_dp, dp)
+         energy = 0.0_dp
+         RETURN
+      END IF
+      CALL qs_upf_inverse_aux_xc_evaluate(qs_env, xc, grid_energy, atom_energy, operators, density_matrices=matrices)
+      energy = grid_energy + atom_energy
+      ns = SIZE(matrices, 4)
+      use_tau = ALLOCATED(state%kinetic_cache)
+      fine = .NOT. pw_grid_compare(native_pool%pw_grid, pool%pw_grid)
+      ALLOCATE (density(ns), kinetic(ns), direction(ns), kinetic_direction(ns), combined(ns), combined_tau(ns), &
+                density_g(ns), direction_g(ns))
+      DO spin = 1, ns
+         CALL density(spin)%create(pool%pw_grid)
+         CALL density_g(spin)%create(pool%pw_grid)
+         CALL kinetic(spin)%create(pool%pw_grid)
+         CALL direction(spin)%create(pool%pw_grid)
+         CALL direction_g(spin)%create(pool%pw_grid)
+         CALL kinetic_direction(spin)%create(pool%pw_grid)
+         CALL combined(spin)%create(pool%pw_grid)
+         CALL combined_tau(spin)%create(pool%pw_grid)
+      END DO
+      CALL qs_upf_inverse_scf_xc_source_direction(ks_env, matrices, density, kinetic, context=state)
+      CALL qs_upf_inverse_scf_xc_source_direction(ks_env, matrices_direction, direction, kinetic_direction, context=state)
+      DO spin = 1, ns
+         CALL pw_transfer(density(spin), density_g(spin))
+         CALL pw_transfer(direction(spin), direction_g(spin))
+      END DO
+      IF (ASSOCIATED(core)) THEN
+         CPASSERT(ASSOCIATED(native_core_g))
+         CALL core_g%create(pool%pw_grid)
+         CALL transferred_core%create(pool%pw_grid)
+         CALL pw_real_transfer(native_core_g, core_g)
+         IF (fine) THEN
+            CALL pw_transfer(core_g, transferred_core)
+            CALL pw_transfer(transferred_core, core_g)
+         ELSE
+            transferred_core%array = core%array
+         END IF
+         DO spin = 1, ns
+            density(spin)%array = density(spin)%array + transferred_core%array
+            density_g(spin)%array = density_g(spin)%array + core_g%array
+         END DO
+         CALL transferred_core%release()
+         CALL core_g%release()
+      END IF
+      IF (use_tau) CALL qs_upf_inverse_core_kinetic(ks_env, kinetic, 1.0_dp, context=state)
+      weights => native_weights
+      IF (fine .AND. ASSOCIATED(native_weights)) THEN
+         CALL weight_source_g%create(native_weights%pw_grid)
+         CALL weight_target_g%create(pool%pw_grid)
+         CALL transferred_weights%create(pool%pw_grid)
+         CALL pw_transfer(native_weights, weight_source_g)
+         CALL pw_real_transfer(weight_source_g, weight_target_g)
+         CALL pw_transfer(weight_target_g, transferred_weights)
+         weights => transferred_weights
+         CALL weight_source_g%release()
+         CALL weight_target_g%release()
+      END IF
+      NULLIFY (response, response_tau)
+      CALL qs_upf_inverse_xc_grid_kernel(xc, density, density_g, kinetic, direction, direction_g, kinetic_direction, &
+                                         weights, pool, response, response_tau)
+      atomic_xc = control%qs_control%gapw .OR. control%qs_control%gapw_xc .OR. ALLOCATED(state%paw_reconstruction)
+      IF (atomic_xc) THEN
+         CALL qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, direction, kinetic_direction, xc, &
+                                                   atomic, combined, combined_tau, context=state)
+      ELSE
+         DO spin = 1, ns
+            combined(spin)%array = 0.0_dp
+            combined_tau(spin)%array = 0.0_dp
+         END DO
+      END IF
+      DO spin = 1, ns
+         combined(spin)%array = combined(spin)%array + response(spin)%array
+         combined_tau(spin)%array = combined_tau(spin)%array + response_tau(spin)%array
+      END DO
+      CALL qs_upf_inverse_scf_xc_source_adjoint(ks_env, combined, combined_tau, operators_direction, context=state)
+      IF (atomic_xc) operators_direction(:, :, :, :) = operators_direction + atomic
+      IF (ANY(state%paw%active) .AND. .NOT. ALLOCATED(state%paw_reconstruction)) THEN
+         ALLOCATE (paw, MOLD=matrices)
+         IF (ASSOCIATED(state%bloch%kpoints)) THEN
+            ALLOCATE (kweights, SOURCE=state%bloch%weights)
+            CALL qs_upf_inverse_paw_xc_kernel(state%paw, state%bloch%frames, matrices, matrices_direction, kweights, xc, paw)
+         ELSE
+            CALL qs_upf_inverse_paw_xc_kernel(state%paw, [state%frame], matrices, matrices_direction, [1.0_dp], xc, paw)
+         END IF
+         operators_direction(:, :, :, :) = operators_direction + paw
+      END IF
+      DO spin = 1, ns
+         CALL pool%give_back_pw(response(spin))
+         CALL pool%give_back_pw(response_tau(spin))
+         CALL density(spin)%release()
+         CALL density_g(spin)%release()
+         CALL kinetic(spin)%release()
+         CALL direction(spin)%release()
+         CALL direction_g(spin)%release()
+         CALL kinetic_direction(spin)%release()
+         CALL combined(spin)%release()
+         CALL combined_tau(spin)%release()
+      END DO
+      DEALLOCATE (response, response_tau)
+      IF (fine .AND. ASSOCIATED(native_weights)) CALL transferred_weights%release()
+   END SUBROUTINE xc_component_kernel
+
 END MODULE qs_upf_inverse_aux_xc

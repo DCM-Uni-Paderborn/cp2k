@@ -23,8 +23,10 @@ MODULE qs_upf_inverse_xc
    USE message_passing,                 ONLY: mp_comm_type
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL,&
                                               pw_grid_type
+   USE pw_grids,                        ONLY: pw_grid_compare
    USE pw_methods,                      ONLY: pw_derive,&
                                               pw_transfer
+   USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_native_grid_interpolation,    ONLY: interpolate_native_grid_batch,&
@@ -92,6 +94,7 @@ MODULE qs_upf_inverse_xc
    PUBLIC :: qs_upf_inverse_xc_grid_evaluate, qs_upf_inverse_xc_grid_response
    PUBLIC :: qs_upf_inverse_xc_grid_model_response
    PUBLIC :: qs_upf_inverse_xc_field_kernel, qs_upf_inverse_xc_semilocal_kernel_available
+   PUBLIC :: qs_upf_inverse_xc_grid_kernel
    PUBLIC :: qs_upf_inverse_xc_pw_fields, qs_upf_inverse_xc_pw_adjoint, qs_upf_inverse_xc_pw_response
 
 CONTAINS
@@ -1807,6 +1810,7 @@ CONTAINS
 !> \param kinetic Same optional valence kinetic kernels as in the unperturbed evaluation.
 !> \param core_tau_response Prescribed frozen-core kinetic-density response.
 !> \param paw_reconstruction Same optional PAW-only reconstruction caches as in the evaluation.
+!> \param background_weights_response ...
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_grid_response(frames, augmentation, matrices, kweights, points, weights, state, &
                                               fields, fields_response, grid, cell, point_response, weights_response, &
@@ -2022,5 +2026,97 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE qs_upf_inverse_xc_pw_response
+
+! **************************************************************************************************
+!> \brief ...
+!> \param xc ...
+!> \param density ...
+!> \param density_g ...
+!> \param kinetic ...
+!> \param direction ...
+!> \param direction_g ...
+!> \param kinetic_direction ...
+!> \param weights ...
+!> \param pool ...
+!> \param potential ...
+!> \param kinetic_potential ...
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_xc_grid_kernel(xc, density, density_g, kinetic, direction, direction_g, kinetic_direction, &
+                                            weights, pool, potential, kinetic_potential)
+      TYPE(section_vals_type), POINTER                   :: xc
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
+      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: density_g(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic(:), direction(:)
+      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: direction_g(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic_direction(:)
+      TYPE(pw_r3d_rs_type), POINTER                      :: weights
+      TYPE(pw_pool_type), POINTER                        :: pool
+      TYPE(pw_r3d_rs_type), POINTER                      :: potential(:), kinetic_potential(:)
+
+      INTEGER                                            :: axis, dims(3), np, ns, orders(3), spin
+      REAL(dp), ALLOCATABLE                              :: dgrad(:, :, :), drho(:, :), dtau(:, :), &
+                                                            grad(:, :, :), rho(:, :), tau(:, :), &
+                                                            vg(:, :, :), vn(:, :), vt(:, :), w(:)
+      TYPE(pw_c1d_gs_type)                               :: derivative_g
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: derivative_r, gradient_r, work_r
+
+      grid => density(1)%pw_grid
+      np = SIZE(density(1)%array)
+      ns = SIZE(density)
+      dims = SHAPE(density(1)%array)
+      ALLOCATE (rho(np, ns), grad(np, 3, ns), tau(np, ns), drho(np, ns), dgrad(np, 3, ns), dtau(np, ns), &
+                vn(np, ns), vg(np, 3, ns), vt(np, ns), w(np))
+      w = 1.0_dp
+      IF (ASSOCIATED(weights)) THEN
+         CPASSERT(pw_grid_compare(weights%pw_grid, grid))
+         w(:) = RESHAPE(weights%array, [np])
+      END IF
+      CALL derivative_g%create(grid)
+      CALL gradient_r%create(grid)
+      CALL work_r%create(grid)
+      CALL derivative_r%create(grid)
+      DO spin = 1, ns
+         CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
+         CPASSERT(ASSOCIATED(direction(spin)%pw_grid, grid))
+         rho(:, spin) = RESHAPE(density(spin)%array, [np])
+         tau(:, spin) = RESHAPE(kinetic(spin)%array, [np])
+         drho(:, spin) = RESHAPE(direction(spin)%array, [np])
+         dtau(:, spin) = RESHAPE(kinetic_direction(spin)%array, [np])
+         DO axis = 1, 3
+            orders = 0
+            orders(axis) = 1
+            derivative_g%array = density_g(spin)%array
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, gradient_r)
+            grad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
+            derivative_g%array = direction_g(spin)%array
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, gradient_r)
+            dgrad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
+         END DO
+      END DO
+      CALL qs_upf_inverse_xc_field_kernel(xc, rho, grad, tau, drho, dgrad, dtau, vn, vg, vt)
+      ALLOCATE (potential(ns), kinetic_potential(ns))
+      DO spin = 1, ns
+         CALL pool%create_pw(potential(spin))
+         CALL pool%create_pw(kinetic_potential(spin))
+         potential(spin)%array = RESHAPE(w*vn(:, spin), dims)
+         kinetic_potential(spin)%array = RESHAPE(w*vt(:, spin), dims)
+         DO axis = 1, 3
+            work_r%array = RESHAPE(w*vg(:, axis, spin), dims)
+            CALL pw_transfer(work_r, derivative_g)
+            orders = 0
+            orders(axis) = 1
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, derivative_r)
+            potential(spin)%array = potential(spin)%array - derivative_r%array
+         END DO
+      END DO
+      CALL derivative_g%release()
+      CALL gradient_r%release()
+      CALL work_r%release()
+      CALL derivative_r%release()
+   END SUBROUTINE qs_upf_inverse_xc_grid_kernel
 
 END MODULE qs_upf_inverse_xc

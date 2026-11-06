@@ -36,6 +36,7 @@ MODULE admm_utils
    PRIVATE
 
    PUBLIC :: admm_inverse_sqrt_divdiff, admm_purified_operator, admm_charge_scaled_operator
+   PUBLIC :: admm_charge_scaled_operator_response
    PUBLIC :: admm_correct_for_eigenvalues, &
              admm_uncorrect_for_eigenvalues
 
@@ -148,7 +149,7 @@ CONTAINS
 !> \param gram_values Positive Gram eigenvalues in the same order.
 !> \param inverse_root The same Gram inverse square root used to build the auxiliary density.
 !> \param auxiliary_operator Hermitian derivative at fixed purified auxiliary density.
-!> \param operator Hermitian derivative with respect to the primary AO density.
+!> \param OPERATOR Hermitian derivative with respect to the primary AO density.
 !> \param metric_inverse Optional inverse M_AA for geometry. Supply all four geometry arguments.
 !> \param mixed_covector Optional derivative with respect to M_AO, with the factor two included.
 !> \param auxiliary_covector Optional Hermitian derivative with respect to M_AA.
@@ -383,5 +384,90 @@ CONTAINS
          END SELECT
       END IF
    END SUBROUTINE admm_uncorrect_for_eigenvalues
+
+! **************************************************************************************************
+!> \brief Fixed-geometry electronic response of the ADMM charge-ratio operator.
+!>        Differentiate the actual native-density charge and numerator used above.
+!>        The projection, both charge metrics and physical mesh weights stay fixed.
+!>        The caller supplies the complete auxiliary operator response, including
+!>        its explicit eta dependence, and the corresponding partial_eta response.
+!> \param auxiliary_operator Derivative of the auxiliary energy at fixed eta.
+!> \param operator_direction Total electronic variation of that derivative.
+!> \param density Actual auxiliary density R, either D or eta D.
+!> \param density_direction Variation of that same actual density.
+!> \param auxiliary_metric Original auxiliary valence charge metric.
+!> \param primary_density Original primary density for the charge-sector selection.
+!> \param primary_metric Original primary valence charge metric.
+!> \param weights Normalized physical k-point weights, applied once.
+!> \param eta Original positive primary-to-raw-auxiliary charge ratio.
+!> \param eta_direction Variation of that same charge ratio.
+!> \param normalized_density True for R=eta D, false for R=D.
+!> \param explicit_derivative Partial_eta of the auxiliary energy at fixed R.
+!> \param explicit_direction Total variation of that partial derivative.
+!> \param corrected_direction Raw-auxiliary operator response before projection.
+!> \param lambda_direction Primary charge-multiplier response.
+! **************************************************************************************************
+   SUBROUTINE admm_charge_scaled_operator_response(auxiliary_operator, operator_direction, density, density_direction, &
+                                                   auxiliary_metric, primary_density, primary_metric, weights, &
+                                                   eta, eta_direction, normalized_density, explicit_derivative, &
+                                                   explicit_direction, corrected_direction, lambda_direction)
+      COMPLEX(dp), INTENT(IN) :: auxiliary_operator(:, :, :), operator_direction(:, :, :), &
+         density(:, :, :), density_direction(:, :, :), auxiliary_metric(:, :, :), &
+         primary_density(:, :, :), primary_metric(:, :, :)
+      REAL(dp), INTENT(IN)                               :: weights(:), eta, eta_direction
+      LOGICAL, INTENT(IN)                                :: normalized_density
+      REAL(dp), INTENT(IN)                               :: explicit_derivative, explicit_direction
+      COMPLEX(dp), INTENT(OUT)                           :: corrected_direction(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: lambda_direction
+
+      COMPLEX(dp), ALLOCATABLE                           :: corrected(:, :, :)
+      INTEGER                                            :: ik
+      LOGICAL                                            :: valid
+      REAL(dp) :: auxiliary_charge, charge_direction, lambda, numerator_direction, primary_charge, &
+         scale, scale_direction, tolerance, trace_direction, trace_value
+
+      valid = ALL(SHAPE(operator_direction) == SHAPE(auxiliary_operator)) .AND. &
+              ALL(SHAPE(density_direction) == SHAPE(density)) .AND. &
+              ALL(SHAPE(corrected_direction) == SHAPE(auxiliary_operator))
+      CPASSERT(valid)
+      CPASSERT(ieee_is_finite(eta_direction) .AND. ieee_is_finite(explicit_direction))
+      ALLOCATE (corrected, MOLD=auxiliary_operator)
+      CALL admm_charge_scaled_operator(auxiliary_operator, density, auxiliary_metric, primary_density, primary_metric, &
+                                       weights, eta, normalized_density, explicit_derivative, corrected, lambda)
+      scale = 1.0_dp
+      scale_direction = 0.0_dp
+      IF (normalized_density) THEN
+         scale = eta
+         scale_direction = eta_direction
+      END IF
+      auxiliary_charge = 0.0_dp
+      charge_direction = 0.0_dp
+      primary_charge = 0.0_dp
+      numerator_direction = explicit_direction
+      DO ik = 1, SIZE(weights)
+         trace_value = REAL(SUM(CONJG(auxiliary_metric(:, :, ik))*density(:, :, ik)), dp)
+         trace_direction = REAL(SUM(CONJG(auxiliary_metric(:, :, ik))*density_direction(:, :, ik)), dp)
+         auxiliary_charge = auxiliary_charge + weights(ik)*trace_value/scale
+         charge_direction = charge_direction + weights(ik)* &
+                            (trace_direction/scale - trace_value*scale_direction/scale**2)
+         primary_charge = primary_charge + weights(ik)* &
+                          REAL(SUM(CONJG(primary_metric(:, :, ik))*primary_density(:, :, ik)), dp)
+         IF (normalized_density) THEN
+            trace_value = REAL(SUM(CONJG(auxiliary_operator(:, :, ik))*density(:, :, ik)), dp)
+            trace_direction = REAL(SUM(CONJG(operator_direction(:, :, ik))*density(:, :, ik)) + &
+                                   SUM(CONJG(auxiliary_operator(:, :, ik))*density_direction(:, :, ik)), dp)
+            numerator_direction = numerator_direction + weights(ik)* &
+                                  (trace_direction/scale - trace_value*scale_direction/scale**2)
+         END IF
+      END DO
+      tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(auxiliary_charge), ABS(primary_charge))
+      lambda_direction = 0.0_dp
+      IF (ABS(auxiliary_charge) > tolerance .OR. ABS(primary_charge) > tolerance) THEN
+         CPASSERT(auxiliary_charge > 0.0_dp)
+         lambda_direction = (numerator_direction - lambda*charge_direction)/auxiliary_charge
+      END IF
+      corrected_direction(:, :, :) = scale*operator_direction + scale_direction*auxiliary_operator - &
+                                     (eta_direction*lambda + eta*lambda_direction)*auxiliary_metric
+   END SUBROUTINE admm_charge_scaled_operator_response
 
 END MODULE admm_utils

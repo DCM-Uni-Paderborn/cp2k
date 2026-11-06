@@ -840,11 +840,12 @@ CONTAINS
 !> \param kinetic_potential_direction Created native potentials receiving its kinetic-density response.
 !> \param density_tangent Native density-floor response used only between feasible tangent projections.
 !> \param orbital_direction Optional original coefficient and occupation responses of matrices_direction.
+!> \param context Optional independent auxiliary basis and XC state.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_xc_model_response(ks_env, matrices_direction, density_direction, &
                                                    kinetic_direction, xc_section, operators_direction, &
                                                    potential_direction, kinetic_potential_direction, density_tangent, &
-                                                   orbital_direction)
+                                                   orbital_direction, context)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density_direction(:), &
@@ -856,6 +857,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: density_tangent
       TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
          OPTIONAL                                        :: orbital_direction
+      TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: context
 
       INTEGER                                            :: nao, nk, ns, selected, spin
       LOGICAL                                            :: tangent, valid
@@ -874,9 +877,17 @@ CONTAINS
       tangent = .FALSE.
       IF (PRESENT(density_tangent)) tangent = density_tangent
       CALL get_ks_env(ks_env, upf_inverse=state, cell=cell, para_env=para_env, skala_constraints=constraints)
+      IF (PRESENT(context)) THEN
+         state => context
+         NULLIFY (constraints)
+      END IF
       CPASSERT(ASSOCIATED(state))
       CPASSERT(state%enabled)
-      CPASSERT(ALLOCATED(state%kinetic_cache) .EQV. state%xc%kinetic)
+      IF (PRESENT(context)) THEN
+         CPASSERT(.NOT. state%xc%kinetic .OR. ALLOCATED(state%kinetic_cache))
+      ELSE
+         CPASSERT(ALLOCATED(state%kinetic_cache) .EQV. state%xc%kinetic)
+      END IF
       CPASSERT(ASSOCIATED(state%xc_grid))
       CPASSERT(ALLOCATED(state%xc_matrices))
       CPASSERT(ALLOCATED(state%xc_fields))

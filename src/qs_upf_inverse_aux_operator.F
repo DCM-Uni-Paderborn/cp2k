@@ -10,6 +10,7 @@ MODULE qs_upf_inverse_aux_operator
                                               admm_upf_ace_search_type,&
                                               get_admm_env
    USE admm_utils,                      ONLY: admm_charge_scaled_operator,&
+                                              admm_charge_scaled_operator_response,&
                                               admm_purified_operator
    USE bibliography,                    ONLY: Lin2016ACE,&
                                               cite_reference
@@ -17,7 +18,9 @@ MODULE qs_upf_inverse_aux_operator
    USE cp_cfm_types,                    ONLY: cp_cfm_get_submatrix
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
+                                              dbcsr_create,&
                                               dbcsr_p_type,&
+                                              dbcsr_release,&
                                               dbcsr_set
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               dbcsr_allocate_matrix_set,&
@@ -65,13 +68,16 @@ MODULE qs_upf_inverse_aux_operator
    USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_upf_inverse_aux_xc,           ONLY: qs_upf_inverse_aux_xc_rescale
+   USE qs_upf_inverse_aux_xc,           ONLY: qs_upf_inverse_aux_xc_kernel,&
+                                              qs_upf_inverse_aux_xc_kernel_available,&
+                                              qs_upf_inverse_aux_xc_rescale
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_geometry
    USE qs_upf_inverse_charge_metric,    ONLY: qs_upf_inverse_charge_metric_contract
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_metric_response
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_metric_dense,&
-                                              qs_upf_inverse_matrix_gather
+                                              qs_upf_inverse_matrix_gather,&
+                                              qs_upf_inverse_matrix_scatter
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density,&
                                               qs_upf_inverse_kpoints_original_operator
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_core_prepare,&
@@ -85,6 +91,7 @@ MODULE qs_upf_inverse_aux_operator
    PRIVATE
    PUBLIC :: qs_upf_inverse_aux_projection, qs_upf_inverse_aux_operator_evaluate
    PUBLIC :: qs_upf_inverse_aux_metric_response
+   PUBLIC :: qs_upf_inverse_ri_response, qs_upf_inverse_aux_electronic_response
    PUBLIC :: qs_upf_inverse_aux_core_exchange, qs_upf_inverse_aux_response
    PUBLIC :: qs_upf_inverse_aux_evaluate
    PUBLIC :: qs_upf_inverse_aux_ace_build, qs_upf_inverse_aux_ace_evaluate
@@ -349,8 +356,9 @@ CONTAINS
                   END DO
                   CALL kpoint_star_operator_defect(admm%upf_inverse%bloch%star, compressed, &
                                                    covariance_defect, covariance_scale, little_group=.TRUE.)
-                  IF (.NOT. ieee_is_finite(covariance_defect) .OR. .NOT. ieee_is_finite(covariance_scale)) &
+                  IF (.NOT. ieee_is_finite(covariance_defect) .OR. .NOT. ieee_is_finite(covariance_scale)) THEN
                      term_ready = .FALSE.
+                  END IF
                   IF (covariance_defect > 1.e-10_dp*MAX(1.0_dp, covariance_scale)) term_ready = .FALSE.
                END DO
                DEALLOCATE (compressed)
@@ -577,8 +585,9 @@ CONTAINS
                                               ri_energy, ri_operator, ri_spin_energy, ready)
          ELSE
             DO contribution = 1, SIZE(exchange, 1)
-               IF (exchange(contribution, 1)%use_ace .AND. exchange(contribution, 1)%ace%built) &
+               IF (exchange(contribution, 1)%use_ace .AND. exchange(contribution, 1)%ace%built) THEN
                   exchange(contribution, 1)%ace%step_counter = exchange(contribution, 1)%ace%step_counter + 1
+               END IF
             END DO
          END IF
          CALL get_qs_env(qs_env, natom=natom)
@@ -615,8 +624,9 @@ CONTAINS
       END IF
       IF (active .AND. geometry) THEN
          DO contribution = 1, SIZE(exchange, 1)
-            IF (exchange(contribution, 1)%use_ace) &
+            IF (exchange(contribution, 1)%use_ace) THEN
                CALL hfx_ace_release_state(exchange(contribution, 1)%ace, keep_motion=.TRUE.)
+            END IF
          END DO
       END IF
    END SUBROUTINE qs_upf_inverse_aux_evaluate
@@ -1576,7 +1586,7 @@ CONTAINS
 !> \param primary_density ...
 !> \param auxiliary_density Unscaled purified density, before charge normalization.
 !> \param auxiliary_operator Complete derivative including the charge-normalization multiplier.
-!> \param operator ...
+!> \param OPERATOR ...
 !> \param metric_inverse ...
 !> \param mixed_covector ...
 !> \param auxiliary_covector ...
@@ -1819,6 +1829,24 @@ CONTAINS
 !> \brief Compose one analytic geometry direction from already evaluated auxiliary XC quantities.
 !>        The XC energy, operator and ratio derivative are independent of this direction.
 !>        RI, original core, projection and normalization responses keep their original meanings.
+!> \param qs_env ...
+!> \param exchange ...
+!> \param ri_energy ...
+!> \param ri_operator ...
+!> \param ri_atom_gradient ...
+!> \param ri_strain_gradient ...
+!> \param atom_response ...
+!> \param cell_response ...
+!> \param grid_energy ...
+!> \param atom_energy ...
+!> \param xc_operator ...
+!> \param xc_eta ...
+!> \param xc_response ...
+!> \param energy ...
+!> \param operators ...
+!> \param response ...
+!> \param components ...
+!> \param valence_spin_energy ...
 ! **************************************************************************************************
    SUBROUTINE compose_auxiliary_response(qs_env, exchange, ri_energy, ri_operator, &
                                          ri_atom_gradient, ri_strain_gradient, atom_response, cell_response, &
@@ -2026,4 +2054,284 @@ CONTAINS
          DEALLOCATE (point_response)
       END DO
    END SUBROUTINE primary_grid_metric_response
+! **************************************************************************************************
+!> \brief Fixed-geometry native RI-RHO response with the selected basis and density templates.
+!> \param qs_env Native RI interactions and integral owners.
+!> \param state Selected primary or auxiliary reconstruction.
+!> \param rho Matching image-density templates for that basis.
+!> \param direction Unweighted Hermitian AO density direction.
+!> \param operators Original RI-RHO exchange operator response without k weights.
+!> \param available Whether every exchange contribution supplies the response.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_ri_response(qs_env, state, rho, direction, operators, available)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
+      TYPE(qs_rho_type), POINTER                         :: rho
+      COMPLEX(dp), INTENT(IN)                            :: direction(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      COMPLEX(dp), ALLOCATABLE                           :: contribution(:, :, :, :), dense(:, :)
+      INTEGER                                            :: component, image, ns, spin
+      LOGICAL                                            :: bloch, imaginary
+      REAL(dp)                                           :: unused_energy
+      TYPE(dbcsr_p_type), POINTER                        :: imag_operator(:, :), imag_source(:, :), &
+                                                            images(:, :), real_operator(:, :), &
+                                                            real_source(:, :)
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+
+      available = .FALSE.
+      CALL get_qs_env(qs_env, x_data=exchange)
+      IF (.NOT. ASSOCIATED(exchange)) RETURN
+      IF (SIZE(exchange, 1) == 0) RETURN
+      bloch = ASSOCIATED(state%bloch%kpoints)
+      DO component = 1, SIZE(exchange, 1)
+         ASSOCIATE (hf => exchange(component, 1))
+            IF (.NOT. hf%do_hfx_ri .OR. hf%use_ace) RETURN
+            IF (.NOT. ASSOCIATED(hf%ri_data)) RETURN
+            IF (hf%ri_data%flavor /= ri_pmat .OR. hf%ri_data%orb_basis_type /= state%basis_type) RETURN
+            IF (.NOT. ALLOCATED(hf%ri_data%rho_ao_t)) RETURN
+            IF (.NOT. ALLOCATED(hf%ri_data%ks_t)) RETURN
+            IF (.NOT. ALLOCATED(hf%ri_data%t_3c_int_ctr_2)) RETURN
+         END ASSOCIATE
+      END DO
+      CALL qs_rho_get(rho, rho_ao_kp=images)
+      ns = SIZE(direction, 4)
+      ALLOCATE (operators, MOLD=direction)
+      operators = CMPLX(0.0_dp, 0.0_dp, dp)
+      ALLOCATE (real_operator(ns, SIZE(images, 2)))
+      DO image = 1, SIZE(images, 2)
+         DO spin = 1, ns
+            ALLOCATE (real_operator(spin, image)%matrix)
+            CALL dbcsr_create(real_operator(spin, image)%matrix, template=images(spin, image)%matrix)
+         END DO
+      END DO
+      imaginary = ANY(AIMAG(direction) /= 0.0_dp)
+      IF (.NOT. bloch) THEN
+         CPASSERT(SIZE(direction, 3) == 1)
+         ALLOCATE (real_source(ns, 1), imag_source(ns, 1), imag_operator(ns, 1))
+         DO spin = 1, ns
+            ALLOCATE (real_source(spin, 1)%matrix, imag_source(spin, 1)%matrix, imag_operator(spin, 1)%matrix)
+            CALL qs_upf_inverse_matrix_scatter(state%frame%ao, direction(:, :, 1, spin), images(spin, 1)%matrix, &
+                                               real_source(spin, 1)%matrix, imag_source(spin, 1)%matrix)
+            CALL dbcsr_create(imag_operator(spin, 1)%matrix, template=imag_source(spin, 1)%matrix)
+         END DO
+      END IF
+      DO component = 1, SIZE(exchange, 1)
+         ASSOCIATE (hf => exchange(component, 1))
+            IF (bloch) THEN
+               CALL hfx_ri_update_ks_kp(qs_env, hf%ri_data, real_operator, unused_energy, images, .FALSE., ns, &
+                                        hf%general_parameter%fraction, density_matrices=direction, &
+                                        operators_response=contribution)
+               operators(:, :, :, :) = operators + contribution
+            ELSE
+               CALL hfx_ri_update_ks(qs_env, hf%ri_data, real_operator, unused_energy, rho_ao=real_source, &
+                                     geometry_did_change=.FALSE., nspins=ns, &
+                                     hf_fraction=hf%general_parameter%fraction, response=.TRUE.)
+               IF (imaginary) THEN
+                  CALL hfx_ri_update_ks(qs_env, hf%ri_data, imag_operator, unused_energy, rho_ao=imag_source, &
+                                        geometry_did_change=.FALSE., nspins=ns, &
+                                        hf_fraction=hf%general_parameter%fraction, response=.TRUE.)
+               END IF
+            END IF
+         END ASSOCIATE
+      END DO
+      IF (.NOT. bloch) THEN
+         DO spin = 1, ns
+            CALL qs_upf_inverse_matrix_gather(state%frame%ao, real_operator(spin, 1)%matrix, dense, &
+                                              imag_operator(spin, 1)%matrix)
+            operators(:, :, 1, spin) = dense
+            CALL dbcsr_release(real_source(spin, 1)%matrix)
+            CALL dbcsr_release(imag_source(spin, 1)%matrix)
+            CALL dbcsr_release(imag_operator(spin, 1)%matrix)
+            DEALLOCATE (real_source(spin, 1)%matrix, imag_source(spin, 1)%matrix, imag_operator(spin, 1)%matrix)
+         END DO
+         DEALLOCATE (real_source, imag_source, imag_operator)
+      END IF
+      DO image = 1, SIZE(real_operator, 2)
+         DO spin = 1, ns
+            CALL dbcsr_release(real_operator(spin, image)%matrix)
+            DEALLOCATE (real_operator(spin, image)%matrix)
+         END DO
+      END DO
+      DEALLOCATE (real_operator)
+      available = .TRUE.
+   END SUBROUTINE qs_upf_inverse_ri_response
+
+! **************************************************************************************************
+!> \brief Electronic ADMM response at fixed projection, metrics and geometry.
+!>        Combine auxiliary RI and XC kernels, original PAW core exchange, explicit
+!>        charge-ratio powers and the complete normalization derivative. Unsupported
+!>        purification or exchange kernels retain the caller's numerical response.
+!> \param qs_env Accepted primary and auxiliary densities and projection.
+!> \param direction Unweighted primary AO density direction.
+!> \param operators Complete auxiliary contribution to the primary operator response.
+!> \param available Whether every auxiliary contribution has an analytic response.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_aux_electronic_response(qs_env, direction, operators, available)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      COMPLEX(dp), INTENT(IN)                            :: direction(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: operators(:, :, :, :)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      COMPLEX(dp), ALLOCATABLE :: auxiliary_direction(:, :, :, :), auxiliary_operator(:, :, :, :), &
+         auxiliary_response(:, :, :, :), core_operator(:, :, :, :), corrected(:, :, :), &
+         dense(:, :), fock(:, :, :, :), fock_direction(:, :, :, :), matrix(:, :, :), &
+         primary_density(:, :, :, :), primary_metric(:, :, :), projection(:, :, :)
+      INTEGER                                            :: ik, na, nk, no, ns, spin
+      LOGICAL                                            :: normalized, ratio_dependent, valid
+      REAL(dp) :: auxiliary_charge, auxiliary_charge_direction, core_energy, eta, fock_pairing, &
+         lambda_direction, primary_charge, primary_charge_direction, response_pairing, scale, &
+         tolerance
+      REAL(dp), ALLOCATABLE                              :: core_derivative(:), eta_direction(:), &
+                                                            explicit_derivative(:), &
+                                                            explicit_direction(:)
+      TYPE(admm_type), POINTER                           :: admm
+      TYPE(dbcsr_p_type), POINTER                        :: density_ao(:), metric(:)
+      TYPE(hfx_type), POINTER                            :: exchange(:, :)
+      TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_rho_type), POINTER                         :: rho
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: primary
+
+      available = .FALSE.
+      CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm, rho=rho, x_data=exchange)
+      IF (.NOT. ASSOCIATED(admm) .OR. .NOT. ASSOCIATED(exchange)) RETURN
+      IF (.NOT. admm%upf_density%valid .OR. .NOT. ASSOCIATED(admm%upf_inverse)) RETURN
+      IF (admm%purification_method /= do_admm_purify_none .OR. admm%block_fit .OR. admm%block_dm) RETURN
+      IF (admm%scaling_model /= do_admm_exch_scaling_none .AND. &
+          admm%scaling_model /= do_admm_exch_scaling_merlot) RETURN
+      ns = SIZE(direction, 4)
+      IF (.NOT. qs_upf_inverse_aux_xc_kernel_available(admm%xc_section_aux, ns)) RETURN
+      CALL get_ks_env(ks_env, upf_inverse=primary)
+      CPASSERT(ASSOCIATED(primary))
+      CALL qs_upf_inverse_aux_projection(qs_env, projection)
+      na = SIZE(projection, 1)
+      no = SIZE(projection, 2)
+      nk = SIZE(projection, 3)
+      CPASSERT(ALL(SHAPE(direction) == [no, no, nk, ns]))
+      CPASSERT(ALL(SHAPE(admm%upf_density%matrices) == [na, na, nk, ns]))
+      normalized = admm%do_admmq .OR. admm%do_admms
+      ratio_dependent = normalized .OR. admm%do_admmp
+      ALLOCATE (primary_density, MOLD=direction)
+      ALLOCATE (primary_metric(no, no, nk))
+      IF (ASSOCIATED(primary%bloch%kpoints)) THEN
+         primary_metric(:, :, :) = primary%metric_k
+         DO spin = 1, ns
+            CALL qs_upf_inverse_kpoints_density(primary%bloch, spin, matrix)
+            primary_density(:, :, :, spin) = matrix
+         END DO
+      ELSE
+         CPASSERT(nk == 1)
+         metric => get_1d_pointer(primary%metric)
+         CALL qs_upf_inverse_matrix_gather(primary%frame%ao, metric(1)%matrix, dense)
+         primary_metric(:, :, 1) = dense
+         CALL qs_rho_get(rho, rho_ao=density_ao)
+         DO spin = 1, ns
+            CALL qs_upf_inverse_matrix_gather(primary%frame%ao, density_ao(spin)%matrix, dense)
+            primary_density(:, :, 1, spin) = dense
+         END DO
+      END IF
+      ALLOCATE (auxiliary_direction, MOLD=admm%upf_density%matrices)
+      ALLOCATE (eta_direction(ns), explicit_derivative(ns), explicit_direction(ns), core_derivative(ns))
+      eta_direction = 0.0_dp
+      DO spin = 1, ns
+         DO ik = 1, nk
+            auxiliary_direction(:, :, ik, spin) = MATMUL(projection(:, :, ik), &
+                                                         MATMUL(direction(:, :, ik, spin), CONJG(TRANSPOSE(projection(:, :, ik)))))
+         END DO
+         IF (.NOT. ratio_dependent) CYCLE
+         eta = admm%gsi(spin)
+         CPASSERT(eta > 0.0_dp)
+         scale = MERGE(eta, 1.0_dp, normalized)
+         auxiliary_charge = 0.0_dp
+         auxiliary_charge_direction = 0.0_dp
+         primary_charge = 0.0_dp
+         primary_charge_direction = 0.0_dp
+         DO ik = 1, nk
+            auxiliary_charge = auxiliary_charge + admm%upf_aux_metric%weights(ik)* &
+                          REAL(SUM(CONJG(admm%upf_aux_metric%values(:, :, ik))*admm%upf_density%matrices(:, :, ik, spin)), dp)/scale
+            auxiliary_charge_direction = auxiliary_charge_direction + admm%upf_aux_metric%weights(ik)* &
+                                      REAL(SUM(CONJG(admm%upf_aux_metric%values(:, :, ik))*auxiliary_direction(:, :, ik, spin)), dp)
+            primary_charge = primary_charge + admm%upf_aux_metric%weights(ik)* &
+                             REAL(SUM(CONJG(primary_metric(:, :, ik))*primary_density(:, :, ik, spin)), dp)
+            primary_charge_direction = primary_charge_direction + admm%upf_aux_metric%weights(ik)* &
+                                       REAL(SUM(CONJG(primary_metric(:, :, ik))*direction(:, :, ik, spin)), dp)
+         END DO
+         tolerance = 128.0_dp*EPSILON(0.0_dp)*MAX(1.0_dp, ABS(primary_charge), ABS(auxiliary_charge))
+         IF (ABS(auxiliary_charge) <= tolerance .AND. ABS(primary_charge) <= tolerance) THEN
+            IF (ABS(auxiliary_charge_direction) > tolerance .OR. ABS(primary_charge_direction) > tolerance) RETURN
+         ELSE
+            IF (auxiliary_charge <= 0.0_dp) RETURN
+            eta_direction(spin) = (primary_charge_direction - eta*auxiliary_charge_direction)/auxiliary_charge
+         END IF
+         IF (normalized) THEN
+            auxiliary_direction(:, :, :, spin) = eta*auxiliary_direction(:, :, :, spin) + &
+                                                 eta_direction(spin)/eta*admm%upf_density%matrices(:, :, :, spin)
+         END IF
+      END DO
+      ! RI response owns its tensors and leaves accepted exchange histories unchanged.
+      CALL qs_upf_inverse_ri_response(qs_env, admm%upf_inverse, admm%rho_aux_fit, &
+                                      admm%upf_density%matrices, fock, valid)
+      IF (.NOT. valid) RETURN
+      CALL qs_upf_inverse_ri_response(qs_env, admm%upf_inverse, admm%rho_aux_fit, auxiliary_direction, fock_direction, valid)
+      IF (.NOT. valid) RETURN
+      CALL qs_upf_inverse_aux_xc_kernel(qs_env, admm%xc_section_aux, auxiliary_direction, eta_direction, &
+                                        auxiliary_operator, auxiliary_response, explicit_derivative, explicit_direction)
+      DO spin = 1, ns
+         IF (admm%do_admmp) THEN
+            eta = admm%gsi(spin)
+            fock_pairing = 0.0_dp
+            response_pairing = 0.0_dp
+            DO ik = 1, nk
+               fock_pairing = fock_pairing + admm%upf_aux_metric%weights(ik)* &
+                              REAL(SUM(CONJG(fock(:, :, ik, spin))*admm%upf_density%matrices(:, :, ik, spin)), dp)
+               response_pairing = response_pairing + admm%upf_aux_metric%weights(ik)* &
+                                  REAL(SUM(CONJG(fock(:, :, ik, spin))*auxiliary_direction(:, :, ik, spin)), dp)
+            END DO
+            explicit_derivative(spin) = explicit_derivative(spin) + eta*fock_pairing
+            explicit_direction(spin) = explicit_direction(spin) + eta_direction(spin)*fock_pairing + 2.0_dp*eta*response_pairing
+            auxiliary_response(:, :, :, spin) = auxiliary_response(:, :, :, spin) + eta**2*fock_direction(:, :, :, spin) + &
+                                                2.0_dp*eta*eta_direction(spin)*fock(:, :, :, spin)
+            auxiliary_operator(:, :, :, spin) = auxiliary_operator(:, :, :, spin) + eta**2*fock(:, :, :, spin)
+         ELSE
+            auxiliary_response(:, :, :, spin) = auxiliary_response(:, :, :, spin) + fock_direction(:, :, :, spin)
+            auxiliary_operator(:, :, :, spin) = auxiliary_operator(:, :, :, spin) + fock(:, :, :, spin)
+         END IF
+      END DO
+      CALL qs_upf_inverse_aux_core_exchange(qs_env, exchange, core_energy, core_operator, eta_derivative=core_derivative)
+      auxiliary_operator(:, :, :, :) = auxiliary_operator + core_operator
+      explicit_derivative(:) = explicit_derivative + core_derivative
+      IF (admm%do_admmp) THEN
+         DO spin = 1, ns
+            eta = admm%gsi(spin)
+            auxiliary_response(:, :, :, spin) = auxiliary_response(:, :, :, spin) + &
+                                                eta_direction(spin)/eta*core_operator(:, :, :, spin)
+            DO ik = 1, nk
+               explicit_direction(spin) = explicit_direction(spin) + admm%upf_aux_metric%weights(ik)* &
+                                         REAL(SUM(CONJG(core_operator(:, :, ik, spin))*auxiliary_direction(:, :, ik, spin)), dp)/eta
+            END DO
+         END DO
+      END IF
+      ALLOCATE (operators, MOLD=direction)
+      ALLOCATE (corrected(na, na, nk))
+      DO spin = 1, ns
+         lambda_direction = 0.0_dp
+         IF (ratio_dependent) THEN
+            CALL admm_charge_scaled_operator_response(auxiliary_operator(:, :, :, spin), auxiliary_response(:, :, :, spin), &
+                                                     admm%upf_density%matrices(:, :, :, spin), auxiliary_direction(:, :, :, spin), &
+                          admm%upf_aux_metric%values, primary_density(:, :, :, spin), primary_metric, admm%upf_aux_metric%weights, &
+                             admm%gsi(spin), eta_direction(spin), normalized, explicit_derivative(spin), explicit_direction(spin), &
+                                                      corrected, lambda_direction)
+         ELSE
+            corrected(:, :, :) = auxiliary_response(:, :, :, spin)
+         END IF
+         DO ik = 1, nk
+            operators(:, :, ik, spin) = MATMUL(CONJG(TRANSPOSE(projection(:, :, ik))), &
+                                      MATMUL(corrected(:, :, ik), projection(:, :, ik))) + lambda_direction*primary_metric(:, :, ik)
+            operators(:, :, ik, spin) = 0.5_dp*(operators(:, :, ik, spin) + CONJG(TRANSPOSE(operators(:, :, ik, spin))))
+         END DO
+      END DO
+      available = .TRUE.
+   END SUBROUTINE qs_upf_inverse_aux_electronic_response
+
 END MODULE qs_upf_inverse_aux_operator
