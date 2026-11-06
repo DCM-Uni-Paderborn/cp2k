@@ -18,11 +18,17 @@ MODULE skala_gpw_features
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
-   USE qs_atom_grid_partition,          ONLY: &
-        becke_shape, becke_shape_derivative, build_periodic_atom_image_layout, &
-        periodic_atom_image_partition, periodic_atom_image_partition_from_layout, &
-        periodic_context_adjoint, periodic_context_point_type, periodic_context_prepare, &
-        periodic_context_type, periodic_context_weights
+   USE qs_atom_grid_partition,          ONLY: becke_shape,&
+                                              becke_shape_derivative,&
+                                              periodic_context_adjoint,&
+                                              periodic_context_point_type,&
+                                              periodic_context_prepare,&
+                                              periodic_context_type,&
+                                              periodic_context_weights
+   USE skala_periodic_partition,        ONLY: build_periodic_atom_image_layout,&
+                                              periodic_atom_image_partition,&
+                                              periodic_atom_image_partition_from_layout,&
+                                              skala_periodic_partition_type
    USE torch_api,                       ONLY: &
         torch_dict_clone, torch_dict_create, torch_dict_insert, torch_dict_release, &
         torch_dict_type, torch_tensor_expand_dim, torch_tensor_from_array, torch_tensor_narrow, &
@@ -51,7 +57,7 @@ MODULE skala_gpw_features
              skala_gpw_feature_build_atom_subchunk_bounds, skala_gpw_feature_release, &
              skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, &
              build_periodic_atom_image_layout, periodic_atom_image_partition, &
-             periodic_atom_image_partition_from_layout, smooth_atom_partition, &
+             periodic_atom_image_partition_from_layout, skala_periodic_partition_type, smooth_atom_partition, &
              smooth_partition_atomic_weight_scale, smooth_partition_atomic_weight_scale_derivative, &
              skala_gpw_periodic_partition_response, skala_gpw_periodic_weight_derivative
 

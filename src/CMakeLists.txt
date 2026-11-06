@@ -437,6 +437,7 @@ list(
   "upf_inverse_unittest"
   "atom_upf_unittest"
   "xc_semilocal_unittest"
+  "skala_periodic_partition_unittest"
   "upf_projector_integrals_unittest"
   "upf_local_integrals_unittest"
   "gapw_unittest"
@@ -487,6 +488,8 @@ add_executable(parallel_rng_types_unittest common/parallel_rng_types_unittest.F)
 add_executable(upf_inverse_unittest pseudopotentials/upf_inverse_unittest.F)
 add_executable(atom_upf_unittest pseudopotentials/atom_upf_unittest.F)
 add_executable(xc_semilocal_unittest xc/xc_semilocal_unittest.F)
+add_executable(skala_periodic_partition_unittest
+               xc/skala_periodic_partition_unittest.F)
 add_executable(upf_projector_integrals_unittest
                pseudopotentials/upf_projector_integrals_unittest.F)
 add_executable(upf_local_integrals_unittest

@@ -102,8 +102,7 @@ MODULE qs_collocate_density
                                    rs_grid_zero, &
                                    transfer_rs2pw
    USE rs_pw_interface, ONLY: density_rs2pw
-   USE task_list_methods, ONLY: rs_copy_to_buffer, &
-                                rs_distribute_matrix, &
+   USE task_list_methods, ONLY: rs_distribute_matrix, &
                                 rs_scatter_matrices
    USE task_list_types, ONLY: atom_pair_type, &
                               task_list_type, &
@@ -1506,9 +1505,8 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_rho_elec'
 
       CHARACTER(LEN=default_string_length)               :: my_basis_type
-      INTEGER                                            :: ga_gb_function, handle, ilevel, img, &
-                                                            nimages, nlevels
-      LOGICAL                                            :: any_distributed, my_compute_grad, &
+      INTEGER                                            :: ga_gb_function, handle, img, nimages
+      LOGICAL                                            :: my_compute_grad, &
                                                             my_compute_tau, my_soft_valid
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_images
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -1596,14 +1594,7 @@ CONTAINS
 
       ! Get grids.
       CALL pw_env_get(pw_env, rs_grids=rs_rho)
-      nlevels = SIZE(rs_rho)
       group = rs_rho(1)%desc%group
-
-      ! Check if any of the grids is distributed.
-      any_distributed = .FALSE.
-      DO ilevel = 1, nlevels
-         any_distributed = any_distributed .OR. rs_rho(ilevel)%desc%distributed
-      END DO
 
       ! Gather all matrix images in a single array.
       CALL get_ks_env(ks_env, dft_control=dft_control)
@@ -1620,11 +1611,7 @@ CONTAINS
       END IF
 
       ! Distribute matrix blocks.
-      IF (any_distributed) THEN
-         CALL rs_scatter_matrices(matrix_images, task_list%pab_buffer, task_list, group)
-      ELSE
-         CALL rs_copy_to_buffer(matrix_images, task_list%pab_buffer, task_list)
-      END IF
+      CALL rs_scatter_matrices(matrix_images, task_list%pab_buffer, task_list, group)
       DEALLOCATE (matrix_images)
 
       ! Map all tasks onto the grids
@@ -1675,7 +1662,7 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: la_max, la_min, lb_max, lb_min, npgfa, &
                                                             npgfb, nsgfa, nsgfb
       INTEGER, DIMENSION(:, :), POINTER                  :: first_sgfa, first_sgfb
-      LOGICAL                                            :: atom_pair_changed, distributed_rs_grids, &
+      LOGICAL                                            :: atom_pair_changed, redistribute_matrices, &
                                                             do_kp, found, my_soft, use_subpatch
       REAL(KIND=dp)                                      :: eps_rho_rspace, f, prefactor, radius, &
                                                             scale, zetp
@@ -1768,18 +1755,16 @@ CONTAINS
       ! *** set up the rs multi-grids
       CPASSERT(ASSOCIATED(pw_env))
       CALL pw_env_get(pw_env, rs_descs=rs_descs, rs_grids=rs_rho)
-      DO igrid_level = 1, gridlevel_info%ngrid_levels
-         distributed_rs_grids = rs_rho(igrid_level)%desc%distributed
-      END DO
+      redistribute_matrices = ASSOCIATED(task_list%atom_pair_send)
 
       eps_rho_rspace = dft_control%qs_control%eps_rho_rspace
 
       !   *** Initialize working density matrix ***
-      ! distributed rs grids require a matrix that will be changed
-      ! whereas this is not the case for replicated grids
+      ! Remote tasks need a working matrix containing the received density blocks.
       ALLOCATE (deltap(nimages))
-      IF (distributed_rs_grids) THEN
+      IF (redistribute_matrices) THEN
          DO img = 1, nimages
+            ALLOCATE (deltap(img)%matrix)
          END DO
          ! this matrix has no strict sparsity pattern in parallel
          ! deltap%sparsity_id=-1
@@ -1802,7 +1787,7 @@ CONTAINS
       END IF
 
       ! distribute the matrix
-      IF (distributed_rs_grids) THEN
+      IF (redistribute_matrices) THEN
          CALL rs_distribute_matrix(rs_descs=rs_descs, pmats=deltap, &
                                    atom_pair_send=atom_pair_send, atom_pair_recv=atom_pair_recv, &
                                    nimages=nimages, scatter=.TRUE.)
@@ -2010,7 +1995,7 @@ CONTAINS
       END DO loop_xyz
 
       !   *** Release work storage ***
-      IF (distributed_rs_grids) THEN
+      IF (redistribute_matrices) THEN
          CALL dbcsr_deallocate_matrix_set(deltap)
       ELSE
          DO img = 1, nimages
@@ -2063,7 +2048,7 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: la_max, la_min, lb_max, lb_min, npgfa, &
                                                             npgfb, nsgfa, nsgfb
       INTEGER, DIMENSION(:, :), POINTER                  :: first_sgfa, first_sgfb
-      LOGICAL                                            :: atom_pair_changed, distributed_rs_grids, &
+      LOGICAL                                            :: atom_pair_changed, redistribute_matrices, &
                                                             do_kp, found, my_soft, use_subpatch
       REAL(KIND=dp)                                      :: eps_rho_rspace, f, prefactor, radius, &
                                                             scale, zetp
@@ -2153,18 +2138,16 @@ CONTAINS
       ! *** set up the rs multi-grids
       CPASSERT(ASSOCIATED(pw_env))
       CALL pw_env_get(pw_env, rs_descs=rs_descs, rs_grids=rs_rho)
-      DO igrid_level = 1, gridlevel_info%ngrid_levels
-         distributed_rs_grids = rs_rho(igrid_level)%desc%distributed
-      END DO
+      redistribute_matrices = ASSOCIATED(task_list%atom_pair_send)
 
       eps_rho_rspace = dft_control%qs_control%eps_rho_rspace
 
       !   *** Initialize working density matrix ***
-      ! distributed rs grids require a matrix that will be changed
-      ! whereas this is not the case for replicated grids
+      ! Remote tasks need a working matrix containing the received density blocks.
       ALLOCATE (deltap(nimages))
-      IF (distributed_rs_grids) THEN
+      IF (redistribute_matrices) THEN
          DO img = 1, nimages
+            ALLOCATE (deltap(img)%matrix)
          END DO
          ! this matrix has no strict sparsity pattern in parallel
          ! deltap%sparsity_id=-1
@@ -2187,7 +2170,7 @@ CONTAINS
       END IF
 
       ! distribute the matrix
-      IF (distributed_rs_grids) THEN
+      IF (redistribute_matrices) THEN
          CALL rs_distribute_matrix(rs_descs=rs_descs, pmats=deltap, &
                                    atom_pair_send=atom_pair_send, atom_pair_recv=atom_pair_recv, &
                                    nimages=nimages, scatter=.TRUE.)
@@ -2419,7 +2402,7 @@ CONTAINS
       CALL density_rs2pw(pw_env, rs_rho, drho, drho_gspace)
 
       !   *** Release work storage ***
-      IF (distributed_rs_grids) THEN
+      IF (redistribute_matrices) THEN
          CALL dbcsr_deallocate_matrix_set(deltap)
       ELSE
          DO img = 1, nimages

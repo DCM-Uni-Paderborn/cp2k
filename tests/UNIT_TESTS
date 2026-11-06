@@ -31,6 +31,7 @@ qs_charge_mixing_unittest
 atom_upf_unittest
 upf_inverse_unittest
 xc_semilocal_unittest
+skala_periodic_partition_unittest
 upf_projector_integrals_unittest
 upf_local_integrals_unittest
 gapw_unittest

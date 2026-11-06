@@ -1232,6 +1232,7 @@ list(
   CP2K_SRCS_F
   motion/averages_types.F
   motion/bfgs_optimizer.F
+  motion/cell_manifold_utils.F
   motion/cell_opt.F
   motion/cell_opt_types.F
   motion/cell_opt_utils.F
@@ -1509,6 +1510,7 @@ list(
   xc/cp_linked_list_xc_deriv.F
   xc/skala_gpw_features.F
   xc/skala_gpw_functional.F
+  xc/skala_periodic_partition.F
   xc/skala_torch_api.F
   xc_pot_saop.F
   xc_write_output.F
@@ -1713,5 +1715,6 @@ set(CP2K_PROGS_F
     motion/dumpdcd.F
     motion/xyz2dcd.F
     nequip_unittest.F
+    xc/skala_periodic_partition_unittest.F
     gx_ac_unittest.F
-  pseudopotentials/upf_inverse_unittest.F)
+    pseudopotentials/upf_inverse_unittest.F)
