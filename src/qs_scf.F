@@ -1313,9 +1313,12 @@ CONTAINS
          space_grown = .FALSE.
          reference_refreshed = .FALSE.
          inner_limit = remaining
-         ! The occupation-weighted model uses a fresh reference after each accepted step.
-         IF (scf_control%smear%do_smear .AND. &
-             scf_env%qs_ot_env(1)%settings%occupation_preconditioner) inner_limit = 1
+         ! Rebuild the occupation-weighted chart while its reference is still changing.
+         ! Near unconstrained Bloch stationarity, retain the coupled curvature history.
+         IF (scf_control%smear%do_smear .AND. scf_env%qs_ot_env(1)%settings%occupation_preconditioner) THEN
+            IF (.NOT. do_kpoints .OR. SIZE(tolerances) > 0 .OR. &
+                NORM2(physical) > SQRT(scf_control%eps_scf)) inner_limit = 1
+         END IF
          CALL qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, tolerances, &
                                         scf_control%eps_scf, energy, converged, max_iterations=inner_limit, &
                                         max_step=step_radius, iterations=steps, check_external=.TRUE., stopped=stopped, &
