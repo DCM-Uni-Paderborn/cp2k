@@ -91,7 +91,9 @@ MODULE qs_skala_scf
         skala_orbital_chart_density_response, skala_orbital_chart_derivative, &
         skala_orbital_chart_operator_response, skala_orbital_chart_precondition, &
         skala_orbital_chart_response_inverse, skala_orbital_chart_scales, skala_orbital_chart_size
-   USE smearing_utils,                  ONLY: Smearkp
+   USE smearing_utils,                  ONLY: Smearkp,&
+                                              smearing_separate_spin,&
+                                              smearing_spin_targets
    USE upf_inverse_quadrature,          ONLY: upf_inverse_semilocal_pair
    USE xc_derivatives,                  ONLY: xc_functionals_floor_jumps_available,&
                                               xc_functionals_get_needs,&
@@ -4250,9 +4252,10 @@ CONTAINS
 
       INTEGER                                            :: count, first, groups, i, ik, last, &
                                                             local, nk, ns, spin
+      INTEGER                                            :: electrons(2)
       INTEGER, ALLOCATABLE                               :: counts(:), multiplets(:)
       LOGICAL                                            :: owner, separate, valid
-      REAL(dp), ALLOCATABLE                              :: targets(:)
+      REAL(dp)                                           :: targets(2)
       TYPE(dft_control_type), POINTER                    :: dft
       TYPE(mo_set_type), POINTER                         :: mos(:)
       TYPE(scf_control_type), POINTER                    :: control
@@ -4266,16 +4269,17 @@ CONTAINS
       nk = SIZE(state%dimensions, 1)
       state%temperature = control%smear%electronic_temperature
       state%maxocc = 2.0_dp/REAL(ns, dp)
-      separate = ns == 1 .OR. control%smear%fixed_mag_mom > 0.0_dp .OR. dft%restricted
+      separate = ns == 1 .OR. smearing_separate_spin(control%smear%fixed_mag_mom) .OR. dft%restricted
       groups = MERGE(ns, 1, separate)
-      ALLOCATE (state%band_dimensions(nk, ns), state%band_offsets(nk, ns), targets(ns), &
+      ALLOCATE (state%band_dimensions(nk, ns), state%band_offsets(nk, ns), &
                 state%thermal_targets(groups), state%thermal_mu(groups), state%thermal_spin_entropy(ns))
       state%band_dimensions = 0
       owner = state%para_env%mepos == 0
       IF (state%bloch) owner = state%kpoints%para_env_kp%mepos == 0
+      electrons = 0
       DO spin = 1, ns
-         targets(spin) = REAL(mos(spin)%nelectron, dp)
-         IF (state%bloch) targets(spin) = REAL(state%kpoints%kp_env(1)%kpoint_env%mos(spin)%nelectron, dp)
+         electrons(spin) = mos(spin)%nelectron
+         IF (state%bloch) electrons(spin) = state%kpoints%kp_env(1)%kpoint_env%mos(spin)%nelectron
          DO local = 1, SIZE(state%orbitals, 1)
             IF (.NOT. ASSOCIATED(state%orbitals(local, spin)%native)) CYCLE
             ik = 1
@@ -4283,12 +4287,14 @@ CONTAINS
             IF (owner) state%band_dimensions(ik, spin) = state%orbitals(local, spin)%native%nmo
          END DO
       END DO
-      CPASSERT(ALL(targets >= 0.0_dp))
       IF (separate) THEN
-         state%thermal_targets(:) = targets
+         targets = smearing_spin_targets(electrons, control%smear%fixed_mag_mom)
+         IF (ns == 1) targets(1) = REAL(electrons(1), dp)
+         state%thermal_targets(:) = targets(:ns)
       ELSE
-         state%thermal_targets(1) = SUM(targets)
+         state%thermal_targets(1) = REAL(SUM(electrons), dp)
       END IF
+      CPASSERT(ALL(state%thermal_targets >= 0.0_dp))
       CALL state%para_env%sum(state%band_dimensions)
       count = 0
       DO spin = 1, ns

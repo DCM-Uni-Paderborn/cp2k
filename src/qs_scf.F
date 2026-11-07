@@ -102,7 +102,7 @@ MODULE qs_scf
         ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
         ot_precond_none, ot_precond_s_inverse, outer_scf_becke_constraint, &
         outer_scf_hirshfeld_constraint, outer_scf_optimizer_broyden, &
-        outer_scf_optimizer_newton_ls, plus_u_lowdin, sic_eo, smear_fermi_dirac, smear_gaussian, &
+        outer_scf_optimizer_newton_ls, plus_u_lowdin, restart_guess, sic_eo, smear_fermi_dirac, smear_gaussian, &
         smear_mp, smear_mv, tblite_scc_mixer_tblite
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
@@ -174,7 +174,8 @@ MODULE qs_scf
                                               qs_kpoint_set_fixed_occupations,&
                                               qs_kpoint_state_canonicalize_fixed,&
                                               qs_kpoint_state_commit,&
-                                              qs_kpoint_state_prepare_fixed_density
+                                              qs_kpoint_state_prepare_fixed_density,&
+                                              qs_kpoint_state_prepare_thermal_restart
    USE qs_ks_atom,                      ONLY: update_ks_atom
    USE qs_ks_methods,                   ONLY: evaluate_core_matrix_traces,&
                                               qs_ks_update_qs_env
@@ -1758,7 +1759,7 @@ CONTAINS
                                                             nkpoint, nmo, nspin_ot
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL :: added_mos_auto_grow, do_adiis, do_kpoints, do_rotation, fixed_density_prepared, &
-         has_unit_metric, kp_diis_step, kpoint_mos_initialized, retained_symmetry
+         has_unit_metric, kp_diis_step, kpoint_mos_initialized, native_restart, retained_symmetry
       REAL(KIND=dp)                                      :: u_ramping
       REAL(KIND=dp), DIMENSION(:), POINTER               :: wkp
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
@@ -1783,6 +1784,7 @@ CONTAINS
       entry_reason = kp_ot_entry_initial
       IF (PRESENT(kp_ot_entry_reason)) entry_reason = kp_ot_entry_reason
       fixed_density_prepared = .FALSE.
+      native_restart = .FALSE.
 
       CALL get_qs_env(qs_env=qs_env, &
                       scf_control=scf_control, &
@@ -1836,6 +1838,7 @@ CONTAINS
                CALL qs_rho_update_rho(rho, qs_env=qs_env)
                CALL qs_ks_did_change(qs_env%ks_env, rho_changed=.TRUE.)
             ELSE
+               native_restart = scf_control%density_guess == restart_guess
                CALL kpoint_density_state_restore(kpoints)
             END IF
          END IF
@@ -2116,6 +2119,11 @@ CONTAINS
                      END IF
                      IF (dft_control%restricted) THEN
                         CALL qs_kpoint_copy_spin_mos(kpoints, dft_control%nspins)
+                     END IF
+                     IF (entry_reason == kp_ot_entry_initial .AND. native_restart .AND. &
+                         scf_env%qs_ot_env(1)%settings%do_ener .AND. scf_control%smear%do_smear) THEN
+                        CALL qs_kpoint_state_prepare_thermal_restart(kpoints, scf_control%smear, &
+                                                                     dft_control%restricted, scf_control%eps_scf)
                      END IF
                      CALL qs_kpoint_state_commit( &
                         qs_env, update_occupations=.TRUE., &
