@@ -11,6 +11,11 @@ PROGRAM skala_periodic_partition_unittest
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
    USE mathlib,                         ONLY: inv_3x3
+   USE qs_atom_grid_partition,          ONLY: periodic_context_adjoint,&
+                                              periodic_context_point_type,&
+                                              periodic_context_prepare,&
+                                              periodic_context_type,&
+                                              periodic_context_weights
    USE skala_periodic_partition,        ONLY: build_periodic_atom_image_layout,&
                                               periodic_atom_image_partition,&
                                               periodic_atom_image_partition_from_layout,&
@@ -102,6 +107,39 @@ PROGRAM skala_periodic_partition_unittest
    IF (unity_error > 2.e-13_dp) ERROR STOP 'Periodic atom-image weights do not sum to one'
    IF (translation_error > 2.e-13_dp) ERROR STOP 'Moving an atom by a lattice vector changed its image family'
    IF (derivative_error > 3.e-8_dp) ERROR STOP 'Periodic partition derivatives fail finite differences'
+   CALL check_sparse_context_weight(cell)
    DEALLOCATE (cell, perturbed)
    CALL cp2k_finalize()
+CONTAINS
+   SUBROUTINE check_sparse_context_weight(cell)
+      TYPE(cell_type), POINTER                           :: cell
+
+      INTEGER                                            :: axis
+      REAL(dp)                                           :: atom_gradient(3, 2), &
+                                                            cell_gradient(3, 3), &
+                                                            point_gradient(3), positions(3, 2)
+      TYPE(periodic_context_point_type)                  :: weights
+      TYPE(periodic_context_type)                        :: context
+
+      ! Both atoms lie on the context plateau. The small Becke fraction is
+      ! 1.25986017273395e-12, inside the sparse taper for internal weights.
+      cell%hmat = 0.0_dp
+      DO axis = 1, 3
+         cell%hmat(axis, axis) = 24.0_dp
+      END DO
+      cell%h_inv = inv_3x3(cell%hmat)
+      cell%perd = 1
+      positions(:, 1) = 0.0_dp
+      positions(:, 2) = [4.0_dp, 0.0_dp, 0.0_dp]
+      CALL periodic_context_prepare(positions, cell, 8.0_dp, context)
+      CALL periodic_context_weights(context, [3.95_dp, 0.0_dp, 0.0_dp], weights)
+      IF (SIZE(weights%atoms) /= 3) ERROR STOP 'Unexpected sparse context size'
+      IF (ANY(weights%atoms /= [0, 1, 2])) ERROR STOP 'Unexpected sparse context ordering'
+      IF (ABS(weights%internal(1) - 2.304039241659e-4_dp) > 1.0e-12_dp) &
+         ERROR STOP 'Loss of precision in the sparse Becke weight'
+      CALL periodic_context_adjoint(context, weights, [0.0_dp, 0.0_dp, 0.0_dp], [0.0_dp, 1.0_dp, 0.0_dp], &
+                                    point_gradient, atom_gradient, cell_gradient)
+      IF (ABS(point_gradient(1) + 0.5259824094236_dp) > 1.0e-10_dp) &
+         ERROR STOP 'Loss of precision in the sparse Becke weight derivative'
+   END SUBROUTINE check_sparse_context_weight
 END PROGRAM skala_periodic_partition_unittest

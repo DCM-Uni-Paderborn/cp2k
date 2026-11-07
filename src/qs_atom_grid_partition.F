@@ -798,9 +798,7 @@ CONTAINS
                IF (distance > layout_tol) direction = displacement/distance
                radial_difference = values%radii(image) - distance
                mu = radial_difference/neighbors%radii(neighbor)
-               switch = 0.5_dp*(1.0_dp - becke_shape(MAX(-1.0_dp, MIN(1.0_dp, mu))))
-               switch_derivative = 0.0_dp
-               IF (ABS(mu) < 1.0_dp) switch_derivative = -0.5_dp*becke_shape_derivative(mu)
+               CALL context_becke_switch(mu, switch, switch_derivative)
                factor = neighbors%drops(neighbor) + neighbors%switches(neighbor)*switch
                CPASSERT(factor > 0.0_dp)
                coefficient_mu = logarithm_adjoint(image)*neighbors%switches(neighbor)*switch_derivative/factor
@@ -852,7 +850,7 @@ CONTAINS
          DO neighbor = 1, SIZE(neighbors%atoms)
             distance = NORM2(point - neighbors%positions(:, neighbor))
             mu = (values%radii(image) - distance)/neighbors%radii(neighbor)
-            switch = 0.5_dp*(1.0_dp - becke_shape(MAX(-1.0_dp, MIN(1.0_dp, mu))))
+            CALL context_becke_switch(mu, switch)
             factor = neighbors%drops(neighbor) + neighbors%switches(neighbor)*switch
             IF (factor <= 0.0_dp) THEN
                value = -HUGE(1.0_dp)
@@ -866,6 +864,29 @@ CONTAINS
          END DO
       END ASSOCIATE
    END FUNCTION context_raw_log
+
+! **************************************************************************************************
+!> \brief Evaluate the small Becke fraction before taking its complement.
+!>        Subtracting the iterated shape from one loses precision where the sparse row taper acts.
+!> \param mu Difference of distances divided by pair separation.
+!> \param value Becke pair fraction.
+!> \param derivative Optional derivative with respect to mu.
+! **************************************************************************************************
+   PURE SUBROUTINE context_becke_switch(mu, value, derivative)
+      REAL(dp), INTENT(IN)                               :: mu
+      REAL(dp), INTENT(OUT)                              :: value
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: derivative
+
+      INTEGER                                            :: iteration
+
+      value = 0.5_dp*MAX(0.0_dp, 1.0_dp - ABS(mu))
+      IF (PRESENT(derivative)) derivative = -0.5_dp
+      DO iteration = 1, 3
+         IF (PRESENT(derivative)) derivative = derivative*(6.0_dp*value*(1.0_dp - value))
+         value = value**2*(3.0_dp - 2.0_dp*value)
+      END DO
+      IF (mu < 0.0_dp) value = 1.0_dp - value
+   END SUBROUTINE context_becke_switch
 
 ! **************************************************************************************************
 !> \brief Complementary C2 radial windows between three quarters and the full context radius.
