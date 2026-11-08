@@ -131,8 +131,8 @@ MODULE qs_ks_methods
                                               set_ks_env
    USE qs_ks_utils,                     ONLY: &
         calc_v_sic_rspace, calculate_zmp_potential, check_sum_energies, compute_matrix_vxc, &
-        compute_matrix_vxc_kp, get_embed_potential_energy, low_spin_roks, print_densities, &
-        print_detailed_energy, sic_explicit_orbitals, sum_up_and_integrate
+        get_embed_potential_energy, low_spin_roks, print_densities, print_detailed_energy, &
+        sic_explicit_orbitals, sum_up_and_integrate
    USE qs_local_rho_types,              ONLY: local_rho_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
@@ -259,9 +259,9 @@ CONTAINS
       TYPE(cdft_control_type), POINTER                   :: cdft_control
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_logger_type), POINTER                      :: logger
-      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ksmat, matrix_vhxc, matrix_vxc, mo_derivs
+      TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ksmat, matrix_vhxc, mo_derivs
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: ks_matrix, ks_matrix_im, matrix_h, &
-                                                            matrix_h_im, matrix_s, matrix_vxc_kp, &
+                                                            matrix_h_im, matrix_s, matrix_vxc, &
                                                             my_rho, rho_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(ecoul_1center_type), DIMENSION(:), POINTER    :: ecoul_1c
@@ -308,7 +308,7 @@ CONTAINS
                adiabatic_rescaling_section, hfx_sections, input, scf_section, &
                xc_section, gauxc_section, matrix_h, matrix_h_im, matrix_s, auxbas_pw_pool, poisson_env, &
                v_rspace_new, v_rspace_new_aux_fit, v_tau_rspace, v_tau_rspace_aux_fit, matrix_vxc, &
-               matrix_vxc_kp, matrix_vhxc, &
+               matrix_vhxc, &
                vee, rho_nlcc, ks_env, ks_matrix, ks_matrix_im, rho, energy, rho_xc, rho_r, rho_ao, &
                rho_core, sab_orb, particle_set, qs_kind_set, kpoints, inverse_weight_potential, inverse_weights)
 
@@ -342,9 +342,8 @@ CONTAINS
                       matrix_s_kp=matrix_s, &
                       matrix_ks_kp=ks_matrix, &
                       matrix_ks_im_kp=ks_matrix_im, &
-                      matrix_vxc=matrix_vxc, &
                       matrix_vhxc=matrix_vhxc, &
-                      matrix_vxc_kp=matrix_vxc_kp, &
+                      matrix_vxc_kp=matrix_vxc, &
                       pw_env=pw_env, &
                       cell=cell, &
                       atomic_kind_set=atomic_kind_set, &
@@ -1034,17 +1033,10 @@ CONTAINS
                END IF
                IF (edisp /= 0.0_dp) energy%dispersion = edisp
                IF (qs_env%requires_matrix_vxc .AND. ASSOCIATED(v_rspace_new)) THEN
-                  IF (do_kpoints) THEN
-                     CALL compute_matrix_vxc_kp(qs_env=qs_env, v_rspace=v_rspace_new, &
-                                                matrix_vxc_kp=matrix_vxc_kp, &
-                                                gapw_full_basis=native_gapw_composite_direct_ao)
-                     CALL set_ks_env(ks_env, matrix_vxc_kp=matrix_vxc_kp)
-                  ELSE
-                     CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace_new, &
-                                             matrix_vxc=matrix_vxc, &
-                                             gapw_full_basis=native_gapw_composite_direct_ao)
-                     CALL set_ks_env(ks_env, matrix_vxc=matrix_vxc)
-                  END IF
+                  CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace_new, &
+                                          matrix_vxc=matrix_vxc, &
+                                          gapw_full_basis=native_gapw_composite_direct_ao)
+                  CALL set_ks_env(ks_env, matrix_vxc_kp=matrix_vxc)
                END IF
             ELSE
                IF (qs_upf_inverse_scf_active(ks_env)) THEN
@@ -1066,7 +1058,7 @@ CONTAINS
             IF (edisp /= 0.0_dp) energy%dispersion = edisp
             IF (qs_env%requires_matrix_vxc .AND. ASSOCIATED(v_rspace_new)) THEN
                CALL compute_matrix_vxc(qs_env=qs_env, v_rspace=v_rspace_new, matrix_vxc=matrix_vxc)
-               CALL set_ks_env(ks_env, matrix_vxc=matrix_vxc)
+               CALL set_ks_env(ks_env, matrix_vxc_kp=matrix_vxc)
             END IF
 
             IF (gapw .OR. gapw_xc) THEN
@@ -1331,23 +1323,14 @@ CONTAINS
          CALL qs_upf_inverse_scf_add_paw(ks_env)
 
          IF (use_gauxc_matrix) THEN
-            IF (dokp) THEN
-               CALL get_qs_env(qs_env=qs_env, matrix_vxc_kp=matrix_vxc_kp)
-               CPASSERT(ASSOCIATED(matrix_vxc_kp))
-               DO ispin = 1, nspins
-                  DO img = 1, nimages
-                     CALL dbcsr_add(ks_matrix(ispin, img)%matrix, matrix_vxc_kp(ispin, img)%matrix, &
-                                    1.0_dp, 1.0_dp)
-                  END DO
+            CALL get_qs_env(qs_env=qs_env, matrix_vxc_kp=matrix_vxc)
+            CPASSERT(ASSOCIATED(matrix_vxc))
+            DO ispin = 1, nspins
+               DO img = 1, nimages
+                  CALL dbcsr_add(ks_matrix(ispin, img)%matrix, matrix_vxc(ispin, img)%matrix, &
+                                 1.0_dp, 1.0_dp)
                END DO
-            ELSE
-               CALL get_qs_env(qs_env=qs_env, matrix_vxc=matrix_vxc)
-               CPASSERT(ASSOCIATED(matrix_vxc))
-               CPASSERT(nimages == 1)
-               DO ispin = 1, nspins
-                  CALL dbcsr_add(ks_matrix(ispin, 1)%matrix, matrix_vxc(ispin)%matrix, 1.0_dp, 1.0_dp)
-               END DO
-            END IF
+            END DO
          END IF
 
          IF (ASSOCIATED(inverse_weight_potential)) THEN

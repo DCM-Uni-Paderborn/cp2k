@@ -1977,6 +1977,7 @@ CONTAINS
 
          CALL dbt_copy_matrix_to_tensor(rho_ao(ispin, 1)%matrix, rho_ao_tmp)
 
+         ! For low-spin ROKS, consecutive calls can use different spin configurations within one SCF iteration.
          ! Incremental updates can discard small density changes through tensor screening.
          ! Rebuild both the density and exchange matrix when full-density updates are requested.
          IF (use_delta_p) THEN
