@@ -1149,7 +1149,8 @@ CONTAINS
       END DO
       grid_shape = 0
       IF (map%grid%grid_span == FULLSPACE .AND. .NOT. map%grid%spherical) grid_shape = map%grid%npts
-      CALL upf_inverse_coulomb_prepare(map%centers, map%cell, map%grid%g, map%grid%vol, map%maps, frame%periodicity, grid_shape)
+      CALL upf_inverse_coulomb_prepare(map%centers, map%cell, map%grid%g, map%grid%vol, map%maps, &
+                                       frame%periodicity, grid_shape, comm=para_env%mp_comm_type)
       map%ready = .TRUE.
    END SUBROUTINE qs_upf_inverse_coulomb_prepare
 

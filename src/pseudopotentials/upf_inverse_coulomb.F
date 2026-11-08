@@ -93,15 +93,18 @@ CONTAINS
 !> \param map Owned maps. Rebuild after changing centers, cell, reciprocal vectors or radial grids.
 !> \param periodicity Optional lattice directions to repeat. Defaults to three periodic directions.
 !> \param grid_shape Optional full-box real-grid dimensions. Zero or omission retains continuous coefficients.
+!> \param comm Optional communicator sharing shell integrals. Center and cell data are replicated.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_coulomb_prepare(centers, cell, gvecs, volume, map, periodicity, grid_shape)
+   SUBROUTINE upf_inverse_coulomb_prepare(centers, cell, gvecs, volume, map, periodicity, grid_shape, comm)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       REAL(dp), INTENT(IN)                               :: cell(3, 3), gvecs(:, :), volume
       TYPE(upf_inverse_coulomb_map_type), INTENT(OUT)    :: map
       INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3), grid_shape(3)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
 
       INTEGER                                            :: a, b, h, i, image(3), info, j, k, &
-                                                            limits(2, 3), r
+                                                            limits(2, 3), nrank, owner, r, rank
+      LOGICAL                                            :: has_images
       REAL(dp)                                           :: displacement(3), inverse_cell(3, 3), &
                                                             radius
       REAL(dp), ALLOCATABLE                              :: kernel(:, :, :, :)
@@ -119,6 +122,13 @@ CONTAINS
       inverse_cell = cell
       CALL invmat(inverse_cell, info)
       CPASSERT(info == 0)
+      rank = 0
+      nrank = 1
+      IF (PRESENT(comm)) THEN
+         rank = comm%mepos
+         nrank = comm%num_pe
+      END IF
+      owner = -1
       DO a = 1, SIZE(centers)
          ALLOCATE (map%fourier(a)%values(SIZE(gvecs, 2), SIZE(centers(a)%radii), SIZE(centers(a)%l)))
          CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
@@ -132,6 +142,7 @@ CONTAINS
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
             CALL residual_image_limits(inverse_cell, centers(a)%position - centers(b)%position, &
                                        radius, map%periodicity, limits)
+            has_images = .FALSE.
             DO k = limits(1, 3), limits(2, 3)
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
@@ -139,6 +150,9 @@ CONTAINS
                      image = [i, j, k]
                      displacement = centers(a)%position - centers(b)%position - MATMUL(cell, REAL(image, dp))
                      IF (SUM(displacement**2) >= radius**2) CYCLE
+                     has_images = .TRUE.
+                     owner = MOD(owner + 1, nrank)
+                     IF (owner /= rank) CYCLE
                      CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                           centers(b)%radii, centers(b)%l, centers(b)%indices, &
                                                           displacement, kernel)
@@ -154,6 +168,7 @@ CONTAINS
                   END DO
                END DO
             END DO
+            IF (nrank > 1 .AND. has_images) CALL comm%sum(map%pairs(a, b)%values)
             IF (a /= b) THEN
                ALLOCATE (map%pairs(b, a)%values(SIZE(kernel, 3), SIZE(kernel, 4), SIZE(kernel, 1), SIZE(kernel, 2)))
                DO h = 1, SIZE(kernel, 2)

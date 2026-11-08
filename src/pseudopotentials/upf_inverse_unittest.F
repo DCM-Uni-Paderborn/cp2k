@@ -2904,7 +2904,7 @@ CONTAINS
                                            response=response, center_response=derivative, cell_response=dcell, &
                                            gvecs_response=dg, volume_response=dvolume, background_response=db, &
                                            poisson_weights_response=dkw, periodicity=periodicity)
-         CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map, periodicity)
+         CALL upf_inverse_coulomb_prepare(centers, cell, g, volume, map, periodicity, comm=comm)
          CALL upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient)
          CALL upf_inverse_coulomb_pair_geometry(centers, map, parallel_center_gradient, parallel_cell_gradient, comm)
          CALL check(MAXVAL(ABS(parallel_center_gradient - center_gradient)), "Distributed pair position covector", 3.e-12_dp)
