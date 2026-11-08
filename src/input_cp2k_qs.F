@@ -515,6 +515,15 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="UPF_ANGULAR_REFERENCE_CELL", &
+                          description="Reference lattice for the angular quadrature of original USPP and PAW. "// &
+                          "Restart files retain the three lattice vectors independently of the FFT grid. "// &
+                          "By default the angular reference is the Quickstep reference cell.", &
+                          usage="UPF_ANGULAR_REFERENCE_CELL ax ay az bx by bz cx cy cz", &
+                          n_var=9, type_of_var=real_t, unit_str="bohr")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       CALL keyword_create(keyword, __LOCATION__, name="CORE_PPL", &
                           description="Specifies the method used to calculate the local pseudopotential contribution.", &
                           usage="CORE_PPL ANALYTIC", &

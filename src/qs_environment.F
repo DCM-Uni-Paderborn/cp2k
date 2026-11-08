@@ -87,6 +87,7 @@ MODULE qs_environment
                                               xtb_header
    USE hfx_types,                       ONLY: compare_hfx_sections,&
                                               hfx_create
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: &
         atomic_guess, cdft_charge_constraint, debug_run, diag_ot, dispersion_d2, dispersion_d3, &
         dispersion_d3bj, do_et_ddapc, do_method_am1, do_method_dftb, do_method_gapw, &
@@ -125,6 +126,7 @@ MODULE qs_environment
    USE lri_environment_types,           ONLY: lri_environment_type
    USE machine,                         ONLY: m_flush
    USE mathconstants,                   ONLY: pi
+   USE mathlib,                         ONLY: det_3x3
    USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_kind_types,             ONLY: molecule_kind_type,&
                                               write_molecule_kind_set
@@ -1118,10 +1120,11 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: mo_index_range
       LOGICAL :: all_potential_present, be_silent, cneo_potential_present, do_kpoints, do_ri_hfx, &
          do_ri_mp2, do_ri_rpa, do_ri_sos_mp2, do_rpa_ri_exx, do_wfc_im_time, e1terms, &
-         has_unit_metric, lribas, mp2_present, orb_gradient, paw_atom
+         has_angular_reference, has_unit_metric, lribas, mp2_present, orb_gradient, paw_atom
       REAL(KIND=dp)                                      :: alpha, ccore, ewald_rcut, fxx, maxocc, &
                                                             rc, rcut, total_zeff_corr, &
                                                             verlet_skin, zeff_correction
+      REAL(dp), POINTER                                  :: angular_reference(:)
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -1211,6 +1214,19 @@ CONTAINS
 
       ! Read the input section with the Quickstep control parameters
       CALL read_qs_section(dft_control%qs_control, qs_section, cell)
+      dft_control%qs_control%upf_angular_reference_cell = cell%hmat
+      IF (ASSOCIATED(cell_ref)) dft_control%qs_control%upf_angular_reference_cell = cell_ref%hmat
+      CALL section_vals_val_get(qs_section, "UPF_ANGULAR_REFERENCE_CELL", explicit=has_angular_reference)
+      IF (has_angular_reference) THEN
+         CALL section_vals_val_get(qs_section, "UPF_ANGULAR_REFERENCE_CELL", r_vals=angular_reference)
+         ASSOCIATE (reference => dft_control%qs_control%upf_angular_reference_cell)
+            reference = RESHAPE(angular_reference, [3, 3])
+            IF (.NOT. ALL(ieee_is_finite(reference))) CPABORT("Invalid UPF angular reference lattice")
+            IF (det_3x3(reference) <= 0.0_dp) THEN
+               CPABORT("The UPF angular reference lattice must have positive volume")
+            END IF
+         END ASSOCIATE
+      END IF
 
       CALL check_gapw_low_spin_roks(dft_control, dft_section, subsys_section)
 

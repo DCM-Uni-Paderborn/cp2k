@@ -54,13 +54,14 @@ CONTAINS
 !> \brief Select the shared angular reference for periodic USPP and PAW quadratures.
 !>        The reference cell is independent of mesh reduction and survives geometry updates.
 !> \param cell Current physical cell, used to select the periodic domain.
-!> \param reference Fixed reference cell of this Quickstep environment.
+!> \param reference Cartesian lattice vectors of the fixed angular reference.
 !> \param kinds Original potentials of the physical kinds.
 !> \param atom_xc Whether the USPP functional includes atom-centered XC quadrature.
 !> \param rotations Reference point group, unallocated when no angular average is needed.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_reference_rotations(cell, reference, kinds, atom_xc, rotations)
-      TYPE(cell_type), POINTER                          :: cell, reference
+      TYPE(cell_type), INTENT(IN)                       :: cell
+      REAL(dp), INTENT(IN)                               :: reference(3, 3)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       LOGICAL, INTENT(IN)                                :: atom_xc
       REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: rotations(:, :, :)
@@ -75,8 +76,7 @@ CONTAINS
          ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
             IF (.NOT. (pot%is_paw .OR. (atom_xc .AND. pot%is_ultrasoft))) CYCLE
          END ASSOCIATE
-         CPASSERT(ASSOCIATED(reference))
-         CALL crys_sym_lattice_rotations(reference%hmat, rotations)
+         CALL crys_sym_lattice_rotations(reference, rotations)
          RETURN
       END DO
    END SUBROUTINE qs_upf_reference_rotations

@@ -519,6 +519,7 @@ MODULE cp_control_types
 ! **************************************************************************************************
    TYPE qs_control_type
       INTEGER                              :: uspp_method = 2
+      REAL(KIND=dp)                        :: upf_angular_reference_cell(3, 3) = 0.0_dp
       INTEGER                              :: method_id = 0
       REAL(KIND=dp)                        :: eps_core_charge = 0.0_dp, &
                                               eps_kg_orb = 0.0_dp, &

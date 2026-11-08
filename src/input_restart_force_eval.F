@@ -57,6 +57,9 @@ MODULE input_restart_force_eval
    USE particle_list_types,             ONLY: particle_list_type
    USE qmmm_ff_fist,                    ONLY: qmmm_ff_precond_only_qm
    USE qs_environment_types,            ONLY: get_qs_env
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE string_utilities,                ONLY: string_to_ascii
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
@@ -93,11 +96,13 @@ CONTAINS
                                                             nforce_eval
       INTEGER, DIMENSION(:), POINTER                     :: i_force_eval
       LOGICAL                                            :: is_present, multiple_subsys, &
-                                                            skip_vel_section
+                                                            skip_vel_section, use_ref_cell
       REAL(KIND=dp), DIMENSION(:), POINTER               :: work
       TYPE(cell_type), POINTER                           :: cell
       TYPE(cp_subsys_type), POINTER                      :: subsys
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_ks_env_type), POINTER                       :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER              :: upf_inverse
       TYPE(section_vals_type), POINTER                   :: cell_section, dft_section, &
                                                             force_env_sections, qmmm_section, &
                                                             rng_section, subsys_section, &
@@ -122,6 +127,20 @@ CONTAINS
                                                     i_rep_section=i_force_eval(iforce_eval))
       CALL update_subsys(subsys_section, force_env, skip_vel_section, &
                          write_binary_restart_file)
+      IF (ASSOCIATED(force_env%qs_env)) THEN
+         CALL get_qs_env(force_env%qs_env, cell=cell, use_ref_cell=use_ref_cell, dft_control=dft_control, ks_env=ks_env)
+         NULLIFY (upf_inverse)
+         IF (ASSOCIATED(ks_env)) CALL get_ks_env(ks_env, upf_inverse=upf_inverse)
+         IF (ASSOCIATED(upf_inverse) .AND. .NOT. use_ref_cell) THEN
+            IF (ALLOCATED(upf_inverse%angular_rotations) .AND. &
+                ANY(dft_control%qs_control%upf_angular_reference_cell /= cell%hmat)) THEN
+               dft_section => section_vals_get_subs_vals3(force_env_sections, "DFT", i_rep_section=i_force_eval(iforce_eval))
+               ALLOCATE (work(9))
+               work = RESHAPE(dft_control%qs_control%upf_angular_reference_cell, [9])
+               CALL section_vals_val_set(dft_section, "QS%UPF_ANGULAR_REFERENCE_CELL", r_vals_ptr=work)
+            END IF
+         END IF
+      END IF
 
       ! For RESPA we need to update all subsystems
       IF (PRESENT(respa)) THEN

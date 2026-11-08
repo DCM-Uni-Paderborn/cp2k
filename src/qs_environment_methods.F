@@ -114,13 +114,13 @@ CONTAINS
 
       INTEGER                                            :: kind, level, ngrid
       LOGICAL                                            :: has_upf
-      TYPE(cell_type), POINTER                           :: cell, reference
+      TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
-      CALL get_qs_env(qs_env, qs_kind_set=kinds, pw_env=pw_env, cell=cell, cell_ref=reference, dft_control=control)
+      CALL get_qs_env(qs_env, qs_kind_set=kinds, pw_env=pw_env, cell=cell, dft_control=control)
       has_upf = .FALSE.
       DO kind = 1, SIZE(kinds)
          IF (kinds(kind)%ghost) CYCLE
@@ -148,8 +148,8 @@ CONTAINS
          grid => pw_env%vdw_pw_pool%pw_grid
          grids(level + 1) = crys_sym_grid_type(grid%npts, grid%spherical)
       END IF
-      CALL qs_upf_reference_rotations(cell, reference, kinds, control%qs_control%gapw .OR. control%qs_control%gapw_xc, &
-                                      rotations)
+      CALL qs_upf_reference_rotations(cell, control%qs_control%upf_angular_reference_cell, kinds, &
+                                      control%qs_control%gapw .OR. control%qs_control%gapw_xc, rotations)
    END SUBROUTINE qs_env_symmetry_grids
 
 ! **************************************************************************************************
