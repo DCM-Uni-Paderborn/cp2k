@@ -1175,8 +1175,54 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: ao_operators(:, :, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: charge
 
-      COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), ao_operator(:, :), &
-                                                            background(:)
+      COMPLEX(dp), ALLOCATABLE                           :: ao_operator(:, :)
+      INTEGER                                            :: a, k, kind
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
+      TYPE(qs_upf_inverse_type), POINTER                 :: frame
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE                                     :: potentials(:)
+
+      CPASSERT(map%ready)
+      CPASSERT(ALL(SHAPE(ao_operators) == SHAPE(map%metric)))
+      CALL evaluate_coulomb_sources(qs_env, state, map, matrix, energy, potentials, charge)
+      CALL get_qs_env(qs_env, qs_kind_set=kinds)
+      ALLOCATE (ao_operator(SIZE(matrix, 1), SIZE(matrix, 2)))
+      CALL qs_upf_inverse_background_integrate(map%background, qs_env, map%potential, ao_operators)
+      DO k = 1, SIZE(map%weights)
+         CALL select_frame(state, k, frame, augmentation)
+         DO a = 1, SIZE(map%centers)
+            kind = map%center_kinds(a)
+            CALL qs_upf_inverse_density_gapw_integrate(frame, augmentation, map%inverse_centers(a), kinds(kind), &
+                                                       map%pairs(a), potentials(a)%values, ao_operator, map%center_atoms(a), &
+                                                       map%fields(a, k))
+            ao_operators(:, :, k) = ao_operators(:, :, k) + ao_operator
+         END DO
+      END DO
+   END SUBROUTINE qs_upf_inverse_coulomb_evaluate
+
+! **************************************************************************************************
+!> \brief Refresh the Coulomb sources and potentials for one spin-summed density.
+!>        Geometry derivatives use these fields directly. The AO transpose is separate.
+!> \param qs_env ...
+!> \param state ...
+!> \param map ...
+!> \param matrix Hermitian AO occupation matrices, without k-point weights.
+!> \param energy Coulomb energy with the same ionic convention as the AO evaluation.
+!> \param potentials Radial Coulomb potentials for the center densities.
+!> \param charge Optional integrated electronic charge.
+! **************************************************************************************************
+   SUBROUTINE evaluate_coulomb_sources(qs_env, state, map, matrix, energy, potentials, charge)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
+      TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: energy
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE, INTENT(OUT)                         :: potentials(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: charge
+
+      COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), background(:)
       INTEGER                                            :: a, k, kind
       REAL(dp)                                           :: electronic_charge, total
       REAL(dp), ALLOCATABLE                              :: radial(:, :)
@@ -1184,12 +1230,9 @@ CONTAINS
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
-      TYPE(upf_inverse_coulomb_potential_type), &
-         ALLOCATABLE                                     :: potentials(:)
 
       CPASSERT(map%ready)
       CPASSERT(ALL(SHAPE(matrix) == SHAPE(map%metric)))
-      CPASSERT(ALL(SHAPE(ao_operators) == SHAPE(map%metric)))
       CALL select_frame(state, 1, frame, augmentation)
       CPASSERT(ALL(frame%cell == map%cell))
       CPASSERT(ALL(frame%positions == map%positions))
@@ -1212,7 +1255,7 @@ CONTAINS
       END DO
       IF (PRESENT(charge)) charge = electronic_charge
       ALLOCATE (background, SOURCE=map%source_g%array + map%ionic%array)
-      ALLOCATE (adjoint(SIZE(background)), ao_operator(SIZE(matrix, 1), SIZE(matrix, 2)))
+      ALLOCATE (adjoint(SIZE(background)))
       IF (map%grid%para%mode == PW_MODE_LOCAL) THEN
          CALL upf_inverse_coulomb_periodic(map%centers, map%cell, map%grid%g, map%grid%vol, &
                                            background, map%poisson_weights, energy, potentials, adjoint, map=map%maps)
@@ -1224,18 +1267,7 @@ CONTAINS
       ! Convert the Fourier covector to the native unweighted potential before its grid transpose.
       map%potential_g%array = adjoint/(map%grid%vol*map%multiplicity)
       CALL pw_transfer(map%potential_g, map%potential)
-      CALL qs_upf_inverse_background_integrate(map%background, qs_env, map%potential, ao_operators)
-      DO k = 1, SIZE(map%weights)
-         CALL select_frame(state, k, frame, augmentation)
-         DO a = 1, SIZE(map%centers)
-            kind = map%center_kinds(a)
-            CALL qs_upf_inverse_density_gapw_integrate(frame, augmentation, map%inverse_centers(a), kinds(kind), &
-                                                       map%pairs(a), potentials(a)%values, ao_operator, map%center_atoms(a), &
-                                                       map%fields(a, k))
-            ao_operators(:, :, k) = ao_operators(:, :, k) + ao_operator
-         END DO
-      END DO
-   END SUBROUTINE qs_upf_inverse_coulomb_evaluate
+   END SUBROUTINE evaluate_coulomb_sources
 
 ! **************************************************************************************************
 !> \brief Apply the complete fixed-geometry GAPW Coulomb kernel to an electronic AO direction.
@@ -1362,8 +1394,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
 
       COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), background(:), &
-                                                            background_response(:), &
-                                                            operators(:, :, :)
+                                                            background_response(:)
       INTEGER                                            :: a, info
       REAL(dp)                                           :: energy, inverse_cell(3, 3), &
                                                             ionic_virial(3, 3), kernel_response, &
@@ -1382,8 +1413,7 @@ CONTAINS
       CPASSERT(map%ready)
       CPASSERT(ALL(SHAPE(atom_response) == SHAPE(map%positions)))
       CALL prepare_pair_responses(qs_env, state, map)
-      ALLOCATE (operators, MOLD=map%metric)
-      CALL qs_upf_inverse_coulomb_evaluate(qs_env, state, map, matrix, energy, operators)
+      CALL evaluate_coulomb_sources(qs_env, state, map, matrix, energy, potentials)
       inverse_cell = map%cell
       CALL invmat(inverse_cell, info)
       CPASSERT(info == 0)
@@ -1463,16 +1493,16 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
       REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :), cell_gradient(3, 3)
 
-      COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :)
       INTEGER                                            :: a
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: center_gradient(:, :)
       TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE                                     :: potentials(:)
 
       CPASSERT(map%ready)
       CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(map%positions)))
-      ALLOCATE (operators, MOLD=map%metric)
-      CALL qs_upf_inverse_coulomb_evaluate(qs_env, state, map, matrix, energy, operators)
+      CALL evaluate_coulomb_sources(qs_env, state, map, matrix, energy, potentials)
       CALL get_qs_env(qs_env, para_env=para_env)
       ALLOCATE (center_gradient(3, SIZE(map%centers)))
       CALL upf_inverse_coulomb_pair_geometry(map%centers, map%maps, center_gradient, cell_gradient, &
