@@ -16,8 +16,7 @@ MODULE qs_vxc_atom_utils
                                               gth_potential_type,&
                                               sgp_potential_type
    USE kinds,                           ONLY: dp
-   USE mathconstants,                   ONLY: fac,&
-                                              fourpi
+   USE mathconstants,                   ONLY: fac
    USE orbital_pointers,                ONLY: indso,&
                                               nsoset
    USE paw_basis_types,                 ONLY: get_paw_basis_info
@@ -28,8 +27,8 @@ MODULE qs_vxc_atom_utils
                                               qs_kind_type
    USE qs_rho_atom_types,               ONLY: rho_atom_coeff,&
                                               rho_atom_type
+   USE upf_core,                        ONLY: upf_core_radial_init
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
-                                              upf_radial_fields_init,&
                                               upf_radial_fields_type
    USE upf_types,                       ONLY: upf_nlcc_kinetic
 #include "./base/base_uses.f90"
@@ -446,8 +445,7 @@ CONTAINS
          CALL upf_nlcc_kinetic(pot, radial, available, reason)
          IF (.NOT. available) CPABORT(TRIM(reason))
          IF (ALL(radial == 0.0_dp)) RETURN
-         CALL upf_radial_fields_init(pot%r, RESHAPE(SQRT(fourpi)*radial, [SIZE(radial), 1]), [0], field, &
-                                     finite_table=radial(SIZE(radial)) /= 0.0_dp)
+         CALL upf_core_radial_init(pot%r, radial, field)
       END ASSOCIATE
       ALLOCATE (core_tau(SIZE(radius)), SOURCE=0.0_dp)
       DO ir = 1, SIZE(radius)

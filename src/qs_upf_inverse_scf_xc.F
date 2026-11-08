@@ -19,7 +19,6 @@ MODULE qs_upf_inverse_scf_xc
                                               get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
                                               lebedev_grid
-   USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_para_env_type
@@ -80,9 +79,9 @@ MODULE qs_upf_inverse_scf_xc
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator
+   USE upf_core,                        ONLY: upf_core_radial_init
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_init
-   USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
-                                              upf_radial_fields_periodic
+   USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
    USE upf_types,                       ONLY: upf_nlcc_kinetic,&
                                               upf_uses_model_core_tau
    USE xc_input_constants,              ONLY: xc_deriv_pw
@@ -1097,8 +1096,7 @@ CONTAINS
       LOGICAL                                            :: core_available
       REAL(dp)                                           :: ae_radius, core_radius
       REAL(dp), ALLOCATABLE                              :: coefficients(:, :), core_tau(:), &
-                                                            native_radius(:), radial(:, :), &
-                                                            support(:), widths(:)
+                                                            native_radius(:), support(:), widths(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(grid_atom_type), POINTER                      :: grid
@@ -1148,14 +1146,11 @@ CONTAINS
             END DO
             CYCLE
          END IF
+         ! The reconstructed PAW core has its own radial fields and support.
+         IF (state%paw(ikind)%active .AND. ALLOCATED(state%paw_reconstruction)) CYCLE
          ASSOCIATE (pot => kinds(ikind)%sgp_potential%upf_data)
             IF (ALLOCATED(pot%rho_nlcc)) THEN
-               IF (ANY(pot%rho_nlcc /= 0.0_dp)) THEN
-                  ALLOCATE (radial(SIZE(pot%r), 1))
-                  radial(:, 1) = SQRT(fourpi)*pot%rho_nlcc
-                  CALL upf_radial_fields_init(pot%r, radial, [0], state%core_cache(ikind))
-                  DEALLOCATE (radial)
-               END IF
+               IF (ANY(pot%rho_nlcc /= 0.0_dp)) CALL upf_core_radial_init(pot%r, pot%rho_nlcc, state%core_cache(ikind))
             END IF
             ! An independent basis functional may need tau even when the primary one does not.
             IF (ALLOCATED(state%kinetic_cache) .AND. (upf_uses_model_core_tau(pot) .OR. pot%is_paw)) THEN
@@ -1166,12 +1161,7 @@ CONTAINS
                   CALL upf_nlcc_kinetic(pot, core_tau, core_available, core_reason)
                   IF (.NOT. core_available) CPABORT(TRIM(core_reason))
                END IF
-               IF (ANY(core_tau /= 0.0_dp)) THEN
-                  ALLOCATE (radial(SIZE(pot%r), 1))
-                  radial(:, 1) = SQRT(fourpi)*core_tau
-                  CALL upf_radial_fields_init(pot%r, radial, [0], state%core_kinetic_cache(ikind))
-                  DEALLOCATE (radial)
-               END IF
+               IF (ANY(core_tau /= 0.0_dp)) CALL upf_core_radial_init(pot%r, core_tau, state%core_kinetic_cache(ikind))
             END IF
          END ASSOCIATE
       END DO

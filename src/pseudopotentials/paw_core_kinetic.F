@@ -286,6 +286,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Original AE kinetic field and gradient from occupied signed core waves at positive radii.
 !>        The cusped AE origin has no Cartesian gradient and is not replaced by the smooth PS field.
+!>        Outside the supplied radial domain the field and its derivatives are zero.
 !> \param cache Verified original-data cache; a core-free cache returns exact zeros.
 !> \param displacement Evaluation point minus the core center, excluding a nonempty core's origin.
 !> \param tau Spin-summed AE kinetic density including the factor 1/2.
@@ -305,6 +306,7 @@ CONTAINS
       IF (PRESENT(gradient)) gradient = 0.0_dp
       IF (.NOT. ALLOCATED(cache%wave)) RETURN
       radius = SQRT(SUM(displacement**2))
+      IF (radius > cache%ae_support_radius) RETURN
       IF (radius == 0.0_dp) THEN
          CALL cp_abort(__LOCATION__, &
                        "Original AE core kinetic fields require positive-radius quadrature")

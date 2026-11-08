@@ -9,6 +9,8 @@ MODULE upf_core
    USE bessel_lib,                      ONLY: bessel0
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi
+   USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
+                                              upf_radial_fields_type
    USE upf_types,                       ONLY: atom_upfpot_type,&
                                               upf_nlcc_kinetic,&
                                               upf_radial_weights
@@ -16,9 +18,25 @@ MODULE upf_core
 
    IMPLICIT NONE
    PRIVATE
-   PUBLIC :: upf_core_fourier, upf_core_kinetic_fourier
+   PUBLIC :: upf_core_fourier, upf_core_kinetic_fourier, upf_core_radial_init
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Prepare a spherical core field on its original finite radial domain.
+!>        Keep a nonzero final sample and the existing smooth closure for an exact zero suffix.
+!> \param r Original radial mesh.
+!> \param values Spin-summed spherical core charge or kinetic density.
+!> \param field Cartesian radial spline with the spherical-harmonic normalization removed.
+! **************************************************************************************************
+   SUBROUTINE upf_core_radial_init(r, values, field)
+      REAL(dp), INTENT(IN)                               :: r(:), values(:)
+      TYPE(upf_radial_fields_type), INTENT(OUT)          :: field
+
+      CPASSERT(SIZE(r) == SIZE(values) .AND. SIZE(r) > 0)
+      CALL upf_radial_fields_init(r, RESHAPE(SQRT(fourpi)*values, [SIZE(values), 1]), [0], field, &
+                                  finite_table=values(SIZE(values)) /= 0.0_dp)
+   END SUBROUTINE upf_core_radial_init
 
 ! **************************************************************************************************
 !> \brief Integrate the supplied true spherical density with the original radial quadrature.

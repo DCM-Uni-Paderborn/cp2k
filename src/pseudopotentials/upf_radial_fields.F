@@ -306,7 +306,7 @@ CONTAINS
             displacement = points(:, point) - shift
             dr = -dshift
             IF (PRESENT(points_response)) dr = dr + points_response(:, point)
-            IF (SUM(displacement**2) >= fields%radius**2) CYCLE
+            IF (SUM(displacement**2) > fields%radius**2) CYCLE
             IF (PRESENT(gradient_response)) THEN
                CALL upf_radial_fields_evaluate(fields, displacement, v, g, hh)
             ELSE IF (PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(cell_gradient)) THEN

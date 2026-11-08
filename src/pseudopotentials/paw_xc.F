@@ -77,6 +77,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Cartesian original AE core density, gradient and Hessian on positive-radius quadrature.
 !>        Retains the radial cusp and complete original table rather than smoothing in r squared.
+!>        Outside the supplied radial domain the field and its derivatives are zero.
 !> \param grid Original PAW XC cache with AE core density and its radial spline slopes.
 !> \param displacement Point minus core center; the nonempty core's exact origin is excluded.
 !> \param density Spin-summed AE core density, including the original UPF volume convention.
@@ -100,6 +101,7 @@ CONTAINS
       IF (PRESENT(hessian)) hessian = 0.0_dp
       IF (.NOT. grid%has_ae_core) RETURN
       radius = SQRT(SUM(displacement**2))
+      IF (radius > grid%r(grid%core_support_index)) RETURN
       IF (radius == 0.0_dp) THEN
          CALL cp_abort(__LOCATION__, &
                        "Original AE core density fields require positive-radius quadrature")

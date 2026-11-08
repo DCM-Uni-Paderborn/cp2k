@@ -97,7 +97,8 @@ PROGRAM upf_inverse_unittest
    USE t_c_g0,                          ONLY: free_C0,&
                                               init_truncated => init
    USE upf_core,                        ONLY: upf_core_fourier,&
-                                              upf_core_kinetic_fourier
+                                              upf_core_kinetic_fourier,&
+                                              upf_core_radial_init
    USE upf_inverse,                     ONLY: &
         upf_inverse_atomic_init, upf_inverse_atomic_residual, upf_inverse_atomic_type, &
         upf_inverse_basis, upf_inverse_basis_response, upf_inverse_density_evaluate, &
@@ -3125,12 +3126,15 @@ CONTAINS
 !> \brief Original core normalization, finite endpoint and joint phase/lattice/volume derivative.
 ! **************************************************************************************************
    SUBROUTINE check_core_fourier()
-      COMPLEX(dp)                                        :: dg(3, 3), dr(3, 3), response(3), rho(3), &
-                                                            samples(3, 2)
+      COMPLEX(dp)                                        :: dg(3, 3), dr(3, 3), &
+                                                            radial_gradient(3, 1, 3), &
+                                                            radial_values(3, 1), response(3), &
+                                                            rho(3), samples(3, 2)
       INTEGER                                            :: side
       REAL(dp)                                           :: delta_g(3, 3), delta_r(3), g(3, 3), &
-                                                            position(3), shift
+                                                            points(3, 3), position(3), shift
       TYPE(atom_upfpot_type)                             :: pot
+      TYPE(upf_radial_fields_type)                       :: field
 
       pot%pseudo_type = "NC"
       IF (upf_uses_model_core_tau(pot)) ERROR STOP "NC without a core tau table selected a model"
@@ -3175,6 +3179,17 @@ CONTAINS
                                        3.0_dp*(1.0_dp + 0.01_dp*shift), samples(:, side))
       END DO
       CALL check(MAXVAL(ABS((samples(:, 2) - samples(:, 1))/(2.0_dp*step) - response)), "Core tau joint response", 2.e-9_dp)
+      ! A supplied nonzero endpoint is part of the original finite radial domain.
+      CALL upf_core_radial_init(pot%r, pot%rho_nlcc, field)
+      points = 0.0_dp
+      points(3, :) = [1.5_dp, 2.0_dp, 2.5_dp]
+      CALL upf_radial_fields_periodic(field, points, [0.0_dp, 0.0_dp, 0.0_dp], g, &
+                                      RESHAPE([0, 0, 0], [3, 1]), [0.0_dp, 0.0_dp, 0.0_dp], &
+                                      radial_values, radial_gradient)
+      CALL check(MAXVAL(ABS(radial_values(:, 1) - [0.2_dp, 0.1_dp, 0.0_dp])), &
+                 "Original finite spherical core samples", 1.e-13_dp)
+      CALL check(MAXVAL(ABS(radial_gradient(3, 1, :))), "Exterior finite core gradient", 0.0_dp)
+
       pot%core_correction = .FALSE.
       CALL upf_core_fourier(pot, g, position, 3.0_dp, rho, dr, dg)
       CALL check(MAXVAL(ABS(rho)) + MAXVAL(ABS(dr)) + MAXVAL(ABS(dg)), "Absent partial core", 0.0_dp)
