@@ -33,9 +33,15 @@ MODULE cryssym
    PRIVATE
    PUBLIC :: csym_type, release_csym_type, print_crys_symmetry, print_kp_symmetry
    PUBLIC :: crys_sym_gen, kpoint_gen, kpoint_gen_general, crys_sym_cartesian_halfturn
-   PUBLIC :: crys_sym_grid_compatible
+   PUBLIC :: crys_sym_grid_compatible, crys_sym_grid_type
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cryssym'
+
+   !> Uniform quadrature and the shape of its retained reciprocal frequencies.
+   TYPE crys_sym_grid_type
+      INTEGER                                     :: npts(3)
+      LOGICAL                                     :: spherical
+   END TYPE crys_sym_grid_type
 
 ! **************************************************************************************************
 !> \brief CSM type
@@ -48,7 +54,7 @@ MODULE cryssym
       LOGICAL                                     :: inversion_only = .FALSE.
       LOGICAL                                     :: cartesian_half_turns = .FALSE.
       LOGICAL                                     :: proper_rotations_only = .FALSE.
-      INTEGER, ALLOCATABLE                        :: integration_grids(:, :)
+      TYPE(crys_sym_grid_type), ALLOCATABLE        :: integration_grids(:)
       LOGICAL                                     :: spglib_reduction = .FALSE.
       LOGICAL                                     :: spglib_backend = .FALSE.
       LOGICAL                                     :: spglib_requested = .TRUE.
@@ -106,35 +112,43 @@ CONTAINS
    END FUNCTION crys_sym_cartesian_halfturn
 
 ! **************************************************************************************************
-!> \brief Whether a fractional Seitz operation permutes every uniform integration grid.
+!> \brief Whether a fractional Seitz operation preserves the real and reciprocal grids.
 !>        Grid points are hmat*diag(1/npts)*j, modulo the lattice. Both the scaled
 !>        rotation and translation must be integer in grid-index coordinates.
+!>        In reciprocal space a physical rotation preserves a spherical cutoff.
+!>        A Fourier box must also contain its rotated frequencies, including both
+!>        physical signs of the even-grid boundary.
 !> \param rotation Fractional direct-space rotation.
 !> \param translation Fractional direct-space translation, modulo lattice vectors.
-!> \param grids Three positive point counts for each active integration grid.
-!> \return Whether all grid nodes and their uniform weights are preserved to roundoff.
+!> \param grids Active integration grids and their reciprocal cutoff shapes.
+!> \return Whether the operation preserves all nodes, weights and reciprocal cutoff shapes.
 ! **************************************************************************************************
    PURE LOGICAL FUNCTION crys_sym_grid_compatible(rotation, translation, grids) RESULT(allowed)
       REAL(dp), INTENT(IN)                               :: rotation(3, 3), translation(3)
-      INTEGER, INTENT(IN)                                :: grids(:, :)
+      TYPE(crys_sym_grid_type), INTENT(IN)               :: grids(:)
 
       REAL(dp), PARAMETER :: tolerance = 256.0_dp*EPSILON(1.0_dp)
 
-      INTEGER                                            :: column, grid, row
-      REAL(dp)                                           :: mapped(3, 3), shifted(3)
+      INTEGER                                            :: column, grid, npts(3), row
+      REAL(dp)                                           :: extent(3), mapped(3, 3), shifted(3)
 
       allowed = .FALSE.
-      IF (SIZE(grids, 1) /= 3) RETURN
-      IF (ANY(grids <= 0)) RETURN
-      DO grid = 1, SIZE(grids, 2)
+      DO grid = 1, SIZE(grids)
+         npts = grids(grid)%npts
+         IF (ANY(npts <= 0)) RETURN
          DO column = 1, 3
             DO row = 1, 3
-               mapped(row, column) = REAL(grids(row, grid), dp)*rotation(row, column)/REAL(grids(column, grid), dp)
+               mapped(row, column) = REAL(npts(row), dp)*rotation(row, column)/REAL(npts(column), dp)
             END DO
          END DO
          IF (MAXVAL(ABS(mapped - ANINT(mapped))) > tolerance*MAX(1.0_dp, MAXVAL(ABS(mapped)))) RETURN
-         shifted = REAL(grids(:, grid), dp)*(translation - ANINT(translation))
-         IF (MAXVAL(ABS(shifted - ANINT(shifted))) > tolerance*REAL(MAXVAL(grids(:, grid)), dp)) RETURN
+         shifted = REAL(npts, dp)*(translation - ANINT(translation))
+         IF (MAXVAL(ABS(shifted - ANINT(shifted))) > tolerance*REAL(MAXVAL(npts), dp)) RETURN
+         IF (.NOT. grids(grid)%spherical) THEN
+            extent = REAL(npts/2, dp)
+            ! The largest absolute component of R^T G on the box is attained at a corner.
+            IF (ANY(MATMUL(ABS(TRANSPOSE(rotation)), extent) > extent + tolerance*MAXVAL(extent))) RETURN
+         END IF
       END DO
       allowed = .TRUE.
    END FUNCTION crys_sym_grid_compatible
@@ -344,7 +358,7 @@ CONTAINS
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
-!> \param integration_grids Point counts of the active uniform integration grids.
+!> \param integration_grids Active uniform integration grids and reciprocal cutoff shapes.
 !> \param proper_rotations_only Exclude determinant-negative spatial operations.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen(csym, nk, symm, shift, full_grid, gamma_centered, &
@@ -356,7 +370,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: shift(3)
       LOGICAL, INTENT(IN), OPTIONAL :: full_grid, gamma_centered, inversion_symmetry_only, &
          use_spglib_reduction, use_spglib_backend, cartesian_half_turns
-      INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :)
+      TYPE(crys_sym_grid_type), INTENT(IN), OPTIONAL     :: integration_grids(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'kpoint_gen'
@@ -549,7 +563,7 @@ CONTAINS
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
-!> \param integration_grids Point counts of the active uniform integration grids.
+!> \param integration_grids Active uniform integration grids and reciprocal cutoff shapes.
 !> \param proper_rotations_only Exclude determinant-negative spatial operations.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen_general(csym, xkp_in, wkp_in, symm, full_grid, &
@@ -563,7 +577,7 @@ CONTAINS
                                                             use_spglib_reduction, &
                                                             use_spglib_backend, &
                                                             cartesian_half_turns
-      INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :)
+      TYPE(crys_sym_grid_type), INTENT(IN), OPTIONAL     :: integration_grids(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_gen_general'

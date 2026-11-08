@@ -19,6 +19,7 @@ MODULE qs_environment_methods
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_distribution_type
    USE cp_dbcsr_operations,             ONLY: cp_dbcsr_dist2d_to_dist
+   USE cryssym,                         ONLY: crys_sym_grid_type
    USE distribution_2d_types,           ONLY: distribution_2d_release,&
                                               distribution_2d_type
    USE distribution_methods,            ONLY: distribute_molecules_2d
@@ -40,6 +41,7 @@ MODULE qs_environment_methods
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_release,&
                                               pw_env_type
+   USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
@@ -101,15 +103,16 @@ CONTAINS
 !> \brief Return the active uniform quadratures used with original UPF operators.
 !>        Spatial operations must preserve every grid, including a distinct XC or vdW grid.
 !> \param qs_env Initialized Quickstep environment
-!> \param grids Grid dimensions, unallocated when no physical UPF kind is present
+!> \param grids Grid dimensions and cutoff shapes, unallocated without a physical UPF kind
 ! **************************************************************************************************
    SUBROUTINE qs_env_symmetry_grids(qs_env, grids)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: grids(:, :)
+      TYPE(crys_sym_grid_type), ALLOCATABLE, INTENT(OUT) :: grids(:)
 
       INTEGER                                            :: kind, level, ngrid
       LOGICAL                                            :: has_upf
       TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
       CALL get_qs_env(qs_env, qs_kind_set=kinds, pw_env=pw_env)
@@ -125,16 +128,21 @@ CONTAINS
       ngrid = SIZE(pw_env%pw_pools)
       IF (ASSOCIATED(pw_env%xc_pw_pool)) ngrid = ngrid + 1
       IF (ASSOCIATED(pw_env%vdw_pw_pool)) ngrid = ngrid + 1
-      ALLOCATE (grids(3, ngrid))
+      ALLOCATE (grids(ngrid))
       DO level = 1, SIZE(pw_env%pw_pools)
-         grids(:, level) = pw_env%pw_pools(level)%pool%pw_grid%npts
+         grid => pw_env%pw_pools(level)%pool%pw_grid
+         grids(level) = crys_sym_grid_type(grid%npts, grid%spherical)
       END DO
       level = SIZE(pw_env%pw_pools)
       IF (ASSOCIATED(pw_env%xc_pw_pool)) THEN
          level = level + 1
-         grids(:, level) = pw_env%xc_pw_pool%pw_grid%npts
+         grid => pw_env%xc_pw_pool%pw_grid
+         grids(level) = crys_sym_grid_type(grid%npts, grid%spherical)
       END IF
-      IF (ASSOCIATED(pw_env%vdw_pw_pool)) grids(:, level + 1) = pw_env%vdw_pw_pool%pw_grid%npts
+      IF (ASSOCIATED(pw_env%vdw_pw_pool)) THEN
+         grid => pw_env%vdw_pw_pool%pw_grid
+         grids(level + 1) = crys_sym_grid_type(grid%npts, grid%spherical)
+      END IF
    END SUBROUTINE qs_env_symmetry_grids
 
 ! **************************************************************************************************

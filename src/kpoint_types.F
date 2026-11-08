@@ -26,6 +26,7 @@ MODULE kpoint_types
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
+   USE cryssym,                         ONLY: crys_sym_grid_type
    USE input_cp2k_kpoints,              ONLY: lattice_fft_auto,&
                                               use_complex_wfn,&
                                               use_k290_kpoint_backend,&
@@ -190,7 +191,7 @@ MODULE kpoint_types
 !> \param lattice_fft         [input] lattice FFT selection mode
 !> \param cartesian_half_turns [input] restrict spatial symmetry to Cartesian proper half-turns
 !> \param proper_rotations_only [input] exclude determinant-negative spatial operations
-!> \param integration_grids [internal] active uniform integration grids for spatial symmetry
+!> \param integration_grids [internal] real and reciprocal integration grids for spatial symmetry
 !> \param inversion_symmetry_only [input] reduce kpoints only by inversion symmetry
 !> \param symmetry_backend [input] k-point symmetry backend
 !> \param symmetry_reduction_method [input] k-point symmetry reduction method
@@ -227,7 +228,7 @@ MODULE kpoint_types
       LOGICAL                                 :: inversion_symmetry_only = .FALSE.
       LOGICAL                                 :: cartesian_half_turns = .FALSE.
       LOGICAL                                 :: proper_rotations_only = .FALSE.
-      INTEGER, ALLOCATABLE                    :: integration_grids(:, :)
+      TYPE(crys_sym_grid_type), ALLOCATABLE     :: integration_grids(:)
       INTEGER                                 :: symmetry_backend = use_k290_kpoint_backend
       INTEGER                                 :: symmetry_reduction_method = use_k290_kpoint_symmetry
       LOGICAL                                 :: verbose = .FALSE.

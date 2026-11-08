@@ -9,6 +9,7 @@ PROGRAM kpsym_unittest
    USE cryssym,                         ONLY: crys_sym_cartesian_halfturn,&
                                               crys_sym_gen,&
                                               crys_sym_grid_compatible,&
+                                              crys_sym_grid_type,&
                                               csym_type,&
                                               kpoint_gen,&
                                               kpoint_gen_general,&
@@ -144,20 +145,34 @@ PROGRAM kpsym_unittest
    END DO
    ne_coords = RESHAPE([1.5_dp, 0.5_dp, 1.0_dp/3.0_dp, 0.5_dp, 0.5_dp, 2.0_dp/3.0_dp], [3, 2])
    CALL check_mesh(ne_coords, cell, 1.e-8_dp, 6, .FALSE., .TRUE., &
-                   integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=16)
+                   integration_grids=[crys_sym_grid_type([25, 25, 25], .FALSE.)], expected_operations=16)
    ne_coords(3, :) = ne_coords(3, :) - 2.e-4_dp*[0.13_dp, -0.07_dp]/12.0_dp
    CALL check_mesh(ne_coords, cell, 1.e-8_dp, 6, .FALSE., .TRUE., &
-                   integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8)
+                   integration_grids=[crys_sym_grid_type([25, 25, 25], .FALSE.)], expected_operations=8)
    ! A rounded backend translation must not turn an approximate atom map into exact grid symmetry.
    CALL check_mesh(ne_coords, cell, 1.e-6_dp, 6, .FALSE., .TRUE., &
-                   integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8)
+                   integration_grids=[crys_sym_grid_type([25, 25, 25], .FALSE.)], expected_operations=8)
    IF (spg_get_major_version() > 0) THEN
       CALL check_mesh(ne_coords, cell, 1.e-6_dp, 6, .FALSE., .TRUE., &
-                      integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8, &
+                      integration_grids=[crys_sym_grid_type([25, 25, 25], .FALSE.)], expected_operations=8, &
                       use_spglib_reduction=.TRUE.)
       CALL check_mesh(ne_coords, cell, 1.e-6_dp, 6, .FALSE., .TRUE., &
-                      integration_grids=RESHAPE([25, 25, 25], [3, 1]), expected_operations=8, &
+                      integration_grids=[crys_sym_grid_type([25, 25, 25], .FALSE.)], expected_operations=8, &
                       use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE.)
+   END IF
+
+   ! A hexagonal rotation can permute the real points and send frequencies outside the box.
+   IF (spg_get_major_version() > 0) THEN
+      cell = 0.0_dp
+      cell(1, 1:2) = [10.0_dp, 5.0_dp]
+      cell(2, 2) = 5.0_dp*SQRT(3.0_dp)
+      cell(3, 3) = 20.0_dp
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), cell, &
+                      1.e-8_dp, 6, .FALSE., .TRUE., use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE., &
+                      integration_grids=[crys_sym_grid_type([20, 20, 40], .TRUE.)], expected_operations=24)
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), cell, &
+                      1.e-8_dp, 8, .FALSE., .TRUE., use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE., &
+                      integration_grids=[crys_sym_grid_type([20, 20, 40], .FALSE.)], expected_operations=8)
    END IF
 
    ! Genuine tolerance-induced nonclosure must still trigger the orbit guard.
@@ -238,13 +253,14 @@ CONTAINS
          rotation(axis, axis) = 1.0_dp
       END DO
       translation = [0.5_dp, 0.0_dp, 0.0_dp]
-      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4], [3, 1]))) THEN
+      IF (.NOT. crys_sym_grid_compatible(rotation, translation, [crys_sym_grid_type([4, 4, 4], .FALSE.)])) THEN
          ERROR STOP 'Grid-compatible fractional translation rejected'
       END IF
-      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([3, 4, 4], [3, 1]))) THEN
+      IF (crys_sym_grid_compatible(rotation, translation, [crys_sym_grid_type([3, 4, 4], .FALSE.)])) THEN
          ERROR STOP 'Grid-incompatible fractional translation retained'
       END IF
-      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 4, 3, 4, 4], [3, 2]))) THEN
+      IF (crys_sym_grid_compatible(rotation, translation, [crys_sym_grid_type([4, 4, 4], .FALSE.), &
+                                                          crys_sym_grid_type([3, 4, 4], .FALSE.)])) THEN
          ERROR STOP 'Incompatible secondary integration grid ignored'
       END IF
       translation = [1.0_dp, -2.0_dp, 3.0_dp]
@@ -252,10 +268,10 @@ CONTAINS
       rotation(2, 2) = 0.0_dp
       rotation(1, 2) = 1.0_dp
       rotation(2, 1) = 1.0_dp
-      IF (.NOT. crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 4, 6], [3, 1]))) THEN
+      IF (.NOT. crys_sym_grid_compatible(rotation, translation, [crys_sym_grid_type([4, 4, 6], .FALSE.)])) THEN
          ERROR STOP 'Grid-compatible axis exchange rejected'
       END IF
-      IF (crys_sym_grid_compatible(rotation, translation, RESHAPE([4, 6, 6], [3, 1]))) THEN
+      IF (crys_sym_grid_compatible(rotation, translation, [crys_sym_grid_type([4, 6, 6], .FALSE.)])) THEN
          ERROR STOP 'Grid-incompatible axis exchange retained'
       END IF
    END SUBROUTINE check_grid_operations
@@ -639,7 +655,7 @@ CONTAINS
 !> \param cartesian_half_turns ...
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
-!> \param integration_grids Dimensions of every active uniform quadrature
+!> \param integration_grids Shapes of the active real and reciprocal integration grids
 !> \param expected_operations Expected size of the selected spatial group
 !> \param proper_rotations_only exclude determinant-negative spatial operations
 ! **************************************************************************************************
@@ -652,8 +668,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: full_grid, cartesian_half_turns, &
                                                             use_spglib_reduction, &
                                                             use_spglib_backend
-      INTEGER, INTENT(IN), OPTIONAL                      :: integration_grids(:, :), &
-                                                            expected_operations
+      TYPE(crys_sym_grid_type), INTENT(IN), OPTIONAL     :: integration_grids(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: expected_operations
       LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       INTEGER                                            :: a, i, j, k
