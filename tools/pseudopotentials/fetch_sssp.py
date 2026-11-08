@@ -74,7 +74,13 @@ def stage_file(data, target, staging, pending):
 def install_staged(pending):
     for target, staged in pending.items():
         target.parent.mkdir(parents=True, exist_ok=True)
-        staged.replace(target)
+        # Staging and installation share a filesystem. Publish the completed
+        # file atomically without replacing a concurrent installation.
+        try:
+            os.link(staged, target)
+        except FileExistsError:
+            if target.read_bytes() != staged.read_bytes():
+                raise RuntimeError(f"Existing file differs: {target}") from None
 
 
 class PreparedCollection:
