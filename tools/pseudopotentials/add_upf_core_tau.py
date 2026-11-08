@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Add an explicitly chosen orbital-rescaling NLCC kinetic model to a USPP.
+"""Add an explicitly chosen NLCC kinetic model to a scalar USPP or ONCV UPF.
 
 GIPAW radial core orbitals, optionally completed by matching QE atomic waves,
 or a retained Vanderbilt atom.ae file and closed-shell occupations define the
 reference core. A common radial rescaling reproduces
 the supplied nonnegative NLCC charge. This defines auxiliary model orbitals,
 not recovered generator core tau or normalized atomic core eigenstates.
+For ONCV data, a separate positive-amplitude model uses closed-core reference
+waves on their native radial mesh and retains the original signed NLCC charge.
 Original sections are retained, apart from the kinetic-data availability flag.
 """
 
 import argparse
 from bisect import bisect_right
 from hashlib import sha256
+import io
 import math
 from pathlib import Path
 import re
@@ -351,6 +354,24 @@ def reference_orbitals(tree, r, rab, occupations, vanderbilt=None, qe_wfc=None):
     return selected
 
 
+def pauli_kinetic(r, density, orbitals):
+    """Evaluate n_model (tau_A - tau_W[n_A]) / n_A as scaled squares."""
+    scale = max(abs(wave) for _, _, wave, _ in orbitals)
+    if scale == 0:
+        raise ValueError("Nonzero NLCC charge outside the reference core support")
+    a = [wave / scale for _, _, wave, _ in orbitals]
+    b = [slope / scale for _, _, _, slope in orbitals]
+    norm = math.fsum(f * x * x for (f, _, _, _), x in zip(orbitals, a))
+    eta = math.fsum(f * x * y for (f, _, _, _), x, y in zip(orbitals, a, b)) / norm
+    residual = []
+    for (f, l, _, _), x, y in zip(orbitals, a, b):
+        angular = (
+            l * (l + 1) * (x / r) ** 2 if r > 0 else (2 * y * y if l == 1 else 0.0)
+        )
+        residual.append(f * ((y - eta * x) ** 2 + angular))
+    return density * 0.5 * math.fsum(residual) / norm
+
+
 def model_kinetic(r, density, orbitals):
     """tau_M = tau_W[n_M] + n_M (tau_A - tau_W[n_A]) / n_A.
 
@@ -364,24 +385,9 @@ def model_kinetic(r, density, orbitals):
                 raise ValueError("A zero NLCC density has a nonzero model derivative")
             kinetic.append(0.0)
             continue
-        scale = max(abs(wave[i]) for _, _, wave, _ in orbitals)
-        if scale == 0:
-            raise ValueError("Nonzero NLCC charge outside the reference core support")
-        a = [wave[i] / scale for _, _, wave, _ in orbitals]
-        b = [slope[i] / scale for _, _, _, slope in orbitals]
-        norm = math.fsum(f * x * x for (f, _, _, _), x in zip(orbitals, a))
-        eta = math.fsum(f * x * y for (f, _, _, _), x, y in zip(orbitals, a, b)) / norm
-        residual = []
-        for (f, l, _, _), x, y in zip(orbitals, a, b):
-            angular = (
-                l * (l + 1) * (x / r[i]) ** 2
-                if r[i] > 0
-                else (2 * y * y if l == 1 else 0.0)
-            )
-            residual.append(f * ((y - eta * x) ** 2 + angular))
-        tau = (
-            0.125 * (derivative[i] / math.sqrt(nm)) ** 2
-            + nm * 0.5 * math.fsum(residual) / norm
+        samples = [(f, l, wave[i], slope[i]) for f, l, wave, slope in orbitals]
+        tau = 0.125 * (derivative[i] / math.sqrt(nm)) ** 2 + pauli_kinetic(
+            r[i], nm, samples
         )
         if not math.isfinite(tau):
             raise ValueError("Nonfinite model core kinetic density")
@@ -389,18 +395,162 @@ def model_kinetic(r, density, orbitals):
     return kinetic
 
 
-def enrich(data, occupations, vanderbilt=None, qe_wfc=None):
-    tree = ET.fromstring(data)
+def oncv_document(data):
+    """Return the UPF byte interval and mask unescaped generator notes for parsing."""
+    match = re.search(rb"<UPF\b[^>]*>.*?</UPF>", data, re.S)
+    if match is None:
+        raise ValueError("Missing a complete ONCV UPF block")
+    start, end = match.span()
+    prefix = tuple(data[:start].strip().splitlines())
+    suffix = data[end:].strip()
+    if (prefix, suffix) not in (
+        ((), b""),
+        ((b"Begin PSP_UPF",), b"END_PSP"),
+        ((b"END_PSP", b"Begin PSP_UPF"), b"END_PSP"),
+    ):
+        raise ValueError("Unrecognized framing around the ONCV UPF block")
+    document = match[0]
+    masked = re.sub(
+        rb"(<PP_INFO\b[^>]*>)(.*?)(</PP_INFO>)",
+        lambda m: m[1] + b" " * len(m[2]) + m[3],
+        document,
+        count=1,
+        flags=re.S,
+    )
+    return start, document, masked
+
+
+def oncv_reference(document, header, data):
+    """Match the exported shells to the embedded atomic input before interpolation."""
+    match = re.search(rb"<PP_INPUTFILE\b[^>]*>(.*?)</PP_INPUTFILE>", document, re.S)
+    if match is None:
+        raise ValueError("Missing embedded ONCVPSP input")
+    records = [
+        line.split()
+        for line in match[1].decode().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    element, z, nc, nv, xc, *_ = next(iter(records), ())
+    z, nc, nv, xc = map(integer, (z, nc, nv, xc))
+    q = real(header.get("z_valence", "nan"))
+    if (
+        element not in ELEMENTS
+        or element != header.get("element", "").strip()
+        or z != ELEMENTS.index(element) + 1
+        or nc <= 0
+        or nv <= 0
+        or len(records) < 1 + nc + nv
+    ):
+        raise ValueError("Invalid embedded ONCV atomic configuration")
+    orbitals = [
+        (integer(n), integer(l), real(f)) for n, l, f, *_ in records[1 : 1 + nc + nv]
+    ]
+    core = orbitals[:nc]
+    if (
+        len({(n, l) for n, l, _ in orbitals}) != nc + nv
+        or z - sum(f for _, _, f in core) != q
+    ):
+        raise ValueError("ONCV orbital assignment and frozen-core charge disagree")
+    if any(l < 0 or n <= l or f != 2 * (2 * l + 1) for n, l, f in core):
+        raise ValueError("The ONCV reference core must contain only closed shells")
+
+    stream = io.StringIO(data.decode("ascii"))
+    schema, symbol, charge, count, nodes, functional = stream.readline().split()
+    if (schema, symbol, integer(charge), integer(count), integer(functional)) != (
+        "ONCV_AE_CORE_V1",
+        element,
+        z,
+        nc,
+        xc,
+    ):
+        raise ValueError("ONCV core export and embedded atomic input disagree")
+    nodes = integer(nodes)
+    if nodes < 4:
+        raise ValueError("Incomplete ONCV reference mesh")
+    native_r, reference = [], []
+    for n, l, f in core:
+        marker, nn, ll, ff = stream.readline().split()
+        if (marker, integer(nn), integer(ll), real(ff)) != ("SHELL", n, l, f):
+            raise ValueError("ONCV core export has a different occupied shell order")
+        radii, reduced = [], []
+        for _ in range(nodes):
+            r, u = map(real, stream.readline().split())
+            radii.append(r)
+            reduced.append(u)
+        if not native_r:
+            if radii[0] <= 0 or any(b <= a for a, b in zip(radii, radii[1:])):
+                raise ValueError("Invalid ONCV reference mesh")
+            native_r = radii
+        elif radii != native_r:
+            raise ValueError("ONCV reference orbitals must share the same radial mesh")
+        norm = math.fsum(
+            (b - a) * (u * u + v * v) / 2 for a, b, u, v in zip(radii, radii[1:], reduced, reduced[1:])
+        )
+        if abs(norm - 1) > 5e-4:
+            raise ValueError("ONCV reference orbital is not normalized on its native mesh")
+        radial = [u / r for r, u in zip(radii, reduced)]
+        reference.append((f, l, radial, slopes(radii, radial)))
+    if stream.read().strip():
+        raise ValueError("Unexpected trailing records in the ONCV core export")
+    return native_r, reference
+
+
+def positive_amplitude_kinetic(r, density, native_r, reference):
+    """Build the auxiliary NC kinetic field while retaining the signed NLCC table."""
+    if min(density) < -1e-8 * max(density):
+        raise ValueError("Negative NLCC samples exceed 1e-8 of the positive peak")
+    amplitude = [math.sqrt(max(value, 0.0)) for value in density]
+    derivative = slopes(r, amplitude, monotone=True)
+    kinetic = [0.0] * len(r)
+    for i, radius in enumerate(r):
+        if amplitude[i] == 0:
+            if derivative[i] != 0:
+                raise ValueError("A zero model amplitude has a nonzero derivative")
+            continue
+        if radius == 0:
+            continue
+        if not native_r[0] <= radius <= native_r[-1]:
+            raise ValueError("Nonzero NLCC amplitude outside the ONCV reference mesh")
+        j = min(bisect_right(native_r, radius) - 1, len(native_r) - 2)
+        h = native_r[j + 1] - native_r[j]
+        t = (radius - native_r[j]) / h
+        samples = []
+        for f, l, y, dy in reference:
+            c0, c1 = y[j], h * dy[j]
+            c2 = 3 * (y[j + 1] - c0) - h * (2 * dy[j] + dy[j + 1])
+            c3 = 2 * (c0 - y[j + 1]) + h * (dy[j] + dy[j + 1])
+            value = c0 + t * (c1 + t * (c2 + t * c3))
+            slope = (c1 + t * (2 * c2 + t * 3 * c3)) / h
+            samples.append((f, l, value, slope))
+        kinetic[i] = 0.5 * derivative[i] ** 2 + pauli_kinetic(radius, amplitude[i] ** 2, samples)
+    if r[0] == 0 and amplitude[0] > 0:
+        # The origin carries zero radial volume weight.
+        kinetic[0] = kinetic[1]
+    if not all(map(math.isfinite, kinetic)):
+        raise ValueError("Nonfinite ONCV model core kinetic density")
+    return kinetic
+
+
+def enrich(data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None):
+    start, document, masked = (0, data, data) if oncv_core is None else oncv_document(data)
+    tree = ET.fromstring(masked)
     header = tree.find("PP_HEADER")
     if tree.tag != "UPF" or tree.get("version") != "2.0.1" or header is None:
         raise ValueError("Requires UPF version 2.0.1")
-    if (
-        not flag(header, "is_ultrasoft")
-        or flag(header, "is_paw")
-        or flag(header, "has_so")
+    if flag(header, "is_paw") or flag(header, "has_so"):
+        raise ValueError("Requires scalar UPF data without PAW or spin-orbit flags")
+    if oncv_core is None:
+        if not flag(header, "is_ultrasoft") or occupations is None:
+            raise ValueError(
+                "Orbital rescaling requires ultrasoft data and explicit core occupations"
+            )
+    elif (
+        header.get("pseudo_type", "").strip().upper() != "NC"
+        or flag(header, "is_ultrasoft")
+        or any(value is not None for value in (occupations, vanderbilt, qe_wfc))
     ):
         raise ValueError(
-            "Requires scalar ultrasoft data without PAW or spin-orbit flags"
+            "The ONCV model requires scalar NC data and its own embedded shell occupations"
         )
     if tree.find("PP_TAUMOD") is not None:
         raise ValueError("Original already supplies model core kinetic data")
@@ -417,20 +567,19 @@ def enrich(data, occupations, vanderbilt=None, qe_wfc=None):
         or any(v <= 0 for v in rab)
     ):
         raise ValueError("Invalid original radial mesh or quadrature")
-    if (
-        not flag(header, "core_correction")
-        or any(v < 0 for v in density)
-        or not any(density)
-    ):
-        raise ValueError(
-            "This orbital-rescaling model requires a nonzero nonnegative NLCC density"
+    if not flag(header, "core_correction") or max(density) <= 0:
+        raise ValueError("Requires an enabled, nonzero NLCC density")
+    if oncv_core is None:
+        if min(density) < 0:
+            raise ValueError("The USPP orbital-rescaling model requires a nonnegative NLCC density")
+        kinetic = model_kinetic(
+            r, density, reference_orbitals(tree, r, rab, occupations, vanderbilt, qe_wfc)
         )
-    kinetic = model_kinetic(
-        r, density, reference_orbitals(tree, r, rab, occupations, vanderbilt, qe_wfc)
-    )
-    spans, end = top_level_spans(data)
+    else:
+        kinetic = positive_amplitude_kinetic(r, density, *oncv_reference(document, header, oncv_core))
+    spans, end = top_level_spans(masked)
     first, last = spans["PP_HEADER"]
-    old = data[first:last]
+    old = document[first:last]
     pattern = rb"(?i)(with_metagga_info\s*=\s*)([\"'])(.*?)(\2)"
     if re.search(pattern, old):
         updated = re.sub(pattern, lambda m: m[1] + m[2] + b"T" + m[4], old, count=1)
@@ -439,32 +588,41 @@ def enrich(data, occupations, vanderbilt=None, qe_wfc=None):
         if marker < 0:
             raise ValueError("Requires a self-closing UPF header")
         updated = old[:marker] + b' with_metagga_info="T"' + old[marker:]
-    source = (
-        "Original GIPAW"
-        if vanderbilt is None
-        else f"Vanderbilt atom.ae SHA256 {sha256(vanderbilt).hexdigest()}\nVanderbilt"
-    )
-    if qe_wfc is not None:
-        source = f"QE ld1.wfc SHA256 {sha256(qe_wfc).hexdigest()}\nGIPAW plus QE"
-    provenance = (
-        "\n<!-- CP2K auxiliary NLCC core kinetic model ORBITAL_RESCALE\n"
-        f"Source SHA256 {sha256(data).hexdigest()}\n"
-        f"{source} index occupations {' '.join(map(str, occupations))}\n"
-        "Natural cubic reference-orbital slopes and shape-preserving NLCC slopes.\n"
-        "Common orbital rescaling preserves the supplied NLCC charge.\n"
-        "This field is a specified model, not recovered original generator tau. -->\n"
-    )
+    if oncv_core is None:
+        source = (
+            "Original GIPAW"
+            if vanderbilt is None
+            else f"Vanderbilt atom.ae SHA256 {sha256(vanderbilt).hexdigest()}\nVanderbilt"
+        )
+        if qe_wfc is not None:
+            source = f"QE ld1.wfc SHA256 {sha256(qe_wfc).hexdigest()}\nGIPAW plus QE"
+        provenance = (
+            "\n<!-- CP2K auxiliary NLCC core kinetic model ORBITAL_RESCALE\n"
+            f"Source SHA256 {sha256(data).hexdigest()}\n"
+            f"{source} index occupations {' '.join(map(str, occupations))}\n"
+            "Natural cubic reference-orbital slopes and shape-preserving NLCC slopes.\n"
+            "Common orbital rescaling preserves the supplied NLCC charge.\n"
+            "This field is a specified model, not recovered original generator tau. -->\n"
+        )
+    else:
+        provenance = (
+            "\n<!-- CP2K auxiliary NLCC core kinetic model POSITIVE_AMPLITUDE\n"
+            f"Source SHA256 {sha256(data).hexdigest()}\n"
+            f"ONCV core export SHA256 {sha256(oncv_core).hexdigest()}\n"
+            "Closed-core references follow the embedded ONCV atomic input.\n"
+            "The original signed NLCC charge is retained. -->\n"
+        )
     block = f'<PP_TAUMOD type="real" size="{len(r)}" columns="3" convention="hartree_per_volume">\n'
     block += "\n".join(
         " ".join(f"{v:.17e}" for v in kinetic[i : i + 3]) for i in range(0, len(r), 3)
     )
     block += "\n</PP_TAUMOD>\n"
     return (
-        data[:first]
+        data[: start + first]
         + updated
-        + data[last:end]
+        + document[last:end]
         + (provenance + block).encode()
-        + data[end:]
+        + data[start + end:]
     )
 
 
@@ -472,8 +630,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("original", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--model", choices=["orbital-rescale"], required=True)
-    parser.add_argument("--core-occupations", nargs="+", type=int, required=True)
+    parser.add_argument(
+        "--model", choices=["orbital-rescale", "positive-amplitude"], required=True
+    )
+    parser.add_argument(
+        "--core-occupations", nargs="+", type=int, help="Explicit USPP shell occupations"
+    )
     reference = parser.add_mutually_exclusive_group()
     reference.add_argument(
         "--vanderbilt-ae",
@@ -486,12 +648,26 @@ def main():
         help="Complete GIPAW with missing scalar ld1.wfc columns on the original mesh; "
         "append occupations in missing QE header order",
     )
+    reference.add_argument(
+        "--oncv-core",
+        type=Path,
+        help="ONCV_AE_CORE_V1 closed-core export for the positive-amplitude NC model",
+    )
     args = parser.parse_args()
+    if args.model == "positive-amplitude" and args.oncv_core is None:
+        parser.error("positive-amplitude requires --oncv-core")
+    if args.model == "orbital-rescale" and (
+        args.oncv_core is not None or args.core_occupations is None
+    ):
+        parser.error(
+            "orbital-rescale requires --core-occupations and uses USPP reference data"
+        )
     try:
         original = args.original.read_bytes()
         vanderbilt = args.vanderbilt_ae.read_bytes() if args.vanderbilt_ae else None
         qe_wfc = args.qe_ae_wfc.read_bytes() if args.qe_ae_wfc else None
-        output = enrich(original, args.core_occupations, vanderbilt, qe_wfc)
+        oncv_core = args.oncv_core.read_bytes() if args.oncv_core else None
+        output = enrich(original, args.core_occupations, vanderbilt, qe_wfc, oncv_core)
         with args.output.open("xb") as stream:
             stream.write(output)
     except (OSError, ValueError, OverflowError, AttributeError, ET.ParseError) as error:
