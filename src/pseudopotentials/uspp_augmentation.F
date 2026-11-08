@@ -588,18 +588,19 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: radial(:, 0:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: radial_next(:, 0:)
 
-      INTEGER                                            :: l, nr
-      REAL(dp), ALLOCATABLE                              :: work(:)
+      INTEGER                                            :: l, lmax, nr
+      REAL(dp), ALLOCATABLE                              :: argument(:), work(:)
 
       nr = SIZE(weighted_q, 1)
-      ALLOCATE (work(nr))
-      DO l = 0, UBOUND(weighted_q, 3)
-         IF (PRESENT(radial_next)) THEN
-            work(:) = r(:nr)*bessel0(norm_g*r(:nr), l + 1)
-            radial_next(:, l) = MATMUL(work, weighted_q(:, :, l))
-         END IF
-         work(:) = bessel0(norm_g*r(:nr), l)
+      lmax = UBOUND(weighted_q, 3)
+      ALLOCATE (argument(nr), work(nr))
+      argument(:) = norm_g*r(:nr)
+      work(:) = bessel0(argument, 0)
+      DO l = 0, lmax
          radial(:, l) = MATMUL(work, weighted_q(:, :, l))
+         ! The strain term at l uses the same Bessel values as the charge at l+1.
+         IF (l < lmax .OR. PRESENT(radial_next)) work(:) = bessel0(argument, l + 1)
+         IF (PRESENT(radial_next)) radial_next(:, l) = MATMUL(r(:nr)*work, weighted_q(:, :, l))
       END DO
    END SUBROUTINE augmentation_radial
 
