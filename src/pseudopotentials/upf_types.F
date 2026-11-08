@@ -115,8 +115,20 @@ MODULE upf_types
    PUBLIC :: atom_upfpot_type, upf_partial_waves_type, upf_radial_weights
    PUBLIC :: upf_paw_type, upf_gipaw_orbitals_type
    PUBLIC :: upf_release, upf_has_complete_partial_waves
-   PUBLIC :: upf_nlcc_kinetic
+   PUBLIC :: upf_nlcc_kinetic, upf_uses_model_core_tau
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Select model-core tau for USPP and for NC with an explicitly supplied table.
+!> \param pot Original UPF metadata and optional model-core table.
+!> \return Whether this dataset uses the model-core convention instead of PAW reconstruction.
+! **************************************************************************************************
+   PURE FUNCTION upf_uses_model_core_tau(pot) RESULT(use_tau)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      LOGICAL                                            :: use_tau
+
+      use_tau = .NOT. pot%is_paw .AND. (pot%is_ultrasoft .OR. ALLOCATED(pot%tau_nlcc))
+   END FUNCTION upf_uses_model_core_tau
 
 ! **************************************************************************************************
 !> \brief Obtain the independently supplied model-core kinetic density in Hartree per cubic bohr.

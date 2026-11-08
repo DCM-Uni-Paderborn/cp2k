@@ -31,6 +31,7 @@ MODULE qs_upf_inverse_core
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE upf_core,                        ONLY: upf_core_fourier,&
                                               upf_core_kinetic_fourier
+   USE upf_types,                       ONLY: upf_uses_model_core_tau
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
@@ -77,8 +78,6 @@ CONTAINS
                IF (state%paw(kind)%active) THEN
                   state%has_core_tau = state%has_core_tau .OR. ANY(state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2) /= 0.0_dp)
                ELSE
-                  ! Preserve the native NC density-only core convention.
-                  IF (.NOT. pot%is_ultrasoft) CYCLE
                   IF (.NOT. ALLOCATED(pot%tau_nlcc)) CYCLE
                   state%has_core_tau = state%has_core_tau .OR. ANY(pot%tau_nlcc /= 0.0_dp)
                END IF
@@ -114,7 +113,7 @@ CONTAINS
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, core_g%pw_grid%g, atoms(atom)%r, &
                                              core_g%pw_grid%vol, values, &
                                              core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
-            ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
+            ELSE IF (upf_uses_model_core_tau(kinds(kind)%sgp_potential%upf_data)) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, core_g%pw_grid%g, atoms(atom)%r, &
                                              core_g%pw_grid%vol, values)
             ELSE
@@ -179,8 +178,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Prepare independent fixed core tau without changing primary partial-core fields.
-!>        Preserve original PAW PS core and the specified USPP model core. NC and GTH retain
-!>        their native density-only core convention. Reference preparation checks data availability.
+!>        Preserve the original PAW PS core and the specified model-core fields.
+!>        Reference preparation checks data availability and conventions.
 !> \param ks_env Original potentials, positions and spin convention.
 !> \param state Independent basis state, with its own source grid and reference-wave caches.
 ! **************************************************************************************************
@@ -206,7 +205,7 @@ CONTAINS
          IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          IF (state%paw(kind)%active) THEN
             state%has_core_tau = state%has_core_tau .OR. ANY(state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2) /= 0.0_dp)
-         ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
+         ELSE IF (upf_uses_model_core_tau(kinds(kind)%sgp_potential%upf_data)) THEN
             IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data%tau_nlcc)) CYCLE
             state%has_core_tau = state%has_core_tau .OR. ANY(kinds(kind)%sgp_potential%upf_data%tau_nlcc /= 0.0_dp)
          END IF
@@ -226,7 +225,7 @@ CONTAINS
             CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, state%source_grid%g, atoms(atom)%r, &
                                           state%source_grid%vol, values, &
                                           core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
-         ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
+         ELSE IF (upf_uses_model_core_tau(kinds(kind)%sgp_potential%upf_data)) THEN
             CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, state%source_grid%g, atoms(atom)%r, &
                                           state%source_grid%vol, values)
          ELSE
@@ -376,7 +375,7 @@ CONTAINS
 !> \brief Differentiate original spherical Fourier cores on their defining grid.
 !> \param kinds Original UPF and native kind ownership.
 !> \param atoms Original Cartesian centers.
-!> \param state Selected PAW PS-core or USPP model-core kinetic fields.
+!> \param state Selected PAW PS-core and explicit model-core kinetic fields.
 !> \param grid Defining core-density or core-tau grid.
 !> \param potential Folded spin covectors on the consumer grid.
 !> \param atom_response Total Cartesian center directions.
@@ -421,7 +420,7 @@ CONTAINS
             IF (state%paw(kind)%active) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, grid%g, atoms(atom)%r, grid%vol, &
                                              density, dr, dg, core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
-            ELSE IF (kinds(kind)%sgp_potential%upf_data%is_ultrasoft) THEN
+            ELSE IF (upf_uses_model_core_tau(kinds(kind)%sgp_potential%upf_data)) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, grid%g, atoms(atom)%r, grid%vol, &
                                              density, dr, dg)
             ELSE
@@ -509,15 +508,15 @@ CONTAINS
          IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          IF (.NOT. kinds(kind)%sgp_potential%upf_data%core_correction) CYCLE
          IF (kinetic) THEN
-            IF (.NOT. kinds(kind)%sgp_potential%upf_data%is_ultrasoft .AND. &
-                .NOT. kinds(kind)%sgp_potential%upf_data%is_paw) CYCLE
             IF (state%paw(kind)%active) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
                                              derivative_g%pw_grid%vol, density, dr, dg, &
                                              core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
-            ELSE
+            ELSE IF (upf_uses_model_core_tau(kinds(kind)%sgp_potential%upf_data)) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
                                              derivative_g%pw_grid%vol, density, dr, dg)
+            ELSE
+               CYCLE
             END IF
          ELSE
             CALL upf_core_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &

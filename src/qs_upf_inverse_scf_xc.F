@@ -83,7 +83,8 @@ MODULE qs_upf_inverse_scf_xc
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_init
    USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
                                               upf_radial_fields_periodic
-   USE upf_types,                       ONLY: upf_nlcc_kinetic
+   USE upf_types,                       ONLY: upf_nlcc_kinetic,&
+                                              upf_uses_model_core_tau
    USE xc_input_constants,              ONLY: xc_deriv_pw
 #include "./base/base_uses.f90"
 
@@ -136,7 +137,7 @@ CONTAINS
             IF (.NOT. state%paw(ikind)%xcgrid%core_kinetic%available) THEN
                CPABORT(TRIM(state%paw(ikind)%xcgrid%core_kinetic%failure_reason))
             END IF
-         ELSE IF (kinds(ikind)%sgp_potential%upf_data%is_ultrasoft) THEN
+         ELSE IF (upf_uses_model_core_tau(kinds(ikind)%sgp_potential%upf_data)) THEN
             CALL upf_nlcc_kinetic(kinds(ikind)%sgp_potential%upf_data, core_tau, core_available, core_reason)
             IF (.NOT. core_available) CPABORT(TRIM(core_reason))
          END IF
@@ -1156,9 +1157,8 @@ CONTAINS
                   DEALLOCATE (radial)
                END IF
             END IF
-            ! Native NC retains its density-only core convention in mixed systems.
             ! An independent basis functional may need tau even when the primary one does not.
-            IF (ALLOCATED(state%kinetic_cache) .AND. (pot%is_ultrasoft .OR. pot%is_paw)) THEN
+            IF (ALLOCATED(state%kinetic_cache) .AND. (upf_uses_model_core_tau(pot) .OR. pot%is_paw)) THEN
                IF (state%paw(ikind)%active) THEN
                   IF (ALLOCATED(core_tau)) DEALLOCATE (core_tau)
                   ALLOCATE (core_tau, SOURCE=state%paw(ikind)%xcgrid%core_kinetic%kinetic(:, 2))

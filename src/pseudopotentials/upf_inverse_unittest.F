@@ -131,7 +131,8 @@ PROGRAM upf_inverse_unittest
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
                                               upf_radial_fields_periodic,&
                                               upf_radial_fields_type
-   USE upf_types,                       ONLY: upf_radial_weights
+   USE upf_types,                       ONLY: upf_radial_weights,&
+                                              upf_uses_model_core_tau
    USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
                                               uspp_augmentation_prepare_realspace
 #include "../base/base_uses.f90"
@@ -3131,7 +3132,16 @@ CONTAINS
                                                             position(3), shift
       TYPE(atom_upfpot_type)                             :: pot
 
+      pot%pseudo_type = "NC"
+      IF (upf_uses_model_core_tau(pot)) ERROR STOP "NC without a core tau table selected a model"
+      pot%is_ultrasoft = .TRUE.
+      IF (.NOT. upf_uses_model_core_tau(pot)) ERROR STOP "USPP must validate its model-core data"
+      pot%is_ultrasoft = .FALSE.
       ALLOCATE (pot%r(5), pot%rab(5), pot%rho_nlcc(5), pot%tau_nlcc(5))
+      IF (.NOT. upf_uses_model_core_tau(pot)) ERROR STOP "Explicit NC core tau was ignored"
+      pot%is_paw = .TRUE.
+      IF (upf_uses_model_core_tau(pot)) ERROR STOP "PAW must use its core reconstruction"
+      pot%is_paw = .FALSE.
       pot%r(:) = [0.0_dp, 0.5_dp, 1.0_dp, 1.5_dp, 2.0_dp]
       pot%rab = 0.5_dp
       pot%rho_nlcc(:) = [1.0_dp, 0.8_dp, 0.5_dp, 0.2_dp, 0.1_dp]
