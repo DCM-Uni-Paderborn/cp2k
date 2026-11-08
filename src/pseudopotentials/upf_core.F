@@ -18,7 +18,12 @@ MODULE upf_core
 
    IMPLICIT NONE
    PRIVATE
-   PUBLIC :: upf_core_fourier, upf_core_kinetic_fourier, upf_core_radial_init
+   TYPE upf_core_fourier_cache_type
+      PRIVATE
+      LOGICAL :: ready = .FALSE.
+      REAL(dp), ALLOCATABLE :: radial(:), slope(:)
+   END TYPE upf_core_fourier_cache_type
+   PUBLIC :: upf_core_fourier, upf_core_kinetic_fourier, upf_core_radial_init, upf_core_fourier_cache_type
 
 CONTAINS
 
@@ -49,19 +54,22 @@ CONTAINS
 !> \param density Fourier density coefficients, including 1/volume.
 !> \param dposition Optional Cartesian center derivatives, axis first.
 !> \param dg Optional reciprocal-vector derivatives at fixed center and volume, axis first.
+!> \param cache Optional radial transforms for this field, grid and derivative selection only.
 ! **************************************************************************************************
-   SUBROUTINE upf_core_fourier(pot, gvecs, position, volume, density, dposition, dg)
+   SUBROUTINE upf_core_fourier(pot, gvecs, position, volume, density, dposition, dg, cache)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
       COMPLEX(dp), INTENT(OUT)                           :: density(:)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dposition(:, :), dg(:, :)
+      TYPE(upf_core_fourier_cache_type), OPTIONAL, &
+         INTENT(INOUT)                                   :: cache
 
       density = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(dposition)) dposition = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(dg)) dg = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (.NOT. pot%core_correction) RETURN
       CPASSERT(ALLOCATED(pot%rho_nlcc))
-      CALL core_field_fourier(pot, pot%rho_nlcc, gvecs, position, volume, density, dposition, dg)
+      CALL core_field_fourier(pot, pot%rho_nlcc, gvecs, position, volume, density, dposition, dg, cache)
    END SUBROUTINE upf_core_fourier
 
 ! **************************************************************************************************
@@ -74,13 +82,16 @@ CONTAINS
 !> \param dposition Optional Cartesian center derivatives, axis first.
 !> \param dg Optional reciprocal-vector derivatives at fixed center and volume, axis first.
 !> \param core_kinetic Optional independently prepared core tau on the original mesh, for PAW PS cores.
+!> \param cache Optional radial transforms for this field, grid and derivative selection only.
 ! **************************************************************************************************
-   SUBROUTINE upf_core_kinetic_fourier(pot, gvecs, position, volume, kinetic, dposition, dg, core_kinetic)
+   SUBROUTINE upf_core_kinetic_fourier(pot, gvecs, position, volume, kinetic, dposition, dg, core_kinetic, cache)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       REAL(dp), INTENT(IN)                               :: gvecs(:, :), position(3), volume
       COMPLEX(dp), INTENT(OUT)                           :: kinetic(:)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dposition(:, :), dg(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: core_kinetic(:)
+      TYPE(upf_core_fourier_cache_type), OPTIONAL, &
+         INTENT(INOUT)                                   :: cache
 
       CHARACTER(LEN=256)                                 :: reason
       LOGICAL                                            :: available
@@ -88,11 +99,11 @@ CONTAINS
 
       IF (PRESENT(core_kinetic)) THEN
          CPASSERT(SIZE(core_kinetic) == SIZE(pot%r))
-         CALL core_field_fourier(pot, core_kinetic, gvecs, position, volume, kinetic, dposition, dg)
+         CALL core_field_fourier(pot, core_kinetic, gvecs, position, volume, kinetic, dposition, dg, cache)
       ELSE
          CALL upf_nlcc_kinetic(pot, field, available, reason)
          IF (.NOT. available) CPABORT(TRIM(reason))
-         CALL core_field_fourier(pot, field, gvecs, position, volume, kinetic, dposition, dg)
+         CALL core_field_fourier(pot, field, gvecs, position, volume, kinetic, dposition, dg, cache)
       END IF
    END SUBROUTINE upf_core_kinetic_fourier
 
@@ -106,16 +117,20 @@ CONTAINS
 !> \param density ...
 !> \param dposition ...
 !> \param dg ...
+!> \param cache ...
 ! **************************************************************************************************
-   SUBROUTINE core_field_fourier(pot, field, gvecs, position, volume, density, dposition, dg)
+   SUBROUTINE core_field_fourier(pot, field, gvecs, position, volume, density, dposition, dg, cache)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       REAL(dp), INTENT(IN)                               :: field(:), gvecs(:, :), position(3), &
                                                             volume
       COMPLEX(dp), INTENT(OUT)                           :: density(:)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dposition(:, :), dg(:, :)
+      TYPE(upf_core_fourier_cache_type), OPTIONAL, &
+         INTENT(INOUT)                                   :: cache
 
       COMPLEX(dp)                                        :: phase
       INTEGER                                            :: ig, nr
+      LOGICAL                                            :: reuse
       REAL(dp)                                           :: norm_g, radial, slope
       REAL(dp), ALLOCATABLE                              :: weighted(:)
 
@@ -130,26 +145,49 @@ CONTAINS
       density = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(dposition)) dposition = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (PRESENT(dg)) dg = CMPLX(0.0_dp, 0.0_dp, dp)
-      nr = SIZE(pot%r)
-      CPASSERT(SIZE(field) == nr)
-      ALLOCATE (weighted(nr))
-      weighted(:) = fourpi*upf_radial_weights(pot)*pot%r**2*field
-      ! Form weights before omitting an exact zero suffix.
-      DO WHILE (nr > 0)
-         IF (weighted(nr) /= 0.0_dp) EXIT
-         nr = nr - 1
-      END DO
-      IF (nr == 0) RETURN
+      reuse = .FALSE.
+      IF (PRESENT(cache)) reuse = cache%ready
+      IF (reuse) THEN
+         IF (.NOT. ALLOCATED(cache%radial)) RETURN
+         CPASSERT(SIZE(cache%radial) == SIZE(density))
+         CPASSERT(PRESENT(dg) .EQV. ALLOCATED(cache%slope))
+      ELSE
+         nr = SIZE(pot%r)
+         CPASSERT(SIZE(field) == nr)
+         ALLOCATE (weighted(nr))
+         weighted(:) = fourpi*upf_radial_weights(pot)*pot%r**2*field
+         ! Form weights before omitting an exact zero suffix.
+         DO WHILE (nr > 0)
+            IF (weighted(nr) /= 0.0_dp) EXIT
+            nr = nr - 1
+         END DO
+         IF (PRESENT(cache)) cache%ready = .TRUE.
+         IF (nr == 0) RETURN
+         IF (PRESENT(cache)) THEN
+            ALLOCATE (cache%radial(SIZE(density)))
+            IF (PRESENT(dg)) ALLOCATE (cache%slope(SIZE(density)), SOURCE=0.0_dp)
+         END IF
+      END IF
       DO ig = 1, SIZE(density)
          norm_g = SQRT(SUM(gvecs(:, ig)**2))
          phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(gvecs(:, ig), position), dp))/volume
-         radial = SUM(weighted(:nr)*bessel0(norm_g*pot%r(:nr), 0))
+         IF (reuse) THEN
+            radial = cache%radial(ig)
+         ELSE
+            radial = SUM(weighted(:nr)*bessel0(norm_g*pot%r(:nr), 0))
+            IF (PRESENT(cache)) cache%radial(ig) = radial
+         END IF
          density(ig) = phase*radial
          IF (PRESENT(dposition)) dposition(:, ig) = CMPLX(0.0_dp, -gvecs(:, ig), dp)*density(ig)
          IF (PRESENT(dg)) THEN
             dg(:, ig) = CMPLX(0.0_dp, -position, dp)*density(ig)
             IF (norm_g > 0.0_dp) THEN
-               slope = -SUM(weighted(:nr)*pot%r(:nr)*bessel0(norm_g*pot%r(:nr), 1))
+               IF (reuse) THEN
+                  slope = cache%slope(ig)
+               ELSE
+                  slope = -SUM(weighted(:nr)*pot%r(:nr)*bessel0(norm_g*pot%r(:nr), 1))
+                  IF (PRESENT(cache)) cache%slope(ig) = slope
+               END IF
                dg(:, ig) = dg(:, ig) + phase*slope*gvecs(:, ig)/norm_g
             END IF
          END IF

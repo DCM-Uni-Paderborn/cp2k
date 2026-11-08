@@ -10,7 +10,8 @@ MODULE qs_upf_inverse_core
                                               get_atomic_kind_set
    USE cell_types,                      ONLY: cell_type
    USE cp_control_types,                ONLY: dft_control_type
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
@@ -33,6 +34,7 @@ MODULE qs_upf_inverse_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE upf_core,                        ONLY: upf_core_fourier,&
+                                              upf_core_fourier_cache_type,&
                                               upf_core_kinetic_fourier
    USE upf_types,                       ONLY: upf_nlcc_kinetic,&
                                               upf_uses_model_core_tau
@@ -568,8 +570,10 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: density(:), dg(:, :), dr(:, :)
       INTEGER                                            :: atom, axis, index, kind, other, spin
-      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:), natom_of_kind(:)
+      INTEGER(int_8)                                     :: bytes_left, bytes_per_kind
       LOGICAL                                            :: calculate_virial, paw
+      LOGICAL, ALLOCATABLE                               :: cache_kind(:)
       REAL(dp)                                           :: gradient, spin_factor
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -580,6 +584,9 @@ CONTAINS
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
+      TYPE(upf_core_fourier_cache_type), POINTER        :: cache
+      TYPE(upf_core_fourier_cache_type), ALLOCATABLE, &
+         TARGET                                          :: caches(:)
       TYPE(virial_type), POINTER                         :: virial
 
       CALL get_qs_env(qs_env, particle_set=atoms, qs_kind_set=kinds, force=force, &
@@ -588,12 +595,28 @@ CONTAINS
       CALL get_ks_env(ks_env, upf_inverse=state)
       CPASSERT(kinetic .OR. ASSOCIATED(state))
       CPASSERT(SIZE(potential) > 0 .AND. ASSOCIATED(force))
-      CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
+      CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of, natom_of_kind=natom_of_kind)
       CALL derivative_g%create(potential(1)%pw_grid)
       ALLOCATE (density(SIZE(derivative_g%array)), dr(3, SIZE(derivative_g%array)))
       calculate_virial = .FALSE.
       IF (ASSOCIATED(virial)) calculate_virial = virial%pv_availability .AND. .NOT. virial%pv_numer
       IF (calculate_virial) ALLOCATE (dg(3, SIZE(derivative_g%array)))
+      ! The grid and radial field are fixed throughout this call. Cache only
+      ! repeated kinds and bound the stored radial arrays per rank.
+      bytes_left = 64_int_8*1024*1024
+      bytes_per_kind = INT(SIZE(density), int_8)*(STORAGE_SIZE(0.0_dp)/8)
+      IF (calculate_virial) bytes_per_kind = 2*bytes_per_kind
+      ALLOCATE (caches(SIZE(kinds)), cache_kind(SIZE(kinds)))
+      cache_kind(:) = .FALSE.
+      DO kind = 1, SIZE(kinds)
+         IF (natom_of_kind(kind) < 2 .OR. kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         IF (.NOT. kinds(kind)%sgp_potential%upf_data%core_correction) CYCLE
+         IF (bytes_per_kind > bytes_left) EXIT
+         cache_kind(kind) = .TRUE.
+         bytes_left = bytes_left - bytes_per_kind
+      END DO
       spin_factor = 1.0_dp/REAL(SIZE(potential), dp)
       DO atom = 1, SIZE(atoms)
          kind = kind_of(atom)
@@ -602,22 +625,24 @@ CONTAINS
          IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
          IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          IF (.NOT. kinds(kind)%sgp_potential%upf_data%core_correction) CYCLE
+         NULLIFY (cache)
+         IF (cache_kind(kind)) cache => caches(kind)
          IF (kinetic) THEN
             paw = .FALSE.
             IF (ASSOCIATED(state)) paw = state%paw(kind)%active
             IF (paw) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
                                              derivative_g%pw_grid%vol, density, dr, dg, &
-                                             core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))
+                                             core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2), cache=cache)
             ELSE IF (upf_uses_model_core_tau(kinds(kind)%sgp_potential%upf_data)) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
-                                             derivative_g%pw_grid%vol, density, dr, dg)
+                                             derivative_g%pw_grid%vol, density, dr, dg, cache=cache)
             ELSE
                CYCLE
             END IF
          ELSE
             CALL upf_core_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
-                                  derivative_g%pw_grid%vol, density, dr, dg)
+                                  derivative_g%pw_grid%vol, density, dr, dg, cache=cache)
          END IF
          IF (.NOT. ALLOCATED(potential_g)) THEN
             ! Every atom contracts the same reciprocal XC potential for each spin.
