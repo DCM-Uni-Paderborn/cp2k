@@ -48,6 +48,7 @@ MODULE skala_density_constraints
    END INTERFACE
 
    TYPE skala_density_samples_type
+      INTEGER :: npoints = 0
       INTEGER, ALLOCATABLE :: points(:, :)
       REAL(dp), ALLOCATABLE :: density(:, :), kinetic(:, :)
    END TYPE skala_density_samples_type
@@ -257,9 +258,9 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: kinetic(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: append
 
-      INTEGER                                            :: first, nk, np, ns
+      INTEGER                                            :: capacity, first, last, nk, np, ns
       INTEGER, ALLOCATABLE                               :: combined_points(:, :)
-      LOGICAL                                            :: valid
+      LOGICAL                                            :: extend, valid
       REAL(dp), ALLOCATABLE                              :: combined_density(:, :), &
                                                             combined_kinetic(:, :)
 
@@ -287,26 +288,37 @@ CONTAINS
          CPASSERT(ALL(points(1:2, :) >= 1) .AND. ALL(points(3, :) == 1))
       END IF
       ASSOCIATE (sample => state%samples(domain))
+         extend = .FALSE.
+         IF (PRESENT(append)) extend = append .AND. ALLOCATED(sample%points)
          first = 0
-         IF (PRESENT(append)) THEN
-            IF (append .AND. ALLOCATED(sample%points)) THEN
-               valid = SIZE(sample%density, 2) == ns .AND. SIZE(sample%kinetic, 2) == nk
-               CPASSERT(valid)
-               first = SIZE(sample%points, 2)
+         capacity = 0
+         IF (extend) THEN
+            valid = SIZE(sample%density, 2) == ns .AND. SIZE(sample%kinetic, 2) == nk
+            CPASSERT(valid)
+            first = sample%npoints
+            capacity = SIZE(sample%points, 2)
+         END IF
+         CPASSERT(np <= HUGE(last) - first)
+         last = first + np
+         IF (.NOT. extend .OR. last > capacity) THEN
+            ! PAW contributes many radial batches. Grow only when the next batch does not fit.
+            capacity = MAX(last, capacity + MIN(capacity/2, HUGE(capacity) - capacity))
+            ALLOCATE (combined_points(3, capacity), combined_density(capacity, ns), combined_kinetic(capacity, nk))
+            IF (first > 0) THEN
+               combined_points(:, :first) = sample%points(:, :first)
+               combined_density(:first, :) = sample%density(:first, :)
+               combined_kinetic(:first, :) = sample%kinetic(:first, :)
             END IF
+            CALL MOVE_ALLOC(combined_points, sample%points)
+            CALL MOVE_ALLOC(combined_density, sample%density)
+            CALL MOVE_ALLOC(combined_kinetic, sample%kinetic)
          END IF
-         ALLOCATE (combined_points(3, first + np), combined_density(first + np, ns), combined_kinetic(first + np, nk))
-         IF (first > 0) THEN
-            combined_points(:, :first) = sample%points
-            combined_density(:first, :) = sample%density
-            combined_kinetic(:first, :) = sample%kinetic
+         IF (np > 0) THEN
+            sample%points(:, first + 1:last) = points
+            sample%density(first + 1:last, :) = density
+            IF (PRESENT(kinetic)) sample%kinetic(first + 1:last, :) = kinetic
          END IF
-         combined_points(:, first + 1:) = points
-         combined_density(first + 1:, :) = density
-         IF (PRESENT(kinetic)) combined_kinetic(first + 1:, :) = kinetic
-         CALL MOVE_ALLOC(combined_points, sample%points)
-         CALL MOVE_ALLOC(combined_density, sample%density)
-         CALL MOVE_ALLOC(combined_kinetic, sample%kinetic)
+         sample%npoints = last
       END ASSOCIATE
    END SUBROUTINE skala_density_samples_put
 
@@ -337,14 +349,14 @@ CONTAINS
          ns = state%sample_nspins
          nk = 0
          IF (available) THEN
-            np = SIZE(sample%points, 2)
+            np = sample%npoints
             nk = SIZE(sample%kinetic, 2)
          END IF
          ALLOCATE (points(3, np), density(np, ns), kinetic(np, nk))
          IF (available) THEN
-            points(:, :) = sample%points
-            density(:, :) = sample%density
-            kinetic(:, :) = sample%kinetic
+            points(:, :) = sample%points(:, :np)
+            density(:, :) = sample%density(:np, :)
+            kinetic(:, :) = sample%kinetic(:np, :)
          END IF
       END ASSOCIATE
    END SUBROUTINE skala_density_samples_get
@@ -363,6 +375,7 @@ CONTAINS
       DO domain = skala_fft_domain, skala_last_sample_domain
          ASSOCIATE (sample => state%samples(domain))
             IF (ALLOCATED(sample%points)) DEALLOCATE (sample%points, sample%density, sample%kinetic)
+            sample%npoints = 0
          END ASSOCIATE
       END DO
       state%sampling = .FALSE.
