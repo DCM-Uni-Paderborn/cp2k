@@ -1508,6 +1508,8 @@ CONTAINS
             END DO
          END IF
          NULLIFY (vxc_rho, vxc_tau)
+         IF (ASSOCIATED(tau_r) .AND. .NOT. qs_upf_inverse_scf_active(ks_env)) &
+            CALL qs_upf_inverse_core_kinetic(ks_env, tau_r, 1.0_dp)
          CALL xc_vxc_pw_create(vxc_rho=vxc_rho, vxc_tau=vxc_tau, rho_r=rho_r, &
                                rho_g=rho_g, tau=tau_r, exc=excint, &
                                xc_section=xc_section, &
@@ -1516,6 +1518,8 @@ CONTAINS
                                virial_xc=vdum, &
                                exc_r=exc_r, &
                                project_density_potential=.NOT. qs_upf_inverse_scf_active(ks_env))
+         IF (ASSOCIATED(tau_r) .AND. .NOT. qs_upf_inverse_scf_active(ks_env)) &
+            CALL qs_upf_inverse_core_kinetic(ks_env, tau_r, -1.0_dp)
          ! calclulate non-local vdW functional
          ! only if this XC_SECTION has it
          ! if yes, we use the dispersion_env from ks_env

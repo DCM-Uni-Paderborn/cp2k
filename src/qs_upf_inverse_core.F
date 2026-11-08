@@ -16,7 +16,8 @@ MODULE qs_upf_inverse_core
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_methods,                      ONLY: pw_axpy,&
                                               pw_integral_ab,&
-                                              pw_transfer
+                                              pw_transfer,&
+                                              pw_zero
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_collocate_density,            ONLY: calculate_rho_nlcc
@@ -24,14 +25,17 @@ MODULE qs_upf_inverse_core
                                               qs_environment_type
    USE qs_force_types,                  ONLY: qs_force_type
    USE qs_integrate_potential_single,   ONLY: integrate_rho_nlcc
-   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_kind_types,                   ONLY: has_uspp,&
+                                              qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
-                                              qs_ks_env_type
+                                              qs_ks_env_type,&
+                                              set_ks_env
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE upf_core,                        ONLY: upf_core_fourier,&
                                               upf_core_kinetic_fourier
-   USE upf_types,                       ONLY: upf_uses_model_core_tau
+   USE upf_types,                       ONLY: upf_nlcc_kinetic,&
+                                              upf_uses_model_core_tau
    USE virial_types,                    ONLY: virial_type
 #include "./base/base_uses.f90"
 
@@ -40,6 +44,7 @@ MODULE qs_upf_inverse_core
    PUBLIC :: qs_upf_inverse_core_collocate, qs_upf_inverse_core_force
    PUBLIC :: qs_upf_inverse_core_kinetic
    PUBLIC :: qs_upf_inverse_core_source_geometry
+   PUBLIC :: qs_upf_nc_core_prepare, qs_upf_nc_core_force
 
 CONTAINS
 
@@ -136,6 +141,60 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_core_collocate
 
 ! **************************************************************************************************
+!> \brief Collocate explicitly supplied NC core tau on the native auxiliary grid.
+!> \param ks_env Geometry and model-core source field.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_nc_core_prepare(ks_env)
+      TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
+
+      CHARACTER(LEN=256)                                 :: reason
+      COMPLEX(dp), ALLOCATABLE                           :: values(:)
+      INTEGER                                            :: atom, kind
+      LOGICAL                                            :: available
+      REAL(dp), ALLOCATABLE                              :: radial(:)
+      TYPE(dft_control_type), POINTER                    :: control
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_c1d_gs_type), POINTER                      :: core_g, tau_g
+      TYPE(pw_r3d_rs_type)                               :: tau_r
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_ks_env(ks_env, dft_control=control)
+      IF (.NOT. control%use_kinetic_energy_density .OR. .NOT. control%qs_control%gpw) RETURN
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, rho_nlcc_g=core_g, rho_nlcc_tau_g=tau_g)
+      IF (has_uspp(kinds)) RETURN
+      IF (ASSOCIATED(tau_g)) CALL pw_zero(tau_g)
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data%tau_nlcc)) CYCLE
+         IF (.NOT. ASSOCIATED(core_g)) THEN
+            CALL upf_nlcc_kinetic(kinds(kind)%sgp_potential%upf_data, radial, available, reason)
+            IF (.NOT. available) CPABORT(TRIM(reason))
+            CPASSERT(ALL(radial == 0.0_dp))
+            CYCLE
+         END IF
+         IF (.NOT. ASSOCIATED(tau_g)) THEN
+            ALLOCATE (tau_g)
+            CALL tau_g%create(core_g%pw_grid)
+            CALL pw_zero(tau_g)
+            CALL set_ks_env(ks_env, rho_nlcc_tau_g=tau_g)
+         END IF
+         IF (.NOT. ALLOCATED(values)) ALLOCATE (values(SIZE(tau_g%array)))
+         CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, tau_g%pw_grid%g, atoms(atom)%r, &
+                                       tau_g%pw_grid%vol, values)
+         tau_g%array = tau_g%array + values/REAL(control%nspins, dp)
+      END DO
+      IF (ASSOCIATED(tau_g)) THEN
+         CALL tau_r%create(tau_g%pw_grid)
+         CALL pw_transfer(tau_g, tau_r)
+         CALL pw_transfer(tau_r, tau_g)
+         CALL tau_r%release()
+      END IF
+   END SUBROUTINE qs_upf_nc_core_prepare
+
+! **************************************************************************************************
 !> \brief Add or remove the fixed spin-split core tau on the actual XC grid.
 !>        The stored valence kinetic density is restored after XC evaluation. The reciprocal
 !>        transfer and its folded potential adjoint retain the native grid projection.
@@ -153,20 +212,28 @@ CONTAINS
 
       INTEGER                                            :: spin
       TYPE(pw_c1d_gs_type)                               :: field_g
+      TYPE(pw_c1d_gs_type), POINTER                      :: native_tau_g
       TYPE(pw_r3d_rs_type)                               :: field_r
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
-      CALL get_ks_env(ks_env, upf_inverse=state)
+      CALL get_ks_env(ks_env, upf_inverse=state, rho_nlcc_tau_g=native_tau_g)
       IF (PRESENT(context)) THEN
          state => context
          CALL prepare_core_kinetic(ks_env, state)
       END IF
-      IF (.NOT. ASSOCIATED(state)) RETURN
-      IF (.NOT. state%has_core_tau) RETURN
+      IF (ASSOCIATED(state)) THEN
+         IF (.NOT. state%has_core_tau) RETURN
+      ELSE IF (.NOT. ASSOCIATED(native_tau_g)) THEN
+         RETURN
+      END IF
       CPASSERT(SIZE(kinetic) > 0)
       CALL field_g%create(kinetic(1)%pw_grid)
       CALL field_r%create(kinetic(1)%pw_grid)
-      CALL pw_real_transfer(state%core_tau_g, field_g)
+      IF (ASSOCIATED(state)) THEN
+         CALL pw_real_transfer(state%core_tau_g, field_g)
+      ELSE
+         CALL pw_real_transfer(native_tau_g, field_g)
+      END IF
       CALL pw_transfer(field_g, field_r)
       DO spin = 1, SIZE(kinetic)
          CPASSERT(ASSOCIATED(kinetic(spin)%pw_grid, field_r%pw_grid))
@@ -271,6 +338,21 @@ CONTAINS
          CALL core_field_force(qs_env, kinetic_potential, .TRUE.)
       END IF
    END SUBROUTINE qs_upf_inverse_core_force
+
+! **************************************************************************************************
+!> \brief Differentiate the native NC model-core kinetic density.
+!> \param qs_env Native geometry and force/virial storage.
+!> \param kinetic_potential Spin potentials on the auxiliary PW grid.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_nc_core_force(qs_env, kinetic_potential)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic_potential(:)
+
+      TYPE(pw_c1d_gs_type), POINTER                      :: tau_g
+
+      CALL get_ks_env(qs_env%ks_env, rho_nlcc_tau_g=tau_g)
+      IF (ASSOCIATED(tau_g)) CALL core_field_force(qs_env, kinetic_potential, .TRUE.)
+   END SUBROUTINE qs_upf_nc_core_force
 
 ! **************************************************************************************************
 !> \brief Contract frozen-core source geometry without changing accepted forces or virials.
@@ -477,6 +559,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: density(:), dg(:, :), dr(:, :)
       INTEGER                                            :: atom, axis, index, kind, other, spin
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      LOGICAL                                            :: paw
       REAL(dp)                                           :: gradient, spin_factor
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -492,7 +575,7 @@ CONTAINS
                       virial=virial, atomic_kind_set=atomic_kinds, para_env=para_env)
       CALL get_qs_env(qs_env, ks_env=ks_env)
       CALL get_ks_env(ks_env, upf_inverse=state)
-      CPASSERT(ASSOCIATED(state))
+      CPASSERT(kinetic .OR. ASSOCIATED(state))
       CPASSERT(SIZE(potential) > 0 .AND. ASSOCIATED(force))
       CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
       CALL potential_g%create(potential(1)%pw_grid)
@@ -508,7 +591,9 @@ CONTAINS
          IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          IF (.NOT. kinds(kind)%sgp_potential%upf_data%core_correction) CYCLE
          IF (kinetic) THEN
-            IF (state%paw(kind)%active) THEN
+            paw = .FALSE.
+            IF (ASSOCIATED(state)) paw = state%paw(kind)%active
+            IF (paw) THEN
                CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
                                              derivative_g%pw_grid%vol, density, dr, dg, &
                                              core_kinetic=state%paw(kind)%xcgrid%core_kinetic%kinetic(:, 2))

@@ -145,7 +145,8 @@ MODULE qs_ks_methods
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE qs_upf_inverse_aux_operator,     ONLY: qs_upf_inverse_aux_evaluate
    USE qs_upf_inverse_basis,            ONLY: qs_upf_inverse_basis_select
-   USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_force
+   USE qs_upf_inverse_core,             ONLY: qs_upf_inverse_core_force,&
+                                              qs_upf_nc_core_force
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_update
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_add_paw,&
@@ -1232,6 +1233,8 @@ CONTAINS
                CALL integrate_rho_nlcc(v_rspace_new(ispin), qs_env)
                IF (dft_control%do_admm) CALL integrate_rho_nlcc(v_rspace_new_aux_fit(ispin), qs_env)
             END DO
+            IF (ASSOCIATED(v_tau_rspace)) CALL qs_upf_nc_core_force(qs_env, v_tau_rspace)
+            IF (ASSOCIATED(v_tau_rspace_aux_fit)) CALL qs_upf_nc_core_force(qs_env, v_tau_rspace_aux_fit)
          END IF
       END IF
 

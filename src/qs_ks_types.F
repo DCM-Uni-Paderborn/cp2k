@@ -179,6 +179,7 @@ MODULE qs_ks_types
       TYPE(pw_r3d_rs_type), POINTER                         :: vppl => Null(), &
                                                                rho_nlcc => Null()
       TYPE(pw_c1d_gs_type), POINTER                         :: rho_nlcc_g => Null()
+      TYPE(pw_c1d_gs_type), POINTER                         :: rho_nlcc_tau_g => Null()
 
       TYPE(pw_r3d_rs_type), POINTER                         :: xcint_weights => Null()
 
@@ -335,6 +336,7 @@ CONTAINS
 !> \param matrix_metric_kp Metric in the image-indexed representation.
 !> \param upf_inverse ...
 !> \param skala_constraints ...
+!> \param rho_nlcc_tau_g Model-core kinetic density per spin in reciprocal space.
 ! **************************************************************************************************
    SUBROUTINE get_ks_env(ks_env, v_hartree_rspace, &
                          s_mstruct_changed, rho_changed, exc_accint, &
@@ -357,7 +359,7 @@ CONTAINS
                          molecule_kind_set, molecule_set, subsys, cp_subsys, virial, results, atprop, &
                          nkind, natom, dft_control, dbcsr_dist, distribution_2d, pw_env, &
                          para_env, blacs_env, nelectron_total, nelectron_spin, uspp, matrix_metric, matrix_metric_kp, &
-                         upf_inverse, skala_constraints)
+                         upf_inverse, skala_constraints, rho_nlcc_tau_g)
 
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: v_hartree_rspace
@@ -419,6 +421,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), OPTIONAL, POINTER   :: upf_inverse
       TYPE(skala_density_constraints_type), OPTIONAL, &
          POINTER                                         :: skala_constraints
+      TYPE(pw_c1d_gs_type), OPTIONAL, POINTER            :: rho_nlcc_tau_g
 
       IF (.NOT. ASSOCIATED(ks_env%subsys)) CPABORT("get_ks_env: subsys not associated")
 
@@ -480,6 +483,7 @@ CONTAINS
       IF (PRESENT(rho_core)) rho_core => ks_env%rho_core
       IF (PRESENT(rho_nlcc)) rho_nlcc => ks_env%rho_nlcc
       IF (PRESENT(rho_nlcc_g)) rho_nlcc_g => ks_env%rho_nlcc_g
+      IF (PRESENT(rho_nlcc_tau_g)) rho_nlcc_tau_g => ks_env%rho_nlcc_tau_g
       IF (PRESENT(vppl)) vppl => ks_env%vppl
       IF (PRESENT(vee)) vee => ks_env%vee
 
@@ -616,6 +620,7 @@ CONTAINS
 !> \param blacs_env ...
 !> \param uspp Prepared USPP state whose ownership is transferred to the KS environment.
 !> \param upf_inverse ...
+!> \param rho_nlcc_tau_g Model-core kinetic density per spin in reciprocal space.
 ! **************************************************************************************************
    SUBROUTINE set_ks_env(ks_env, v_hartree_rspace, &
                          s_mstruct_changed, rho_changed, exc_accint, &
@@ -633,7 +638,7 @@ CONTAINS
                          sab_vdw, sab_scp, sab_almo, sab_kp, sab_kp_nosym, sab_cneo, &
                          task_list, task_list_soft, &
                          subsys, dft_control, dbcsr_dist, distribution_2d, pw_env, &
-                         para_env, blacs_env, uspp, upf_inverse)
+                         para_env, blacs_env, uspp, upf_inverse, rho_nlcc_tau_g)
 
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       TYPE(pw_r3d_rs_type), OPTIONAL, POINTER            :: v_hartree_rspace
@@ -667,6 +672,7 @@ CONTAINS
       TYPE(cp_blacs_env_type), OPTIONAL, POINTER         :: blacs_env
       TYPE(qs_uspp_type), OPTIONAL, POINTER              :: uspp
       TYPE(qs_upf_inverse_scf_type), OPTIONAL, POINTER   :: upf_inverse
+      TYPE(pw_c1d_gs_type), OPTIONAL, POINTER            :: rho_nlcc_tau_g
 
       IF (PRESENT(upf_inverse)) ks_env%upf_inverse => upf_inverse
       IF (PRESENT(uspp)) ks_env%uspp => uspp
@@ -715,6 +721,7 @@ CONTAINS
       IF (PRESENT(rho_core)) ks_env%rho_core => rho_core
       IF (PRESENT(rho_nlcc)) ks_env%rho_nlcc => rho_nlcc
       IF (PRESENT(rho_nlcc_g)) ks_env%rho_nlcc_g => rho_nlcc_g
+      IF (PRESENT(rho_nlcc_tau_g)) ks_env%rho_nlcc_tau_g => rho_nlcc_tau_g
       IF (PRESENT(vppl)) ks_env%vppl => vppl
       IF (PRESENT(vee)) ks_env%vee => vee
 
@@ -858,6 +865,10 @@ CONTAINS
          CALL ks_env%xcint_weights%release()
          DEALLOCATE (ks_env%xcint_weights)
       END IF
+      IF (ASSOCIATED(ks_env%rho_nlcc_tau_g)) THEN
+         CALL ks_env%rho_nlcc_tau_g%release()
+         DEALLOCATE (ks_env%rho_nlcc_tau_g)
+      END IF
       IF (ASSOCIATED(ks_env%rho_nlcc_g)) THEN
          CALL ks_env%rho_nlcc_g%release()
          DEALLOCATE (ks_env%rho_nlcc_g)
@@ -983,6 +994,10 @@ CONTAINS
       IF (ASSOCIATED(ks_env%xcint_weights)) THEN
          CALL ks_env%xcint_weights%release()
          DEALLOCATE (ks_env%xcint_weights)
+      END IF
+      IF (ASSOCIATED(ks_env%rho_nlcc_tau_g)) THEN
+         CALL ks_env%rho_nlcc_tau_g%release()
+         DEALLOCATE (ks_env%rho_nlcc_tau_g)
       END IF
       IF (ASSOCIATED(ks_env%rho_nlcc_g)) THEN
          CALL ks_env%rho_nlcc_g%release()

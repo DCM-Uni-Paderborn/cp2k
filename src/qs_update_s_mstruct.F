@@ -45,6 +45,7 @@ MODULE qs_update_s_mstruct
    USE qs_rho_types,                    ONLY: qs_rho_create,&
                                               qs_rho_type
    USE qs_scf_types,                    ONLY: scf_env_did_change
+   USE qs_upf_inverse_core,             ONLY: qs_upf_nc_core_prepare
    USE skala_gpw_functional,            ONLY: get_gauxc_section,&
                                               native_skala_gapw_composite_direct_ao,&
                                               native_skala_gapw_composite_reference,&
@@ -146,6 +147,8 @@ CONTAINS
          CALL calculate_rho_nlcc(rho_nlcc, qs_env)
          CALL pw_transfer(rho_nlcc, rho_nlcc_g)
       END IF
+
+      CALL qs_upf_nc_core_prepare(qs_env%ks_env)
 
       ! compute the xcint_weights
       IF (dft_control%qs_control%gapw .OR. dft_control%qs_control%gapw_xc) THEN
