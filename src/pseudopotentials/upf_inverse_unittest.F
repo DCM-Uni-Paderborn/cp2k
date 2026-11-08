@@ -317,6 +317,7 @@ CONTAINS
             CALL qs_upf_inverse_atom_grid_prepare(coordinates, cell, [1, 1], refs, [6.0_dp, 6.0_dp], comm, state)
             IF (side == 0) THEN
                ALLOCATE (points_response(3, SIZE(state%weights)), weights_response(SIZE(state%weights)))
+               CALL qs_upf_inverse_atom_grid_response(state, 0.0_dp*motion, 0.0_dp*dh, points_response, weights_response)
                CALL qs_upf_inverse_atom_grid_response(state, motion, dh, points_response, weights_response)
             END IF
             DO row = 1, SIZE(state%weights)

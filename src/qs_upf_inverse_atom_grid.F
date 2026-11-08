@@ -7,7 +7,8 @@
 !> \brief Atom-centered quadrature and its geometry response for inverse mixed XC.
 MODULE qs_upf_inverse_atom_grid
    USE cell_types,                      ONLY: cell_type
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE message_passing,                 ONLY: mp_comm_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE skala_periodic_partition,        ONLY: build_periodic_atom_image_layout,&
@@ -17,6 +18,8 @@ MODULE qs_upf_inverse_atom_grid
 
    IMPLICIT NONE
    PRIVATE
+
+   INTEGER(int_8), PARAMETER :: partition_cache_bytes = 64_int_8*1024_int_8**2
 
    TYPE qs_upf_inverse_atom_grid_ref_type
       TYPE(grid_atom_type), POINTER :: grid => NULL()
@@ -32,6 +35,8 @@ MODULE qs_upf_inverse_atom_grid
       REAL(dp) :: inverse_cell(3, 3) = 0.0_dp
       INTEGER :: background_axes(3) = 0, natom = 0
       TYPE(skala_periodic_partition_type) :: partition
+      ! Atom derivatives followed by the three strain columns, for each local row.
+      REAL(dp), ALLOCATABLE :: partition_derivatives(:, :, :)
       ! Native inverse frames and this quadrature share one geometry lifetime.
       COMPLEX(dp), ALLOCATABLE :: inverse_values(:, :, :), inverse_gradients(:, :, :, :)
    END TYPE qs_upf_inverse_atom_grid_type
@@ -154,7 +159,7 @@ CONTAINS
 !> \brief Differentiate the same finite quadrature at fixed radial offsets and image membership.
 !>        Atom grids move with their centers. There is no cell-volume Jacobian for Cartesian
 !>        atom quadrature. Cell dependence enters through atom positions and lattice images.
-!> \param state Prepared local quadrature.
+!> \param state Prepared local quadrature, optionally retaining its partition derivatives.
 !> \param atom_response Cartesian response of each base atom.
 !> \param cell_response Response of the cell's lattice columns.
 !> \param points_response Local point response, indexed (axis,row).
@@ -163,13 +168,15 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_atom_grid_response(state, atom_response, cell_response, points_response, weights_response, &
                                                 background_weights_response)
-      TYPE(qs_upf_inverse_atom_grid_type), INTENT(IN)    :: state
+      TYPE(qs_upf_inverse_atom_grid_type), INTENT(INOUT) :: state
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       REAL(dp), INTENT(OUT)                              :: points_response(:, :), &
                                                             weights_response(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: background_weights_response(:)
 
-      INTEGER                                            :: atom, row
+      INTEGER                                            :: atom, nrow, row, status
+      INTEGER(int_8)                                     :: bytes_per_row
+      LOGICAL                                            :: cached, store_derivatives
       REAL(dp)                                           :: dstrain(3, 3), fractional(3), &
                                                             fractional_response(3), strain(3, 3), &
                                                             value, weight, window, window_gradient(3)
@@ -178,12 +185,29 @@ CONTAINS
       CPASSERT(ALL(SHAPE(atom_response) == [3, state%natom]))
       CPASSERT(ALL(SHAPE(points_response) == SHAPE(state%points)))
       CPASSERT(SIZE(weights_response) == SIZE(state%weights))
+      nrow = SIZE(state%atoms)
+      cached = ALLOCATED(state%partition_derivatives)
+      store_derivatives = .FALSE.
+      bytes_per_row = (3_int_8*state%natom + 9)*STORAGE_SIZE(0.0_dp)/8
+      IF (.NOT. cached .AND. nrow > 0 .AND. nrow <= partition_cache_bytes/bytes_per_row) THEN
+         ALLOCATE (state%partition_derivatives(3, state%natom + 3, nrow), STAT=status)
+         store_derivatives = status == 0
+      END IF
       ALLOCATE (datom(3, state%natom))
       strain = MATMUL(cell_response, state%inverse_cell)
-      DO row = 1, SIZE(state%atoms)
+      DO row = 1, nrow
          atom = state%atoms(row)
          points_response(:, row) = atom_response(:, atom)
-         CALL periodic_atom_image_partition_from_layout(state%points(:, row), state%partition, atom, weight, datom, dstrain)
+         IF (cached) THEN
+            datom(:, :) = state%partition_derivatives(:, :state%natom, row)
+            dstrain(:, :) = state%partition_derivatives(:, state%natom + 1:, row)
+         ELSE
+            CALL periodic_atom_image_partition_from_layout(state%points(:, row), state%partition, atom, weight, datom, dstrain)
+            IF (store_derivatives) THEN
+               state%partition_derivatives(:, :state%natom, row) = datom
+               state%partition_derivatives(:, state%natom + 1:, row) = dstrain
+            END IF
+         END IF
          ! Translation invariance gives the point derivative as minus the sum of atom derivatives.
          value = SUM(datom*(atom_response - SPREAD(points_response(:, row), 2, state%natom))) + SUM(dstrain*strain)
          weights_response(row) = state%base_weights(row)*value
