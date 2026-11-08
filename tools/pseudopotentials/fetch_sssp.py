@@ -7,9 +7,11 @@ With --install, use original NC/PAW files and prepared USPPs by default.
 PSLibrary and GBRV USPPs are available with --additional-uspp. All destinations are
 chosen explicitly. Downloads do not enable unsupported calculation methods.
 --paw-core supplies compatible complete frozen-core waves for selected PAW files.
+--nc-core takes a local catalog of auxiliary NC core kinetic fields.
 """
 
 import argparse
+import gzip
 from hashlib import sha256
 import json
 import os
@@ -21,6 +23,9 @@ import tempfile
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+
+from add_upf_core_tau import supplement_nc_core
+from add_upf_full_waves import flag
 
 
 def fetch_file(request, path):
@@ -195,7 +200,21 @@ class PreparedCollection:
                 raise RuntimeError("Incomplete prepared UPF archive")
 
 
-def install_library(root, name, source, prepared=None, paw_core=None):
+def load_nc_core(path):
+    data = path.read_bytes()
+    catalog = json.loads(gzip.decompress(data))
+    if (
+        catalog.get("format") != "sssp-nc-core-v1"
+        or catalog.get("sssp_version") != "2.0"
+        or catalog.get("model") != "positive-amplitude"
+        or catalog.get("unit") != "hartree_per_volume"
+        or not isinstance(catalog.get("models"), dict)
+    ):
+        raise ValueError("Expected an SSSP 2.0 positive-amplitude NC core catalog")
+    return sha256(data).hexdigest(), catalog["models"]
+
+
+def install_library(root, name, source, prepared=None, paw_core=None, nc_core=None):
     functional, table = name.split("-")
     destination = root / functional / {"eff": "efficiency", "prec": "precision"}[table]
     with tempfile.TemporaryDirectory(prefix="sssp-download-", dir=root) as temporary:
@@ -253,6 +272,22 @@ def install_library(root, name, source, prepared=None, paw_core=None):
                             sha256=row["sha256"],
                             core_reference_tolerance=row["core_reference_tolerance"],
                         )
+                    elif (
+                        nc_core is not None
+                        and pseudo_type == "NC"
+                        and flag(header, "core_correction")
+                    ):
+                        catalog_sha256, models = nc_core
+                        row = models.get(original_hash)
+                        if not isinstance(row, dict) or row.get("file") != filename:
+                            raise RuntimeError(f"No matching NC core kinetic field: {filename}")
+                        model = supplement_nc_core(data, row.get("tau"), catalog_sha256)
+                        target = root / "prepared-nc-core" / functional / filename
+                        stage_file(model, target, staging, pending)
+                        entry.update(
+                            sha256=sha256(model).hexdigest(),
+                            core_kinetic_model="positive-amplitude",
+                        )
                     else:
                         stage_file(data, target, staging, pending)
                         entry["sha256"] = original_hash
@@ -274,6 +309,8 @@ def install_library(root, name, source, prepared=None, paw_core=None):
         }
         if paw_core is not None:
             index["paw_core_release"] = paw_core.release["version"]
+        if nc_core is not None:
+            index["nc_core_catalog_sha256"] = nc_core[0]
         stage_file(
             (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
             destination / "selection.json",
@@ -325,6 +362,12 @@ def main():
         help="Supplement matching PAW files with complete frozen-core reference waves",
     )
     parser.add_argument(
+        "--nc-core",
+        type=Path,
+        metavar="CATALOG",
+        help="Install matching NC core kinetic fields from an SSSP 2.0 .json.gz catalog",
+    )
+    parser.add_argument(
         "--library",
         action="append",
         choices=sorted(libraries),
@@ -337,6 +380,12 @@ def main():
         parser.error("--additional-uspp requires installation with prepared USPPs")
     if args.paw_core and not args.install:
         parser.error("--paw-core requires --install")
+    if args.nc_core and not args.install:
+        parser.error("--nc-core requires --install")
+    try:
+        nc_core = load_nc_core(args.nc_core) if args.nc_core else None
+    except (OSError, EOFError, ValueError, AttributeError) as error:
+        parser.error(f"Cannot read NC core catalog: {error}")
     root = args.directory.resolve()
     root.mkdir(parents=True, exist_ok=True)
     selected = list(dict.fromkeys(args.library or libraries))
@@ -353,7 +402,7 @@ def main():
         for name in selected:
             source = libraries[name]
             if args.install:
-                install_library(root, name, source, prepared, paw_core)
+                install_library(root, name, source, prepared, paw_core, nc_core)
                 continue
             archive = download(source, root, staging)
             if archive.parent != root:

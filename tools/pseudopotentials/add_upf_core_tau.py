@@ -714,17 +714,6 @@ def enrich(
         else:
             reference = oncv_qe_reference(document, header, *oncv_qe)
         kinetic = positive_amplitude_kinetic(r, density, *reference)
-    spans, end = top_level_spans(masked)
-    first, last = spans["PP_HEADER"]
-    old = document[first:last]
-    pattern = rb"(?i)(with_metagga_info\s*=\s*)([\"'])(.*?)(\2)"
-    if re.search(pattern, old):
-        updated = re.sub(pattern, lambda m: m[1] + m[2] + b"T" + m[4], old, count=1)
-    else:
-        marker = old.rfind(b"/>")
-        if marker < 0:
-            raise ValueError("Requires a self-closing UPF header")
-        updated = old[:marker] + b' with_metagga_info="T"' + old[marker:]
     if not nc_model:
         source = (
             "Original GIPAW"
@@ -767,9 +756,25 @@ def enrich(
             f"{source}"
             "The original signed NLCC charge is retained. -->\n"
         )
-    block = f'<PP_TAUMOD type="real" size="{len(r)}" columns="3" convention="hartree_per_volume">\n'
+    return insert_core_tau(data, start, document, masked, kinetic, provenance)
+
+
+def insert_core_tau(data, start, document, masked, kinetic, provenance):
+    spans, end = top_level_spans(masked)
+    first, last = spans["PP_HEADER"]
+    old = document[first:last]
+    pattern = rb"(?i)(with_metagga_info\s*=\s*)([\"'])(.*?)(\2)"
+    if re.search(pattern, old):
+        updated = re.sub(pattern, lambda m: m[1] + m[2] + b"T" + m[4], old, count=1)
+    else:
+        marker = old.rfind(b"/>")
+        if marker < 0:
+            raise ValueError("Requires a self-closing UPF header")
+        updated = old[:marker] + b' with_metagga_info="T"' + old[marker:]
+    block = f'<PP_TAUMOD type="real" size="{len(kinetic)}" columns="3" convention="hartree_per_volume">\n'
     block += "\n".join(
-        " ".join(f"{v:.17e}" for v in kinetic[i : i + 3]) for i in range(0, len(r), 3)
+        " ".join(f"{v:.17e}" for v in kinetic[i : i + 3])
+        for i in range(0, len(kinetic), 3)
     )
     block += "\n</PP_TAUMOD>\n"
     return (
@@ -779,6 +784,43 @@ def enrich(
         + (provenance + block).encode()
         + data[start + end:]
     )
+
+
+def supplement_nc_core(data, kinetic, catalog_sha256):
+    """Attach a tabulated positive-amplitude model to its matching NC original."""
+    start, document, masked = oncv_document(data)
+    tree = ET.fromstring(masked)
+    header = tree.find("PP_HEADER")
+    if (
+        header is None
+        or header.get("pseudo_type", "").strip().upper() != "NC"
+        or any(flag(header, key) for key in ("is_ultrasoft", "is_paw", "has_so"))
+        or not flag(header, "core_correction")
+        or tree.find("PP_TAUMOD") is not None
+    ):
+        raise ValueError("Requires a scalar NC UPF with an unsupplemented core density")
+    density = values(tree.find("PP_NLCC"))
+    if (
+        not isinstance(kinetic, list)
+        or len(kinetic) != len(density)
+        or len(kinetic) != int(header.get("mesh_size", "0"))
+        or any(
+            type(t) not in (int, float)
+            or not math.isfinite(t)
+            or t < 0
+            or (n <= 0 and t != 0)
+            for n, t in zip(density, kinetic)
+        )
+        or not any(kinetic)
+    ):
+        raise ValueError("Invalid tabulated NC core kinetic field")
+    provenance = (
+        "\n<!-- CP2K auxiliary NLCC core kinetic model POSITIVE_AMPLITUDE\n"
+        f"Source SHA256 {sha256(data).hexdigest()}\n"
+        f"SSSP NC core catalog SHA256 {catalog_sha256}\n"
+        "The original signed NLCC charge is retained. -->\n"
+    )
+    return insert_core_tau(data, start, document, masked, kinetic, provenance)
 
 
 def main():
