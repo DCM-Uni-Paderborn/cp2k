@@ -44,7 +44,8 @@ MODULE qs_upf_inverse_paw
                                               qs_upf_inverse_grid_type,&
                                               qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_type
-   USE skala_density_constraints,       ONLY: skala_density_constraints_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type,&
+                                              skala_density_samples_only
    USE upf_inverse,                     ONLY: upf_inverse_density_evaluate,&
                                               upf_inverse_kinetic_type
    USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_fourier_kernel
@@ -725,6 +726,7 @@ CONTAINS
 !> \param core_energy Optional kind-indexed core-core exchange constants for the native HF interactions.
 !> \param core_potential Optional kind-indexed core-valence operators, with one spin-independent matrix.
 !> \param samples Optional physical XC arguments, retained on the existing atomic owners.
+!>                Descriptor-only sampling leaves zero energies and Hamiltonian, and no potential.
 !> \param orbital_factors Optional original factors certified for the installed density.
 !> \param hartree Include the one-center Hartree contribution, by default true. XC-only consumers
 !>                use energies(2). The dataset reference constant remains separately in energies(3).
@@ -753,7 +755,7 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: atomic_operator(:, :)
       INTEGER                                            :: center, first, ik, ikind, last, n, nk, &
                                                             ns, p, q, spin
-      LOGICAL                                            :: use_hartree, use_semilocal
+      LOGICAL                                            :: fields_only, own_center, use_hartree, use_semilocal
       REAL(dp)                                           :: eh, ex
       REAL(dp), ALLOCATABLE                              :: dm(:, :, :), vh(:, :), vxc(:, :, :)
       TYPE(twofold_real_type), ALLOCATABLE               :: density_components(:, :, :), &
@@ -763,6 +765,10 @@ CONTAINS
       IF (PRESENT(semilocal_xc)) use_semilocal = semilocal_xc
       use_hartree = .TRUE.
       IF (PRESENT(hartree)) use_hartree = hartree
+      fields_only = .FALSE.
+      IF (PRESENT(samples)) THEN
+         IF (ASSOCIATED(samples)) fields_only = skala_density_samples_only(samples)
+      END IF
       nk = SIZE(frames)
       CPASSERT(PRESENT(core_energy) .EQV. PRESENT(core_potential))
       IF (PRESENT(core_energy)) THEN
@@ -773,13 +779,16 @@ CONTAINS
       CALL check_paw_density(frames, density, kweights)
       ns = SIZE(density, 4)
       CPASSERT(ALL(SHAPE(hamiltonian) == SHAPE(density)))
-      ALLOCATE (potential(SIZE(frames(1)%ao%center_atoms)))
       energies = 0.0_dp
       hamiltonian = 0.0_dp
-      DO center = 1, SIZE(potential)
+      IF (fields_only .AND. .NOT. use_semilocal) RETURN
+      IF (.NOT. fields_only) ALLOCATE (potential(SIZE(frames(1)%ao%center_atoms)))
+      DO center = 1, SIZE(frames(1)%ao%center_atoms)
          ikind = frames(1)%ao%center_kinds(center)
          CPASSERT(ikind > 0 .AND. ikind <= SIZE(kinds))
          IF (.NOT. kinds(ikind)%active) CYCLE
+         own_center = MODULO(center - 1, frames(1)%ao%point_comm%num_pe) == frames(1)%ao%point_comm%mepos
+         IF (fields_only .AND. .NOT. own_center) CYCLE
          first = frames(1)%ao%projector_first(center)
          last = frames(1)%ao%projector_last(center)
          n = last - first + 1
@@ -789,17 +798,12 @@ CONTAINS
             CPASSERT(ALL(SHAPE(core_potential(ikind)%matrix) == [n, n, 1]))
             CPASSERT(ALL(ieee_is_finite(core_potential(ikind)%matrix)))
          END IF
-         ALLOCATE (potential(center)%matrix(n, n, ns), SOURCE=0.0_dp)
          ! The global density and inverse coefficients are replicated. One rank owns
          ! each atomic functional, including the core constant, independently of k groups.
-         IF (MODULO(center - 1, frames(1)%ao%point_comm%num_pe) == frames(1)%ao%point_comm%mepos) THEN
-            ALLOCATE (dm(n, n, ns), vh(n, n), vxc(n, n, ns))
+         IF (own_center) THEN
+            ALLOCATE (dm(n, n, ns), vxc(n, n, ns))
             CALL project_paw_density(frames, density, kweights, first, last, dm)
-            ALLOCATE (potential_components(n, n, ns))
-            potential_components = twofold_real_type()
-            eh = 0.0_dp
-            vh = 0.0_dp
-            IF (use_hartree) CALL paw_onecenter_hartree(kinds(ikind)%onecenter, SUM(dm, DIM=3), eh, vh)
+            IF (.NOT. fields_only) ALLOCATE (potential_components(n, n, ns), SOURCE=twofold_real_type())
             ex = 0.0_dp
             vxc = 0.0_dp
             IF (use_semilocal) THEN
@@ -811,6 +815,13 @@ CONTAINS
                                     density_components=density_components, potential_components=potential_components)
                DEALLOCATE (density_components)
             END IF
+            IF (fields_only) THEN
+               DEALLOCATE (dm, vxc)
+               CYCLE
+            END IF
+            eh = 0.0_dp
+            ALLOCATE (vh(n, n), SOURCE=0.0_dp)
+            IF (use_hartree) CALL paw_onecenter_hartree(kinds(ikind)%onecenter, SUM(dm, DIM=3), eh, vh)
             IF (PRESENT(core_energy)) THEN
                ex = ex + core_energy(ikind) + SUM(SUM(dm, DIM=3)*core_potential(ikind)%matrix(:, :, 1))
                DO spin = 1, ns
@@ -830,14 +841,13 @@ CONTAINS
                potential_components(p, q, spin) = twofold_add(potential_components(p, q, spin), twofold_real_type(vh(p, q), 0.0_dp))
                   END DO
                END DO
-               potential(center)%matrix(:, :, spin) = twofold_value(potential_components(:, :, spin))
             END DO
             DEALLOCATE (dm, vh, vxc)
          END IF
          IF (.NOT. ALLOCATED(potential_components)) ALLOCATE (potential_components(n, n, ns), SOURCE=twofold_real_type())
          CALL frames(1)%ao%point_comm%sum(potential_components%hi)
          CALL frames(1)%ao%point_comm%sum(potential_components%lo)
-         potential(center)%matrix(:, :, :) = twofold_value(potential_components)
+         ALLOCATE (potential(center)%matrix, SOURCE=twofold_value(potential_components))
          ALLOCATE (potential(center)%components, SOURCE=potential_components)
          ALLOCATE (atomic_operator(SIZE(density, 1), SIZE(density, 2)))
          DO spin = 1, ns
@@ -848,7 +858,7 @@ CONTAINS
          END DO
          DEALLOCATE (atomic_operator, potential_components)
       END DO
-      CALL frames(1)%ao%point_comm%sum(energies)
+      IF (.NOT. fields_only) CALL frames(1)%ao%point_comm%sum(energies)
    END SUBROUTINE qs_upf_inverse_paw_evaluate
 
 ! **************************************************************************************************

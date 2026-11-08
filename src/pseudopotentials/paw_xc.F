@@ -349,7 +349,7 @@ CONTAINS
 !> \param ir Positive radial node.
 !> \param side AE (1) or compensated PS (2).
 !> \param rho Density including the prescribed frozen core.
-!> \param gradient Cartesian density gradient.
+!> \param gradient Optional Cartesian density gradient.
 !> \param kinetic Optional independent valence kinetic density, without core or charge compensation.
 !> \param include_core Include frozen-core charge and gradient, default true.
 ! **************************************************************************************************
@@ -357,8 +357,8 @@ CONTAINS
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(twofold_real_type), INTENT(IN)                :: coefficients(:, :, :)
       INTEGER, INTENT(IN)                                :: ir, side
-      REAL(dp), INTENT(OUT)                              :: rho(:, :), gradient(:, :, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :)
+      REAL(dp), INTENT(OUT)                              :: rho(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :, :), kinetic(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: include_core
 
       INTEGER                                            :: angular, axis, l, lm, nlm, nspin, spin
@@ -376,8 +376,10 @@ CONTAINS
       assertion_valid = ir >= 1 .AND. ir <= grid%nr .AND. grid%r(ir) > 0.0_dp
       CPASSERT(assertion_valid)
       CPASSERT(ALL(SHAPE(rho) == [grid%na, nspin]))
-      assertion_valid = ALL(SHAPE(gradient) == [3, grid%na, nspin])
-      CPASSERT(assertion_valid)
+      IF (PRESENT(gradient)) THEN
+         assertion_valid = ALL(SHAPE(gradient) == [3, grid%na, nspin])
+         CPASSERT(assertion_valid)
+      END IF
       radius = twofold_real_type(grid%r(ir), 0.0_dp)
       DO spin = 1, nspin
          harmonics = twofold_real_type(); slope = twofold_real_type()
@@ -385,12 +387,13 @@ CONTAINS
             DO lm = 1, nlm
                l = INT(SQRT(REAL(lm - 1, dp)))
                harmonics(lm) = component_dot(coefficients(:, lm, spin), grid%radial(ir, :, l, side))
-               slope(lm) = component_dot(coefficients(:, lm, spin), grid%radial_gradient(ir, :, l, side))
+               IF (PRESENT(gradient)) slope(lm) = component_dot(coefficients(:, lm, spin), grid%radial_gradient(ir, :, l, side))
             END DO
          END IF
          DO angular = 1, grid%na
             CALL twofold_product(core_scale, grid%core(ir, side), core%hi, core%lo)
             rho(angular, spin) = twofold_value(twofold_add(component_dot(harmonics, grid%harmonics(angular, :)), core))
+            IF (.NOT. PRESENT(gradient)) CYCLE
             CALL twofold_product(core_scale, grid%core_gradient(ir, side), core%hi, core%lo)
             radial = twofold_add(component_dot(slope, grid%harmonics(angular, :)), core)
             DO axis = 1, 3
@@ -571,12 +574,12 @@ CONTAINS
                                                             ir, jr, na, nr, nspin, p, pair, q, &
                                                             side, spin
       INTEGER, ALLOCATABLE                               :: selected_keys(:, :)
-      LOGICAL                                            :: assertion_valid, lsd, record_samples, &
+      LOGICAL                                            :: assertion_valid, fields_only, lsd, record_samples, &
                                                             use_tau
       REAL(dp)                                           :: batch_energy, sign
-      REAL(dp), ALLOCATABLE                              :: drho(:, :, :, :), rho(:, :, :), &
-                                                            tau(:, :, :), weights(:, :)
-      REAL(dp), POINTER                                  :: vtau(:, :, :), vxc(:, :, :), &
+      REAL(dp), ALLOCATABLE                              :: rho(:, :, :), weights(:, :)
+      REAL(dp), ALLOCATABLE, TARGET                      :: drho(:, :, :, :), tau(:, :, :)
+      REAL(dp), POINTER                                  :: gradient(:, :, :), kinetic(:, :), vtau(:, :, :), vxc(:, :, :), &
                                                             vxg(:, :, :, :)
       TYPE(twofold_real_type) :: &
          coefficient_derivative(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3)), &
@@ -603,8 +606,12 @@ CONTAINS
       END IF
       use_tau = needs%tau .OR. needs%tau_spin
       record_samples = .FALSE.
+      fields_only = .FALSE.
       IF (PRESENT(samples)) THEN
-         IF (ASSOCIATED(samples)) record_samples = skala_density_samples_active(samples)
+         IF (ASSOCIATED(samples)) THEN
+            record_samples = skala_density_samples_active(samples)
+            fields_only = skala_density_samples_only(samples)
+         END IF
       END IF
       IF (record_samples) THEN
          CPASSERT(PRESENT(atom))
@@ -625,11 +632,14 @@ CONTAINS
       ! their quadrature. Zero-weight padding keeps the final batch rectangular.
       nr = MIN(grid%nr, MAX(1, 2048/na))
       bounds(2, 2) = nr
-      ALLOCATE (rho(na, nr, nspin), drho(4, na, nr, nspin), tau(na, nr, nspin), weights(na, nr), &
-                vxc(na, nr, nspin), vxg(3, na, nr, nspin), vtau(na, nr, nspin))
-      CALL xc_rho_set_create(rho_set, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
-      CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
-      CALL xc_dset_create(derivatives, local_bounds=bounds)
+      ALLOCATE (rho(na, nr, nspin), tau(na, nr, nspin))
+      IF (.NOT. fields_only) THEN
+         ALLOCATE (drho(4, na, nr, nspin), weights(na, nr), &
+                   vxc(na, nr, nspin), vxg(3, na, nr, nspin), vtau(na, nr, nspin))
+         CALL xc_rho_set_create(rho_set, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
+         CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
+         CALL xc_dset_create(derivatives, local_bounds=bounds)
+      END IF
       energy = 0.0_dp
       coefficient_derivative = twofold_real_type()
       energy_sum = twofold_real_type()
@@ -637,34 +647,36 @@ CONTAINS
          sign = REAL(3 - 2*side, dp)
          DO first = 1, grid%nr, nr
             rho = 0.0_dp
-            drho = 0.0_dp
             tau = 0.0_dp
-            weights = 0.0_dp
+            IF (.NOT. fields_only) THEN
+               drho = 0.0_dp
+               weights = 0.0_dp
+            END IF
             DO jr = 1, nr
                ir = first + jr - 1
                IF (ir <= grid%nr) THEN
                   IF (grid%r(ir) > 0.0_dp) THEN
+                     NULLIFY (gradient, kinetic)
+                     IF (.NOT. fields_only) gradient => drho(1:3, :, jr, :)
+                     IF (use_tau) kinetic => tau(:, jr, :)
+                     CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), gradient, kinetic)
                      IF (use_tau) THEN
-                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), &
-                                                    drho(1:3, :, jr, :), tau(:, jr, :))
                         IF (PRESENT(core_kinetic)) THEN
                            tau(:, jr, :) = tau(:, jr, :) + core_kinetic(ir, side)/REAL(nspin, dp)
                         ELSE IF (grid%core_kinetic%available) THEN
                            tau(:, jr, :) = tau(:, jr, :) + grid%core_kinetic%kinetic(ir, side)/REAL(nspin, dp)
                         END IF
-                     ELSE
-                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :))
                      END IF
-                     drho(4, :, jr, :) = SQRT(SUM(drho(1:3, :, jr, :)**2, DIM=1))
-                     weights(:, jr) = grid%wr(ir)*grid%wa
+                     IF (.NOT. fields_only) THEN
+                        drho(4, :, jr, :) = SQRT(SUM(drho(1:3, :, jr, :)**2, DIM=1))
+                        weights(:, jr) = grid%wr(ir)*grid%wa
+                     END IF
                   END IF
                END IF
-               CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, jr)
+               IF (.NOT. fields_only) CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, jr)
             END DO
-            IF (record_samples) THEN
-               CALL record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
-               IF (skala_density_samples_only(samples)) CYCLE
-            END IF
+            IF (record_samples) CALL record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
+            IF (fields_only) CYCLE
             IF (PRESENT(samples)) THEN
                IF (ASSOCIATED(samples)) THEN
                   domain = skala_paw_ae_domain
@@ -696,8 +708,12 @@ CONTAINS
             CALL accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative)
          END DO
       END DO
-      energy = twofold_value(energy_sum)
       potential = 0.0_dp
+      IF (fields_only) THEN
+         IF (PRESENT(potential_components)) potential_components = twofold_real_type()
+         RETURN
+      END IF
+      energy = twofold_value(energy_sum)
       DO spin = 1, nspin
          DO q = 1, onecenter%nproj
             DO p = 1, onecenter%nproj

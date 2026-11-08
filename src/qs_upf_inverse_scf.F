@@ -113,7 +113,8 @@ MODULE qs_upf_inverse_scf
    USE qs_uspp_types,                   ONLY: qs_uspp_init,&
                                               qs_uspp_release,&
                                               qs_uspp_type
-   USE skala_density_constraints,       ONLY: skala_density_constraints_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_type,&
+                                              skala_density_samples_only
    USE upf_local_integrals,             ONLY: upf_local_fourier,&
                                               upf_local_init,&
                                               upf_local_prepare_fourier
@@ -438,6 +439,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
       INTEGER                                            :: ikind, nao, nk, ns, spin
+      LOGICAL                                            :: fields_only
       REAL(dp)                                           :: density_cutoff, gradient_cutoff
       REAL(dp), ALLOCATABLE                              :: core_energy(:)
       TYPE(dbcsr_p_type), POINTER                        :: density(:, :)
@@ -456,7 +458,10 @@ CONTAINS
       IF (.NOT. ANY(state%paw%active)) RETURN
       CALL check_geometry(ks_env, state)
       ns = control%nspins
-      IF (PRESENT(exchange)) THEN
+      state%paw_density_evaluation = -1
+      fields_only = .FALSE.
+      IF (ASSOCIATED(samples)) fields_only = skala_density_samples_only(samples)
+      IF (PRESENT(exchange) .AND. .NOT. fields_only) THEN
          ALLOCATE (core_energy(SIZE(kinds)), SOURCE=0.0_dp)
          ALLOCATE (core_potential(SIZE(kinds)))
          DO ikind = 1, SIZE(kinds)
@@ -506,6 +511,7 @@ CONTAINS
                                           semilocal_xc=.NOT. ALLOCATED(state%paw_reconstruction), &
                            core_energy=core_energy, core_potential=core_potential, samples=samples, orbital_factors=orbital_factors)
       END IF
+      IF (fields_only) RETURN
       energies(3) = energies(3) + state%gth_paw_energy
       state%paw_density_evaluation = state%density_evaluations
    END SUBROUTINE qs_upf_inverse_scf_paw_evaluate
