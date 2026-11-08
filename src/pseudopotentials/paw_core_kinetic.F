@@ -306,7 +306,6 @@ CONTAINS
       IF (PRESENT(gradient)) gradient = 0.0_dp
       IF (.NOT. ALLOCATED(cache%wave)) RETURN
       radius = SQRT(SUM(displacement**2))
-      IF (radius > cache%ae_support_radius) RETURN
       IF (radius == 0.0_dp) THEN
          CALL cp_abort(__LOCATION__, &
                        "Original AE core kinetic fields require positive-radius quadrature")
@@ -449,7 +448,7 @@ CONTAINS
 !> \param cache Original-data cache.
 !> \param shell Occupied shell index.
 !> \param radius Evaluation radius, using the first positive interval below the first mesh radius.
-!>        Outside the original mesh a zero continuation requires an exactly zero supplied endpoint.
+!>        Beyond the supplied shell domain the wave and its derivatives are zero.
 !> \param value Signed radial wave.
 !> \param derivative First radial derivative.
 !> \param second Second radial derivative.
@@ -460,6 +459,12 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: radius
       REAL(dp), INTENT(OUT)                              :: value, derivative, second
 
+      IF (radius > cache%r(cache%support_index(shell))) THEN
+         value = 0.0_dp
+         derivative = 0.0_dp
+         second = 0.0_dp
+         RETURN
+      END IF
       CALL paw_core_radial_value(cache%r, cache%wave(:, shell), cache%slope(:, shell), &
                                  cache%endpoint_curvature(shell), cache%support_index(shell), radius, value, derivative, second)
    END SUBROUTINE core_wave_value
