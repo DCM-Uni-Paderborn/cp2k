@@ -1314,11 +1314,11 @@ CONTAINS
       PROCEDURE(orbital_curvature_segment), POINTER :: curvature_segment_local
       PROCEDURE(orbital_hessian_product), POINTER :: hessian_local
       PROCEDURE(orbital_lagrangian_hessian), POINTER :: lagrangian_hessian_local
-      INTEGER :: capacity, d, history, iteration, last_progress_check, limit, m, nf, r, shortening
+      INTEGER :: capacity, d, history, iteration, last_progress_check, limit, m, nf, probe, r, shortening
       TYPE(skala_constraint_chart_type) :: curve
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked, &
                  coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, &
-                 curvature_stalled, newton_used
+                 curvature_stalled, newton_used, gradient_progress
       REAL(dp) :: curvature, energy, fraction, progress_norm, radius, maximum_radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
@@ -1432,22 +1432,25 @@ CONTAINS
          END IF
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), TINY(0.0_dp))
          resolved_descent = .FALSE.
+         gradient_progress = .FALSE.
          newton_used = .FALSE.
-         IF (coupled_curvature .OR. curvature_stalled .OR. (history > 0 .AND. &
-                                                            -DOT_PRODUCT(reduced, direction) <= 32.0_dp*roundoff)) THEN
+         slope = DOT_PRODUCT(reduced, direction)
+         IF (coupled_curvature .OR. curvature_stalled .OR. (history > 0 .AND. -slope <= 32.0_dp*roundoff)) THEN
             IF (PRESENT(check_stalled_segment)) THEN
                ! Resolve a physical boundary on the feasible BFGS segment before
                ! estimating smooth curvature. The callback retains its admission tests.
                fraction = 1.0_dp
                IF (NORM2(direction) > radius) fraction = radius/NORM2(direction)
-               trial(:) = x
-               trial(curve%free) = x(curve%free) + fraction*direction
-               IF (ANY(trial(curve%free) /= x(curve%free))) THEN
+               DO probe = 1, 3
+                  trial(:) = x
+                  trial(curve%free) = x(curve%free) + fraction*direction
+                  IF (ALL(trial(curve%free) == x(curve%free))) EXIT
                   CALL reduced_evaluation(trial, trial_energy, trial_reduced, valid)
-                  IF (valid) THEN
-                     roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+                  IF (.NOT. valid) EXIT
+                  roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+                  IF (probe == 1) THEN
                      resolved_descent = trial_energy < energy - roundoff .AND. &
-                                        trial_energy <= energy + 1.0e-4_dp*fraction*DOT_PRODUCT(reduced, direction)
+                                        trial_energy <= energy + 1.0e-4_dp*fraction*slope
                      IF (.NOT. resolved_descent) THEN
                         event = .FALSE.
                         CALL check_stalled_segment(x, trial, curve, context, event)
@@ -1458,17 +1461,27 @@ CONTAINS
                         END IF
                      END IF
                   END IF
-                  ! A boundary scan can restore the native fields at a different point.
-                  CALL reduced_evaluation(x, energy, reduced, valid)
-                  IF (.NOT. valid) RETURN
-               END IF
+                  IF (ABS(trial_energy - energy) > roundoff) EXIT
+                  trial_slope = DOT_PRODUCT(trial_reduced, direction)
+                  gradient_progress = NORM2(trial_reduced) < NORM2(reduced) .AND. &
+                                      free_gradient_norm(trial_reduced) <= &
+                                      MAX(gradient_tolerance, 0.9_dp*free_gradient_norm(reduced)) .AND. &
+                                      ABS(trial_slope) <= 0.9_dp*ABS(slope)
+                  IF (gradient_progress) THEN
+                     direction(:) = fraction*direction
+                     EXIT
+                  END IF
+                  ! A reversed slope brackets a smaller step. Limit this probe to two halvings
+                  ! before asking for the local Hessian, which can describe a much smaller scale.
+                  IF (.NOT. coupled_curvature .OR. trial_slope <= 0.0_dp) EXIT
+                  fraction = 0.5_dp*fraction
+               END DO
+               ! A boundary scan or trial can leave the native fields at another point.
+               CALL reduced_evaluation(x, energy, reduced, valid)
+               IF (.NOT. valid) RETURN
             END IF
-            ! A resolved descent can increase the gradient in a region of negative curvature.
-            ! Keep that original BFGS proposal for the ordinary acceptance checks below.
-            ! Probe curvature only when that proposal has not already established descent.
-            ! The extra probe is bounded to one per history-length interval. Every trial
-            ! restores the same physical constraints and uses the original line search.
-            IF (coupled_curvature .OR. .NOT. resolved_descent) THEN
+            ! Keep a trial with verified gradient progress for the ordinary admission checks.
+            IF (.NOT. gradient_progress .AND. (coupled_curvature .OR. .NOT. resolved_descent)) THEN
                curvature_interrupted = .FALSE.
                CALL newton_direction(x, reduced, newton, newton_valid, newton_stopped)
                IF (curvature_interrupted) THEN
