@@ -7,7 +7,8 @@ reference core. A common radial rescaling reproduces
 the supplied nonnegative NLCC charge. This defines auxiliary model orbitals,
 not recovered generator core tau or normalized atomic core eigenstates.
 For ONCV data, a separate positive-amplitude model uses closed-core reference
-waves on their native radial mesh and retains the original signed NLCC charge.
+waves from an ONCV export or a matching independent scalar Vanderbilt PBE
+atomic state. It retains the original signed NLCC charge.
 Original sections are retained, apart from the kinetic-data availability flag.
 """
 
@@ -120,7 +121,7 @@ def resample(r, u, target):
     return result
 
 
-def vanderbilt_orbitals(data, z, occupations, target):
+def read_vanderbilt_state(data, z):
     """Read rwae's sequential records with four-byte markers and eight-byte reals."""
     if len(data) < 8:
         raise ValueError("Truncated Vanderbilt atomic state")
@@ -157,10 +158,8 @@ def vanderbilt_orbitals(data, z, occupations, target):
     ):
         raise ValueError("Invalid or incompatible scalar Vanderbilt atomic state")
     (count,) = record("i")
-    if count <= 0 or count != len(occupations):
-        raise ValueError(
-            "Supply one core occupation for every Vanderbilt orbital index"
-        )
+    if count <= 0 or count > (len(data) - offset) // 28:
+        raise ValueError("Invalid Vanderbilt orbital count")
     shells = [record("idd") for _ in range(count)]
     if len(record()) != 8 * mesh:
         raise ValueError("Invalid Vanderbilt radial potential size")
@@ -174,7 +173,7 @@ def vanderbilt_orbitals(data, z, occupations, target):
         raise ValueError("Invalid Vanderbilt radial mesh")
     quadrature = weights([b * (x + a) for x in r])
     orbitals = []
-    for (label, occupied, energy), selected in zip(shells, occupations):
+    for label, occupied, energy in shells:
         raw = record()
         if len(raw) < 4:
             raise ValueError("Truncated Vanderbilt orbital")
@@ -185,21 +184,32 @@ def vanderbilt_orbitals(data, z, occupations, target):
         u.extend([0.0] * (mesh - size))
         if not all(math.isfinite(x) for x in (*u, occupied, energy)) or occupied < 0:
             raise ValueError("Invalid Vanderbilt orbital values")
+        orbitals.append((label // 100, label % 100 // 10, occupied, u))
+    if offset != len(data):
+        raise ValueError("Unexpected trailing Vanderbilt records")
+    return ion, xc, relativity, r, quadrature, orbitals
+
+
+def select_vanderbilt_core(orbitals, occupations, quadrature):
+    if len(orbitals) != len(occupations):
+        raise ValueError("Supply one core occupation for every Vanderbilt orbital index")
+    selected_orbitals = []
+    for (n, l, occupied, u), selected in zip(orbitals, occupations):
         if selected and (
             selected != occupied
             or abs(math.fsum(w * v * v for w, v in zip(quadrature, u)) - 1) > 1e-4
         ):
             raise ValueError("Vanderbilt core occupation or normalization check failed")
-        orbitals.append(
-            (
-                label // 100,
-                label % 100 // 10,
-                resample(r, u, target) if selected else [],
-            )
-        )
-    if offset != len(data):
-        raise ValueError("Unexpected trailing Vanderbilt records")
-    return orbitals
+        selected_orbitals.append((n, l, u if selected else []))
+    return selected_orbitals
+
+
+def vanderbilt_orbitals(data, z, occupations, target):
+    _, _, _, r, quadrature, orbitals = read_vanderbilt_state(data, z)
+    return [
+        (n, l, resample(r, u, target) if u else [])
+        for n, l, u in select_vanderbilt_core(orbitals, occupations, quadrature)
+    ]
 
 
 def qe_atomic_orbitals(data, target):
@@ -420,8 +430,8 @@ def oncv_document(data):
     return start, document, masked
 
 
-def oncv_reference(document, header, data):
-    """Match the exported shells to the embedded atomic input before interpolation."""
+def oncv_configuration(document, header):
+    """Read the occupied reference configuration and frozen-shell assignment."""
     match = re.search(rb"<PP_INPUTFILE\b[^>]*>(.*?)</PP_INPUTFILE>", document, re.S)
     if match is None:
         raise ValueError("Missing embedded ONCVPSP input")
@@ -453,7 +463,12 @@ def oncv_reference(document, header, data):
         raise ValueError("ONCV orbital assignment and frozen-core charge disagree")
     if any(l < 0 or n <= l or f != 2 * (2 * l + 1) for n, l, f in core):
         raise ValueError("The ONCV reference core must contain only closed shells")
+    return element, z, nc, xc, orbitals
 
+
+def oncv_reference(document, header, data):
+    """Match the exported shells to the embedded atomic input before interpolation."""
+    element, z, nc, xc, orbitals = oncv_configuration(document, header)
     stream = io.StringIO(data.decode("ascii"))
     schema, symbol, charge, count, nodes, functional = stream.readline().split()
     if (schema, symbol, integer(charge), integer(count), integer(functional)) != (
@@ -468,7 +483,7 @@ def oncv_reference(document, header, data):
     if nodes < 4:
         raise ValueError("Incomplete ONCV reference mesh")
     native_r, reference = [], []
-    for n, l, f in core:
+    for n, l, f in orbitals[:nc]:
         marker, nn, ll, ff = stream.readline().split()
         if (marker, integer(nn), integer(ll), real(ff)) != ("SHELL", n, l, f):
             raise ValueError("ONCV core export has a different occupied shell order")
@@ -493,6 +508,42 @@ def oncv_reference(document, header, data):
     if stream.read().strip():
         raise ValueError("Unexpected trailing records in the ONCV core export")
     return native_r, reference
+
+
+def oncv_vanderbilt_reference(document, header, data):
+    """Match an independent neutral PBE atom and select the ONCV frozen shells."""
+    _, z, nc, xc, configuration = oncv_configuration(document, header)
+    ion, functional, relativity, r, quadrature, orbitals = read_vanderbilt_state(data, z)
+    # ONCVPSP uses 4 for PBE and Vanderbilt uses 5. The archived neutral
+    # scalar PBE states are independently generated reference orbitals.
+    if (xc, ion, functional, relativity) != (4, 0, 5, 2):
+        raise ValueError(
+            "Independent Vanderbilt references require a matching neutral scalar PBE atom"
+        )
+    occupied = sorted((n, l, f) for n, l, f, _ in orbitals if f > 0)
+    if occupied != sorted((n, l, f) for n, l, f in configuration if f > 0):
+        raise ValueError("Vanderbilt and ONCV occupied configurations disagree")
+    frozen = set(configuration[:nc])
+    occupations = [f if (n, l, f) in frozen else 0 for n, l, f, _ in orbitals]
+    reference = []
+    selected = select_vanderbilt_core(orbitals, occupations, quadrature)
+    for (_, l, u), f in zip(selected, occupations):
+        if not f:
+            continue
+        if abs(u[0]) >= 1e-14:
+            raise ValueError("Vanderbilt reduced radial orbital is nonzero at the origin")
+        radial = [value / x for x, value in zip(r[1:], u[1:])]
+        origin = 0.0
+        if l == 0:
+            # The regular s radial function can have a finite value at r=0.
+            origin = math.fsum(
+                radial[j]
+                * math.prod(-r[k + 1] / (r[j + 1] - r[k + 1]) for k in range(3) if k != j)
+                for j in range(3)
+            )
+        radial.insert(0, origin)
+        reference.append((f, l, radial, slopes(r, radial)))
+    return r, reference
 
 
 def positive_amplitude_kinetic(r, density, native_r, reference):
@@ -531,15 +582,18 @@ def positive_amplitude_kinetic(r, density, native_r, reference):
     return kinetic
 
 
-def enrich(data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None):
-    start, document, masked = (0, data, data) if oncv_core is None else oncv_document(data)
+def enrich(
+    data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None, *, oncv_vanderbilt=None
+):
+    nc_model = oncv_core is not None or oncv_vanderbilt is not None
+    start, document, masked = oncv_document(data) if nc_model else (0, data, data)
     tree = ET.fromstring(masked)
     header = tree.find("PP_HEADER")
     if tree.tag != "UPF" or tree.get("version") != "2.0.1" or header is None:
         raise ValueError("Requires UPF version 2.0.1")
     if flag(header, "is_paw") or flag(header, "has_so"):
         raise ValueError("Requires scalar UPF data without PAW or spin-orbit flags")
-    if oncv_core is None:
+    if not nc_model:
         if not flag(header, "is_ultrasoft") or occupations is None:
             raise ValueError(
                 "Orbital rescaling requires ultrasoft data and explicit core occupations"
@@ -547,6 +601,7 @@ def enrich(data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None)
     elif (
         header.get("pseudo_type", "").strip().upper() != "NC"
         or flag(header, "is_ultrasoft")
+        or (oncv_core is not None and oncv_vanderbilt is not None)
         or any(value is not None for value in (occupations, vanderbilt, qe_wfc))
     ):
         raise ValueError(
@@ -569,14 +624,17 @@ def enrich(data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None)
         raise ValueError("Invalid original radial mesh or quadrature")
     if not flag(header, "core_correction") or max(density) <= 0:
         raise ValueError("Requires an enabled, nonzero NLCC density")
-    if oncv_core is None:
+    if not nc_model:
         if min(density) < 0:
             raise ValueError("The USPP orbital-rescaling model requires a nonnegative NLCC density")
         kinetic = model_kinetic(
             r, density, reference_orbitals(tree, r, rab, occupations, vanderbilt, qe_wfc)
         )
-    else:
+    elif oncv_vanderbilt is None:
         kinetic = positive_amplitude_kinetic(r, density, *oncv_reference(document, header, oncv_core))
+    else:
+        reference = oncv_vanderbilt_reference(document, header, oncv_vanderbilt)
+        kinetic = positive_amplitude_kinetic(r, density, *reference)
     spans, end = top_level_spans(masked)
     first, last = spans["PP_HEADER"]
     old = document[first:last]
@@ -588,7 +646,7 @@ def enrich(data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None)
         if marker < 0:
             raise ValueError("Requires a self-closing UPF header")
         updated = old[:marker] + b' with_metagga_info="T"' + old[marker:]
-    if oncv_core is None:
+    if not nc_model:
         source = (
             "Original GIPAW"
             if vanderbilt is None
@@ -605,11 +663,17 @@ def enrich(data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None)
             "This field is a specified model, not recovered original generator tau. -->\n"
         )
     else:
+        source = (
+            f"ONCV core export SHA256 {sha256(oncv_core).hexdigest()}\n"
+            "Closed-core references follow the embedded ONCV atomic input.\n"
+            if oncv_vanderbilt is None
+            else f"Vanderbilt atom.ae SHA256 {sha256(oncv_vanderbilt).hexdigest()}\n"
+            "Independent neutral scalar PBE reference matched to the ONCV atomic configuration.\n"
+        )
         provenance = (
             "\n<!-- CP2K auxiliary NLCC core kinetic model POSITIVE_AMPLITUDE\n"
             f"Source SHA256 {sha256(data).hexdigest()}\n"
-            f"ONCV core export SHA256 {sha256(oncv_core).hexdigest()}\n"
-            "Closed-core references follow the embedded ONCV atomic input.\n"
+            f"{source}"
             "The original signed NLCC charge is retained. -->\n"
         )
     block = f'<PP_TAUMOD type="real" size="{len(r)}" columns="3" convention="hartree_per_volume">\n'
@@ -640,7 +704,7 @@ def main():
     reference.add_argument(
         "--vanderbilt-ae",
         type=Path,
-        help="Use a retained Vanderbilt atom.ae file instead of UPF GIPAW core orbitals",
+        help="Use a retained Vanderbilt atom.ae file for USPP or the positive-amplitude PBE NC model",
     )
     reference.add_argument(
         "--qe-ae-wfc",
@@ -654,8 +718,13 @@ def main():
         help="ONCV_AE_CORE_V1 closed-core export for the positive-amplitude NC model",
     )
     args = parser.parse_args()
-    if args.model == "positive-amplitude" and args.oncv_core is None:
-        parser.error("positive-amplitude requires --oncv-core")
+    if args.model == "positive-amplitude" and (
+        (args.oncv_core is None and args.vanderbilt_ae is None)
+        or args.core_occupations is not None
+    ):
+        parser.error(
+            "positive-amplitude uses --oncv-core or --vanderbilt-ae and the embedded ONCV occupations"
+        )
     if args.model == "orbital-rescale" and (
         args.oncv_core is not None or args.core_occupations is None
     ):
@@ -667,7 +736,10 @@ def main():
         vanderbilt = args.vanderbilt_ae.read_bytes() if args.vanderbilt_ae else None
         qe_wfc = args.qe_ae_wfc.read_bytes() if args.qe_ae_wfc else None
         oncv_core = args.oncv_core.read_bytes() if args.oncv_core else None
-        output = enrich(original, args.core_occupations, vanderbilt, qe_wfc, oncv_core)
+        if args.model == "positive-amplitude":
+            output = enrich(original, oncv_core=oncv_core, oncv_vanderbilt=vanderbilt)
+        else:
+            output = enrich(original, args.core_occupations, vanderbilt, qe_wfc)
         with args.output.open("xb") as stream:
             stream.write(output)
     except (OSError, ValueError, OverflowError, AttributeError, ET.ParseError) as error:
