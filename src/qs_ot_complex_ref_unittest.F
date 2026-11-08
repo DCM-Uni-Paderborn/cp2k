@@ -236,13 +236,16 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       INTEGER, INTENT(INOUT)                             :: nfail
 
+      REAL(dp), PARAMETER                                :: root_diagonal(n) = [1.2_dp, 0.85_dp, 1.1_dp]
+
       COMPLEX(dp)                                        :: actual(n, n), density(n, n), &
                                                             expected(n, n), metric(n, n), &
-                                                            transformed_metric(n, n), upper(n, n), &
+                                                            relative_root(n, n), transformed_metric(n, n), &
+                                                            transport(n, n), upper(n, n), &
                                                             vector(n)
       INTEGER                                            :: direction, i, j, part, spin, unit
       REAL(dp)                                           :: error, imaginary_part(n, n), &
-                                                            real_part(n, n), scaling(n)
+                                                            real_part(n, n)
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
       TYPE(kpoint_type)                                  :: points
@@ -270,18 +273,30 @@ CONTAINS
       CALL cp_cfm_create(points%native_operators(kpoint_slot_s)%matrices(1, 1), matrix_struct)
       CALL kpoint_density_state_initialize(points, uspp_method_inverse)
       upper = CMPLX(0.0_dp, 0.0_dp, dp)
+      relative_root = CMPLX(0.0_dp, 0.0_dp, dp)
       DO i = 1, n
          upper(i, i) = 1.0_dp + 0.1_dp*i
+         relative_root(i, i) = root_diagonal(i)
       END DO
       upper(1, 2) = CMPLX(0.1_dp, 0.05_dp, dp)
       upper(2, 3) = CMPLX(0.07_dp, -0.03_dp, dp)
-      metric = MATMUL(CONJG(TRANSPOSE(upper)), upper)
+      relative_root(1, 3) = CMPLX(0.06_dp, -0.04_dp, dp)
+      relative_root(3, 1) = CONJG(relative_root(1, 3))
+      ! For R = upper and positive B = relative_root, the metrics R^H B^2 R
+      ! and R^H R give the analytic principal transport R^-1 B R.
+      transport = MATMUL(relative_root, upper)
+      metric = MATMUL(CONJG(TRANSPOSE(transport)), transport)
+      transformed_metric = MATMUL(CONJG(TRANSPOSE(upper)), upper)
+      DO i = n, 1, -1
+         DO j = i + 1, n
+            transport(i, :) = transport(i, :) - upper(i, j)*transport(j, :)
+         END DO
+         transport(i, :) = transport(i, :)/upper(i, i)
+      END DO
       vector = [CMPLX(0.4_dp, 0.1_dp, dp), CMPLX(0.2_dp, -0.3_dp, dp), CMPLX(-0.15_dp, 0.22_dp, dp)]
-      scaling = [1.2_dp, 0.85_dp, 1.1_dp]
       DO j = 1, n
          DO i = 1, n
             density(i, j) = vector(i)*CONJG(vector(j))
-            transformed_metric(i, j) = metric(i, j)/(scaling(i)*scaling(j))
          END DO
          density(j, j) = density(j, j) + 0.03_dp
       END DO
@@ -299,9 +314,7 @@ CONTAINS
          points%native_density_representation = MERGE(uspp_method_inverse_1c, uspp_method_inverse, direction == 1)
          IF (direction == 1) THEN
             CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), transformed_metric)
-            DO j = 1, n
-               expected(:, j) = scaling(:)*density(:, j)*scaling(j)
-            END DO
+            expected = MATMUL(transport, MATMUL(density, CONJG(TRANSPOSE(transport))))
          ELSE
             CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), metric)
             expected = density
@@ -319,7 +332,7 @@ CONTAINS
          CALL cp_cfm_get_submatrix(points%native_density(1, 2), actual)
          error = MAX(error, MAXVAL(ABS(actual)))
       END DO
-      IF (error > 5.0E-12_dp) nfail = nfail + 1
+      CALL check_error('inverse density restart transport', error, 5.0E-12_dp, nfail)
       DO spin = 1, 2
          CALL cp_cfm_release(points%native_density(1, spin))
          CALL cp_cfm_release(points%native_trial(1, spin))
