@@ -84,8 +84,7 @@ MODULE qs_upf_inverse_scf_xc
    USE upf_radial_fields,               ONLY: upf_radial_fields_init,&
                                               upf_radial_fields_periodic
    USE upf_types,                       ONLY: upf_nlcc_kinetic
-   USE xc_input_constants,              ONLY: xc_deriv_pw,&
-                                              xc_rho_no_smooth
+   USE xc_input_constants,              ONLY: xc_deriv_pw
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -902,9 +901,6 @@ CONTAINS
          CPABORT("Inverse mixed XC response requires XC_DERIV PW")
       END IF
       smooth_id = section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO")
-      IF (smooth_id /= xc_rho_no_smooth .AND. .NOT. xc_section_uses_native_skala_evaluator(xc_section)) THEN
-         CPABORT("Inverse mixed semilocal XC kernel requires XC_SMOOTH_RHO NONE")
-      END IF
       nao = SIZE(state%xc_matrices, 1)
       nk = SIZE(state%xc_matrices, 3)
       ns = SIZE(state%xc_matrices, 4)

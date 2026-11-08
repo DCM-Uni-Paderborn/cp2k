@@ -67,8 +67,7 @@ MODULE qs_upf_inverse_scf_response
                                               xc_section_uses_native_skala_evaluator
    USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
                                               xc_functionals_spin_floors
-   USE xc_input_constants,              ONLY: xc_deriv_pw,&
-                                              xc_rho_no_smooth
+   USE xc_input_constants,              ONLY: xc_deriv_pw
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
 #include "./base/base_uses.f90"
 
@@ -233,7 +232,6 @@ CONTAINS
       IF (.NOT. model) THEN
          IF (.NOT. qs_upf_inverse_xc_semilocal_kernel_available(xc, control%nspins == 2)) RETURN
          IF (section_get_ival(xc, 'XC_GRID%XC_DERIV') /= xc_deriv_pw) RETURN
-         IF (section_get_ival(xc, 'XC_GRID%XC_SMOOTH_RHO') /= xc_rho_no_smooth) RETURN
       END IF
       functional => section_vals_get_subs_vals(xc, 'XC_FUNCTIONAL')
       needs = xc_functionals_get_needs(functional, lsd=control%nspins == 2, calc_potential=.TRUE.)
