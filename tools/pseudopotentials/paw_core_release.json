@@ -4,17 +4,20 @@
   "catalog": {
     "file": "paw-core-v0.1.0.json",
     "url": "https://github.com/DCM-Uni-Paderborn/inverse-uspp/releases/download/paw-core-v0.1.0/paw-core-v0.1.0.json",
+    "asset_api_url": "https://api.github.com/repos/DCM-Uni-Paderborn/inverse-uspp/releases/assets/711604069?download=1",
     "sha256": "9bc388a86926ea0688b25ca99a5e57f66c517e15b7bb2167f282e93ceb436325"
   },
   "archives": {
     "pbe": {
       "file": "paw-core-v0.1.0-pbe.tar.gz",
       "url": "https://github.com/DCM-Uni-Paderborn/inverse-uspp/releases/download/paw-core-v0.1.0/paw-core-v0.1.0-pbe.tar.gz",
+      "asset_api_url": "https://api.github.com/repos/DCM-Uni-Paderborn/inverse-uspp/releases/assets/711603780?download=1",
       "sha256": "c3c5b8c40ec29d1bf26572d2f32e05e37c8cf683f32aa4da3318e7a52731cc88"
     },
     "pbesol": {
       "file": "paw-core-v0.1.0-pbesol.tar.gz",
       "url": "https://github.com/DCM-Uni-Paderborn/inverse-uspp/releases/download/paw-core-v0.1.0/paw-core-v0.1.0-pbesol.tar.gz",
+      "asset_api_url": "https://api.github.com/repos/DCM-Uni-Paderborn/inverse-uspp/releases/assets/711603936?download=1",
       "sha256": "f305b34e99053eabe48812e899117102820cfa1f8a98d785535f47fa8d9f013d"
     }
   }

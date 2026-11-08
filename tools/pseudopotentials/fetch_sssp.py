@@ -18,8 +18,15 @@ import re
 import shutil
 import tarfile
 import tempfile
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+
+
+def fetch_file(request, path):
+    with urllib.request.urlopen(request, timeout=120) as response:
+        with path.open("wb") as output:
+            shutil.copyfileobj(response, output)
 
 
 def download(source, root, temporary):
@@ -27,9 +34,21 @@ def download(source, root, temporary):
     if not path.exists():
         path = temporary / source["file"]
         if not path.exists():
-            with urllib.request.urlopen(source["url"], timeout=120) as response:
-                with path.open("wb") as output:
-                    shutil.copyfileobj(response, output)
+            try:
+                fetch_file(source["url"], path)
+            except urllib.error.HTTPError as error:
+                api_url = source.get("asset_api_url")
+                if api_url is None or error.code not in (429, 500, 502, 503, 504):
+                    raise
+                error.close()
+                request = urllib.request.Request(
+                    api_url,
+                    headers={
+                        "Accept": "application/octet-stream",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+                fetch_file(request, path)
     checksum = sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
