@@ -43,6 +43,8 @@ MODULE uspp_augmentation
       INTEGER(int_8) :: fourier_budget = -1_int_8
       INTEGER, ALLOCATABLE :: fourier_map(:)
       REAL(dp), ALLOCATABLE :: fourier_norm(:), fourier_radial(:, :, :), fourier_next(:, :, :)
+      REAL(dp), ALLOCATABLE :: fourier_vectors(:, :)
+      COMPLEX(dp), ALLOCATABLE :: fourier_form(:, :, :)
    END TYPE uspp_augmentation_type
 
    PUBLIC :: uspp_augmentation_type, uspp_augmentation_init, uspp_augmentation_fourier, &
@@ -476,8 +478,8 @@ CONTAINS
    END SUBROUTINE uspp_augmentation_integrate_atom
 
 ! **************************************************************************************************
-!> \brief Cache exact radial transforms for repeated reciprocal-vector lengths.
-!>        The retained arrays are bounded; uncached lengths use direct quadrature.
+!> \brief Cache exact radial transforms and, if they fit, unshifted form factors.
+!>        The retained arrays share the memory limit; uncached vectors use direct evaluation.
 !>        Initialization of a new augmentation object also releases this cache.
 !> \param augmentation Prepared radial data, with the cache updated in place.
 !> \param gvecs Local Cartesian reciprocal vectors, in their current ordering.
@@ -488,8 +490,9 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: gvecs(:, :)
       INTEGER(int_8), INTENT(IN), OPTIONAL               :: max_bytes
 
-      INTEGER                                            :: capacity, ig, index, lmax, nc, ng, unique
-      INTEGER(int_8)                                     :: budget, entry_bytes, index_bytes
+      COMPLEX(dp), ALLOCATABLE                           :: form(:, :)
+      INTEGER                                            :: capacity, ig, index, lmax, nc, ng, np, unique
+      INTEGER(int_8)                                     :: budget, entry_bytes, form_bytes, index_bytes
       INTEGER, ALLOCATABLE                               :: order(:)
       REAL(dp)                                           :: previous
       REAL(dp), ALLOCATABLE                              :: norms(:), sorted(:)
@@ -500,8 +503,14 @@ CONTAINS
       CPASSERT(budget >= 0_int_8)
       ng = SIZE(gvecs, 2)
       nc = SIZE(augmentation%weighted_q, 2)
+      np = augmentation%nproj
       lmax = augmentation%lmax
       CPASSERT(nc > 0 .AND. lmax >= 0)
+      IF (ALLOCATED(augmentation%fourier_vectors) .AND. augmentation%fourier_budget == budget) THEN
+         IF (SIZE(augmentation%fourier_vectors, 2) == ng) THEN
+            IF (ALL(augmentation%fourier_vectors == gvecs)) RETURN
+         END IF
+      END IF
       index_bytes = INT(ng, int_8)*(STORAGE_SIZE(0.0_dp) + STORAGE_SIZE(0))/8
       entry_bytes = 2_int_8*nc*(lmax + 1)*STORAGE_SIZE(0.0_dp)/8
       capacity = INT(MIN(INT(ng, int_8), MAX(0_int_8, (budget - index_bytes)/entry_bytes)))
@@ -510,7 +519,8 @@ CONTAINS
          DO ig = 1, ng
             norms(ig) = SQRT(SUM(gvecs(:, ig)*gvecs(:, ig)))
          END DO
-         IF (ALLOCATED(augmentation%fourier_norm) .AND. augmentation%fourier_budget == budget) THEN
+         IF (ALLOCATED(augmentation%fourier_norm) .AND. .NOT. ALLOCATED(augmentation%fourier_vectors) .AND. &
+             augmentation%fourier_budget == budget) THEN
             IF (SIZE(augmentation%fourier_norm) == ng) THEN
                IF (ALL(augmentation%fourier_norm == norms)) RETURN
             END IF
@@ -519,6 +529,9 @@ CONTAINS
       IF (ALLOCATED(augmentation%fourier_norm)) THEN
          DEALLOCATE (augmentation%fourier_norm, augmentation%fourier_map, &
                      augmentation%fourier_radial, augmentation%fourier_next)
+      END IF
+      IF (ALLOCATED(augmentation%fourier_vectors)) THEN
+         DEALLOCATE (augmentation%fourier_vectors, augmentation%fourier_form)
       END IF
       augmentation%fourier_budget = budget
       IF (capacity == 0) RETURN
@@ -549,6 +562,16 @@ CONTAINS
                                      augmentation%fourier_radial(:, :, index), augmentation%fourier_next(:, :, index))
          END IF
          augmentation%fourier_map(order(ig)) = index
+      END DO
+      form_bytes = INT(ng, int_8)*(3*STORAGE_SIZE(0.0_dp) + &
+                                  INT(np, int_8)**2*STORAGE_SIZE(CMPLX(0.0_dp, KIND=dp)))/8
+      IF (form_bytes > budget - index_bytes - capacity*entry_bytes) RETURN
+      ALLOCATE (augmentation%fourier_vectors, SOURCE=gvecs)
+      ALLOCATE (augmentation%fourier_form(np, np, ng), form(np, np))
+      DO ig = 1, ng
+         CALL augmentation_fourier_evaluate(augmentation, gvecs(:, ig), [0.0_dp, 0.0_dp, 0.0_dp], &
+                                            1.0_dp, form, .TRUE., grid_index=ig)
+         augmentation%fourier_form(:, :, ig) = form
       END DO
    END SUBROUTINE uspp_augmentation_prepare_fourier
 
@@ -599,6 +622,43 @@ CONTAINS
       COMPLEX(KIND=dp), INTENT(OUT), OPTIONAL            :: strain(:, :, :, :)
       INTEGER, INTENT(IN), OPTIONAL                      :: grid_index
 
+      COMPLEX(dp)                                       :: phase
+
+      IF (PRESENT(grid_index) .AND. ALLOCATED(augmentation%fourier_vectors) .AND. .NOT. PRESENT(strain)) THEN
+         IF (grid_index >= 1 .AND. grid_index <= SIZE(augmentation%fourier_vectors, 2)) THEN
+            ! A Nyquist alias can have the same length but a different Cartesian vector.
+            IF (augmentation%fourier_norm(grid_index) > 0.0_dp .AND. &
+                ALL(augmentation%fourier_vectors(:, grid_index) == g)) THEN
+               CPASSERT(volume > 0.0_dp)
+               CPASSERT(ALL(SHAPE(qg) == augmentation%nproj))
+               phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g, position), KIND=dp))*fourpi/volume
+               qg = phase*augmentation%fourier_form(:, :, grid_index)
+               RETURN
+            END IF
+         END IF
+      END IF
+      CALL augmentation_fourier_evaluate(augmentation, g, position, volume, qg, .FALSE., strain, grid_index)
+   END SUBROUTINE uspp_augmentation_fourier
+
+! **************************************************************************************************
+!> \brief Assemble the angular form factors with the optional center and volume prefactor.
+!> \param augmentation ...
+!> \param g ...
+!> \param position ...
+!> \param volume ...
+!> \param qg ...
+!> \param form_only Retain the unshifted angular and radial sum before applying its prefactor.
+!> \param strain ...
+!> \param grid_index ...
+! **************************************************************************************************
+   SUBROUTINE augmentation_fourier_evaluate(augmentation, g, position, volume, qg, form_only, strain, grid_index)
+      TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
+      REAL(dp), INTENT(IN)                               :: g(3), position(3), volume
+      COMPLEX(dp), INTENT(OUT)                           :: qg(:, :)
+      LOGICAL, INTENT(IN)                                :: form_only
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: strain(:, :, :, :)
+      INTEGER, INTENT(IN), OPTIONAL                      :: grid_index
+
       COMPLEX(KIND=dp)                                   :: phase, phase_l
       INTEGER                                            :: a, axis, cached, i, j, l, lm, m, p, &
                                                             pair, powers(3), q
@@ -610,6 +670,7 @@ CONTAINS
 
       CPASSERT(volume > 0.0_dp)
       CPASSERT(ALL(SHAPE(qg) == augmentation%nproj))
+      phase = CMPLX(1.0_dp, 0.0_dp, KIND=dp)
       IF (PRESENT(strain)) THEN
          IF (.NOT. (ALL(SHAPE(strain) == [augmentation%nproj, augmentation%nproj, 3, 3]))) THEN
             CPABORT("Invalid USPP augmentation array dimensions")
@@ -668,7 +729,7 @@ CONTAINS
             END IF
          END DO
       END DO
-      phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g, position), KIND=dp))*fourpi/volume
+      IF (.NOT. form_only) phase = EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g, position), KIND=dp))*fourpi/volume
       qg = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
       DO q = 1, augmentation%nproj
          j = augmentation%radial_index(q)
@@ -692,7 +753,7 @@ CONTAINS
                   END DO
                END IF
             END DO
-            qg(p, q) = phase*qg(p, q)
+            IF (.NOT. form_only) qg(p, q) = phase*qg(p, q)
             qg(q, p) = qg(p, q)
             IF (PRESENT(strain)) THEN
                DO axis = 1, 3
@@ -702,7 +763,7 @@ CONTAINS
             END IF
          END DO
       END DO
-   END SUBROUTINE uspp_augmentation_fourier
+   END SUBROUTINE augmentation_fourier_evaluate
 
 ! **************************************************************************************************
 !> \brief Add the augmentation density on a list of reciprocal vectors.

@@ -134,7 +134,9 @@ PROGRAM upf_inverse_unittest
                                               upf_radial_fields_type
    USE upf_types,                       ONLY: upf_radial_weights,&
                                               upf_uses_model_core_tau
-   USE uspp_augmentation,               ONLY: uspp_augmentation_init,&
+   USE uspp_augmentation,               ONLY: uspp_augmentation_fourier,&
+                                              uspp_augmentation_init,&
+                                              uspp_augmentation_prepare_fourier,&
                                               uspp_augmentation_prepare_realspace
 #include "../base/base_uses.f90"
 
@@ -2509,11 +2511,11 @@ CONTAINS
 
       COMPLEX(dp)                                        :: ao(2, 2), ao_direction(2, 2), &
                                                             coefficients(n, 2), dc(n, 2), &
-                                                            matrix(2, 2)
+                                                            form(n, n), matrix(2, 2), raw_form(n, n)
       INTEGER                                            :: axis, i, image, j, l, pair, point, side
       REAL(dp) :: atoms_response(3, 1), cell(3, 3), cell_response(3, 3), charge_gradient(3, 3), &
          charge_gradient_response(3, 3), charge_gradient_samples(3, 3, 2), d(3, n), delta, &
-         density(3), energy_samples(2), expected, gradient(n, n, 3), gradient_samples(n, n, 3, 2), &
+         density(3), energy_samples(2), expected, gcache(3, 2), gradient(n, n, 3), gradient_samples(n, n, 3, 2), &
          hard_value(n), hessian(n, n, 3, 3), kernel(n, n), p(3, n), points(3, 3), &
          points_response(3, 3), position(3), potential(3), reference(3), response(3), &
          samples(n, n, 2), shifted(3), soft_value(n), value(n), vg(3, 3), weights(3)
@@ -2701,6 +2703,20 @@ CONTAINS
       END DO
       CALL upf_projector_init(pot, 2, projectors)
       CALL uspp_augmentation_init(pot, projectors, augmentation%kinds(1))
+      gcache(:, 1) = [1.0_dp, 0.0_dp, 0.0_dp]
+      gcache(:, 2) = [0.0_dp, 1.0_dp, 0.0_dp]
+      position = [0.3_dp, -0.2_dp, 0.7_dp]
+      CALL uspp_augmentation_prepare_fourier(augmentation%kinds(1), gcache)
+      IF (.NOT. ALLOCATED(augmentation%kinds(1)%fourier_form)) ERROR STOP 'Missing Fourier form cache'
+      CALL uspp_augmentation_fourier(augmentation%kinds(1), gcache(:, 1), position, 3.0_dp, raw_form)
+      CALL uspp_augmentation_fourier(augmentation%kinds(1), gcache(:, 1), position, 3.0_dp, form, grid_index=1)
+      CALL check(MAXVAL(ABS(form - raw_form)), 'Cached Fourier form factor and phase', 1.e-15_dp)
+      CALL uspp_augmentation_fourier(augmentation%kinds(1), gcache(:, 2), position, 3.0_dp, raw_form)
+      CALL uspp_augmentation_fourier(augmentation%kinds(1), gcache(:, 2), position, 3.0_dp, form, grid_index=1)
+      CALL check(MAXVAL(ABS(form - raw_form)), 'Uncached Fourier vector with the same norm', 1.e-15_dp)
+      CALL uspp_augmentation_prepare_fourier(augmentation%kinds(1), gcache(:, 2:1:-1))
+      CALL uspp_augmentation_fourier(augmentation%kinds(1), gcache(:, 2), position, 3.0_dp, form, grid_index=1)
+      CALL check(MAXVAL(ABS(form - raw_form)), 'Fourier cache refreshed after reordering', 1.e-15_dp)
       CALL uspp_augmentation_prepare_realspace(pot, augmentation%kinds(1))
       frame%center_kinds = 1
       frame%coefficients(:, :) = coefficients
