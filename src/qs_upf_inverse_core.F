@@ -569,12 +569,13 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: density(:), dg(:, :), dr(:, :)
       INTEGER                                            :: atom, axis, index, kind, other, spin
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
-      LOGICAL                                            :: paw
+      LOGICAL                                            :: calculate_virial, paw
       REAL(dp)                                           :: gradient, spin_factor
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), POINTER                       :: atoms(:)
-      TYPE(pw_c1d_gs_type)                               :: derivative_g, potential_g
+      TYPE(pw_c1d_gs_type)                               :: derivative_g
+      TYPE(pw_c1d_gs_type), ALLOCATABLE                  :: potential_g(:)
       TYPE(qs_force_type), POINTER                       :: force(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
@@ -588,10 +589,11 @@ CONTAINS
       CPASSERT(kinetic .OR. ASSOCIATED(state))
       CPASSERT(SIZE(potential) > 0 .AND. ASSOCIATED(force))
       CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
-      CALL potential_g%create(potential(1)%pw_grid)
       CALL derivative_g%create(potential(1)%pw_grid)
-      ALLOCATE (density(SIZE(derivative_g%array)), dr(3, SIZE(derivative_g%array)), &
-                dg(3, SIZE(derivative_g%array)))
+      ALLOCATE (density(SIZE(derivative_g%array)), dr(3, SIZE(derivative_g%array)))
+      calculate_virial = .FALSE.
+      IF (ASSOCIATED(virial)) calculate_virial = virial%pv_availability .AND. .NOT. virial%pv_numer
+      IF (calculate_virial) ALLOCATE (dg(3, SIZE(derivative_g%array)))
       spin_factor = 1.0_dp/REAL(SIZE(potential), dp)
       DO atom = 1, SIZE(atoms)
          kind = kind_of(atom)
@@ -617,23 +619,30 @@ CONTAINS
             CALL upf_core_fourier(kinds(kind)%sgp_potential%upf_data, derivative_g%pw_grid%g, atoms(atom)%r, &
                                   derivative_g%pw_grid%vol, density, dr, dg)
          END IF
+         IF (.NOT. ALLOCATED(potential_g)) THEN
+            ! Every atom contracts the same reciprocal XC potential for each spin.
+            ALLOCATE (potential_g(SIZE(potential)))
+            DO spin = 1, SIZE(potential)
+               CPASSERT(ASSOCIATED(potential(spin)%pw_grid, derivative_g%pw_grid))
+               CALL potential_g(spin)%create(derivative_g%pw_grid)
+               CALL pw_transfer(potential(spin), potential_g(spin))
+            END DO
+         END IF
          DO spin = 1, SIZE(potential)
-            CPASSERT(ASSOCIATED(potential(spin)%pw_grid, potential_g%pw_grid))
-            CALL pw_transfer(potential(spin), potential_g)
             DO axis = 1, 3
                derivative_g%array = spin_factor*dr(axis, :)
-               gradient = pw_integral_ab(potential_g, derivative_g)
+               gradient = pw_integral_ab(potential_g(spin), derivative_g)
                IF (para_env%is_source()) force(kind)%gth_nlcc(axis, index) = &
                   force(kind)%gth_nlcc(axis, index) + gradient
             END DO
-            IF (.NOT. virial%pv_availability .OR. virial%pv_numer) CYCLE
+            IF (.NOT. calculate_virial) CYCLE
             DO axis = 1, 3
                DO other = 1, 3
                   derivative_g%array = atoms(atom)%r(other)*dr(axis, :) - &
                                        derivative_g%pw_grid%g(axis, :)*dg(other, :)
                   IF (axis == other) derivative_g%array = derivative_g%array - density
                   derivative_g%array = spin_factor*derivative_g%array
-                  gradient = pw_integral_ab(potential_g, derivative_g)
+                  gradient = pw_integral_ab(potential_g(spin), derivative_g)
                   IF (para_env%is_source()) THEN
                      virial%pv_nlcc(axis, other) = virial%pv_nlcc(axis, other) - gradient
                      virial%pv_virial(axis, other) = virial%pv_virial(axis, other) - gradient
@@ -642,7 +651,11 @@ CONTAINS
             END DO
          END DO
       END DO
-      CALL potential_g%release()
+      IF (ALLOCATED(potential_g)) THEN
+         DO spin = 1, SIZE(potential_g)
+            CALL potential_g(spin)%release()
+         END DO
+      END IF
       CALL derivative_g%release()
    END SUBROUTINE core_field_force
 
