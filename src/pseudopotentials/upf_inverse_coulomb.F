@@ -87,7 +87,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Freeze the Fourier and complete periodic residual-pair maps at a fixed geometry.
-!>        Opposite self images are included by reciprocity. Cartesian cells also admit independent reflections.
+!>        Opposite self images are included by reciprocity. Cartesian cells also admit independent pair reflections.
 !>        Density and compensation moments remain variable.
 !> \param centers Same center geometry and radial/harmonic layout as the subsequent functional.
 !> \param cell ...
@@ -109,9 +109,9 @@ CONTAINS
                                                             k, limits(2, 3), mask, nrank, owner, &
                                                             r, rank
       INTEGER, ALLOCATABLE                               :: parity(:, :)
-      LOGICAL                                            :: cartesian, has_images, reflect
-      REAL(dp)                                           :: displacement(3), inverse_cell(3, 3), &
-                                                            multiplicity, radius
+      LOGICAL                                            :: cartesian, has_images, reflection_axes(3)
+      REAL(dp)                                           :: displacement(3), image_center(3), inverse_cell(3, 3), &
+                                                            multiplicity, radius, separation(3)
       REAL(dp), ALLOCATABLE                              :: kernel(:, :, :, :)
 
       CPASSERT(volume > 0.0_dp .AND. SIZE(gvecs, 1) == 3)
@@ -140,27 +140,27 @@ CONTAINS
          CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                  gvecs, centers(a)%position, volume, map%fourier(a)%values, &
                                                  cell=cell, grid_shape=map%grid_shape)
-         IF (cartesian) parity = self_image_parity(centers(a))
          DO b = a, SIZE(centers)
-            reflect = cartesian .AND. a == b
+            separation = centers(a)%position - centers(b)%position
+            CALL pair_reflection_center(cell, separation, map%periodicity, cartesian, reflection_axes, image_center)
+            IF (ANY(reflection_axes)) parity = image_pair_parity(centers(a), centers(b))
             ALLOCATE (kernel(SIZE(centers(a)%radii), SIZE(centers(a)%l), &
                              SIZE(centers(b)%radii), SIZE(centers(b)%l)))
             ALLOCATE (map%pairs(a, b)%values, MOLD=kernel)
             map%pairs(a, b)%values = 0.0_dp
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
-            CALL residual_image_limits(inverse_cell, centers(a)%position - centers(b)%position, &
-                                       radius, map%periodicity, limits)
+            CALL residual_image_limits(inverse_cell, separation, radius, map%periodicity, limits)
             has_images = .FALSE.
             DO k = limits(1, 3), limits(2, 3)
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
                      image = [i, j, k]
-                     IF (reflect) THEN
-                        IF (ANY(image < 0)) CYCLE
+                     IF (ANY(reflection_axes)) THEN
+                        IF (ANY(reflection_axes .AND. image < image_center)) CYCLE
                      ELSE IF (a == b .AND. negative_image(i, j, k)) THEN
                         CYCLE
                      END IF
-                     displacement = centers(a)%position - centers(b)%position - MATMUL(cell, REAL(image, dp))
+                     displacement = separation - MATMUL(cell, REAL(image, dp))
                      IF (SUM(displacement**2) >= radius**2) CYCLE
                      has_images = .TRUE.
                      owner = MOD(owner + 1, nrank)
@@ -168,19 +168,24 @@ CONTAINS
                      CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                           centers(b)%radii, centers(b)%l, centers(b)%indices, &
                                                           displacement, kernel)
-                     IF (reflect .AND. ANY(image /= 0)) THEN
-                        mask = SUM(MERGE(reflection_bits, 0, image /= 0))
-                        ! Summing every sign of the nonzero indices projects out odd pairs.
-                        ! Average the two opposite orientations to retain exact reciprocity.
-                        multiplicity = 0.5_dp*2**POPCNT(mask)
+                     mask = SUM(MERGE(reflection_bits, 0, reflection_axes .AND. image /= image_center))
+                     IF (mask /= 0) THEN
+                        ! The image orbit projects out every odd channel pair.
+                        multiplicity = REAL(2**POPCNT(mask), dp)
                         DO h = 1, SIZE(kernel, 4)
                            DO channel = 1, SIZE(kernel, 2)
                               IF (IAND(parity(channel, h), mask) /= 0) CYCLE
-                              DO r = 1, SIZE(kernel, 3)
-                                 map%pairs(a, b)%values(:, channel, r, h) = &
-                                    map%pairs(a, b)%values(:, channel, r, h) + multiplicity* &
-                                    (kernel(:, channel, r, h) + kernel(r, h, :, channel))
-                              END DO
+                              IF (a /= b) THEN
+                                 map%pairs(a, b)%values(:, channel, :, h) = &
+                                    map%pairs(a, b)%values(:, channel, :, h) + multiplicity*kernel(:, channel, :, h)
+                              ELSE
+                                 ! Average opposite orientations to retain exact reciprocity.
+                                 DO r = 1, SIZE(kernel, 3)
+                                    map%pairs(a, b)%values(:, channel, r, h) = &
+                                       map%pairs(a, b)%values(:, channel, r, h) + 0.5_dp*multiplicity* &
+                                       (kernel(:, channel, r, h) + kernel(r, h, :, channel))
+                                 END DO
+                              END IF
                            END DO
                         END DO
                         CYCLE
@@ -235,10 +240,10 @@ CONTAINS
                                                             mask, nr, nrank, owner, pair_parity, &
                                                             rank
       INTEGER, ALLOCATABLE                               :: parity(:, :)
-      LOGICAL                                            :: cartesian, reflect
-      REAL(dp)                                           :: delta(3), displacement(3), &
-                                                            inverse_cell(3, 3), multiplicity, &
-                                                            radius, value, values(3)
+      LOGICAL                                            :: cartesian, reflection_axes(3)
+      REAL(dp)                                           :: center_value, delta(3), displacement(3), &
+                                                            image_center(3), inverse_cell(3, 3), multiplicity, &
+                                                            radius, separation(3), value, values(3)
       REAL(dp), ALLOCATABLE                              :: dkernel(:, :, :, :), kernel(:, :, :, :), &
                                                             moments(:)
       TYPE(center_work_type), ALLOCATABLE                :: work(:)
@@ -270,26 +275,26 @@ CONTAINS
          DEALLOCATE (moments)
       END DO
       DO a = 1, SIZE(centers)
-         IF (cartesian) parity = self_image_parity(centers(a))
          DO b = a, SIZE(centers)
-            reflect = cartesian .AND. a == b
+            separation = centers(a)%position - centers(b)%position
+            CALL pair_reflection_center(map%cell, separation, map%periodicity, cartesian, reflection_axes, image_center)
+            IF (ANY(reflection_axes)) parity = image_pair_parity(centers(a), centers(b))
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
-            CALL residual_image_limits(inverse_cell, centers(a)%position - centers(b)%position, &
-                                       radius, map%periodicity, limits)
+            CALL residual_image_limits(inverse_cell, separation, radius, map%periodicity, limits)
             DO k = limits(1, 3), limits(2, 3)
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
                      image = [i, j, k]
                      ! The two orientations of a self image give the same contracted cell derivative.
-                     IF (reflect) THEN
-                        IF (ALL(image == 0) .OR. ANY(image < 0)) CYCLE
-                        mask = SUM(MERGE(reflection_bits, 0, image /= 0))
-                        multiplicity = 0.5_dp*2**POPCNT(mask)
-                     ELSE IF (a == b .AND. (ALL(image == 0) .OR. negative_image(i, j, k))) THEN
+                     IF (a == b .AND. ALL(image == 0)) CYCLE
+                     IF (ANY(reflection_axes)) THEN
+                        IF (ANY(reflection_axes .AND. image < image_center)) CYCLE
+                     ELSE IF (a == b .AND. negative_image(i, j, k)) THEN
                         CYCLE
                      END IF
-                     displacement = centers(a)%position - centers(b)%position - MATMUL(map%cell, REAL(image, dp))
+                     displacement = separation - MATMUL(map%cell, REAL(image, dp))
                      IF (SUM(displacement**2) >= radius**2) CYCLE
+                     mask = SUM(MERGE(reflection_bits, 0, reflection_axes .AND. image /= image_center))
                      DO axis = 1, 3
                         owner = MOD(owner + 1, nrank)
                         IF (owner /= rank) CYCLE
@@ -304,21 +309,31 @@ CONTAINS
                                                              centers(b)%radii, centers(b)%l, centers(b)%indices, &
                                                              displacement, kernel, dkernel, 0.0_dp*centers(a)%radii, &
                                                              0.0_dp*centers(b)%radii, delta)
-                        IF (reflect) THEN
+                        IF (mask /= 0) THEN
                            ! d/dD_axis and the lattice index in column each add one reflection sign.
+                           multiplicity = REAL(2**POPCNT(mask), dp)
+                           IF (a == b) multiplicity = 0.5_dp*multiplicity
+                           center_value = 0.0_dp
                            values = 0.0_dp
-                           DO h = 1, SIZE(centers(a)%l)
+                           DO h = 1, SIZE(centers(b)%l)
                               DO channel = 1, SIZE(centers(a)%l)
                                  pair_parity = IEOR(parity(channel, h), reflection_bits(axis))
                                  value = DOT_PRODUCT(work(a)%q(:, channel), &
-                                                     MATMUL(dkernel(:, channel, :, h), work(a)%q(:, h)))
+                                                     MATMUL(dkernel(:, channel, :, h), work(b)%q(:, h)))
+                                 IF (IAND(pair_parity, mask) == 0) center_value = center_value + value
                                  DO column = 1, 3
                                     IF (IAND(IEOR(pair_parity, reflection_bits(column)), mask) /= 0) CYCLE
                                     values(column) = values(column) + value
                                  END DO
                               END DO
                            END DO
-                           cell_gradient(axis, :) = cell_gradient(axis, :) - multiplicity*values*REAL(image, dp)
+                           IF (a /= b) THEN
+                              center_gradient(axis, a) = center_gradient(axis, a) + multiplicity*center_value
+                              center_gradient(axis, b) = center_gradient(axis, b) - multiplicity*center_value
+                           END IF
+                           ! Reflected image indices are centered on the relative fractional coordinate.
+                           cell_gradient(axis, :) = cell_gradient(axis, :) - multiplicity* &
+                              (image_center*center_value + (REAL(image, dp) - image_center)*values)
                            CYCLE
                         END IF
                         value = 0.0_dp
@@ -847,29 +862,73 @@ CONTAINS
    END FUNCTION cartesian_reflection_cell
 
 ! **************************************************************************************************
+!> \brief Find Cartesian axes where reflecting the displacement maps integer images to integer images.
+!> \param cell Lattice vectors in Cartesian columns.
+!> \param separation Difference of the two center positions, before subtracting an image.
+!> \param periodicity Periodic lattice directions.
+!> \param cartesian Whether the lattice is diagonal in the harmonic frame.
+!> \param axes Axes with an exact integer or half-integer reflection center.
+!> \param center Fractional position of the reflection center on each selected axis.
+! **************************************************************************************************
+   PURE SUBROUTINE pair_reflection_center(cell, separation, periodicity, cartesian, axes, center)
+      REAL(dp), INTENT(IN)                               :: cell(3, 3), separation(3)
+      INTEGER, INTENT(IN)                                :: periodicity(3)
+      LOGICAL, INTENT(IN)                                :: cartesian
+      LOGICAL, INTENT(OUT)                               :: axes(3)
+      REAL(dp), INTENT(OUT)                              :: center(3)
+
+      INTEGER                                            :: axis
+      REAL(dp)                                           :: twice_center
+
+      axes = .FALSE.
+      center = 0.0_dp
+      IF (.NOT. cartesian) RETURN
+      DO axis = 1, 3
+         IF (periodicity(axis) == 0) CYCLE
+         twice_center = ANINT(2.0_dp*separation(axis)/cell(axis, axis))
+         IF (2.0_dp*separation(axis) /= twice_center*cell(axis, axis)) CYCLE
+         axes(axis) = .TRUE.
+         center(axis) = 0.5_dp*twice_center
+      END DO
+   END SUBROUTINE pair_reflection_center
+
+! **************************************************************************************************
 !> \brief Encode the odd Cartesian reflection axes of each product of real solid harmonics.
-!> \param center Native harmonic layout.
+!> \param first First native harmonic layout.
+!> \param second Second native harmonic layout.
 !> \return Bit masks for the two shell channels, with one bit per Cartesian axis.
 ! **************************************************************************************************
-   FUNCTION self_image_parity(center) RESULT(parity)
+   FUNCTION image_pair_parity(first, second) RESULT(parity)
+      TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: first, second
+      INTEGER :: parity(SIZE(first%l), SIZE(second%l))
+      INTEGER :: first_bits(SIZE(first%l)), second_bits(SIZE(second%l))
+
+      first_bits = harmonic_parity(first)
+      second_bits = harmonic_parity(second)
+      parity = IEOR(SPREAD(first_bits, 2, SIZE(second_bits)), SPREAD(second_bits, 1, SIZE(first_bits)))
+   END FUNCTION image_pair_parity
+
+! **************************************************************************************************
+!> \brief Return the odd Cartesian reflection axes of the individual real solid harmonics.
+!> \param center Native harmonic layout.
+!> \return One bit mask per channel.
+! **************************************************************************************************
+   FUNCTION harmonic_parity(center) RESULT(bits)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: center
-      INTEGER :: parity(SIZE(center%l), SIZE(center%l))
+      INTEGER :: bits(SIZE(center%l))
 
-      INTEGER                                            :: channel, l, monomial, nh, row, &
-                                                            bits(SIZE(center%l))
+      INTEGER                                            :: channel, l, monomial, row
 
-      nh = SIZE(center%l)
       CALL init_orbital_pointers(MAXVAL(center%l))
       CALL init_spherical_harmonics(MAXVAL(center%l), -1)
-      DO channel = 1, nh
+      DO channel = 1, SIZE(center%l)
          l = center%l(channel)
          row = center%indices(channel) - l**2
          ! The nonzero monomials of each real solid harmonic have the same parity.
          monomial = MAXLOC(ABS(orbtramat(l)%slm(row, :)), DIM=1)
          bits(channel) = SUM(reflection_bits*MOD(indco(:, ncoset(l - 1) + monomial), 2))
       END DO
-      parity = IEOR(SPREAD(bits, 2, nh), SPREAD(bits, 1, nh))
-   END FUNCTION self_image_parity
+   END FUNCTION harmonic_parity
 
 ! **************************************************************************************************
 !> \brief Reciprocal Coulomb map between two translated harmonic radial-shell distributions.
