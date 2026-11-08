@@ -65,7 +65,8 @@ MODULE skala_gpw_functional
                                               skala_gapw_cp2k_default,&
                                               skala_gapw_direct_valence,&
                                               skala_gapw_paw_one_center,&
-                                              skala_gapw_paw_one_center_split
+                                              skala_gapw_paw_one_center_split,&
+                                              xc_rho_no_smooth
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
                                               xc_rho_set_get,&
@@ -73,6 +74,7 @@ MODULE skala_gpw_functional
                                               xc_rho_set_type,&
                                               xc_rho_set_update
    USE xc_util,                         ONLY: xc_pw_divergence,&
+                                              xc_pw_smooth,&
                                               xc_requires_tmp_g
 #include "../base/base_uses.f90"
 
@@ -852,10 +854,11 @@ CONTAINS
          CALL omp_set_num_threads(omp_max_threads_restore)
          CALL build_vxc_from_feature_grads(vxc_rho, vxc_tau, rho_r, pw_pool, &
                                            density_grad, grad_grad, kin_grad, &
-                                           xc_deriv_method_id)
+                                           xc_deriv_method_id, xc_smooth_id=xc_rho_smooth_id)
          IF (need_response) THEN
             CALL build_vxc_from_feature_grads(vxc_rho_response, vxc_tau_response, rho_r, pw_pool, &
-                                              density_response, grad_response, kin_response, xc_deriv_method_id)
+                                              density_response, grad_response, kin_response, xc_deriv_method_id, &
+                                              xc_smooth_id=xc_rho_smooth_id)
          END IF
          CALL timestop(phase_handle)
 
@@ -3567,10 +3570,11 @@ CONTAINS
 !> \param kin_grad ...
 !> \param xc_deriv_method_id ...
 !> \param global_grid_layout ...
+!> \param xc_smooth_id Density filter used in the forward feature map.
 ! **************************************************************************************************
    SUBROUTINE build_vxc_from_feature_grads(vxc_rho, vxc_tau, rho_r, pw_pool, &
                                            density_grad, grad_grad, kin_grad, &
-                                           xc_deriv_method_id, global_grid_layout)
+                                           xc_deriv_method_id, global_grid_layout, xc_smooth_id)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: vxc_rho, vxc_tau, rho_r
       TYPE(pw_pool_type), POINTER                        :: pw_pool
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: density_grad
@@ -3578,8 +3582,9 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: kin_grad
       INTEGER, INTENT(IN)                                :: xc_deriv_method_id
       LOGICAL, INTENT(IN), OPTIONAL                      :: global_grid_layout
+      INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
 
-      INTEGER                                            :: i, ipt, ispin, j, k, nspins
+      INTEGER                                            :: i, ipt, ispin, j, k, nspins, smooth_id
       INTEGER, DIMENSION(2, 3)                           :: bo
       LOGICAL                                            :: my_global_grid_layout, valid_spin_shape
       REAL(KIND=dp)                                      :: dvol_inv
@@ -3589,6 +3594,8 @@ CONTAINS
       nspins = SIZE(rho_r)
       bo = rho_r(1)%pw_grid%bounds_local
       dvol_inv = 1.0_dp/rho_r(1)%pw_grid%dvol
+      smooth_id = xc_rho_no_smooth
+      IF (PRESENT(xc_smooth_id)) smooth_id = xc_smooth_id
       my_global_grid_layout = .FALSE.
       IF (PRESENT(global_grid_layout)) my_global_grid_layout = global_grid_layout
       IF (my_global_grid_layout) THEN
@@ -3667,6 +3674,11 @@ CONTAINS
             CALL pw_scale(grad_pw(i), -1.0_dp)
          END DO
          CALL xc_pw_divergence(xc_deriv_method_id, grad_pw, tmp_g, vxc_g, vxc_rho(ispin))
+         IF (smooth_id /= xc_rho_no_smooth) THEN
+            ! The native density filter is symmetric. Reuse the now idle gradient buffer.
+            CALL xc_pw_smooth(vxc_rho(ispin), grad_pw(1), smooth_id)
+            vxc_rho(ispin)%array(:, :, :) = grad_pw(1)%array
+         END IF
 
          DO i = 1, 3
             CALL pw_pool%give_back_pw(grad_pw(i))

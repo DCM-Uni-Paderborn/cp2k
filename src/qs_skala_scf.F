@@ -1665,14 +1665,6 @@ CONTAINS
                kinetic%array(point(1), point(2), point(3)) = 1.0_dp/grid%dvol
             END IF
          END IF
-         smooth = section_get_ival(state%qs_env%input, "DFT%XC%XC_GRID%XC_SMOOTH_RHO")
-         IF (descriptor == skala_density_descriptor .AND. smooth /= xc_rho_no_smooth) THEN
-            CALL filtered%create(grid)
-            ! The native smoothing stencils are symmetric on the auxiliary PW grid.
-            CALL xc_pw_smooth(density, filtered, smooth)
-            density%array(:, :, :) = filtered%array
-            CALL filtered%release()
-         END IF
       ELSE
          ALLOCATE (fields(grid%npts(1), grid%npts(2), grid%npts(3), 1), &
                    values(SIZE(state%inverse%atom_grid%atoms), 1))
@@ -1694,6 +1686,14 @@ CONTAINS
             kinetic%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
                                             bounds(1, 3):bounds(2, 3), 1)/grid%dvol
          END IF
+      END IF
+      smooth = section_get_ival(state%qs_env%input, "DFT%XC%XC_GRID%XC_SMOOTH_RHO")
+      IF (descriptor == skala_density_descriptor .AND. smooth /= xc_rho_no_smooth) THEN
+         CALL filtered%create(grid)
+         ! Transpose the same stencil used in the FFT and interpolated background samples.
+         CALL xc_pw_smooth(density, filtered, smooth)
+         density%array(:, :, :) = filtered%array
+         CALL filtered%release()
       END IF
       nk = SIZE(state%dimensions, 1)
       IF (state%bloch) THEN
@@ -4250,9 +4250,8 @@ CONTAINS
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       INTEGER, INTENT(INOUT)                             :: offset
 
-      INTEGER                                            :: count, first, groups, i, ik, last, &
-                                                            local, nk, ns, spin
-      INTEGER                                            :: electrons(2)
+      INTEGER                                            :: count, electrons(2), first, groups, i, &
+                                                            ik, last, local, nk, ns, spin
       INTEGER, ALLOCATABLE                               :: counts(:), multiplets(:)
       LOGICAL                                            :: owner, separate, valid
       REAL(dp)                                           :: targets(2)

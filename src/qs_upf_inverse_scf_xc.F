@@ -237,9 +237,6 @@ CONTAINS
          CPABORT("Inverse mixed XC requires XC_DERIV PW")
       END IF
       smooth_id = section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO")
-      IF (smooth_id /= xc_rho_no_smooth .AND. xc_section_uses_native_skala_evaluator(xc_section)) THEN
-         CPABORT("Inverse mixed Skala requires XC_SMOOTH_RHO NONE")
-      END IF
       CALL frame_refs(state, frames, augmentation)
       nk = SIZE(frames)
       nao = SIZE(frames(1)%frame%coefficients, 2)
@@ -863,7 +860,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
          OPTIONAL, TARGET                                :: context
 
-      INTEGER                                            :: nao, nk, ns, selected, spin
+      INTEGER                                            :: nao, nk, ns, selected, smooth_id, spin
       LOGICAL                                            :: tangent, valid
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), &
                                                             fields_direction(:, :, :, :)
@@ -901,9 +898,12 @@ CONTAINS
          selected = skala_density_constraints_count(constraints)
          CPASSERT(selected == 0 .OR. tangent)
       END IF
-      IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw .OR. &
-          section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO") /= xc_rho_no_smooth) THEN
-         CPABORT("Inverse mixed XC model response requires XC_DERIV PW and XC_SMOOTH_RHO NONE")
+      IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw) THEN
+         CPABORT("Inverse mixed XC response requires XC_DERIV PW")
+      END IF
+      smooth_id = section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO")
+      IF (smooth_id /= xc_rho_no_smooth .AND. .NOT. xc_section_uses_native_skala_evaluator(xc_section)) THEN
+         CPABORT("Inverse mixed semilocal XC kernel requires XC_SMOOTH_RHO NONE")
       END IF
       nao = SIZE(state%xc_matrices, 1)
       nk = SIZE(state%xc_matrices, 3)
@@ -931,9 +931,9 @@ CONTAINS
          orbital_factors => state%orbital_factors
       END IF
       IF (state%xc%kinetic) THEN
-         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction)
+         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction, smooth_id)
       ELSE
-         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction)
+         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, xc_smooth_id=smooth_id)
       END IF
       CALL qs_upf_inverse_xc_grid_model_response(frames, augmentation, matrices_direction, state%xc_kweights, &
                                                  state%atom_grid%points, state%atom_grid%weights, state%xc, &
@@ -941,9 +941,9 @@ CONTAINS
                                                  comm, response, adjoint, state%kinetic_cache, state%atom_grid, &
                                                  state%paw_reconstruction, orbital_factors, orbital_direction)
       IF (state%xc%kinetic) THEN
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction, smooth_id)
       ELSE
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, xc_smooth_id=smooth_id)
          DO spin = 1, ns
             kinetic_potential_direction(spin)%array = 0.0_dp
          END DO

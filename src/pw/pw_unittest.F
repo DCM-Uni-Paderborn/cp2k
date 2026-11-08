@@ -56,7 +56,9 @@ PROGRAM pw_unittest
                                               cube_value_format,&
                                               cube_values_format
    USE rs_pw_interface,                 ONLY: pw_real_transfer
-   USE xc_input_constants,              ONLY: xc_rho_nn10,&
+   USE skala_gpw_functional,            ONLY: build_vxc_from_feature_grads
+   USE xc_input_constants,              ONLY: xc_deriv_pw,&
+                                              xc_rho_nn10,&
                                               xc_rho_nn50,&
                                               xc_rho_spline2_smooth,&
                                               xc_rho_spline3_smooth
@@ -94,21 +96,31 @@ CONTAINS
 !> \brief Use the native XC filter in both directions of the mixed UPF grid map.
 ! **************************************************************************************************!
    SUBROUTINE check_upf_xc_smoothing()
-      INTEGER                                            :: i, j, k, mode, modes(4)
+      INTEGER                                            :: axis, i, j, k, mode, modes(4), nrows
       REAL(dp)                                           :: cell(3, 3), phase, projected
-      REAL(dp), ALLOCATABLE                              :: fields(:, :, :, :), reference(:, :, :, :)
+      REAL(dp), ALLOCATABLE                              :: fields(:, :, :, :), &
+                                                            reference(:, :, :, :), vgrad(:, :, :), &
+                                                            vrho(:, :), vtau(:, :)
       TYPE(mp_comm_type)                                 :: comm
       TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_r3d_rs_type)                               :: density(1), kinetic(1), potential(1), &
-                                                            smooth(1), tau_potential(1)
+      TYPE(pw_pool_type), POINTER                        :: pool
+      TYPE(pw_r3d_rs_type)                               :: kinetic(1), potential(1), smooth(1), &
+                                                            tau_potential(1)
+      TYPE(pw_r3d_rs_type), POINTER                      :: density_ptr(:), skala_density(:), &
+                                                            skala_tau(:)
+      TYPE(pw_r3d_rs_type), TARGET                       :: density(1)
 
-      NULLIFY (grid)
+      NULLIFY (grid, pool, skala_density, skala_tau)
+      density_ptr => density
       CALL comm%set_handle(mp_comm_world%get_handle())
       cell = 0.0_dp
       DO i = 1, 3
          cell(i, i) = REAL(6 + i, dp)
       END DO
       CALL pw_grid_create(grid, comm, cell, grid_span=HALFSPACE, npts=[8, 6, 8], odd=.FALSE., fft_usage=.TRUE.)
+      CALL pw_pool_create(pool, grid)
+      nrows = PRODUCT(grid%npts)
+      ALLOCATE (vrho(nrows, 2), vgrad(nrows, 3, 2), vtau(nrows, 2))
       CALL density(1)%create(grid)
       CALL kinetic(1)%create(grid)
       CALL smooth(1)%create(grid)
@@ -132,12 +144,27 @@ CONTAINS
          CALL qs_upf_inverse_xc_pw_adjoint(fields, potential, tau_potential, modes(mode))
          projected = pw_integral_ab(density(1), potential(1)) + pw_integral_ab(kinetic(1), tau_potential(1))
          CALL check_error(projected, SUM(fields**2), 3.e-13_dp)
+         ! The two equal model spin covectors contract into one restricted channel.
+         vrho(:, :) = SPREAD(RESHAPE(fields(:, :, :, 1), [nrows]), 2, 2)
+         vtau(:, :) = SPREAD(RESHAPE(fields(:, :, :, 5), [nrows]), 2, 2)
+         DO axis = 1, 3
+            vgrad(:, axis, :) = SPREAD(RESHAPE(fields(:, :, :, 1 + axis), [nrows]), 2, 2)
+         END DO
+         CALL build_vxc_from_feature_grads(skala_density, skala_tau, density_ptr, pool, &
+                                           vrho, vgrad, vtau, xc_deriv_pw, &
+                                           global_grid_layout=.TRUE., xc_smooth_id=modes(mode))
+         CALL check_error(MAXVAL(ABS(skala_density(1)%array - potential(1)%array)), 0.0_dp, 3.e-13_dp)
+         CALL check_error(MAXVAL(ABS(skala_tau(1)%array - tau_potential(1)%array)), 0.0_dp, 3.e-13_dp)
+         CALL pool%give_back_pw(skala_density(1))
+         CALL pool%give_back_pw(skala_tau(1))
+         DEALLOCATE (skala_density, skala_tau)
       END DO
       CALL density(1)%release()
       CALL kinetic(1)%release()
       CALL smooth(1)%release()
       CALL potential(1)%release()
       CALL tau_potential(1)%release()
+      CALL pw_pool_release(pool)
       CALL pw_grid_release(grid)
    END SUBROUTINE check_upf_xc_smoothing
 
