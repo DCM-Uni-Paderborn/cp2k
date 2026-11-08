@@ -676,14 +676,18 @@ CONTAINS
                                       dft_control%smeagol_control%aux%isexplicit_HartreeLeadsBottom)
       END IF
 
-      ! calculate the density matrix for the fitted mo_coeffs
+      ! Initialize the auxiliary geometry and the primary XC section.
       IF (dft_control%do_admm) THEN
          IF (PRESENT(ext_xc_section)) THEN
             CALL hfx_admm_init(qs_env, calculate_forces, ext_xc_section)
          ELSE
             CALL hfx_admm_init(qs_env, calculate_forces)
          END IF
+      END IF
 
+      ! Original-UPF descriptor probes sample only the primary fields.
+      ! The next complete evaluation fits the auxiliary density to its own orbitals.
+      IF (dft_control%do_admm .AND. .NOT. (inverse_admm .AND. skala_fields_only)) THEN
          IF (dft_control%do_admm_mo) THEN
             IF (qs_env%run_rtp) THEN
                CALL rtp_admm_calc_rho_aux(qs_env)
