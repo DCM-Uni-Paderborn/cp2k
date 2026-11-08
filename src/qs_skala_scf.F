@@ -557,17 +557,22 @@ CONTAINS
 !> \param gradient Optional derivative in the supplied Cayley coordinates.
 !> \param physical_gradient Optional derivative in the orthonormal physical orbital tangent.
 !> \param sample_inputs Retain physical point fields, default true. Disabled fields are cleared.
+!> \param reuse_fields Reuse an identical, certified native descriptor trial. The complete operator is rebuilt.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical_gradient, sample_inputs)
+   SUBROUTINE qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical_gradient, sample_inputs, reuse_fields)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: energy
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:), physical_gradient(:)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: sample_inputs
+      LOGICAL, INTENT(IN), OPTIONAL                      :: sample_inputs, reuse_fields
 
-      LOGICAL                                            :: need_gradient, record_inputs
+      LOGICAL                                            :: need_gradient, record_inputs, trial_current
 
-      CALL install_native_trial(state, coordinate)
+      trial_current = .FALSE.
+      IF (PRESENT(reuse_fields)) THEN
+         IF (reuse_fields) trial_current = native_samples_match(state, coordinate)
+      END IF
+      IF (.NOT. trial_current) CALL install_native_trial(state, coordinate)
       record_inputs = .TRUE.
       IF (PRESENT(sample_inputs)) record_inputs = sample_inputs
       CALL skala_density_samples_begin(state%constraints)
@@ -743,6 +748,23 @@ CONTAINS
    END FUNCTION at_native_coordinate
 
 ! **************************************************************************************************
+!> \brief Check that the completed native descriptors belong to the still-installed trial.
+!> \param state Borrowed native trial and samples.
+!> \param coordinate Trial coordinates whose fields are requested.
+!> \return Whether both the sample collection and density stamps still match.
+! **************************************************************************************************
+   FUNCTION native_samples_match(state, coordinate) RESULT(matches)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      LOGICAL                                            :: matches
+
+      matches = .FALSE.
+      IF (.NOT. at_native_coordinate(state, coordinate) .OR. state%sample_generation < 0) RETURN
+      matches = state%sample_generation == skala_density_samples_generation(state%constraints) .AND. &
+                state%sample_density_evaluation == state%inverse%density_evaluations
+   END FUNCTION native_samples_match
+
+! **************************************************************************************************
 !> \brief Sample the original physical fields without evaluating the learned XC model.
 !>        The partial energy and KS operator are invalid. A later energy callback rebuilds both.
 !> \param state ...
@@ -754,15 +776,12 @@ CONTAINS
 
       ! Constraint restoration can query the same installed fields more than once.
       ! Reuse only this complete collection at the identical coordinate and density stamp.
-      IF (at_native_coordinate(state, coordinate) .AND. state%sample_generation >= 0) THEN
-         IF (state%sample_generation == skala_density_samples_generation(state%constraints) .AND. &
-             state%sample_density_evaluation == state%inverse%density_evaluations) THEN
-            ! Preserve the field-only callback contract even when no traversal is needed.
-            ! Selected derivative weights can change without changing these raw fields.
-            state%operator_current = .FALSE.
-            CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
-            RETURN
-         END IF
+      IF (native_samples_match(state, coordinate)) THEN
+         ! Preserve the field-only callback contract even when no traversal is needed.
+         ! Selected derivative weights can change without changing these raw fields.
+         state%operator_current = .FALSE.
+         CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
+         RETURN
       END IF
       IF (.NOT. at_native_coordinate(state, coordinate)) THEN
          CALL install_native_trial(state, coordinate)
@@ -1963,10 +1982,11 @@ CONTAINS
 !> \param candidate_targets Actual threshold of each returned physical candidate.
 !> \param restore_operator Restore the complete first energy and KS operator, default true.
 !>        Curvature scans can restore only its fields before the next complete evaluation.
+!> \param leave_trial Keep the last descriptor-only trial for an immediate full evaluation, default false.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_crossings(state, first, last, points, domains, spins, descriptors, &
                                      endpoint_values, targets, total_targets, positive_density_target, density_only, &
-                                     spin_density_targets, candidate_targets, restore_operator)
+                                     spin_density_targets, candidate_targets, restore_operator, leave_trial)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, ALLOCATABLE, INTENT(OUT)                  :: points(:, :), domains(:), spins(:), &
@@ -1977,7 +1997,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: density_only
       REAL(dp), INTENT(IN), OPTIONAL                     :: spin_density_targets(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL       :: candidate_targets(:)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator
+      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator, leave_trial
 
       INTEGER                                            :: descriptor, domain, i, level_index, &
                                                             local_count, nlevels, offset, row, &
@@ -2134,6 +2154,9 @@ CONTAINS
          CALL state%para_env%sum(descriptors)
          CALL state%para_env%sum(endpoint_values)
          IF (PRESENT(candidate_targets)) CALL state%para_env%sum(candidate_targets)
+      END IF
+      IF (PRESENT(leave_trial)) THEN
+         IF (leave_trial) RETURN
       END IF
       IF (PRESENT(restore_operator)) THEN
          IF (.NOT. restore_operator) THEN
@@ -3626,7 +3649,8 @@ CONTAINS
             CALL native_orbital_covectors(context%state, gradient=gradient)
          ELSE
             CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, &
-                                       sample_inputs=SIZE(context%points, 2) > 0)
+                                       sample_inputs=SIZE(context%points, 2) > 0, &
+                                       reuse_fields=SIZE(context%points, 2) == 0)
          END IF
       CLASS DEFAULT
          CPABORT("Invalid native Skala gradient context.")
@@ -4009,10 +4033,16 @@ CONTAINS
       CLASS(*), INTENT(INOUT) :: context
       LOGICAL, INTENT(OUT) :: smooth, interrupted
 
-      LOGICAL :: crossed
+      LOGICAL :: crossed, leave_trial
 
+      leave_trial = .FALSE.
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         ! Unconstrained curvature immediately consumes the trial gradient on a smooth segment.
+         leave_trial = SIZE(context%points, 2) == 0
+      END SELECT
       CALL check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator=.FALSE., &
-                                classify_candidates=.FALSE.)
+                                classify_candidates=.FALSE., leave_trial=leave_trial)
       smooth = .NOT. crossed
       IF (crossed) THEN
          ! Reject this Hessian probe without turning it into an accepted orbital event.
@@ -4034,8 +4064,10 @@ CONTAINS
 !> \param crossed Whether any physical threshold is crossed.
 !> \param restore_operator Restore the accepted native operator after checking the segment.
 !> \param classify_candidates Classify and admit detected roots when true.
+!> \param leave_trial Keep the final descriptor-only trial for the following gradient evaluation.
 ! **************************************************************************************************
-   SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator, classify_candidates)
+   SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator, &
+                                   classify_candidates, leave_trial)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
 
@@ -4046,7 +4078,7 @@ CONTAINS
       CLASS(*), INTENT(INOUT)                            :: context
       LOGICAL, INTENT(OUT)                               :: interrupted
       LOGICAL, INTENT(OUT), OPTIONAL                     :: crossed
-      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator, classify_candidates
+      LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator, classify_candidates, leave_trial
 
       TYPE(qs_skala_scf_crossing_type), POINTER         :: crossings
       TYPE(qs_skala_scf_crossing_type) :: trimmed
@@ -4077,12 +4109,12 @@ CONTAINS
                                         crossings%spins, crossings%descriptors, crossings%values, &
                                         density_only=.NOT. context%kinetic_boundaries, &
                                         spin_density_targets=context%density_floors, candidate_targets=crossings%targets, &
-                                        restore_operator=restore_operator)
+                                        restore_operator=restore_operator, leave_trial=leave_trial)
          ELSE
             CALL qs_skala_scf_crossings(context%state, first, last, crossings%points, crossings%domains, &
                                         crossings%spins, crossings%descriptors, crossings%values, &
                                         density_only=.NOT. context%kinetic_boundaries, candidate_targets=crossings%targets, &
-                                        restore_operator=restore_operator)
+                                        restore_operator=restore_operator, leave_trial=leave_trial)
          END IF
          ! Existing active samples stay on their original constraint curve. Rounding-scale
          ! endpoint sign changes within that same window are not new physical events.
