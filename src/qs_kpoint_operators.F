@@ -2833,7 +2833,7 @@ CONTAINS
          ! Keep block GEMMs for direct assembly; get copies any prepared FFT output.
          use_blocks = prepared .AND. kpoints%para_env_kp%num_pe == 1 .AND. &
                       .NOT. ASSOCIATED(ctx%native(slot)%source)
-         IF (prepared) THEN
+         IF (use_blocks) THEN
             DO ispin = 1, nrows
                use_blocks = use_blocks .AND. .NOT. ALLOCATED(ctx%rs_batch(ispin, slot)%data)
             END DO
