@@ -1046,7 +1046,9 @@ CONTAINS
                BLOCK
                   TYPE(pw_c1d_gs_type), POINTER :: core_tau_g
                   CALL get_ks_env(ks_env, rho_nlcc_tau_g=core_tau_g)
-                  IF (ASSOCIATED(core_tau_g)) CPABORT("Explicit UPF core tau requires native Quickstep XC evaluation")
+                  IF (ASSOCIATED(core_tau_g)) THEN
+                     CPABORT("Explicit UPF core tau requires native Quickstep XC evaluation")
+                  END IF
                END BLOCK
                use_gauxc_matrix = .TRUE.
                CALL apply_gauxc(qs_env, xc_section, calculate_forces)
