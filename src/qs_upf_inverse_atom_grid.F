@@ -9,9 +9,10 @@ MODULE qs_upf_inverse_atom_grid
    USE cell_types,                      ONLY: cell_type
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_comm_type
-   USE qs_atom_grid_partition,          ONLY: build_periodic_atom_image_layout,&
-                                              periodic_atom_image_partition_from_layout
    USE qs_grid_atom,                    ONLY: grid_atom_type
+   USE skala_periodic_partition,        ONLY: build_periodic_atom_image_layout,&
+                                              periodic_atom_image_partition_from_layout,&
+                                              skala_periodic_partition_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -21,12 +22,6 @@ MODULE qs_upf_inverse_atom_grid
       TYPE(grid_atom_type), POINTER :: grid => NULL()
    END TYPE qs_upf_inverse_atom_grid_ref_type
 
-   TYPE atom_image_layout_type
-      INTEGER :: target_image = 0
-      INTEGER, ALLOCATABLE :: atoms(:), shifts(:, :)
-      REAL(dp), ALLOCATABLE :: coordinates(:, :)
-   END TYPE atom_image_layout_type
-
    TYPE qs_upf_inverse_atom_grid_type
       INTEGER, ALLOCATABLE :: atoms(:)
       ! Row within the complete atom quadrature, independent of MPI distribution.
@@ -35,10 +30,10 @@ MODULE qs_upf_inverse_atom_grid
       ! The FFT background is integrated once per auxiliary cell also for isolated electrostatics.
       REAL(dp), ALLOCATABLE :: background_weights(:)
       REAL(dp) :: inverse_cell(3, 3) = 0.0_dp
-      INTEGER :: background_axes(3) = 0
+      INTEGER :: background_axes(3) = 0, natom = 0
+      TYPE(skala_periodic_partition_type) :: partition
       ! Native inverse frames and this quadrature share one geometry lifetime.
       COMPLEX(dp), ALLOCATABLE :: inverse_values(:, :, :), inverse_gradients(:, :, :, :)
-      TYPE(atom_image_layout_type), ALLOCATABLE :: layouts(:)
    END TYPE qs_upf_inverse_atom_grid_type
 
    PUBLIC :: qs_upf_inverse_atom_grid_ref_type, qs_upf_inverse_atom_grid_type
@@ -50,7 +45,7 @@ CONTAINS
 !> \brief Build distributed atom rows from native radial/Lebedev quadratures.
 !>        Cartesian radial offsets and radial support are independent of geometry. A C2 window
 !>        tapers the final quarter of each finite support. This defines a finite residual quadrature,
-!>        not an exact partition of all space. Its finite image layout is shared by the atom's rows.
+!>        not an exact partition of all space. The periodic Becke weights use a smooth image window.
 !> \param atom_coords Cartesian base-atom positions.
 !> \param cell Periodic cell, also supporting nonperiodic directions.
 !> \param atom_kinds Kind index of each atom.
@@ -58,11 +53,10 @@ CONTAINS
 !> \param support_radii Fixed positive support radius of each atom.
 !> \param comm Communicator distributing rows in their global radial/angular order.
 !> \param state Owned local quadrature and finite image layouts.
-!> \param image_shell Optional common image shell for a specified finite approximation.
 !> \param atom_blocks Keep complete atom blocks on one rank for nonlocal atomic functionals.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_atom_grid_prepare(atom_coords, cell, atom_kinds, grids, support_radii, comm, state, &
-                                               image_shell, atom_blocks)
+                                               atom_blocks)
       REAL(dp), INTENT(IN)                               :: atom_coords(:, :)
       TYPE(cell_type), POINTER                           :: cell
       INTEGER, INTENT(IN)                                :: atom_kinds(:)
@@ -71,11 +65,10 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: support_radii(:)
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(OUT)   :: state
-      INTEGER, INTENT(IN), OPTIONAL                      :: image_shell(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_blocks
 
-      INTEGER                                            :: atom, atom_row, ia, idir, ir, kind, &
-                                                            nlocal, row, shell(3)
+      INTEGER                                            :: atom, atom_row, ia, ir, kind, &
+                                                            nlocal, row, target
       LOGICAL                                            :: complete_atoms, owned
       REAL(dp)                                           :: radius, taper, u, weight, window, &
                                                             window_gradient(3)
@@ -89,7 +82,16 @@ CONTAINS
       CPASSERT(ALL(atom_kinds >= 1 .AND. atom_kinds <= SIZE(grids)))
       complete_atoms = .FALSE.
       IF (PRESENT(atom_blocks)) complete_atoms = atom_blocks
-      ALLOCATE (state%layouts(SIZE(atom_kinds)))
+      state%natom = SIZE(atom_kinds)
+      state%inverse_cell = cell%h_inv
+      IF (ANY(cell%perd /= 0)) THEN
+         ! Keep every atom quadrature row inside the plateau of its own image window.
+         CALL build_periodic_atom_image_layout(atom_coords, cell, 1, layout=state%partition, target_image=target, &
+                                               cutoff_radius=2.0_dp*MAXVAL(support_radii))
+      ELSE
+         CALL build_periodic_atom_image_layout(atom_coords, cell, 1, layout=state%partition, target_image=target)
+      END IF
+      CPASSERT(target == 1)
       nlocal = 0
       row = 0
       DO atom = 1, SIZE(atom_kinds)
@@ -97,14 +99,6 @@ CONTAINS
          grid => grids(kind)%grid
          CPASSERT(ASSOCIATED(grid))
          CPASSERT(ASSOCIATED(grid%rad) .AND. ASSOCIATED(grid%weight))
-         DO idir = 1, 3
-            shell(idir) = CEILING(support_radii(atom)*SQRT(SUM(cell%h_inv(idir, :)**2))) + 1
-         END DO
-         IF (PRESENT(image_shell)) shell = image_shell
-         CALL build_periodic_atom_image_layout(atom_coords, cell, atom, image_coords=state%layouts(atom)%coordinates, &
-                                               target_image=state%layouts(atom)%target_image, &
-                                               image_atom=state%layouts(atom)%atoms, image_shift=state%layouts(atom)%shifts, &
-                                               image_shell=shell)
          DO ir = 1, grid%nr
             IF (grid%rad(ir) >= support_radii(atom)) CYCLE
             DO ia = 1, grid%ng_sphere
@@ -140,15 +134,12 @@ CONTAINS
                                          [grid%sin_pol(ia)*grid%cos_azi(ia), &
                                           grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
                state%base_weights(nlocal) = grid%weight(ia, ir)*taper
-               CALL periodic_atom_image_partition_from_layout(state%points(:, nlocal), &
-                                                              state%layouts(atom)%coordinates, &
-                                                              state%layouts(atom)%target_image, weight)
+               CALL periodic_atom_image_partition_from_layout(state%points(:, nlocal), state%partition, atom, weight)
                state%weights(nlocal) = state%base_weights(nlocal)*weight
             END DO
          END DO
       END DO
       IF (ANY(cell%perd == 0)) THEN
-         state%inverse_cell = cell%h_inv
          state%background_axes = 1 - cell%perd
          ALLOCATE (state%background_weights(nlocal))
          DO row = 1, nlocal
@@ -178,32 +169,24 @@ CONTAINS
                                                             weights_response(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: background_weights_response(:)
 
-      INTEGER                                            :: atom, image, row
-      REAL(dp)                                           :: dpoint(3), fractional(3), &
-                                                            fractional_response(3), &
-                                                            image_response(3), value, weight, &
-                                                            window, window_gradient(3)
-      REAL(dp), ALLOCATABLE                              :: dimage(:, :)
+      INTEGER                                            :: atom, row
+      REAL(dp)                                           :: dstrain(3, 3), fractional(3), &
+                                                            fractional_response(3), strain(3, 3), &
+                                                            value, weight, window, window_gradient(3)
+      REAL(dp), ALLOCATABLE                              :: datom(:, :)
 
-      CPASSERT(ALL(SHAPE(atom_response) == [3, SIZE(state%layouts)]))
+      CPASSERT(ALL(SHAPE(atom_response) == [3, state%natom]))
       CPASSERT(ALL(SHAPE(points_response) == SHAPE(state%points)))
       CPASSERT(SIZE(weights_response) == SIZE(state%weights))
-      DO atom = 1, SIZE(state%layouts)
-         ALLOCATE (dimage(3, SIZE(state%layouts(atom)%atoms)))
-         DO row = 1, SIZE(state%atoms)
-            IF (state%atoms(row) /= atom) CYCLE
-            points_response(:, row) = atom_response(:, atom)
-            CALL periodic_atom_image_partition_from_layout(state%points(:, row), state%layouts(atom)%coordinates, &
-                                                           state%layouts(atom)%target_image, weight, dpoint, dimage)
-            value = DOT_PRODUCT(dpoint, points_response(:, row))
-            DO image = 1, SIZE(state%layouts(atom)%atoms)
-               image_response = atom_response(:, state%layouts(atom)%atoms(image)) + &
-                                MATMUL(cell_response, REAL(state%layouts(atom)%shifts(:, image), dp))
-               value = value + DOT_PRODUCT(dimage(:, image), image_response)
-            END DO
-            weights_response(row) = state%base_weights(row)*value
-         END DO
-         DEALLOCATE (dimage)
+      ALLOCATE (datom(3, state%natom))
+      strain = MATMUL(cell_response, state%inverse_cell)
+      DO row = 1, SIZE(state%atoms)
+         atom = state%atoms(row)
+         points_response(:, row) = atom_response(:, atom)
+         CALL periodic_atom_image_partition_from_layout(state%points(:, row), state%partition, atom, weight, datom, dstrain)
+         ! Translation invariance gives the point derivative as minus the sum of atom derivatives.
+         value = SUM(datom*(atom_response - SPREAD(points_response(:, row), 2, state%natom))) + SUM(dstrain*strain)
+         weights_response(row) = state%base_weights(row)*value
       END DO
       IF (PRESENT(background_weights_response)) THEN
          CPASSERT(SIZE(background_weights_response) == SIZE(state%weights))

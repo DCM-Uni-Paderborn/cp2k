@@ -837,7 +837,7 @@ CONTAINS
       CPASSERT(ns == 1 .OR. ns == 2)
       CPASSERT(SIZE(atom_grid%atoms) == np)
       CPASSERT(ALL(SHAPE(atom_grid%points) == SHAPE(points)))
-      CPASSERT(SIZE(positions, 2) == SIZE(atom_grid%layouts))
+      CPASSERT(SIZE(positions, 2) == atom_grid%natom)
       local_atom = 0
       DO atom = 1, SIZE(positions, 2)
          IF (ANY(atom_grid%atoms == atom)) local_atom = local_atom + 1

@@ -18,8 +18,8 @@ MODULE skala_periodic_partition
    INTEGER, PARAMETER :: image_shell = 1
    TYPE, PUBLIC :: skala_periodic_partition_type
       PRIVATE
-      INTEGER :: natom = 0, nneighbor = 0, periodicity(3) = 0
-      REAL(dp) :: cell(3, 3) = 0.0_dp, inverse(3, 3) = 0.0_dp
+      INTEGER :: natom = 0, nneighbor = 0, periodicity(3) = 0, extent(3) = 0
+      REAL(dp) :: cell(3, 3) = 0.0_dp, inverse(3, 3) = 0.0_dp, cutoff_radius = 0.0_dp
       REAL(dp), ALLOCATABLE :: atoms(:, :), offset(:, :, :), inverse_distance(:, :)
       REAL(dp), ALLOCATABLE :: cutoff(:, :), cutoff_gradient(:, :, :)
       INTEGER, ALLOCATABLE :: owner(:, :), self(:)
@@ -36,15 +36,17 @@ CONTAINS
 !> \param image_periodicity Optional periodic directions, including auxiliary-grid periodicity.
 !> \param layout Periodized compact Becke geometry.
 !> \param target_image Reference-atom index in the layout.
+!> \param cutoff_radius Optional Cartesian support radius in bohr, fixed under strain.
 ! **************************************************************************************************
    SUBROUTINE build_periodic_atom_image_layout(atom_coords, cell, target_atom, image_periodicity, &
-                                               layout, target_image)
+                                               layout, target_image, cutoff_radius)
       REAL(dp), INTENT(IN)                               :: atom_coords(:, :)
       TYPE(cell_type), POINTER                           :: cell
       INTEGER, INTENT(IN)                                :: target_atom
       INTEGER, INTENT(IN), OPTIONAL                      :: image_periodicity(3)
       TYPE(skala_periodic_partition_type), INTENT(OUT)   :: layout
       INTEGER, INTENT(OUT)                               :: target_image
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius
 
       INTEGER                                            :: a, b, base(3), extent(3), i, j, k, n, &
                                                             shift(3)
@@ -62,6 +64,13 @@ CONTAINS
       ALLOCATE (layout%atoms(3, layout%natom))
       layout%atoms(:, :) = atom_coords
       extent = (image_shell + 1)*layout%periodicity
+      IF (PRESENT(cutoff_radius)) THEN
+         CPASSERT(cutoff_radius > 0.0_dp .AND. cutoff_radius < SQRT(HUGE(1.0_dp)))
+         layout%cutoff_radius = cutoff_radius
+         ! Bound the fractional components of a Cartesian ball around the nearest integer image.
+         extent = FLOOR(cutoff_radius*SQRT(SUM(layout%inverse**2, DIM=2)) + 0.5_dp)*layout%periodicity
+      END IF
+      layout%extent = extent
       layout%nneighbor = layout%natom*PRODUCT(2*extent + 1)
       ALLOCATE (layout%offset(3, layout%nneighbor, layout%natom), &
                 layout%inverse_distance(layout%nneighbor, layout%natom), &
@@ -138,7 +147,7 @@ CONTAINS
       weight = 0.0_dp
       CALL seed_value(layout, target_image, grid_point - layout%atoms(:, target_image), weight, zero, .FALSE.)
       IF (zero) RETURN
-      extent = (image_shell + 1)*layout%periodicity
+      extent = layout%extent
       n = 0
       TARGET = 0
       DO a = 1, layout%natom
@@ -217,7 +226,7 @@ CONTAINS
    END SUBROUTINE periodic_atom_image_partition
 
 ! **************************************************************************************************
-!> \brief Compact quintic window in fractional coordinates.
+!> \brief Compact quintic window in fractional or Cartesian coordinates.
 !> \param layout Cell geometry and periodic directions.
 !> \param x Cartesian displacement from the window center.
 !> \param value Window value.
@@ -229,8 +238,22 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: value, gradient(3)
 
       INTEGER                                            :: d, j
-      REAL(dp)                                           :: dh(3), f(3), h(3), z
+      REAL(dp)                                           :: distance, dh(3), f(3), h(3), z
 
+      IF (layout%cutoff_radius > 0.0_dp) THEN
+         distance = NORM2(x)
+         z = 2.0_dp*distance/layout%cutoff_radius - 1.0_dp
+         value = 0.0_dp
+         gradient = 0.0_dp
+         IF (z >= 1.0_dp) RETURN
+         IF (z <= 0.0_dp) THEN
+            value = 1.0_dp
+            RETURN
+         END IF
+         value = (1.0_dp - z)**3*(1.0_dp + 3.0_dp*z + 6.0_dp*z**2)
+         gradient = -60.0_dp*z**2*(1.0_dp - z)**2*(x/distance)/layout%cutoff_radius
+         RETURN
+      END IF
       f = MATMUL(layout%inverse, x)
       h = 1.0_dp
       dh = 0.0_dp
@@ -347,10 +370,16 @@ CONTAINS
       IF (c <= 0.0_dp .OR. coefficient == 0.0_dp) RETURN
       gi = -coefficient*dc/c
       datom(:, atom) = datom(:, atom) + gi
-      ! Include the explicit inverse-cell response of the compact window.
-      DO d = 1, 3
-         moment(:, d) = moment(:, d) + gi*point(d)
-      END DO
+      IF (layout%cutoff_radius > 0.0_dp) THEN
+         DO d = 1, 3
+            moment(:, d) = moment(:, d) + gi*center(d)
+         END DO
+      ELSE
+         ! Include the explicit inverse-cell response of the fractional window.
+         DO d = 1, 3
+            moment(:, d) = moment(:, d) + gi*point(d)
+         END DO
+      END IF
       ri = NORM2(x)
       u = x/MAX(ri, 1.e-30_dp)
       DO k = 1, layout%nneighbor
@@ -363,10 +392,15 @@ CONTAINS
          CALL pair_switch(mu, s, ds)
          pair = (1.0_dp - layout%cutoff(k, atom)) + layout%cutoff(k, atom)*s
          IF (pair <= 0.0_dp) CYCLE
-         ! The neighbor taper's affine cell response cancels its center moment.
          gi = coefficient*(s - 1.0_dp)/pair*layout%cutoff_gradient(:, k, atom)
          datom(:, atom) = datom(:, atom) - gi
          datom(:, b) = datom(:, b) + gi
+         ! Only the fractional taper cancels its center moment under affine strain.
+         IF (layout%cutoff_radius > 0.0_dp) THEN
+            DO d = 1, 3
+               moment(:, d) = moment(:, d) + gi*layout%offset(d, k, atom)
+            END DO
+         END IF
          factor = coefficient*layout%cutoff(k, atom)*ds/pair*layout%inverse_distance(k, atom)
          e = -layout%offset(:, k, atom)*layout%inverse_distance(k, atom)
          gi = factor*(-u - mu*e)

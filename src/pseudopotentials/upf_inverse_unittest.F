@@ -170,6 +170,7 @@ PROGRAM upf_inverse_unittest
    CALL check_periodic_coulomb()
    CALL check_cartesian_self_images()
    CALL check_atomic_background_measure()
+   CALL check_periodic_atomic_quadrature()
    CALL check_center_angular()
    CALL check_fourier_coulomb()
    CALL check_core_fourier()
@@ -261,6 +262,80 @@ CONTAINS
       DEALLOCATE (grid%rad, grid%weight, grid%sin_pol, grid%cos_pol, grid%sin_azi, grid%cos_azi)
       DEALLOCATE (grid, cell)
    END SUBROUTINE check_atomic_background_measure
+
+! **************************************************************************************************
+!> \brief Preserve atomic quadrature symmetry and derivatives for orthogonal and hexagonal cells.
+! **************************************************************************************************
+   SUBROUTINE check_periodic_atomic_quadrature()
+      INTEGER                                            :: i, info, lattice, row, side
+      REAL(dp)                                           :: analytic(2), coordinates(3, 2), dh(3, 3), &
+                                                            h(3, 3), motion(3, 2), positions(3, 2), values(2, -1:1)
+      REAL(dp), ALLOCATABLE                              :: points_response(:, :), weights_response(:)
+      TYPE(cell_type), POINTER                           :: cell
+      TYPE(grid_atom_type), POINTER                      :: grid
+      TYPE(qs_upf_inverse_atom_grid_ref_type)            :: refs(1)
+      TYPE(qs_upf_inverse_atom_grid_type)                :: state
+      REAL(dp), PARAMETER                                :: sin60 = SQRT(3.0_dp)/2.0_dp
+
+      ALLOCATE (cell, grid)
+      cell%perd = 1
+      dh = 0.0_dp
+      dh(2, 2) = 0.4_dp
+      positions(:, 1) = 0.0_dp
+      motion = 0.0_dp
+      motion(2, 2) = 1.0_dp
+      grid%nr = 1
+      grid%ng_sphere = 2
+      ALLOCATE (grid%rad(1), grid%weight(2, 1), grid%sin_pol(2), grid%cos_pol(2), grid%sin_azi(2), grid%cos_azi(2))
+      grid%rad = 3.1_dp
+      grid%weight = 1.0_dp
+      refs(1)%grid => grid
+      DO lattice = 1, 2
+         IF (lattice == 1) THEN
+            h = RESHAPE([14.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 13.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 12.0_dp], [3, 3])
+            positions(:, 2) = [0.3_dp, 6.5_dp, 0.0_dp]
+            grid%sin_pol = 1.0_dp
+            grid%cos_pol = 0.0_dp
+            grid%sin_azi = [1.0_dp, -1.0_dp]
+            grid%cos_azi = 0.0_dp
+         ELSE
+            h = RESHAPE([8.0_dp, 0.0_dp, 0.0_dp, 4.0_dp, 8.0_dp*sin60, 0.0_dp, 0.0_dp, 0.0_dp, 12.0_dp], [3, 3])
+            positions(:, 2) = [0.0_dp, 0.0_dp, 3.5_dp]
+            grid%sin_pol = SQRT(0.91_dp)
+            grid%cos_pol = 0.3_dp
+            grid%sin_azi = [1.0_dp, 0.5_dp]
+            grid%cos_azi = [0.0_dp, -sin60]
+         END IF
+         values = 0.0_dp
+         analytic = 0.0_dp
+         DO side = -1, 1
+            cell%hmat = h + side*step*dh
+            cell%h_inv = cell%hmat
+            CALL invmat(cell%h_inv, info)
+            CPASSERT(info == 0)
+            coordinates = positions + side*step*motion
+            CALL qs_upf_inverse_atom_grid_prepare(coordinates, cell, [1, 1], refs, [6.0_dp, 6.0_dp], comm, state)
+            IF (side == 0) THEN
+               ALLOCATE (points_response(3, SIZE(state%weights)), weights_response(SIZE(state%weights)))
+               CALL qs_upf_inverse_atom_grid_response(state, motion, dh, points_response, weights_response)
+            END IF
+            DO row = 1, SIZE(state%weights)
+               IF (state%atoms(row) /= 1) CYCLE
+               i = state%atom_rows(row)
+               values(i, side) = state%weights(row)
+               IF (side == 0) analytic(i) = weights_response(row)
+            END DO
+            IF (side == 0) DEALLOCATE (points_response, weights_response)
+         END DO
+         CALL comm%sum(values)
+         CALL comm%sum(analytic)
+         CALL check(ABS(values(1, 0) - values(2, 0)), 'Periodic atomic quadrature symmetry', 5.e-14_dp)
+         CALL check(MAXVAL(ABS((values(:, 1) - values(:, -1))/(2*step) - analytic)), &
+                    'Periodic atomic quadrature response', 2.e-8_dp)
+      END DO
+      DEALLOCATE (grid%rad, grid%weight, grid%sin_pol, grid%cos_pol, grid%sin_azi, grid%cos_azi)
+      DEALLOCATE (grid, cell)
+   END SUBROUTINE check_periodic_atomic_quadrature
 
 ! **************************************************************************************************
 !> \brief Preserve symmetry and occupations while retaining the orbital differential and curvature.
