@@ -35,7 +35,8 @@ PROGRAM upf_inverse_unittest
    USE ieee_arithmetic,                 ONLY: ieee_is_finite,&
                                               ieee_quiet_nan,&
                                               ieee_value
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               lebedev_grid
    USE mathconstants,                   ONLY: fourpi,&
@@ -2514,6 +2515,7 @@ CONTAINS
                                                             coefficients(n, 2), dc(n, 2), &
                                                             form(n, n), matrix(2, 2), raw_form(n, n)
       INTEGER                                            :: axis, i, image, j, l, pair, point, side
+      INTEGER(int_8)                                     :: partial_budget
       REAL(dp) :: atoms_response(3, 1), cell(3, 3), cell_response(3, 3), charge_gradient(3, 3), &
          charge_gradient_response(3, 3), charge_gradient_samples(3, 3, 2), d(3, n), delta, &
          density(3), energy_samples(2), expected, gcache(3, 2), gradient(n, n, 3), gradient_samples(n, n, 3, 2), &
@@ -2718,6 +2720,20 @@ CONTAINS
       CALL uspp_augmentation_prepare_fourier(augmentation%kinds(1), gcache(:, 2:1:-1))
       CALL uspp_augmentation_fourier(augmentation%kinds(1), gcache(:, 2), position, 3.0_dp, form, grid_index=1)
       CALL check(MAXVAL(ABS(form - raw_form)), 'Fourier cache refreshed after reordering', 1.e-15_dp)
+      ASSOCIATE (kind => augmentation%kinds(1))
+         partial_budget = (INT(SIZE(gcache), int_8) + SIZE(kind%fourier_norm) + &
+                           SIZE(kind%fourier_radial) + SIZE(kind%fourier_next))*STORAGE_SIZE(0.0_dp)/8 + &
+                          INT(SIZE(kind%fourier_map), int_8)*STORAGE_SIZE(0)/8 + &
+                          INT(SIZE(form), int_8)*STORAGE_SIZE(form)/8
+         CALL uspp_augmentation_prepare_fourier(kind, gcache, max_bytes=partial_budget)
+         IF (.NOT. ALLOCATED(kind%fourier_form)) ERROR STOP 'Missing partial Fourier form cache'
+         IF (SIZE(kind%fourier_form, 3) /= 1) ERROR STOP 'Unexpected partial Fourier cache size'
+         DO i = 1, SIZE(gcache, 2)
+            CALL uspp_augmentation_fourier(kind, gcache(:, i), position, 3.0_dp, raw_form)
+            CALL uspp_augmentation_fourier(kind, gcache(:, i), position, 3.0_dp, form, grid_index=i)
+            CALL check(MAXVAL(ABS(form - raw_form)), 'Fourier forms within and outside the cache', 1.e-15_dp)
+         END DO
+      END ASSOCIATE
       CALL uspp_augmentation_prepare_realspace(pot, augmentation%kinds(1))
       frame%center_kinds = 1
       frame%coefficients(:, :) = coefficients

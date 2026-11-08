@@ -478,7 +478,7 @@ CONTAINS
    END SUBROUTINE uspp_augmentation_integrate_atom
 
 ! **************************************************************************************************
-!> \brief Cache exact radial transforms and, if they fit, unshifted form factors.
+!> \brief Cache exact radial transforms and as many unshifted form factors as fit.
 !>        The retained arrays share the memory limit; uncached vectors use direct evaluation.
 !>        Initialization of a new augmentation object also releases this cache.
 !> \param augmentation Prepared radial data, with the cache updated in place.
@@ -491,8 +491,10 @@ CONTAINS
       INTEGER(int_8), INTENT(IN), OPTIONAL               :: max_bytes
 
       COMPLEX(dp), ALLOCATABLE                           :: form(:, :)
-      INTEGER                                            :: capacity, ig, index, lmax, nc, ng, np, unique
-      INTEGER(int_8)                                     :: budget, entry_bytes, form_bytes, index_bytes
+      INTEGER                                            :: capacity, ig, index, lmax, nc, ng, &
+                                                            ng_form, np, unique
+      INTEGER(int_8)                                     :: budget, entry_bytes, form_bytes, &
+                                                            index_bytes, vector_bytes
       INTEGER, ALLOCATABLE                               :: order(:)
       REAL(dp)                                           :: previous
       REAL(dp), ALLOCATABLE                              :: norms(:), sorted(:)
@@ -505,7 +507,7 @@ CONTAINS
       nc = SIZE(augmentation%weighted_q, 2)
       np = augmentation%nproj
       lmax = augmentation%lmax
-      CPASSERT(nc > 0 .AND. lmax >= 0)
+      CPASSERT(nc > 0 .AND. lmax >= 0 .AND. np > 0)
       IF (ALLOCATED(augmentation%fourier_vectors) .AND. augmentation%fourier_budget == budget) THEN
          IF (SIZE(augmentation%fourier_vectors, 2) == ng) THEN
             IF (ALL(augmentation%fourier_vectors == gvecs)) RETURN
@@ -563,12 +565,14 @@ CONTAINS
          END IF
          augmentation%fourier_map(order(ig)) = index
       END DO
-      form_bytes = INT(ng, int_8)*(3*STORAGE_SIZE(0.0_dp) + &
-                                  INT(np, int_8)**2*STORAGE_SIZE(CMPLX(0.0_dp, KIND=dp)))/8
-      IF (form_bytes > budget - index_bytes - capacity*entry_bytes) RETURN
+      vector_bytes = SIZE(gvecs, KIND=int_8)*STORAGE_SIZE(0.0_dp)/8
+      form_bytes = INT(np, int_8)**2*STORAGE_SIZE(CMPLX(0.0_dp, KIND=dp))/8
+      ng_form = INT(MIN(INT(ng, int_8), MAX(0_int_8, (budget - index_bytes - capacity*entry_bytes - vector_bytes)/form_bytes)))
+      IF (ng_form == 0) RETURN
+      ! Keep the full grid as the cache key, even when only a prefix of form factors fits.
       ALLOCATE (augmentation%fourier_vectors, SOURCE=gvecs)
-      ALLOCATE (augmentation%fourier_form(np, np, ng), form(np, np))
-      DO ig = 1, ng
+      ALLOCATE (augmentation%fourier_form(np, np, ng_form), form(np, np))
+      DO ig = 1, ng_form
          CALL augmentation_fourier_evaluate(augmentation, gvecs(:, ig), [0.0_dp, 0.0_dp, 0.0_dp], &
                                             1.0_dp, form, .TRUE., grid_index=ig)
          augmentation%fourier_form(:, :, ig) = form
@@ -626,7 +630,7 @@ CONTAINS
       COMPLEX(dp)                                       :: phase
 
       IF (PRESENT(grid_index) .AND. ALLOCATED(augmentation%fourier_vectors) .AND. .NOT. PRESENT(strain)) THEN
-         IF (grid_index >= 1 .AND. grid_index <= SIZE(augmentation%fourier_vectors, 2)) THEN
+         IF (grid_index >= 1 .AND. grid_index <= SIZE(augmentation%fourier_form, 3)) THEN
             ! A Nyquist alias can have the same length but a different Cartesian vector.
             IF (augmentation%fourier_norm(grid_index) > 0.0_dp .AND. &
                 ALL(augmentation%fourier_vectors(:, grid_index) == g)) THEN
