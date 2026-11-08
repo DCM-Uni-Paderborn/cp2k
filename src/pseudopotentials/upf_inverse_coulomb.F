@@ -85,7 +85,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Freeze the Fourier and complete periodic residual-pair maps at a fixed geometry.
-!>        Every overlapping image is retained. Density and compensation moments remain variable.
+!>        Opposite self images are included by reciprocity. Density and compensation moments remain variable.
 !> \param centers Same center geometry and radial/harmonic layout as the subsequent functional.
 !> \param cell ...
 !> \param gvecs ...
@@ -135,6 +135,7 @@ CONTAINS
             DO k = limits(1, 3), limits(2, 3)
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
+                     IF (a == b .AND. negative_image(i, j, k)) CYCLE
                      image = [i, j, k]
                      displacement = centers(a)%position - centers(b)%position - MATMUL(cell, REAL(image, dp))
                      IF (SUM(displacement**2) >= radius**2) CYCLE
@@ -142,6 +143,14 @@ CONTAINS
                                                           centers(b)%radii, centers(b)%l, centers(b)%indices, &
                                                           displacement, kernel)
                      map%pairs(a, b)%values(:, :, :, :) = map%pairs(a, b)%values + kernel
+                     IF (a == b .AND. ANY(image /= 0)) THEN
+                        ! Reversing the lattice image exchanges the two shell distributions.
+                        DO h = 1, SIZE(kernel, 2)
+                           DO r = 1, SIZE(kernel, 1)
+                              map%pairs(a, b)%values(:, :, r, h) = map%pairs(a, b)%values(:, :, r, h) + kernel(r, h, :, :)
+                           END DO
+                        END DO
+                     END IF
                   END DO
                END DO
             END DO
@@ -220,7 +229,8 @@ CONTAINS
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
                      image = [i, j, k]
-                     IF (a == b .AND. ALL(image == 0)) CYCLE
+                     ! The two orientations of a self image give the same contracted cell derivative.
+                     IF (a == b .AND. (ALL(image == 0) .OR. negative_image(i, j, k))) CYCLE
                      displacement = centers(a)%position - centers(b)%position - MATMUL(map%cell, REAL(image, dp))
                      IF (SUM(displacement**2) >= radius**2) CYCLE
                      DO axis = 1, 3
@@ -240,7 +250,7 @@ CONTAINS
                         value = 0.0_dp
                         DO channel = 1, SIZE(centers(a)%l)
                            DO nr = 1, SIZE(centers(a)%radii)
-                              value = value + MERGE(0.5_dp, 1.0_dp, a == b)*work(a)%q(nr, channel)* &
+                              value = value + work(a)%q(nr, channel)* &
                                       SUM(dkernel(nr, channel, :, :)*work(b)%q)
                            END DO
                         END DO
@@ -736,6 +746,19 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE residual_image_limits
+
+! **************************************************************************************************
+!> \brief Select one half of the opposite lattice images of a center.
+!> \param i First lattice index.
+!> \param j Second lattice index.
+!> \param k Third lattice index.
+!> \return True for the negative member of a nonzero image pair.
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION negative_image(i, j, k) RESULT(negative)
+      INTEGER, INTENT(IN)                                :: i, j, k
+
+      negative = k < 0 .OR. (k == 0 .AND. (j < 0 .OR. (j == 0 .AND. i < 0)))
+   END FUNCTION negative_image
 
 ! **************************************************************************************************
 !> \brief Reciprocal Coulomb map between two translated harmonic radial-shell distributions.
