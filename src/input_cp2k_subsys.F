@@ -97,6 +97,8 @@ CONTAINS
                           description="Input parameters needed to set up the reference cell for "// &
                           "FORCE_EVAL/SUBSYS/CELL. This option can be used to keep the FFT grid "// &
                           "fixed while running a cell optimization or NpT molecular dynamics. "// &
+                          "It also defines the angular quadrature reference for original USPP and PAW "// &
+                          "atom-centered integration in three-dimensional periodic cells. "// &
                           "Check the &CELL section for further details.")
       CALL create_cell_section_low(subsection, periodic)
       CALL section_add_subsection(section, subsection)

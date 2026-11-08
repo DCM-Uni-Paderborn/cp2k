@@ -137,7 +137,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Average a Lebedev rule over a finite Cartesian point group.
-!>        Right cosets modulo the cubic symmetries of the base rule give identical node sets.
+!>        Rotations differing by a signed permutation on the right give identical node sets.
 !>        Evaluate one rule per distinct coset and keep the total weight normalized to one.
 !> \param rule Index of the initialized Lebedev rule.
 !> \param directions New Cartesian unit directions.
