@@ -18,7 +18,9 @@ MODULE qs_upf_inverse_scf_xc
    USE lebedev,                         ONLY: deallocate_lebedev_grids,&
                                               get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
-                                              lebedev_grid
+                                              lebedev_grid,&
+                                              lebedev_rotational_average
+   USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_type,&
                                               mp_para_env_type
@@ -129,7 +131,8 @@ CONTAINS
          CPASSERT(ALLOCATED(kinds(ikind)%sgp_potential%upf_data))
          IF (kinds(ikind)%sgp_potential%upf_data%is_paw) THEN
             CALL qs_upf_inverse_paw_init(kinds(ikind)%sgp_potential%upf_data, &
-                                         kinds(ikind)%sgp_potential%upf_projectors, kinds(ikind)%ngrid_ang, state%paw(ikind))
+                                         kinds(ikind)%sgp_potential%upf_projectors, kinds(ikind)%ngrid_ang, &
+                                         state%paw(ikind), state%angular_rotations)
          END IF
          IF (.NOT. kinetic) CYCLE
          IF (state%paw(ikind)%active) THEN
@@ -1130,6 +1133,17 @@ CONTAINS
             CALL create_grid_atom(grid, nr, na, 0, ll, quadrature)
          END IF
          grids(ikind)%grid => grid
+         IF (ALLOCATED(state%angular_rotations)) THEN
+            ll = get_number_of_lebedev_grid(n=grid%ng_sphere)
+            ASSOCIATE (rows => grids(ikind))
+               CALL lebedev_rotational_average(ll, rows%directions, rows%angular_weights, state%angular_rotations)
+               IF (SIZE(rows%angular_weights) == grid%ng_sphere) THEN
+                  DEALLOCATE (rows%directions, rows%angular_weights)
+               ELSE
+                  rows%angular_weights = fourpi*rows%angular_weights
+               END IF
+            END ASSOCIATE
+         END IF
          IF (kinds(ikind)%ghost) CYCLE
          IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
             ! Retain the original Gaussian core, rather than tabulating or refitting it.

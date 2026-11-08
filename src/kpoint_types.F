@@ -192,6 +192,7 @@ MODULE kpoint_types
 !> \param cartesian_half_turns [input] restrict spatial symmetry to Cartesian proper half-turns
 !> \param proper_rotations_only [input] exclude determinant-negative spatial operations
 !> \param integration_grids [internal] real and reciprocal integration grids for spatial symmetry
+!> \param angular_rotations [internal] reference group defining the angular quadrature
 !> \param inversion_symmetry_only [input] reduce kpoints only by inversion symmetry
 !> \param symmetry_backend [input] k-point symmetry backend
 !> \param symmetry_reduction_method [input] k-point symmetry reduction method
@@ -229,6 +230,7 @@ MODULE kpoint_types
       LOGICAL                                 :: cartesian_half_turns = .FALSE.
       LOGICAL                                 :: proper_rotations_only = .FALSE.
       TYPE(crys_sym_grid_type), ALLOCATABLE     :: integration_grids(:)
+      REAL(dp), ALLOCATABLE                     :: angular_rotations(:, :, :)
       INTEGER                                 :: symmetry_backend = use_k290_kpoint_backend
       INTEGER                                 :: symmetry_reduction_method = use_k290_kpoint_symmetry
       LOGICAL                                 :: verbose = .FALSE.

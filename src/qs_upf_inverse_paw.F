@@ -695,17 +695,19 @@ CONTAINS
 !> \param projectors Matching radial and magnetic projector mapping.
 !> \param nang Requested atomic angular quadrature.
 !> \param cache Owned per-kind PAW data.
+!> \param rotations Fixed reference group for the one-center XC quadrature.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_paw_init(pot, projectors, nang, cache)
+   SUBROUTINE qs_upf_inverse_paw_init(pot, projectors, nang, cache, rotations)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       INTEGER, INTENT(IN)                                :: nang
       TYPE(paw_kind_type), INTENT(OUT)                   :: cache
+      REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
 
       CPASSERT(pot%is_paw .AND. .NOT. pot%has_so)
       CPASSERT(ALLOCATED(pot%paw))
       CALL paw_onecenter_init(pot, projectors, cache%onecenter)
-      CALL paw_xc_init(pot, nang, cache%xcgrid)
+      CALL paw_xc_init(pot, nang, cache%xcgrid, rotations)
       cache%core_energy = pot%paw%core_energy
       cache%active = .TRUE.
    END SUBROUTINE qs_upf_inverse_paw_init

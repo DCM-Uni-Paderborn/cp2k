@@ -85,6 +85,8 @@ MODULE lebedev
    TYPE(oh_grid), DIMENSION(nlg), TARGET :: lebedev_grid = oh_grid()
 
    REAL(KIND=dp), PARAMETER :: one = 1.0_dp, rs2 = one/SQRT(2.0_dp), rs3 = one/SQRT(3.0_dp), zero = 0.0_dp
+   REAL(dp), PARAMETER :: cartesian_identity(3, 3) = RESHAPE( &
+      [one, zero, zero, zero, one, zero, zero, zero, one], [3, 3])
    INTEGER  :: nlgp = -1
    LOGICAL  :: init_lebedev_grids_done = .FALSE.
 
@@ -94,9 +96,44 @@ MODULE lebedev
    PUBLIC :: lebedev_grid
 
    PUBLIC :: deallocate_lebedev_grids, get_number_of_lebedev_grid, init_lebedev_grids
-   PUBLIC :: lebedev_rotational_average
+   PUBLIC :: lebedev_rotational_average, lebedev_preserves_average
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Test whether an orthogonal operation permutes the averaged Lebedev rules.
+!> \param rotation Candidate Cartesian operation.
+!> \param group Rotations of the defining reference point group.
+!> \return Whether every rotated rule maps to an equivalent rule with the same weights.
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION lebedev_preserves_average(rotation, group) RESULT(allowed)
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3), group(:, :, :)
+
+      INTEGER                                            :: other, rule
+      REAL(dp)                                           :: mapped(3, 3)
+
+      allowed = .FALSE.
+      IF (MAXVAL(ABS(MATMUL(TRANSPOSE(rotation), rotation) - cartesian_identity)) > 1.e-12_dp) RETURN
+      DO rule = 1, SIZE(group, 3)
+         mapped = MATMUL(rotation, group(:, :, rule))
+         DO other = 1, SIZE(group, 3)
+            IF (cubic_rotation(MATMUL(TRANSPOSE(group(:, :, other)), mapped))) EXIT
+         END DO
+         IF (other > SIZE(group, 3)) RETURN
+      END DO
+      allowed = .TRUE.
+   END FUNCTION lebedev_preserves_average
+
+! **************************************************************************************************
+!> \brief Orthogonal operations with integer entries permute the base Lebedev rule.
+!> \param rotation Orthogonal Cartesian operation.
+!> \return Whether it is a signed permutation.
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION cubic_rotation(rotation) RESULT(cubic)
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3)
+
+      cubic = MAXVAL(ABS(rotation - ANINT(rotation))) <= 1.e-12_dp
+   END FUNCTION cubic_rotation
 
 ! **************************************************************************************************
 !> \brief Average a Lebedev rule over a finite Cartesian point group.
@@ -112,8 +149,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: directions(:, :), weights(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
 
-      REAL(dp), PARAMETER :: identity(3, 3) = RESHAPE([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, &
-         0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [3, 3]), tolerance = 1.e-12_dp
+      REAL(dp), PARAMETER                                :: tolerance = 1.e-12_dp
 
       INTEGER                                            :: first, last, n, operation, other, unique
       INTEGER, ALLOCATABLE                               :: representative(:)
@@ -127,16 +163,17 @@ CONTAINS
       END IF
       CPASSERT(SIZE(rotations, 3) > 0)
       CPASSERT(ALL(SHAPE(rotations(:, :, 1)) == 3))
-      CPASSERT(MAXVAL(ABS(rotations(:, :, 1) - identity)) <= tolerance)
+      CPASSERT(MAXVAL(ABS(rotations(:, :, 1) - cartesian_identity)) <= tolerance)
       ALLOCATE (representative(SIZE(rotations, 3)))
       representative(1) = 1
       unique = 1
       DO operation = 2, SIZE(rotations, 3)
          ASSOCIATE (rotation => rotations(:, :, operation))
-            CPASSERT(MAXVAL(ABS(MATMUL(TRANSPOSE(rotation), rotation) - identity)) <= tolerance)
+            relative = MATMUL(TRANSPOSE(rotation), rotation) - cartesian_identity
+            CPASSERT(MAXVAL(ABS(relative)) <= tolerance)
             DO other = 1, unique
                relative = MATMUL(TRANSPOSE(rotations(:, :, representative(other))), rotation)
-               IF (MAXVAL(ABS(relative - ANINT(relative))) <= tolerance) EXIT
+               IF (cubic_rotation(relative)) EXIT
             END DO
          END ASSOCIATE
          IF (other <= unique) CYCLE

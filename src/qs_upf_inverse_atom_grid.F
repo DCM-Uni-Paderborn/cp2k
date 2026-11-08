@@ -7,10 +7,12 @@
 !> \brief Atom-centered quadrature and its geometry response for inverse mixed XC.
 MODULE qs_upf_inverse_atom_grid
    USE cell_types,                      ONLY: cell_type
+   USE cryssym,                         ONLY: crys_sym_lattice_rotations
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE message_passing,                 ONLY: mp_comm_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
    USE skala_periodic_partition,        ONLY: build_periodic_atom_image_layout,&
                                               periodic_atom_image_partition_from_layout,&
                                               skala_periodic_partition_type
@@ -23,6 +25,7 @@ MODULE qs_upf_inverse_atom_grid
 
    TYPE qs_upf_inverse_atom_grid_ref_type
       TYPE(grid_atom_type), POINTER :: grid => NULL()
+      REAL(dp), ALLOCATABLE :: directions(:, :), angular_weights(:)
    END TYPE qs_upf_inverse_atom_grid_ref_type
 
    TYPE qs_upf_inverse_atom_grid_type
@@ -43,8 +46,40 @@ MODULE qs_upf_inverse_atom_grid
 
    PUBLIC :: qs_upf_inverse_atom_grid_ref_type, qs_upf_inverse_atom_grid_type
    PUBLIC :: qs_upf_inverse_atom_grid_prepare, qs_upf_inverse_atom_grid_response
+   PUBLIC :: qs_upf_reference_rotations
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Select the shared angular reference for periodic USPP and PAW quadratures.
+!>        The reference cell is independent of mesh reduction and survives geometry updates.
+!> \param cell Current physical cell, used to select the periodic domain.
+!> \param reference Fixed reference cell of this Quickstep environment.
+!> \param kinds Original potentials of the physical kinds.
+!> \param atom_xc Whether the USPP functional includes atom-centered XC quadrature.
+!> \param rotations Reference point group, unallocated when no angular average is needed.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_reference_rotations(cell, reference, kinds, atom_xc, rotations)
+      TYPE(cell_type), POINTER                          :: cell, reference
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      LOGICAL, INTENT(IN)                                :: atom_xc
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: rotations(:, :, :)
+
+      INTEGER                                            :: kind
+
+      IF (ANY(cell%perd /= 1)) RETURN
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
+            IF (.NOT. (pot%is_paw .OR. (atom_xc .AND. pot%is_ultrasoft))) CYCLE
+         END ASSOCIATE
+         CPASSERT(ASSOCIATED(reference))
+         CALL crys_sym_lattice_rotations(reference%hmat, rotations)
+         RETURN
+      END DO
+   END SUBROUTINE qs_upf_reference_rotations
 
 ! **************************************************************************************************
 !> \brief Build distributed atom rows from native radial/Lebedev quadratures.
@@ -72,7 +107,7 @@ CONTAINS
       TYPE(qs_upf_inverse_atom_grid_type), INTENT(OUT)   :: state
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_blocks
 
-      INTEGER                                            :: atom, atom_row, ia, ir, kind, &
+      INTEGER                                            :: atom, atom_row, ia, ir, kind, nang, &
                                                             nlocal, row, target
       LOGICAL                                            :: complete_atoms, owned
       REAL(dp)                                           :: radius, taper, u, weight, window, &
@@ -104,9 +139,11 @@ CONTAINS
          grid => grids(kind)%grid
          CPASSERT(ASSOCIATED(grid))
          CPASSERT(ASSOCIATED(grid%rad) .AND. ASSOCIATED(grid%weight))
+         nang = grid%ng_sphere
+         IF (ALLOCATED(grids(kind)%angular_weights)) nang = SIZE(grids(kind)%angular_weights)
          DO ir = 1, grid%nr
             IF (grid%rad(ir) >= support_radii(atom)) CYCLE
-            DO ia = 1, grid%ng_sphere
+            DO ia = 1, nang
                row = row + 1
                owned = MODULO(row - 1, comm%num_pe) == comm%mepos
                IF (complete_atoms) owned = MODULO(atom - 1, comm%num_pe) == comm%mepos
@@ -119,14 +156,17 @@ CONTAINS
       row = 0
       nlocal = 0
       DO atom = 1, SIZE(atom_kinds)
-         grid => grids(atom_kinds(atom))%grid
+         kind = atom_kinds(atom)
+         grid => grids(kind)%grid
+         nang = grid%ng_sphere
+         IF (ALLOCATED(grids(kind)%angular_weights)) nang = SIZE(grids(kind)%angular_weights)
          atom_row = 0
          DO ir = 1, grid%nr
             radius = grid%rad(ir)
             IF (radius >= support_radii(atom)) CYCLE
             u = MAX(0.0_dp, (radius/support_radii(atom) - 0.75_dp)/0.25_dp)
             taper = (1.0_dp - u)**3*(1.0_dp + 3.0_dp*u + 6.0_dp*u*u)
-            DO ia = 1, grid%ng_sphere
+            DO ia = 1, nang
                row = row + 1
                atom_row = atom_row + 1
                owned = MODULO(row - 1, comm%num_pe) == comm%mepos
@@ -135,10 +175,15 @@ CONTAINS
                nlocal = nlocal + 1
                state%atoms(nlocal) = atom
                state%atom_rows(nlocal) = atom_row
-               state%points(:, nlocal) = atom_coords(:, atom) + radius* &
-                                         [grid%sin_pol(ia)*grid%cos_azi(ia), &
-                                          grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
-               state%base_weights(nlocal) = grid%weight(ia, ir)*taper
+               IF (ALLOCATED(grids(kind)%angular_weights)) THEN
+                  state%points(:, nlocal) = atom_coords(:, atom) + radius*grids(kind)%directions(:, ia)
+                  state%base_weights(nlocal) = grid%wr(ir)*grids(kind)%angular_weights(ia)*taper
+               ELSE
+                  state%points(:, nlocal) = atom_coords(:, atom) + radius* &
+                                            [grid%sin_pol(ia)*grid%cos_azi(ia), &
+                                             grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
+                  state%base_weights(nlocal) = grid%weight(ia, ir)*taper
+               END IF
                CALL periodic_atom_image_partition_from_layout(state%points(:, nlocal), state%partition, atom, weight)
                state%weights(nlocal) = state%base_weights(nlocal)*weight
             END DO

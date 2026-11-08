@@ -59,6 +59,7 @@ MODULE qs_environment_methods
    USE qs_outer_scf,                    ONLY: outer_loop_variables_count
    USE qs_rho0_ggrid,                   ONLY: rho0_s_grid_create
    USE qs_rho0_types,                   ONLY: rho0_mpole_type
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_reference_rotations
    USE scf_control_types,               ONLY: scf_control_type
    USE skala_gpw_functional,            ONLY: xc_section_uses_gauxc_model
 #include "./base/base_uses.f90"
@@ -104,18 +105,22 @@ CONTAINS
 !>        Spatial operations must preserve every grid, including a distinct XC or vdW grid.
 !> \param qs_env Initialized Quickstep environment
 !> \param grids Grid dimensions and cutoff shapes, unallocated without a physical UPF kind
+!> \param rotations Angular reference group used by the original UPF quadratures
 ! **************************************************************************************************
-   SUBROUTINE qs_env_symmetry_grids(qs_env, grids)
+   SUBROUTINE qs_env_symmetry_grids(qs_env, grids, rotations)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(crys_sym_grid_type), ALLOCATABLE, INTENT(OUT) :: grids(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: rotations(:, :, :)
 
       INTEGER                                            :: kind, level, ngrid
       LOGICAL                                            :: has_upf
+      TYPE(cell_type), POINTER                           :: cell, reference
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
-      CALL get_qs_env(qs_env, qs_kind_set=kinds, pw_env=pw_env)
+      CALL get_qs_env(qs_env, qs_kind_set=kinds, pw_env=pw_env, cell=cell, cell_ref=reference, dft_control=control)
       has_upf = .FALSE.
       DO kind = 1, SIZE(kinds)
          IF (kinds(kind)%ghost) CYCLE
@@ -143,6 +148,8 @@ CONTAINS
          grid => pw_env%vdw_pw_pool%pw_grid
          grids(level + 1) = crys_sym_grid_type(grid%npts, grid%spherical)
       END IF
+      CALL qs_upf_reference_rotations(cell, reference, kinds, control%qs_control%gapw .OR. control%qs_control%gapw_xc, &
+                                      rotations)
    END SUBROUTINE qs_env_symmetry_grids
 
 ! **************************************************************************************************

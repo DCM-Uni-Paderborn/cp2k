@@ -10,6 +10,7 @@ PROGRAM kpsym_unittest
                                               crys_sym_gen,&
                                               crys_sym_grid_compatible,&
                                               crys_sym_grid_type,&
+                                              crys_sym_lattice_rotations,&
                                               csym_type,&
                                               kpoint_gen,&
                                               kpoint_gen_general,&
@@ -73,6 +74,7 @@ PROGRAM kpsym_unittest
                                                   0.904256_dp, 0.095744_dp, 0.750000_dp, &
                                                   0.595744_dp, 0.595744_dp, 0.500000_dp], [3, 36])
    REAL(dp) :: cell(3, 3), coords(3, 36), halfturn_cell(3, 3), ne_coords(3, 2), shifted(3, 36)
+   REAL(dp), ALLOCATABLE :: angular_rotations(:, :, :)
    INTEGER :: i, io_unit
    INTEGER :: types(36)
 
@@ -167,12 +169,24 @@ PROGRAM kpsym_unittest
       cell(1, 1:2) = [10.0_dp, 5.0_dp]
       cell(2, 2) = 5.0_dp*SQRT(3.0_dp)
       cell(3, 3) = 20.0_dp
+      CALL crys_sym_lattice_rotations(cell, angular_rotations)
       CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), cell, &
                       1.e-8_dp, 6, .FALSE., .TRUE., use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE., &
-                      integration_grids=[crys_sym_grid_type([20, 20, 40], .TRUE.)], expected_operations=24)
+                      integration_grids=[crys_sym_grid_type([20, 20, 40], .TRUE.)], expected_operations=24, &
+                      angular_rotations=angular_rotations)
       CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), cell, &
                       1.e-8_dp, 8, .FALSE., .TRUE., use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE., &
-                      integration_grids=[crys_sym_grid_type([20, 20, 40], .FALSE.)], expected_operations=8)
+                      integration_grids=[crys_sym_grid_type([20, 20, 40], .FALSE.)], expected_operations=8, &
+                      angular_rotations=angular_rotations)
+      ! A previously defined orthorhombic angular grid does not acquire the new sixfold symmetry.
+      halfturn_cell = cell
+      halfturn_cell(1, 2) = 0.0_dp
+      CALL crys_sym_lattice_rotations(halfturn_cell, angular_rotations)
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), cell, &
+                      1.e-8_dp, 8, .FALSE., .TRUE., use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE., &
+                      integration_grids=[crys_sym_grid_type([20, 20, 40], .TRUE.)], expected_operations=8, &
+                      angular_rotations=angular_rotations)
+      DEALLOCATE (angular_rotations)
    END IF
 
    ! Genuine tolerance-induced nonclosure must still trigger the orbit guard.
@@ -656,12 +670,13 @@ CONTAINS
 !> \param use_spglib_reduction ...
 !> \param use_spglib_backend ...
 !> \param integration_grids Shapes of the active real and reciprocal integration grids
+!> \param angular_rotations Reference rotations defining the atom-centered angular rule
 !> \param expected_operations Expected size of the selected spatial group
 !> \param proper_rotations_only exclude determinant-negative spatial operations
 ! **************************************************************************************************
    SUBROUTINE check_mesh(x, h, delta, expected, fallback, closed, full_grid, cartesian_half_turns, &
                          use_spglib_reduction, use_spglib_backend, integration_grids, expected_operations, &
-                         proper_rotations_only)
+                         proper_rotations_only, angular_rotations)
       REAL(dp), INTENT(IN)                               :: x(:, :), h(3, 3), delta
       INTEGER, INTENT(IN)                                :: expected
       LOGICAL, INTENT(IN)                                :: fallback, closed
@@ -669,6 +684,7 @@ CONTAINS
                                                             use_spglib_reduction, &
                                                             use_spglib_backend
       TYPE(crys_sym_grid_type), INTENT(IN), OPTIONAL     :: integration_grids(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: angular_rotations(:, :, :)
       INTEGER, INTENT(IN), OPTIONAL                      :: expected_operations
       LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
@@ -685,12 +701,14 @@ CONTAINS
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., full_grid=full_grid, &
                          cartesian_half_turns=cartesian_half_turns, &
                          use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
-                         integration_grids=integration_grids, proper_rotations_only=proper_rotations_only)
+                         integration_grids=integration_grids, proper_rotations_only=proper_rotations_only, &
+                         angular_rotations=angular_rotations)
       ELSE
          CALL kpoint_gen(csym, [3, 3, 3], symm=.TRUE., shift=[0.0_dp, 0.0_dp, 0.0_dp], &
                          cartesian_half_turns=cartesian_half_turns, &
                          use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
-                         integration_grids=integration_grids, proper_rotations_only=proper_rotations_only)
+                         integration_grids=integration_grids, proper_rotations_only=proper_rotations_only, &
+                         angular_rotations=angular_rotations)
       END IF
       IF (csym%nkpoint /= expected) ERROR STOP "Incorrect irreducible mesh size"
       IF (csym%inversion_only .NEQV. fallback) ERROR STOP "Incorrect orbit-guard decision"
@@ -756,7 +774,7 @@ CONTAINS
             CALL kpoint_gen_general(csym, full_points, full_weights, symm=.TRUE., full_grid=full_grid, &
                                     proper_rotations_only=.TRUE., cartesian_half_turns=cartesian_half_turns, &
                                     use_spglib_reduction=use_spglib_reduction, use_spglib_backend=use_spglib_backend, &
-                                    integration_grids=integration_grids)
+                                    integration_grids=integration_grids, angular_rotations=angular_rotations)
             IF (csym%nkpoint /= expected) ERROR STOP 'Incorrect proper GENERAL mesh size'
             IF (ABS(SUM(csym%wkpoint) - 27.0_dp) > 1.e-12_dp) ERROR STOP 'Incorrect proper GENERAL weights'
             IF (ANY(csym%kplink <= 0)) ERROR STOP 'Incomplete proper GENERAL mesh'

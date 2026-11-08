@@ -193,6 +193,7 @@ MODULE qs_upf_inverse_types
       TYPE(upf_inverse_kinetic_type), ALLOCATABLE :: kinetic_cache(:)
       ! PAW AE valence fields for one joint learned functional, separate from USPP kinetic kernels.
       TYPE(upf_inverse_kinetic_type), ALLOCATABLE :: paw_reconstruction(:)
+      REAL(dp), ALLOCATABLE :: angular_rotations(:, :, :)
       TYPE(paw_kind_type), ALLOCATABLE :: paw(:)
       TYPE(paw_core_projector_type), ALLOCATABLE :: gth_paw_core(:)
       REAL(dp) :: gth_paw_energy = 0.0_dp

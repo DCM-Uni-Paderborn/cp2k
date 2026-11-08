@@ -26,6 +26,7 @@ MODULE qs_upf_inverse_basis
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_reference_rotations
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_operator,&
                                               qs_upf_inverse_background_prepare
@@ -253,6 +254,7 @@ CONTAINS
       INTEGER                                            :: ikind
       LOGICAL                                            :: auxiliary, do_kpoints, use_atomic, &
                                                             use_composite, use_kinetic
+      TYPE(cell_type), POINTER                           :: cell, reference
       TYPE(dbcsr_p_type), POINTER                        :: kinetic_k(:, :)
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
@@ -264,7 +266,7 @@ CONTAINS
       IF (PRESENT(basis_type)) role = basis_type
       CPASSERT(role == 'ORB' .OR. role == 'AUX_FIT')
       auxiliary = role == 'AUX_FIT'
-      CALL get_ks_env(ks_env, dft_control=control, qs_kind_set=kinds, do_kpoints=do_kpoints)
+      CALL get_ks_env(ks_env, dft_control=control, qs_kind_set=kinds, do_kpoints=do_kpoints, cell=cell, cell_ref=reference)
       DO ikind = 1, SIZE(kinds)
          IF (kinds(ikind)%ghost) CYCLE
          IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
@@ -289,6 +291,8 @@ CONTAINS
       IF (PRESENT(kinetic)) use_kinetic = kinetic
       use_composite = control%use_gauxc
       IF (PRESENT(composite_paw)) use_composite = composite_paw
+      CALL qs_upf_reference_rotations(cell, reference, kinds, control%qs_control%gapw .OR. control%qs_control%gapw_xc, &
+                                      state%angular_rotations)
       CALL qs_upf_inverse_scf_xc_reference(kinds, use_kinetic, use_composite, state)
       use_atomic = .FALSE.
       IF (PRESENT(atom_local)) use_atomic = atom_local

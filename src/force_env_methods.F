@@ -654,7 +654,7 @@ CONTAINS
       IF (dynamic_symmetry) THEN
          ! A changed cell can change the PW grids as well as the geometric space group.
          CALL qs_env_rebuild_pw_env(force_env%qs_env)
-         CALL qs_env_symmetry_grids(force_env%qs_env, kpoints%integration_grids)
+         CALL qs_env_symmetry_grids(force_env%qs_env, kpoints%integration_grids, kpoints%angular_rotations)
       END IF
       CALL kpoint_reset_initialization(kpoints)
       CALL kpoint_initialize(kpoints, particle_set, cell)

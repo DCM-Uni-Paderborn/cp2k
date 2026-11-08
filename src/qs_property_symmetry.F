@@ -75,7 +75,7 @@ CONTAINS
       points%symmetry_reduction_method = use_k290_kpoint_symmetry
       IF (backend == use_spglib_kpoint_backend) points%symmetry_reduction_method = use_spglib_kpoint_symmetry
       points%eps_geo = tolerance
-      CALL qs_env_symmetry_grids(qs_env, points%integration_grids)
+      CALL qs_env_symmetry_grids(qs_env, points%integration_grids, points%angular_rotations)
       CALL kpoint_initialize(points, particles, cell)
       CALL qs_env_validate_xc_symmetry(qs_env, points)
       CALL qs_basis_rotation(qs_env, points)

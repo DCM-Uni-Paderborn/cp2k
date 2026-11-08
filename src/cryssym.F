@@ -16,6 +16,7 @@ MODULE cryssym
                                               cite_reference
    USE kinds,                           ONLY: dp
    USE kpsym,                           ONLY: group1s
+   USE lebedev,                         ONLY: lebedev_preserves_average
    USE mathlib,                         ONLY: det_3x3,&
                                               inv_3x3
    USE spglib_f08,                      ONLY: spg_get_international,&
@@ -34,6 +35,7 @@ MODULE cryssym
    PUBLIC :: csym_type, release_csym_type, print_crys_symmetry, print_kp_symmetry
    PUBLIC :: crys_sym_gen, kpoint_gen, kpoint_gen_general, crys_sym_cartesian_halfturn
    PUBLIC :: crys_sym_grid_compatible, crys_sym_grid_type
+   PUBLIC :: crys_sym_lattice_rotations
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cryssym'
 
@@ -55,6 +57,7 @@ MODULE cryssym
       LOGICAL                                     :: cartesian_half_turns = .FALSE.
       LOGICAL                                     :: proper_rotations_only = .FALSE.
       TYPE(crys_sym_grid_type), ALLOCATABLE        :: integration_grids(:)
+      REAL(dp), ALLOCATABLE                        :: angular_rotations(:, :, :)
       LOGICAL                                     :: spglib_reduction = .FALSE.
       LOGICAL                                     :: spglib_backend = .FALSE.
       LOGICAL                                     :: spglib_requested = .TRUE.
@@ -110,6 +113,54 @@ CONTAINS
       allowed = MAXVAL(ABS(rotation - signs)) <= 1.e-12_dp .AND. &
                 signs(1, 1)*signs(2, 2)*signs(3, 3) > 0.0_dp
    END FUNCTION crys_sym_cartesian_halfturn
+
+! **************************************************************************************************
+!> \brief Cartesian point group of a fixed reference lattice, independent of atoms and k points.
+!> \param hmat Cartesian reference lattice vectors in columns.
+!> \param rotations Orthogonal rotations, starting with the identity.
+! **************************************************************************************************
+   SUBROUTINE crys_sym_lattice_rotations(hmat, rotations)
+      REAL(dp), INTENT(IN)                               :: hmat(3, 3)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: rotations(:, :, :)
+
+      REAL(dp), PARAMETER                                :: identity(3, 3) = RESHAPE( &
+                                                            [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, &
+                                                             0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      INTEGER                                            :: n, operation, first
+      INTEGER, ALLOCATABLE                               :: lattice_rotations(:, :, :)
+      REAL(dp)                                           :: delta, rotation(3, 3)
+      TYPE(csym_type)                                    :: symmetry
+
+      ! An approximate metric symmetry must not define the angular integration rule.
+      delta = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(hmat)))
+      CALL crys_sym_gen(symmetry, RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), [1], hmat, &
+                        delta=delta, use_spglib=spg_get_major_version() > 0)
+      IF (symmetry%symlib) THEN
+         ALLOCATE (lattice_rotations(3, 3, symmetry%n_operations))
+         CALL setup_spglib_operations(symmetry, lattice_rotations, n)
+      ELSE
+         CALL setup_k290_operations(symmetry)
+         n = symmetry%nrtot
+      END IF
+      first = 0
+      DO operation = 1, n
+         rotation = symmetry%rt(:, :, operation)
+         IF (MAXVAL(ABS(MATMUL(TRANSPOSE(rotation), rotation) - identity)) > 1.e-12_dp) THEN
+            first = 0
+            EXIT
+         END IF
+         IF (MAXVAL(ABS(rotation - identity)) <= 1.e-12_dp) first = operation
+      END DO
+      IF (first > 0) THEN
+         ALLOCATE (rotations, SOURCE=symmetry%rt(:, :, :n))
+         rotations(:, :, first) = rotations(:, :, 1)
+         rotations(:, :, 1) = identity
+      ELSE
+         ALLOCATE (rotations(3, 3, 1))
+         rotations(:, :, 1) = identity
+      END IF
+      CALL release_csym_type(symmetry)
+   END SUBROUTINE crys_sym_lattice_rotations
 
 ! **************************************************************************************************
 !> \brief Whether a fractional Seitz operation preserves the real and reciprocal grids.
@@ -181,6 +232,10 @@ CONTAINS
       difference = rotated + translation - csym%scoord(:, permutation(1))
       actual = csym%scoord(:, permutation(1)) + ANINT(difference) - rotated
       IF (.NOT. crys_sym_grid_compatible(rotation, actual, csym%integration_grids)) RETURN
+      IF (ALLOCATED(csym%angular_rotations)) THEN
+         IF (.NOT. lebedev_preserves_average(MATMUL(csym%hmat, MATMUL(rotation, inv_3x3(csym%hmat))), &
+                                             csym%angular_rotations)) RETURN
+      END IF
       tolerance = 512.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(csym%scoord)))* &
                   MAX(1.0_dp, MAXVAL(ABS(rotation)))
       DO atom = 1, csym%nat
@@ -238,6 +293,7 @@ CONTAINS
          DEALLOCATE (csym%ibrot)
       END IF
       IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
+      IF (ALLOCATED(csym%angular_rotations)) DEALLOCATE (csym%angular_rotations)
 
    END SUBROUTINE release_csym_type
 
@@ -359,11 +415,12 @@ CONTAINS
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
 !> \param integration_grids Active uniform integration grids and reciprocal cutoff shapes.
+!> \param angular_rotations Point group defining the atom-centered angular rule.
 !> \param proper_rotations_only Exclude determinant-negative spatial operations.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen(csym, nk, symm, shift, full_grid, gamma_centered, &
                          inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns, &
-                         integration_grids, proper_rotations_only)
+                         integration_grids, proper_rotations_only, angular_rotations)
       TYPE(csym_type)                                    :: csym
       INTEGER, INTENT(IN)                                :: nk(3)
       LOGICAL, INTENT(IN), OPTIONAL                      :: symm
@@ -371,6 +428,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL :: full_grid, gamma_centered, inversion_symmetry_only, &
          use_spglib_reduction, use_spglib_backend, cartesian_half_turns
       TYPE(crys_sym_grid_type), INTENT(IN), OPTIONAL     :: integration_grids(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: angular_rotations(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'kpoint_gen'
@@ -420,6 +478,11 @@ CONTAINS
       IF (PRESENT(proper_rotations_only)) csym%proper_rotations_only = proper_rotations_only
       IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
       IF (PRESENT(integration_grids)) ALLOCATE (csym%integration_grids, SOURCE=integration_grids)
+      IF (ALLOCATED(csym%angular_rotations)) DEALLOCATE (csym%angular_rotations)
+      IF (PRESENT(angular_rotations)) THEN
+         CPASSERT(PRESENT(integration_grids))
+         ALLOCATE (csym%angular_rotations, SOURCE=angular_rotations)
+      END IF
 
       IF (PRESENT(use_spglib_reduction)) THEN
          spglib_reduction = use_spglib_reduction
@@ -564,11 +627,12 @@ CONTAINS
 !> \param use_spglib_backend ...
 !> \param cartesian_half_turns Restrict spatial operations to the Cartesian proper half-turn group.
 !> \param integration_grids Active uniform integration grids and reciprocal cutoff shapes.
+!> \param angular_rotations Point group defining the atom-centered angular rule.
 !> \param proper_rotations_only Exclude determinant-negative spatial operations.
 ! **************************************************************************************************
    SUBROUTINE kpoint_gen_general(csym, xkp_in, wkp_in, symm, full_grid, &
                                  inversion_symmetry_only, use_spglib_reduction, use_spglib_backend, cartesian_half_turns, &
-                                 integration_grids, proper_rotations_only)
+                                 integration_grids, proper_rotations_only, angular_rotations)
       TYPE(csym_type)                                    :: csym
       REAL(KIND=dp), DIMENSION(:, :), INTENT(IN)         :: xkp_in
       REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: wkp_in
@@ -578,6 +642,7 @@ CONTAINS
                                                             use_spglib_backend, &
                                                             cartesian_half_turns
       TYPE(crys_sym_grid_type), INTENT(IN), OPTIONAL     :: integration_grids(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: angular_rotations(:, :, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: proper_rotations_only
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'kpoint_gen_general'
@@ -615,6 +680,11 @@ CONTAINS
       IF (PRESENT(proper_rotations_only)) csym%proper_rotations_only = proper_rotations_only
       IF (ALLOCATED(csym%integration_grids)) DEALLOCATE (csym%integration_grids)
       IF (PRESENT(integration_grids)) ALLOCATE (csym%integration_grids, SOURCE=integration_grids)
+      IF (ALLOCATED(csym%angular_rotations)) DEALLOCATE (csym%angular_rotations)
+      IF (PRESENT(angular_rotations)) THEN
+         CPASSERT(PRESENT(integration_grids))
+         ALLOCATE (csym%angular_rotations, SOURCE=angular_rotations)
+      END IF
       csym%spglib_reduction = spglib_reduction
       csym%spglib_backend = spglib_backend
       csym%nkpoint = 0

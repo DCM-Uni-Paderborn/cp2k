@@ -607,7 +607,7 @@ CONTAINS
       IF (kpoints%symmetry .AND. .NOT. kpoints%full_grid .AND. .NOT. kpoints%inversion_symmetry_only) THEN
          ! PW grids are available only after qs_init_subsys. Select their common spatial group
          ! before allocating per-k-point matrices, orbitals and distributions.
-         CALL qs_env_symmetry_grids(qs_env, kpoints%integration_grids)
+         CALL qs_env_symmetry_grids(qs_env, kpoints%integration_grids, kpoints%angular_rotations)
          final_kpoint_reinit = ALLOCATED(kpoints%integration_grids)
       END IF
       IF (owned_kpoints) THEN
