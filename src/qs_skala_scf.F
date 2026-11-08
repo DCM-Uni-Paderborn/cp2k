@@ -34,7 +34,10 @@ MODULE qs_skala_scf
                                               mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE paw_xc,                          ONLY: paw_xc_point_adjoint
+   USE pw_env_types,                    ONLY: pw_env_get,&
+                                              pw_env_type
    USE pw_grid_types,                   ONLY: pw_grid_type
+   USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
@@ -68,6 +71,7 @@ MODULE qs_skala_scf
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_operator
    USE qs_upf_inverse_scf_response,     ONLY: qs_upf_inverse_scf_density_tangent_available,&
                                               qs_upf_inverse_scf_electronic_response
+   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_xc_transfer_real
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_scf_type,&
@@ -1623,7 +1627,7 @@ CONTAINS
    END SUBROUTINE point_operators
 
 ! **************************************************************************************************
-!> \brief Construct descriptor operators for one sample on the original FFT grid.
+!> \brief Construct descriptor operators from the grid that supplied the model sample.
 !> \param state Native orbital and field state.
 !> \param domain Physical evaluation domain.
 !> \param point Global FFT indices or original atomic sample indices.
@@ -1640,30 +1644,29 @@ CONTAINS
                                                             smooth
       REAL(dp), ALLOCATABLE                              :: fields(:, :, :, :), values(:, :)
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_r3d_rs_type)                               :: density, filtered, gradient(3), kinetic
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_grid_type), POINTER                        :: grid, source_grid
+      TYPE(pw_pool_type), POINTER                        :: xc_pool
+      TYPE(pw_r3d_rs_type)                               :: density, filtered, gradient(3), kinetic, &
+                                                            sample
       TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:)
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
 
       CALL qs_rho_get(state%rho, rho_r=rho_r)
-      grid => rho_r(1)%pw_grid
-      IF (domain == skala_background_domain) grid => state%inverse%xc_grid
+      source_grid => rho_r(1)%pw_grid
+      IF (domain == skala_fft_domain) THEN
+         CALL get_qs_env(state%qs_env, pw_env=pw_env)
+         CALL pw_env_get(pw_env, xc_pw_pool=xc_pool)
+         grid => xc_pool%pw_grid
+      ELSE
+         grid => state%inverse%xc_grid
+      END IF
       CPASSERT(ASSOCIATED(grid))
-      CALL density%create(grid)
-      CALL kinetic%create(grid)
-      density%array = 0.0_dp
-      kinetic%array = 0.0_dp
-      DO axis = 1, 3
-         CALL gradient(axis)%create(grid)
-         gradient(axis)%array = 0.0_dp
-      END DO
+      CALL sample%create(grid)
+      sample%array = 0.0_dp
       IF (domain == skala_fft_domain) THEN
          IF (ALL(point >= grid%bounds_local(1, :)) .AND. ALL(point <= grid%bounds_local(2, :))) THEN
-            IF (descriptor == skala_density_descriptor) THEN
-               density%array(point(1), point(2), point(3)) = 1.0_dp/grid%dvol
-            ELSE
-               kinetic%array(point(1), point(2), point(3)) = 1.0_dp/grid%dvol
-            END IF
+            sample%array(point(1), point(2), point(3)) = 1.0_dp/grid%dvol
          END IF
       ELSE
          ALLOCATE (fields(grid%npts(1), grid%npts(2), grid%npts(3), 1), &
@@ -1679,22 +1682,31 @@ CONTAINS
                                         wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
          CALL state%para_env%sum(fields)
          bounds = grid%bounds_local - SPREAD(grid%bounds(1, :) - 1, 1, 2)
-         IF (descriptor == skala_density_descriptor) THEN
-            density%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
-                                            bounds(1, 3):bounds(2, 3), 1)/grid%dvol
-         ELSE
-            kinetic%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
-                                            bounds(1, 3):bounds(2, 3), 1)/grid%dvol
-         END IF
+         sample%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                                        bounds(1, 3):bounds(2, 3), 1)/grid%dvol
       END IF
       smooth = section_get_ival(state%qs_env%input, "DFT%XC%XC_GRID%XC_SMOOTH_RHO")
       IF (descriptor == skala_density_descriptor .AND. smooth /= xc_rho_no_smooth) THEN
          CALL filtered%create(grid)
-         ! Transpose the same stencil used in the FFT and interpolated background samples.
-         CALL xc_pw_smooth(density, filtered, smooth)
-         density%array(:, :, :) = filtered%array
+         CALL xc_pw_smooth(sample, filtered, smooth)
+         sample%array(:, :, :) = filtered%array
          CALL filtered%release()
       END IF
+      CALL density%create(source_grid)
+      CALL kinetic%create(source_grid)
+      density%array = 0.0_dp
+      kinetic%array = 0.0_dp
+      DO axis = 1, 3
+         CALL gradient(axis)%create(source_grid)
+         gradient(axis)%array = 0.0_dp
+      END DO
+      ! Fold the covector back before applying the native Gaussian and UPF integrals.
+      IF (descriptor == skala_density_descriptor) THEN
+         CALL qs_upf_inverse_xc_transfer_real(sample, density)
+      ELSE
+         CALL qs_upf_inverse_xc_transfer_real(sample, kinetic)
+      END IF
+      CALL sample%release()
       nk = SIZE(state%dimensions, 1)
       IF (state%bloch) THEN
          nk = SIZE(state%inverse%bloch%weights)

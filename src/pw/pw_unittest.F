@@ -50,6 +50,7 @@ PROGRAM pw_unittest
                                               pw_r1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_external_potential,           ONLY: interpolate_external_potential
+   USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_xc_transfer_real
    USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_pw_adjoint,&
                                               qs_upf_inverse_xc_pw_fields
    USE realspace_grid_cube,             ONLY: cube_read_values,&
@@ -96,21 +97,23 @@ CONTAINS
 !> \brief Use the native XC filter in both directions of the mixed UPF grid map.
 ! **************************************************************************************************!
    SUBROUTINE check_upf_xc_smoothing()
-      INTEGER                                            :: axis, i, j, k, mode, modes(4), nrows
-      REAL(dp)                                           :: cell(3, 3), phase, projected
+      INTEGER                                            :: axis, i, j, k, mode, modes(4), nrows, &
+                                                            point(3)
+      REAL(dp)                                           :: cell(3, 3), phase, projected, sampled
       REAL(dp), ALLOCATABLE                              :: fields(:, :, :, :), &
                                                             reference(:, :, :, :), vgrad(:, :, :), &
                                                             vrho(:, :), vtau(:, :)
       TYPE(mp_comm_type)                                 :: comm
-      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_grid_type), POINTER                        :: fine_grid, grid
       TYPE(pw_pool_type), POINTER                        :: pool
-      TYPE(pw_r3d_rs_type)                               :: kinetic(1), potential(1), smooth(1), &
+      TYPE(pw_r3d_rs_type)                               :: fine_density, fine_filtered, fine_point, &
+                                                            kinetic(1), potential(1), smooth(1), &
                                                             tau_potential(1)
       TYPE(pw_r3d_rs_type), POINTER                      :: density_ptr(:), skala_density(:), &
                                                             skala_tau(:)
       TYPE(pw_r3d_rs_type), TARGET                       :: density(1)
 
-      NULLIFY (grid, pool, skala_density, skala_tau)
+      NULLIFY (fine_grid, grid, pool, skala_density, skala_tau)
       density_ptr => density
       CALL comm%set_handle(mp_comm_world%get_handle())
       cell = 0.0_dp
@@ -118,6 +121,16 @@ CONTAINS
          cell(i, i) = REAL(6 + i, dp)
       END DO
       CALL pw_grid_create(grid, comm, cell, grid_span=HALFSPACE, npts=[8, 6, 8], odd=.FALSE., fft_usage=.TRUE.)
+      CALL pw_grid_create(fine_grid, comm, cell, grid_span=HALFSPACE, npts=[12, 10, 12], &
+                          odd=.FALSE., fft_usage=.TRUE.)
+      CALL fine_density%create(fine_grid)
+      CALL fine_filtered%create(fine_grid)
+      CALL fine_point%create(fine_grid)
+      fine_point%array = 0.0_dp
+      point = fine_grid%bounds(2, :)
+      IF (ALL(point >= fine_grid%bounds_local(1, :)) .AND. ALL(point <= fine_grid%bounds_local(2, :))) THEN
+         fine_point%array(point(1), point(2), point(3)) = 1.0_dp/fine_grid%dvol
+      END IF
       CALL pw_pool_create(pool, grid)
       nrows = PRODUCT(grid%npts)
       ALLOCATE (vrho(nrows, 2), vgrad(nrows, 3, 2), vtau(nrows, 2))
@@ -135,6 +148,7 @@ CONTAINS
             END DO
          END DO
       END DO
+      CALL qs_upf_inverse_xc_transfer_real(density(1), fine_density)
       modes = [xc_rho_nn10, xc_rho_nn50, xc_rho_spline2_smooth, xc_rho_spline3_smooth]
       DO mode = 1, SIZE(modes)
          CALL xc_pw_smooth(density(1), smooth(1), modes(mode))
@@ -158,12 +172,23 @@ CONTAINS
          CALL pool%give_back_pw(skala_density(1))
          CALL pool%give_back_pw(skala_tau(1))
          DEALLOCATE (skala_density, skala_tau)
+
+         ! A point outside the coarse index range still has a coarse-grid adjoint.
+         CALL xc_pw_smooth(fine_density, fine_filtered, modes(mode))
+         sampled = pw_integral_ab(fine_filtered, fine_point)
+         CALL xc_pw_smooth(fine_point, fine_filtered, modes(mode))
+         CALL qs_upf_inverse_xc_transfer_real(fine_filtered, potential(1))
+         CALL check_error(pw_integral_ab(density(1), potential(1)), sampled, 3.e-13_dp)
       END DO
       CALL density(1)%release()
       CALL kinetic(1)%release()
       CALL smooth(1)%release()
       CALL potential(1)%release()
       CALL tau_potential(1)%release()
+      CALL fine_density%release()
+      CALL fine_filtered%release()
+      CALL fine_point%release()
+      CALL pw_grid_release(fine_grid)
       CALL pw_pool_release(pool)
       CALL pw_grid_release(grid)
    END SUBROUTINE check_upf_xc_smoothing

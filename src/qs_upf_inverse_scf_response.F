@@ -50,7 +50,8 @@ MODULE qs_upf_inverse_scf_response
                                               qs_upf_inverse_paw_xc_kernel
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_model_response,&
                                               qs_upf_inverse_scf_xc_source_adjoint,&
-                                              qs_upf_inverse_scf_xc_source_direction
+                                              qs_upf_inverse_scf_xc_source_direction,&
+                                              qs_upf_inverse_xc_transfer_real
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_scf_type
    USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_grid_kernel,&
@@ -357,7 +358,7 @@ CONTAINS
       weights => native_weights
       IF (fine .AND. ASSOCIATED(native_weights)) THEN
          CALL transferred_weights%create(grid)
-         CALL transfer_real(native_weights, transferred_weights)
+         CALL qs_upf_inverse_xc_transfer_real(native_weights, transferred_weights)
          weights => transferred_weights
       END IF
       CALL qs_upf_inverse_scf_xc_source_direction(ks_env, matrices_direction, direction, kinetic_direction)
@@ -519,29 +520,5 @@ CONTAINS
       CALL source_g%release()
       CALL potential_g%release()
    END SUBROUTINE native_hartree_response
-
-! **************************************************************************************************
-!> \brief Apply the original real/Fourier transfer to an owned real field.
-!> \param source Native original field.
-!> \param TARGET Created destination field.
-! **************************************************************************************************
-   SUBROUTINE transfer_real(source, TARGET)
-      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: source
-      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: target
-
-      TYPE(pw_c1d_gs_type)                               :: source_g, target_g
-
-      IF (pw_grid_compare(source%pw_grid, target%pw_grid)) THEN
-         target%array = source%array
-      ELSE
-         CALL source_g%create(source%pw_grid)
-         CALL target_g%create(target%pw_grid)
-         CALL pw_transfer(source, source_g)
-         CALL pw_real_transfer(source_g, target_g)
-         CALL pw_transfer(target_g, TARGET)
-         CALL source_g%release()
-         CALL target_g%release()
-      END IF
-   END SUBROUTINE transfer_real
 
 END MODULE qs_upf_inverse_scf_response

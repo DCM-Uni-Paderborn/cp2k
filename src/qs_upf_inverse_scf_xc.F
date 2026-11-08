@@ -94,7 +94,7 @@ MODULE qs_upf_inverse_scf_xc
    PUBLIC :: qs_upf_inverse_scf_xc_reference
    PUBLIC :: qs_upf_inverse_scf_xc_model_response
    PUBLIC :: qs_upf_inverse_scf_xc_source_direction, qs_upf_inverse_scf_xc_source_adjoint
-   PUBLIC :: qs_upf_inverse_scf_xc_source_geometry
+   PUBLIC :: qs_upf_inverse_scf_xc_source_geometry, qs_upf_inverse_xc_transfer_real
 
    INTEGER(KIND=int_8), PARAMETER :: max_xc_field_bytes = 64_int_8*1024*1024
 
@@ -449,9 +449,9 @@ CONTAINS
                kinetic%array = kinetic%array + partial_tau%array
             END IF
          END IF
-         CALL source_transfer(density, density_direction(spin))
+         CALL qs_upf_inverse_xc_transfer_real(density, density_direction(spin))
          IF (ALLOCATED(state%kinetic_cache)) THEN
-            CALL source_transfer(kinetic, kinetic_direction(spin))
+            CALL qs_upf_inverse_xc_transfer_real(kinetic, kinetic_direction(spin))
          ELSE
             kinetic_direction(spin)%array = 0.0_dp
          END IF
@@ -553,11 +553,11 @@ CONTAINS
          CPASSERT(ASSOCIATED(potential(spin)%pw_grid))
          valid = ASSOCIATED(kinetic_potential(spin)%pw_grid, potential(spin)%pw_grid)
          CPASSERT(valid)
-         CALL source_transfer(potential(spin), density)
+         CALL qs_upf_inverse_xc_transfer_real(potential(spin), density)
          IF (.NOT. ALLOCATED(state%kinetic_cache)) THEN
             CPASSERT(ALL(kinetic_potential(spin)%array == 0.0_dp))
          END IF
-         CALL source_transfer(kinetic_potential(spin), kinetic)
+         CALL qs_upf_inverse_xc_transfer_real(kinetic_potential(spin), kinetic)
          operators(:, :, :, spin) = CMPLX(0.0_dp, 0.0_dp, dp)
          IF (.NOT. state%gaussian_background) THEN
             ! Q and its potential integral have no Bloch phase. Reuse this same
@@ -694,8 +694,8 @@ CONTAINS
          CPASSERT(ASSOCIATED(potential(spin)%pw_grid))
          valid = ASSOCIATED(kinetic_potential(spin)%pw_grid, potential(spin)%pw_grid)
          CPASSERT(valid)
-         CALL source_transfer(potential(spin), density)
-         CALL source_transfer(kinetic_potential(spin), kinetic)
+         CALL qs_upf_inverse_xc_transfer_real(potential(spin), density)
+         CALL qs_upf_inverse_xc_transfer_real(kinetic_potential(spin), kinetic)
          IF (.NOT. ALLOCATED(state%kinetic_cache)) THEN
             CPASSERT(ALL(kinetic%array == 0.0_dp))
          END IF
@@ -801,7 +801,7 @@ CONTAINS
 !> \param source ...
 !> \param TARGET ...
 ! **************************************************************************************************
-   SUBROUTINE source_transfer(source, TARGET)
+   SUBROUTINE qs_upf_inverse_xc_transfer_real(source, TARGET)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: source
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: target
 
@@ -820,7 +820,7 @@ CONTAINS
          CALL source_g%release()
          CALL target_g%release()
       END IF
-   END SUBROUTINE source_transfer
+   END SUBROUTINE qs_upf_inverse_xc_transfer_real
 
 ! **************************************************************************************************
 !> \brief Native fixed-geometry response of the exact-minus-background XC functional.
