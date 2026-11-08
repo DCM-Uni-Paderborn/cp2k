@@ -22,7 +22,7 @@ MODULE paw_xc
                                               section_vals_type
    USE kinds,                           ONLY: dp
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
-                                              lebedev_grid
+                                              lebedev_rotational_average
    USE mathconstants,                   ONLY: fourpi
    USE orbital_pointers,                ONLY: indco,&
                                               init_orbital_pointers,&
@@ -125,11 +125,13 @@ CONTAINS
 !> \param pot Original scalar PAW UPF data.
 !> \param nang Minimum number of angular points; the selected rule also resolves harmonic products.
 !> \param grid Immutable per-kind one-center XC data.
+!> \param rotations Optional complete point group for the fixed angular quadrature.
 ! **************************************************************************************************
-   SUBROUTINE paw_xc_init(pot, nang, grid)
+   SUBROUTINE paw_xc_init(pot, nang, grid, rotations)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       INTEGER, INTENT(IN)                                :: nang
       TYPE(paw_xc_type), INTENT(OUT)                     :: grid
+      REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
 
       INTEGER                                            :: a, axis, first, i, j, l, lm, m, nb, nr, &
                                                             ns, pair, powers(3), reduced(3), rule, &
@@ -148,14 +150,14 @@ CONTAINS
       grid%npair = nb*(nb + 1)/2
       grid%lmax = 2*MAXVAL(pot%lbeta)
       rule = MAX(get_number_of_lebedev_grid(n=nang), get_number_of_lebedev_grid(l=2*grid%lmax))
-      grid%na = lebedev_grid(rule)%n
-      ALLOCATE (grid%r(nr), grid%wr(nr), grid%wa(grid%na), grid%directions(3, grid%na), &
+      CALL lebedev_rotational_average(rule, grid%directions, grid%wa, rotations)
+      grid%na = SIZE(grid%wa)
+      ALLOCATE (grid%r(nr), grid%wr(nr), &
                 grid%harmonics(grid%na, (grid%lmax + 1)**2), &
                 grid%angular_gradient(3, grid%na, (grid%lmax + 1)**2))
       grid%r(:) = pot%r
       grid%wr(:) = upf_radial_weights(pot)*pot%r**2
-      grid%wa(:) = fourpi*lebedev_grid(rule)%w
-      grid%directions(:, :) = lebedev_grid(rule)%r
+      grid%wa(:) = fourpi*grid%wa
       CALL init_orbital_pointers(grid%lmax)
       CALL init_spherical_harmonics(grid%lmax, -1)
       grid%harmonics = 0.0_dp

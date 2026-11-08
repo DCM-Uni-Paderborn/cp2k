@@ -94,8 +94,66 @@ MODULE lebedev
    PUBLIC :: lebedev_grid
 
    PUBLIC :: deallocate_lebedev_grids, get_number_of_lebedev_grid, init_lebedev_grids
+   PUBLIC :: lebedev_rotational_average
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Average a Lebedev rule over a finite Cartesian point group.
+!>        Right cosets modulo the cubic symmetries of the base rule give identical node sets.
+!>        Evaluate one rule per distinct coset and keep the total weight normalized to one.
+!> \param rule Index of the initialized Lebedev rule.
+!> \param directions New Cartesian unit directions.
+!> \param weights New normalized weights.
+!> \param rotations Optional complete orthogonal group, with identity first.
+! **************************************************************************************************
+   SUBROUTINE lebedev_rotational_average(rule, directions, weights, rotations)
+      INTEGER, INTENT(IN)                                :: rule
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: directions(:, :), weights(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
+
+      REAL(dp), PARAMETER :: identity(3, 3) = RESHAPE([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, &
+         0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [3, 3]), tolerance = 1.e-12_dp
+
+      INTEGER                                            :: first, last, n, operation, other, unique
+      INTEGER, ALLOCATABLE                               :: representative(:)
+      REAL(dp)                                           :: relative(3, 3)
+
+      CPASSERT(ASSOCIATED(lebedev_grid(rule)%r))
+      IF (.NOT. PRESENT(rotations)) THEN
+         ALLOCATE (directions, SOURCE=lebedev_grid(rule)%r)
+         ALLOCATE (weights, SOURCE=lebedev_grid(rule)%w)
+         RETURN
+      END IF
+      CPASSERT(SIZE(rotations, 3) > 0)
+      CPASSERT(ALL(SHAPE(rotations(:, :, 1)) == 3))
+      CPASSERT(MAXVAL(ABS(rotations(:, :, 1) - identity)) <= tolerance)
+      ALLOCATE (representative(SIZE(rotations, 3)))
+      representative(1) = 1
+      unique = 1
+      DO operation = 2, SIZE(rotations, 3)
+         ASSOCIATE (rotation => rotations(:, :, operation))
+            CPASSERT(MAXVAL(ABS(MATMUL(TRANSPOSE(rotation), rotation) - identity)) <= tolerance)
+            DO other = 1, unique
+               relative = MATMUL(TRANSPOSE(rotations(:, :, representative(other))), rotation)
+               IF (MAXVAL(ABS(relative - ANINT(relative))) <= tolerance) EXIT
+            END DO
+         END ASSOCIATE
+         IF (other <= unique) CYCLE
+         unique = unique + 1
+         representative(unique) = operation
+      END DO
+      n = lebedev_grid(rule)%n
+      ALLOCATE (directions(3, n*unique), weights(n*unique))
+      directions(:, :n) = lebedev_grid(rule)%r
+      weights(:n) = lebedev_grid(rule)%w/REAL(unique, dp)
+      DO other = 2, unique
+         first = 1 + n*(other - 1)
+         last = n*other
+         directions(:, first:last) = MATMUL(rotations(:, :, representative(other)), lebedev_grid(rule)%r)
+         weights(first:last) = weights(:n)
+      END DO
+   END SUBROUTINE lebedev_rotational_average
 
 ! **************************************************************************************************
 !> \brief  Get the number of the Lebedev grid, which has the requested
