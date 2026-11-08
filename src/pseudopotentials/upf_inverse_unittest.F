@@ -167,6 +167,7 @@ PROGRAM upf_inverse_unittest
    CALL check_radial_coulomb()
    CALL check_pair_coulomb()
    CALL check_periodic_coulomb()
+   CALL check_cartesian_self_images()
    CALL check_atomic_background_measure()
    CALL check_center_angular()
    CALL check_fourier_coulomb()
@@ -3054,6 +3055,60 @@ CONTAINS
                     "Complete signed density joint geometry response", 3.e-10_dp)
       END DO
    END SUBROUTINE check_periodic_coulomb
+
+! **************************************************************************************************
+!> \brief Check the image reflections for mixed parity shells and an off-diagonal cell variation.
+! **************************************************************************************************
+   SUBROUTINE check_cartesian_self_images()
+      COMPLEX(dp), PARAMETER                             :: background(1) = 0.0_dp
+      INTEGER, PARAMETER                                 :: periodicity(3) = [1, 1, 0]
+      REAL(dp), PARAMETER                                :: g(3, 1) = 0.0_dp, kw(1) = 0.0_dp
+
+      COMPLEX(dp)                                        :: adjoint(1)
+      INTEGER                                            :: i
+      REAL(dp)                                           :: cached_energy, cell(3, 3), &
+                                                            cell_gradient(3, 3), &
+                                                            center_gradient(3, 1), dcell(3, 3), &
+                                                            energy, response, volume
+      TYPE(upf_inverse_coulomb_center_type)              :: center(1), direction(1)
+      TYPE(upf_inverse_coulomb_map_type)                 :: map
+      TYPE(upf_inverse_coulomb_potential_type), &
+         ALLOCATABLE                                     :: cached_potential(:), potential(:)
+
+      cell = 0.0_dp
+      cell(1, 1) = 1.5_dp
+      cell(2, 2) = 1.6_dp
+      cell(3, 3) = 2.3_dp
+      volume = 1.5_dp*1.6_dp*2.3_dp
+      dcell = 0.0_dp
+      dcell(1, 2) = 1.0_dp
+      center(1)%radii = [0.45_dp, 1.2_dp]
+      center(1)%weights = [0.2_dp, 0.4_dp]
+      center(1)%l = [0, 1, 1, 1]
+      center(1)%indices = [1, 2, 3, 4]
+      ALLOCATE (center(1)%density(2, 4), center(1)%shapes(2, 4))
+      DO i = 1, 4
+         center(1)%density(:, i) = SIN(0.7_dp*i*center(1)%radii)/(1.0_dp + i)
+         center(1)%shapes(:, i) = center(1)%radii**center(1)%l(i)*EXP(-0.9_dp*center(1)%radii**2)
+      END DO
+      direction = center
+      direction(1)%radii = 0.0_dp
+      direction(1)%weights = 0.0_dp
+      direction(1)%density = 0.0_dp
+      direction(1)%shapes = 0.0_dp
+      CALL upf_inverse_coulomb_periodic(center, cell, g, volume, background, kw, energy, potential, adjoint, &
+                                        response=response, center_response=direction, cell_response=dcell, &
+                                        gvecs_response=g, volume_response=0.0_dp, background_response=background, &
+                                        poisson_weights_response=kw, periodicity=periodicity)
+      CPASSERT(ABS(response) > 1.0e-7_dp)
+      CALL upf_inverse_coulomb_prepare(center, cell, g, volume, map, periodicity, comm=comm)
+      CALL upf_inverse_coulomb_periodic(center, cell, g, volume, background, kw, cached_energy, cached_potential, &
+                                        adjoint, map=map)
+      CALL upf_inverse_coulomb_pair_geometry(center, map, center_gradient, cell_gradient, comm)
+      CALL check(ABS(cached_energy - energy), "Reflected self-image energy", 3.e-13_dp)
+      CALL check(MAXVAL(ABS(cached_potential(1)%values - potential(1)%values)), "Reflected self-image potential", 3.e-13_dp)
+      CALL check(ABS(cell_gradient(1, 2) - response), "Reflected self-image shear response", 3.e-12_dp)
+   END SUBROUTINE check_cartesian_self_images
 ! **************************************************************************************************
 !> \brief Translated shell theorem, overlap, reciprocity and joint geometry response.
 ! **************************************************************************************************
