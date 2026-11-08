@@ -45,6 +45,7 @@ MODULE qs_upf_inverse_core
    PUBLIC :: qs_upf_inverse_core_kinetic
    PUBLIC :: qs_upf_inverse_core_source_geometry
    PUBLIC :: qs_upf_nc_core_prepare, qs_upf_nc_core_force
+   PUBLIC :: qs_upf_core_kinetic_add
 
 CONTAINS
 
@@ -159,7 +160,8 @@ CONTAINS
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
 
       CALL get_ks_env(ks_env, dft_control=control)
-      IF (.NOT. control%use_kinetic_energy_density .OR. .NOT. control%qs_control%gpw) RETURN
+      IF (.NOT. control%use_kinetic_energy_density) RETURN
+      IF (.NOT. (control%qs_control%gpw .OR. control%qs_control%gapw_xc .OR. control%qs_control%gapw)) RETURN
       CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, rho_nlcc_g=core_g, rho_nlcc_tau_g=tau_g)
       IF (has_uspp(kinds)) RETURN
       IF (ASSOCIATED(tau_g)) CALL pw_zero(tau_g)
@@ -169,13 +171,11 @@ CONTAINS
          IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
          IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
          IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data%tau_nlcc)) CYCLE
-         IF (.NOT. ASSOCIATED(core_g)) THEN
-            CALL upf_nlcc_kinetic(kinds(kind)%sgp_potential%upf_data, radial, available, reason)
-            IF (.NOT. available) CPABORT(TRIM(reason))
-            CPASSERT(ALL(radial == 0.0_dp))
-            CYCLE
-         END IF
+         CALL upf_nlcc_kinetic(kinds(kind)%sgp_potential%upf_data, radial, available, reason)
+         IF (.NOT. available) CPABORT(TRIM(reason))
+         IF (ALL(radial == 0.0_dp)) CYCLE
          IF (.NOT. ASSOCIATED(tau_g)) THEN
+            CPASSERT(ASSOCIATED(core_g))
             ALLOCATE (tau_g)
             CALL tau_g%create(core_g%pw_grid)
             CALL pw_zero(tau_g)
@@ -183,7 +183,7 @@ CONTAINS
          END IF
          IF (.NOT. ALLOCATED(values)) ALLOCATE (values(SIZE(tau_g%array)))
          CALL upf_core_kinetic_fourier(kinds(kind)%sgp_potential%upf_data, tau_g%pw_grid%g, atoms(atom)%r, &
-                                       tau_g%pw_grid%vol, values)
+                                       tau_g%pw_grid%vol, values, core_kinetic=radial)
          tau_g%array = tau_g%array + values/REAL(control%nspins, dp)
       END DO
       IF (ASSOCIATED(tau_g)) THEN
@@ -210,10 +210,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
          OPTIONAL, TARGET                                :: context
 
-      INTEGER                                            :: spin
-      TYPE(pw_c1d_gs_type)                               :: field_g
       TYPE(pw_c1d_gs_type), POINTER                      :: native_tau_g
-      TYPE(pw_r3d_rs_type)                               :: field_r
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL get_ks_env(ks_env, upf_inverse=state, rho_nlcc_tau_g=native_tau_g)
@@ -222,18 +219,31 @@ CONTAINS
          CALL prepare_core_kinetic(ks_env, state)
       END IF
       IF (ASSOCIATED(state)) THEN
-         IF (.NOT. state%has_core_tau) RETURN
-      ELSE IF (.NOT. ASSOCIATED(native_tau_g)) THEN
-         RETURN
+         IF (state%has_core_tau) CALL qs_upf_core_kinetic_add(state%core_tau_g, kinetic, scale)
+      ELSE IF (ASSOCIATED(native_tau_g)) THEN
+         CALL qs_upf_core_kinetic_add(native_tau_g, kinetic, scale)
       END IF
+   END SUBROUTINE qs_upf_inverse_core_kinetic
+
+! **************************************************************************************************
+!> \brief Transfer the per-spin core field to the XC grid and add it to each spin channel.
+!> \param core_tau_g Frozen per-spin core field on the auxiliary grid.
+!> \param kinetic Kinetic density in real space on the evaluation grid.
+!> \param scale Sign and magnitude of the addition.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_core_kinetic_add(core_tau_g, kinetic, scale)
+      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: core_tau_g
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: kinetic(:)
+      REAL(dp), INTENT(IN)                               :: scale
+
+      INTEGER                                            :: spin
+      TYPE(pw_c1d_gs_type)                               :: field_g
+      TYPE(pw_r3d_rs_type)                               :: field_r
+
       CPASSERT(SIZE(kinetic) > 0)
       CALL field_g%create(kinetic(1)%pw_grid)
       CALL field_r%create(kinetic(1)%pw_grid)
-      IF (ASSOCIATED(state)) THEN
-         CALL pw_real_transfer(state%core_tau_g, field_g)
-      ELSE
-         CALL pw_real_transfer(native_tau_g, field_g)
-      END IF
+      CALL pw_real_transfer(core_tau_g, field_g)
       CALL pw_transfer(field_g, field_r)
       DO spin = 1, SIZE(kinetic)
          CPASSERT(ASSOCIATED(kinetic(spin)%pw_grid, field_r%pw_grid))
@@ -241,7 +251,7 @@ CONTAINS
       END DO
       CALL field_r%release()
       CALL field_g%release()
-   END SUBROUTINE qs_upf_inverse_core_kinetic
+   END SUBROUTINE qs_upf_core_kinetic_add
 
 ! **************************************************************************************************
 !> \brief Prepare independent fixed core tau without changing primary partial-core fields.

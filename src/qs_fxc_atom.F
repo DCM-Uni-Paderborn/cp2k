@@ -31,8 +31,8 @@ MODULE qs_fxc_atom
                                               rho_atom_type
    USE qs_vxc_atom_utils,               ONLY: &
         calc_rho_angular, calc_rho_nlcc, calc_tau_atom, calc_weight_function, &
-        create_tau_basis_cache, dgaVtaudgb, gaVxcgb_GC, gaVxcgb_noGC, release_tau_basis_cache, &
-        tau_basis_cache_type
+        create_tau_basis_cache, dgaVtaudgb, gaVxcgb_GC, gaVxcgb_noGC, nc_core_tau_atom, &
+        release_tau_basis_cache, tau_basis_cache_type
    USE util,                            ONLY: get_limit
    USE xc_atom,                         ONLY: fill_rho_set,&
                                               xc_2nd_deriv_of_r,&
@@ -92,6 +92,7 @@ CONTAINS
       LOGICAL                                            :: accint, donlcc, gradient_functional, &
                                                             lsd, my_do_sf, nlcc, paw_atom, &
                                                             scale_rho, tau_f
+      REAL(dp), ALLOCATABLE                              :: core_tau(:)
       REAL(KIND=dp)                                      :: agr, alpha, density_cut, gradient_cut, &
                                                             rtot, tau_cut
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: fw
@@ -263,6 +264,7 @@ CONTAINS
 
          IF (tau_f) THEN
             CALL create_tau_basis_cache(tau_basis_cache, grid_atom, basis_1c, harmonics)
+            CALL nc_core_tau_atom(my_kind_set(ikind), grid_atom%rad, core_tau)
             ALLOCATE (tau_h(1:na, 1:nr, 1:nspins), tau1_h(1:na, 1:nr, 1:nspins), &
                       tau_s(1:na, 1:nr, 1:nspins), tau1_s(1:na, 1:nr, 1:nspins))
             ALLOCATE (vtau_h(1:na, 1:nr, 1:nspins), vtau_s(1:na, 1:nr, 1:nspins))
@@ -345,7 +347,7 @@ CONTAINS
                                      drho1_h, drho1_s)
             END DO
             IF (tau_f) THEN
-               CALL calc_tau_atom(tau_h, tau_s, rho_atom, tau_basis_cache, nspins)
+               CALL calc_tau_atom(tau_h, tau_s, rho_atom, tau_basis_cache, nspins, core_tau)
                CALL calc_tau_atom(tau1_h, tau1_s, rho1_atom, tau_basis_cache, nspins)
             END IF
             IF (scale_rho) THEN

@@ -40,7 +40,8 @@ MODULE qs_fxc
                                               qs_environment_type
    USE qs_fxc_atom,                     ONLY: fxc_atom_calc
    USE qs_kind_types,                   ONLY: qs_kind_type
-   USE qs_ks_types,                     ONLY: qs_ks_env_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_rho_atom_types,               ONLY: rho_atom_type
    USE qs_rho_methods,                  ONLY: qs_rho_copy,&
                                               qs_rho_scale_and_add,&
@@ -49,6 +50,7 @@ MODULE qs_fxc
                                               qs_rho_get,&
                                               qs_rho_release,&
                                               qs_rho_type
+   USE qs_upf_inverse_core,             ONLY: qs_upf_core_kinetic_add
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE xc,                              ONLY: xc_calc_2nd_deriv_analytical,&
                                               xc_calc_2nd_deriv_numerical,&
@@ -132,7 +134,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: eps_delta, factor
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g
-      TYPE(pw_c1d_gs_type), POINTER                      :: rho_nlcc_g
+      TYPE(pw_c1d_gs_type), POINTER                      :: core_tau_g, rho_nlcc_g
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool, xc_pw_pool
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: fxc_rho_lo, fxc_rho_uf, fxc_tau_lo, &
@@ -146,6 +148,7 @@ CONTAINS
       IF (PRESENT(compute_virial)) do_virial = compute_virial
 
       CALL get_qs_env(qs_env, dft_control=dft_control)
+      CALL get_ks_env(qs_env%ks_env, rho_nlcc_tau_g=core_tau_g)
 
       IF (PRESENT(pw_env_ext)) THEN
          pw_env => pw_env_ext
@@ -216,7 +219,7 @@ CONTAINS
          CALL qs_fxc_calculate(rho0_uf, rho1_uf, xc_section, weights_uf, xc_pw_pool, &
                                fxc_rho_uf, fxc_tau_uf, &
                                is_triplet=is_triplet, spinflip=spinflip, &
-                               compute_virial=do_virial, virial_xc=virial_xc)
+                               compute_virial=do_virial, virial_xc=virial_xc, core_tau_g=core_tau_g)
          !
          CALL qs_rho_release(rho0_uf)
          CALL qs_rho_release(rho1_uf)
@@ -271,7 +274,7 @@ CONTAINS
          CALL qs_fxc_calculate(rho0_struct, rho1_struct, xc_section, weights, auxbas_pw_pool, &
                                fxc_rho_lo, fxc_tau_lo, &
                                is_triplet=is_triplet, spinflip=spinflip, &
-                               compute_virial=do_virial, virial_xc=virial_xc)
+                               compute_virial=do_virial, virial_xc=virial_xc, core_tau_g=core_tau_g)
       END IF
 
       ! nonlocal vdW functionals
@@ -365,10 +368,11 @@ CONTAINS
 !> \param spinflip ...
 !> \param compute_virial ...
 !> \param virial_xc ...
+!> \param core_tau_g Per-spin NC model-core field on the auxiliary grid, or null.
 ! **************************************************************************************************
    SUBROUTINE qs_fxc_calculate(rho0, rho1, xc_section, weights, auxbas_pw_pool, &
                                fxc_rho, fxc_tau, is_triplet, spinflip, &
-                               compute_virial, virial_xc)
+                               compute_virial, virial_xc, core_tau_g)
 
       TYPE(qs_rho_type), POINTER                         :: rho0, rho1
       TYPE(section_vals_type), POINTER                   :: xc_section
@@ -378,6 +382,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: is_triplet, spinflip, compute_virial
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(INOUT), &
          OPTIONAL                                        :: virial_xc
+      TYPE(pw_c1d_gs_type), INTENT(IN), POINTER          :: core_tau_g
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_fxc_calculate'
 
@@ -387,7 +392,8 @@ CONTAINS
                                                             do_virial, lsd
       REAL(KIND=dp), DIMENSION(:, :, :, :), POINTER      :: vxg
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho0_g, rho1_g
-      TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho0_r, rho1_r, tau0_r, tau1_r
+      TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: base_tau_r, rho0_r, rho1_r, tau0_r, &
+                                                            tau1_r
       TYPE(qs_rho_type), POINTER                         :: rhot0, rhot1
       TYPE(section_vals_type), POINTER                   :: xc_fun_section
       TYPE(xc_derivative_set_type)                       :: xc_deriv_set
@@ -408,6 +414,7 @@ CONTAINS
       do_analytic = section_get_lval(xc_section, "2ND_DERIV_ANALYTICAL")
 
       CALL qs_rho_get(rho0, rho_r=rho0_r, rho_g=rho0_g, tau_r=tau0_r)
+      base_tau_r => tau0_r
       CALL qs_rho_get(rho1, rho_r=rho1_r, tau_r=tau1_r)
       NULLIFY (rho1_g)
 
@@ -442,6 +449,9 @@ CONTAINS
             CALL pw_zero(fxc_tau(ispin))
          END DO
       END IF
+
+      IF (ASSOCIATED(core_tau_g) .AND. ASSOCIATED(base_tau_r)) &
+         CALL qs_upf_core_kinetic_add(core_tau_g, base_tau_r, 1.0_dp)
 
       IF (mspins == 1 .AND. do_triplet) THEN
          ! split the density and response density arrays for triplet calculation
@@ -520,6 +530,9 @@ CONTAINS
       CALL xc_rho_set_release(rho0_set)
       CALL xc_rho_set_release(rho1_set)
 
+      IF (ASSOCIATED(core_tau_g) .AND. ASSOCIATED(base_tau_r)) &
+         CALL qs_upf_core_kinetic_add(core_tau_g, base_tau_r, -1.0_dp)
+
       CALL timestop(handle)
 
    END SUBROUTINE qs_fxc_calculate
@@ -552,7 +565,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: factor
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g
-      TYPE(pw_c1d_gs_type), POINTER                      :: rho_nlcc_g
+      TYPE(pw_c1d_gs_type), POINTER                      :: core_tau_g, rho_nlcc_g
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool, xc_pw_pool
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
@@ -562,6 +575,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       CALL get_qs_env(qs_env, dft_control=dft_control)
+      CALL get_ks_env(qs_env%ks_env, rho_nlcc_tau_g=core_tau_g)
 
       IF (PRESENT(pw_env_ext)) THEN
          pw_env => pw_env_ext
@@ -610,7 +624,7 @@ CONTAINS
          CALL qs_rho_transfer(rho0_struct, rho0_uf, auxbas_pw_pool, xc_pw_pool)
          !
          CALL qs_fxc_deriv(rho0_uf, xc_rho_set, xc_deriv_set, &
-                           xc_section, weights_uf, xc_pw_pool, is_triplet)
+                           xc_section, weights_uf, xc_pw_pool, is_triplet, core_tau_g)
          !
          CALL qs_rho_release(rho0_uf)
          DEALLOCATE (rho0_uf)
@@ -620,7 +634,7 @@ CONTAINS
          END IF
       ELSE
          CALL qs_fxc_deriv(rho0_struct, xc_rho_set, xc_deriv_set, &
-                           xc_section, weights, auxbas_pw_pool, is_triplet)
+                           xc_section, weights, auxbas_pw_pool, is_triplet, core_tau_g)
       END IF
 
       ! de-apply NLCC density
@@ -645,9 +659,10 @@ CONTAINS
 !> \param weights ...
 !> \param auxbas_pw_pool ...
 !> \param is_triplet ...
+!> \param core_tau_g Per-spin NC model-core field on the auxiliary grid, or null.
 ! **************************************************************************************************
    SUBROUTINE qs_fxc_deriv(rho0, xc_rho_set, xc_deriv_set, xc_section, weights, auxbas_pw_pool, &
-                           is_triplet)
+                           is_triplet, core_tau_g)
 
       TYPE(qs_rho_type), POINTER                         :: rho0
       TYPE(xc_rho_set_type)                              :: xc_rho_set
@@ -656,16 +671,21 @@ CONTAINS
       TYPE(pw_r3d_rs_type), POINTER                      :: weights
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
       LOGICAL, INTENT(IN)                                :: is_triplet
+      TYPE(pw_c1d_gs_type), INTENT(IN), POINTER          :: core_tau_g
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'qs_fxc_deriv'
 
       INTEGER                                            :: handle
-      TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho0_r, tau0_r
+      TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: base_tau_r, rho0_r, tau0_r
       TYPE(qs_rho_type), POINTER                         :: rhot0
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (rho0_r, tau0_r)
+      CALL qs_rho_get(rho0, rho_r=rho0_r, tau_r=tau0_r)
+      base_tau_r => tau0_r
+      IF (ASSOCIATED(core_tau_g) .AND. ASSOCIATED(base_tau_r)) &
+         CALL qs_upf_core_kinetic_add(core_tau_g, base_tau_r, 1.0_dp)
+
       IF (is_triplet) THEN
          ! split the density and response density arrays for triplet calculation
          ALLOCATE (rhot0)
@@ -677,10 +697,12 @@ CONTAINS
          CALL qs_rho_release(rhot0)
          DEALLOCATE (rhot0)
       ELSE
-         CALL qs_rho_get(rho0, rho_r=rho0_r, tau_r=tau0_r)
          CALL xc_prep_2nd_deriv(xc_deriv_set, xc_rho_set, rho0_r, auxbas_pw_pool, weights, &
                                 xc_section=xc_section, tau_r=tau0_r)
       END IF
+
+      IF (ASSOCIATED(core_tau_g) .AND. ASSOCIATED(base_tau_r)) &
+         CALL qs_upf_core_kinetic_add(core_tau_g, base_tau_r, -1.0_dp)
 
       CALL timestop(handle)
 

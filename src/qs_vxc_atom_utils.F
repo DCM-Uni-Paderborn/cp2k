@@ -16,16 +16,22 @@ MODULE qs_vxc_atom_utils
                                               gth_potential_type,&
                                               sgp_potential_type
    USE kinds,                           ONLY: dp
-   USE mathconstants,                   ONLY: fac
+   USE mathconstants,                   ONLY: fac,&
+                                              fourpi
    USE orbital_pointers,                ONLY: indso,&
                                               nsoset
    USE paw_basis_types,                 ONLY: get_paw_basis_info
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_harmonics_atom,               ONLY: get_none0_cg_list,&
                                               harmonics_atom_type
-   USE qs_kind_types,                   ONLY: has_nlcc
+   USE qs_kind_types,                   ONLY: has_nlcc,&
+                                              qs_kind_type
    USE qs_rho_atom_types,               ONLY: rho_atom_coeff,&
                                               rho_atom_type
+   USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
+                                              upf_radial_fields_init,&
+                                              upf_radial_fields_type
+   USE upf_types,                       ONLY: upf_nlcc_kinetic
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -48,7 +54,7 @@ MODULE qs_vxc_atom_utils
              create_tau_basis_cache, release_tau_basis_cache, &
              calc_rho_angular, calc_tau_atom, calc_rho_nlcc, &
              gaVxcgb_noGC, gaVxcgb_GC, dgaVtaudgb
-   PUBLIC :: tau_basis_cache_type
+   PUBLIC :: tau_basis_cache_type, nc_core_tau_atom
    PUBLIC :: calc_weight_function
 
 ! **************************************************************************************************
@@ -416,22 +422,60 @@ CONTAINS
    END SUBROUTINE release_tau_basis_cache
 
 ! **************************************************************************************************
+!> \brief Sample an explicit NC model-core kinetic density on an atom's radial XC grid.
+!> \param kind Atomic kind and original UPF.
+!> \param radius Radial XC grid in bohr.
+!> \param core_tau Spin-summed field. Left unallocated when there is no contribution.
+! **************************************************************************************************
+   SUBROUTINE nc_core_tau_atom(kind, radius, core_tau)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kind
+      REAL(dp), INTENT(IN)                               :: radius(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: core_tau(:)
+
+      CHARACTER(LEN=256)                                 :: reason
+      INTEGER                                            :: ir
+      LOGICAL                                            :: available
+      REAL(dp)                                           :: value(1)
+      REAL(dp), ALLOCATABLE                              :: radial(:)
+      TYPE(upf_radial_fields_type)                       :: field
+
+      IF (kind%ghost .OR. .NOT. ASSOCIATED(kind%sgp_potential)) RETURN
+      IF (.NOT. ALLOCATED(kind%sgp_potential%upf_data)) RETURN
+      ASSOCIATE (pot => kind%sgp_potential%upf_data)
+         IF (pot%is_ultrasoft .OR. pot%is_paw .OR. .NOT. ALLOCATED(pot%tau_nlcc)) RETURN
+         CALL upf_nlcc_kinetic(pot, radial, available, reason)
+         IF (.NOT. available) CPABORT(TRIM(reason))
+         IF (ALL(radial == 0.0_dp)) RETURN
+         CALL upf_radial_fields_init(pot%r, RESHAPE(SQRT(fourpi)*radial, [SIZE(radial), 1]), [0], field, &
+                                     finite_table=radial(SIZE(radial)) /= 0.0_dp)
+      END ASSOCIATE
+      ALLOCATE (core_tau(SIZE(radius)), SOURCE=0.0_dp)
+      DO ir = 1, SIZE(radius)
+         IF (radius(ir) > field%radius) CYCLE
+         CALL upf_radial_fields_evaluate(field, [0.0_dp, 0.0_dp, radius(ir)], value)
+         core_tau(ir) = value(1)
+      END DO
+   END SUBROUTINE nc_core_tau_atom
+
+! **************************************************************************************************
 !> \brief Computes tau hard and soft on the atomic grids for meta-GGA calculations
 !> \param tau_h the hard part of tau
 !> \param tau_s the soft part of tau
 !> \param rho_atom atom-centered density matrices
 !> \param tau_cache precomputed compact one-center gradient basis
 !> \param nspins number of spin channels
+!> \param core_tau Optional spin-summed model-core field on the radial grid.
 !> \note This is a rewrite to correct a meta-GGA GAPW bug. This is more brute force than the original,
 !>       which was done along in qs_rho_atom_methods.F, but makes sure that no corner is cut in
 !>       terms of accuracy (A. Bussy)
 ! **************************************************************************************************
-   SUBROUTINE calc_tau_atom(tau_h, tau_s, rho_atom, tau_cache, nspins)
+   SUBROUTINE calc_tau_atom(tau_h, tau_s, rho_atom, tau_cache, nspins, core_tau)
 
       REAL(dp), DIMENSION(:, :, :), INTENT(INOUT)        :: tau_h, tau_s
       TYPE(rho_atom_type), POINTER                       :: rho_atom
       TYPE(tau_basis_cache_type), INTENT(IN)             :: tau_cache
       INTEGER, INTENT(IN)                                :: nspins
+      REAL(dp), INTENT(IN), OPTIONAL                     :: core_tau(:)
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'calc_tau_atom'
 
@@ -492,6 +536,13 @@ CONTAINS
          END DO
       END DO
 
+      IF (PRESENT(core_tau)) THEN
+         CPASSERT(SIZE(core_tau) == nr)
+         DO ir = 1, nr
+            tau_h(:, ir, :) = tau_h(:, ir, :) + core_tau(ir)/REAL(nspins, dp)
+            tau_s(:, ir, :) = tau_s(:, ir, :) + core_tau(ir)/REAL(nspins, dp)
+         END DO
+      END IF
       DEALLOCATE (work)
 
       CALL timestop(handle)

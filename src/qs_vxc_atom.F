@@ -45,7 +45,8 @@ MODULE qs_vxc_atom
    USE particle_types,                  ONLY: particle_type
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
-   USE pw_methods,                      ONLY: pw_axpy
+   USE pw_methods,                      ONLY: pw_axpy,&
+                                              pw_copy
    USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
@@ -64,6 +65,7 @@ MODULE qs_vxc_atom
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               has_nlcc,&
                                               qs_kind_type
+   USE qs_ks_types,                     ONLY: get_ks_env
    USE qs_linres_types,                 ONLY: nablavks_atom_type
    USE qs_native_grid_cache,            ONLY: fetch_native_grid_stencil,&
                                               native_grid_interpolation_stencil_type,&
@@ -83,10 +85,12 @@ MODULE qs_vxc_atom
                                               rho_atom_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_core,             ONLY: qs_upf_core_kinetic_add
    USE qs_vxc_atom_utils,               ONLY: &
         calc_rho_angular, calc_rho_nlcc, calc_tau_atom, calc_weight_function, &
         create_tau_basis_cache, dgaVtaudgb, evaluate_nlcc_primitive_fields, gaVxcgb_GC, &
-        gaVxcgb_noGC, gapw_atom_grid_support_radius, release_tau_basis_cache, tau_basis_cache_type
+        gaVxcgb_noGC, gapw_atom_grid_support_radius, nc_core_tau_atom, release_tau_basis_cache, &
+        tau_basis_cache_type
    USE skala_gpw_features,              ONLY: build_periodic_atom_image_layout,&
                                               periodic_atom_image_partition_from_layout,&
                                               skala_gpw_smooth_partition_derivatives,&
@@ -281,6 +285,7 @@ CONTAINS
          one_center_tau_matrix_contraction, one_center_tensor_contraction, partition_adjoint, &
          partition_weight, smooth_grid_contraction, smooth_input_contraction, &
          target_partition_adjoint, tau_cut, zeff
+      REAL(dp), ALLOCATABLE                              :: core_tau(:)
       REAL(dp), ALLOCATABLE, DIMENSION(:) :: composite_atomic_grid_weight_grad, &
          composite_atomic_grid_weights, composite_base_grid_weights, composite_distances, &
          composite_grid_weight_grad, composite_grid_weights, composite_partition_weights, fw
@@ -344,10 +349,13 @@ CONTAINS
       TYPE(native_grid_interpolation_stencil_type)       :: interpolation_stencil
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: smooth_rho_g
+      TYPE(pw_c1d_gs_type), POINTER                      :: core_tau_g
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
+      TYPE(pw_r3d_rs_type), ALLOCATABLE, TARGET          :: tau_with_core(:)
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: smooth_rho_r, smooth_tau_r, &
                                                             smooth_vxc_rho, smooth_vxc_tau
+      TYPE(pw_r3d_rs_type), POINTER                      :: smooth_tau_input(:)
       TYPE(qs_force_type), DIMENSION(:), POINTER         :: force
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: my_kind_set
       TYPE(qs_rho_type), POINTER                         :: rho_struct
@@ -667,7 +675,18 @@ CONTAINS
                                    rho_cutoff=section_get_rval(my_xc_section, "density_cutoff"), &
                                    drho_cutoff=section_get_rval(my_xc_section, "gradient_cutoff"), &
                                    tau_cutoff=section_get_rval(my_xc_section, "tau_cutoff"))
-            CALL xc_rho_set_update(smooth_rho_set, smooth_rho_r, smooth_rho_g, smooth_tau_r, needs, &
+            CALL get_ks_env(qs_env%ks_env, rho_nlcc_tau_g=core_tau_g)
+            smooth_tau_input => smooth_tau_r
+            IF (ASSOCIATED(core_tau_g)) THEN
+               ALLOCATE (tau_with_core(nspins))
+               DO ispin = 1, nspins
+                  CALL auxbas_pw_pool%create_pw(tau_with_core(ispin))
+                  CALL pw_copy(smooth_tau_r(ispin), tau_with_core(ispin))
+               END DO
+               CALL qs_upf_core_kinetic_add(core_tau_g, tau_with_core, 1.0_dp)
+               smooth_tau_input => tau_with_core
+            END IF
+            CALL xc_rho_set_update(smooth_rho_set, smooth_rho_r, smooth_rho_g, smooth_tau_input, needs, &
                                    xc_deriv_method_id, xc_rho_smooth_id, auxbas_pw_pool)
             IF (lsd) THEN
                CALL xc_rho_set_get(smooth_rho_set, rhoa=smooth_rhoa, rhob=smooth_rhob, &
@@ -797,6 +816,7 @@ CONTAINS
 
                IF (tau_f) THEN
                   CALL create_tau_basis_cache(tau_basis_cache, grid_atom, basis_1c, harmonics)
+                  CALL nc_core_tau_atom(my_kind_set(ikind), grid_atom%rad, core_tau)
                   CALL reallocate(tau_h, 1, na, 1, nr, 1, nspins)
                   CALL reallocate(tau_s, 1, na, 1, nr, 1, nspins)
                   CALL reallocate(vtau_h, 1, na, 1, nr, 1, nspins)
@@ -841,7 +861,7 @@ CONTAINS
                      rho_d = 0.0_dp
                   END IF
                   IF (tau_f) THEN
-                     CALL calc_tau_atom(tau_h, tau_s, rho_atom, tau_basis_cache, nspins)
+                     CALL calc_tau_atom(tau_h, tau_s, rho_atom, tau_basis_cache, nspins, core_tau)
                   ELSE
                      tau_d = 0.0_dp
                   END IF
@@ -2055,7 +2075,7 @@ CONTAINS
                                          (SUM(smooth_vxc_rho(ispin)%array* &
                                               smooth_rho_r(ispin)%array) + &
                                           SUM(smooth_vxc_tau(ispin)%array* &
-                                              smooth_tau_r(ispin)%array))
+                                              smooth_tau_input(ispin)%array))
                IF (atom_composite_reference) THEN
                   CPASSERT(PRESENT(composite_vxc_rho))
                   CPASSERT(PRESENT(composite_vxc_tau))
@@ -2539,6 +2559,13 @@ CONTAINS
                END IF
             END IF
             CALL xc_rho_set_release(smooth_rho_set, pw_pool=auxbas_pw_pool)
+            NULLIFY (smooth_tau_input)
+            IF (ALLOCATED(tau_with_core)) THEN
+               DO ispin = 1, nspins
+                  CALL auxbas_pw_pool%give_back_pw(tau_with_core(ispin))
+               END DO
+               DEALLOCATE (tau_with_core)
+            END IF
             DEALLOCATE (composite_atomic_grid_sizes, composite_atom_kind, &
                         composite_atom_kind_index, composite_atom_start, composite_atom_end, &
                         composite_atom_coords, composite_local_atoms, composite_local_grid_sizes, &
@@ -3322,6 +3349,7 @@ CONTAINS
                                                             paw_atom, tau_f
       REAL(dp)                                           :: agr, alpha, density_cut, exc_h, exc_s, &
                                                             gradient_cut, tau_cut
+      REAL(dp), ALLOCATABLE                              :: core_tau(:)
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: fw
       REAL(dp), DIMENSION(1, 1, 1)                       :: tau_d
       REAL(dp), DIMENSION(1, 1, 1, 1)                    :: rho_d
@@ -3482,6 +3510,7 @@ CONTAINS
 
             IF (tau_f) THEN
                CALL create_tau_basis_cache(tau_basis_cache, grid_atom, basis_1c, harmonics)
+               CALL nc_core_tau_atom(my_kind_set(ikind), grid_atom%rad, core_tau)
                CALL reallocate(tau_h, 1, na, 1, nr, 1, nspins)
                CALL reallocate(tau_s, 1, na, 1, nr, 1, nspins)
                CALL reallocate(vtau_h, 1, na, 1, nr, 1, nspins)
@@ -3525,7 +3554,7 @@ CONTAINS
                END IF
                IF (tau_f) THEN
                   !compute tau on the grid all at once
-                  CALL calc_tau_atom(tau_h, tau_s, rho_atom, tau_basis_cache, nspins)
+                  CALL calc_tau_atom(tau_h, tau_s, rho_atom, tau_basis_cache, nspins, core_tau)
                ELSE
                   tau_d = 0.0_dp
                END IF

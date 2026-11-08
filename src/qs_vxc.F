@@ -853,6 +853,7 @@ CONTAINS
                   CALL pw_axpy(rho_nlcc_g_use, rho_smooth_model_g(ispin), 1.0_dp)
                END IF
             END DO
+            IF (.NOT. inverse_active) CALL qs_upf_inverse_core_kinetic(ks_env, tau_smooth_model_r, 1.0_dp)
             CALL diagnose_gapw_composite_direction( &
                rho_r, rho_g, tau, rho_smooth_model_r, rho_smooth_model_g, &
                tau_smooth_model_r, my_vxc_rho, my_vxc_tau, xc_section, weights_use, &

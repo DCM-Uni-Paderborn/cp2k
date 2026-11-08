@@ -1043,6 +1043,11 @@ CONTAINS
                IF (qs_upf_inverse_scf_active(ks_env)) THEN
                   CPABORT("Inverse USPP GaussXC AO operators are not implemented")
                END IF
+               BLOCK
+                  TYPE(pw_c1d_gs_type), POINTER :: core_tau_g
+                  CALL get_ks_env(ks_env, rho_nlcc_tau_g=core_tau_g)
+                  IF (ASSOCIATED(core_tau_g)) CPABORT("Explicit UPF core tau requires native Quickstep XC evaluation")
+               END BLOCK
                use_gauxc_matrix = .TRUE.
                CALL apply_gauxc(qs_env, xc_section, calculate_forces)
                IF (gapw_xc .OR. (gapw .AND. gauxc_gapw_has_paw_pseudopotentials(qs_kind_set))) THEN
@@ -1233,9 +1238,11 @@ CONTAINS
                CALL integrate_rho_nlcc(v_rspace_new(ispin), qs_env)
                IF (dft_control%do_admm) CALL integrate_rho_nlcc(v_rspace_new_aux_fit(ispin), qs_env)
             END DO
-            IF (ASSOCIATED(v_tau_rspace)) CALL qs_upf_nc_core_force(qs_env, v_tau_rspace)
-            IF (ASSOCIATED(v_tau_rspace_aux_fit)) CALL qs_upf_nc_core_force(qs_env, v_tau_rspace_aux_fit)
          END IF
+      END IF
+      IF (calculate_forces .AND. .NOT. qs_upf_inverse_scf_active(ks_env)) THEN
+         IF (ASSOCIATED(v_tau_rspace)) CALL qs_upf_nc_core_force(qs_env, v_tau_rspace)
+         IF (ASSOCIATED(v_tau_rspace_aux_fit)) CALL qs_upf_nc_core_force(qs_env, v_tau_rspace_aux_fit)
       END IF
 
       ! calculate KG correction
