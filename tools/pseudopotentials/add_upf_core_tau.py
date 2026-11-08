@@ -7,8 +7,8 @@ reference core. A common radial rescaling reproduces
 the supplied nonnegative NLCC charge. This defines auxiliary model orbitals,
 not recovered generator core tau or normalized atomic core eigenstates.
 For ONCV data, a separate positive-amplitude model uses closed-core reference
-waves from an ONCV export or a matching independent scalar Vanderbilt PBE
-atomic state. It retains the original signed NLCC charge.
+waves from an ONCV export or a matching independent scalar atomic state.
+It retains the original signed NLCC charge.
 Original sections are retained, apart from the kinetic-data availability flag.
 """
 
@@ -246,6 +246,55 @@ def qe_atomic_orbitals(data, target):
     return [(n, l, [row[i + 1] for row in rows]) for i, (n, l) in enumerate(shells)]
 
 
+def gipaw_core_orbitals(tree, r, rab, qe_wfc=None):
+    table = tree.find("PP_GIPAW/PP_GIPAW_CORE_ORBITALS")
+    if table is None:
+        raise ValueError("Missing original GIPAW core orbital table")
+    count = int(table.get("number_of_core_orbitals", "-1"))
+    if len(table) != count:
+        raise ValueError("Incomplete original GIPAW orbital table")
+    orbitals = []
+    for i in range(1, count + 1):
+        node = table.find(f"PP_GIPAW_CORE_ORBITAL.{i}")
+        if node is None or integer(node.get("index", "-1")) != i:
+            raise ValueError("Invalid GIPAW core indexing")
+        orbitals.append(
+            (
+                integer(node.get("n", "-1")),
+                integer(node.get("l", "-1")),
+                values(node),
+            )
+        )
+    if qe_wfc is not None:
+        original = {(n, l): u for n, l, u in orbitals}
+        common = 0
+        w = weights(rab)
+        for n, l, u in qe_atomic_orbitals(qe_wfc, r):
+            if (n, l) not in original:
+                orbitals.append((n, l, u))
+                continue
+            a = original[n, l]
+            if len(a) != len(r):
+                raise ValueError("Incomplete original GIPAW orbital")
+            norm = math.fsum(weight * x * x for weight, x in zip(w, a))
+            error = min(
+                math.fsum(
+                    weight * (x - sign * y) ** 2 for weight, x, y in zip(w, a, u)
+                )
+                for sign in (-1, 1)
+            )
+            if not math.isfinite(norm) or not math.isfinite(error):
+                raise ValueError("Nonfinite original GIPAW orbital")
+            if norm == 0 and error == 0:
+                continue
+            if norm <= 0 or error > 1e-12 * norm:
+                raise ValueError("QE and original GIPAW orbitals disagree")
+            common += 1
+        if not common:
+            raise ValueError("QE atomic waves have no shared GIPAW reference")
+    return orbitals
+
+
 def reference_orbitals(tree, r, rab, occupations, vanderbilt=None, qe_wfc=None):
     header = tree.find("PP_HEADER")
     symbol = header.get("element", "").strip()
@@ -263,51 +312,7 @@ def reference_orbitals(tree, r, rab, occupations, vanderbilt=None, qe_wfc=None):
             vanderbilt, ELEMENTS.index(symbol) + 1, occupations, r
         )
     else:
-        table = tree.find("PP_GIPAW/PP_GIPAW_CORE_ORBITALS")
-        if table is None:
-            raise ValueError("Missing original GIPAW core orbital table")
-        count = int(table.get("number_of_core_orbitals", "-1"))
-        if len(table) != count:
-            raise ValueError("Incomplete original GIPAW orbital table")
-        orbitals = []
-        for i in range(1, count + 1):
-            node = table.find(f"PP_GIPAW_CORE_ORBITAL.{i}")
-            if node is None or integer(node.get("index", "-1")) != i:
-                raise ValueError("Invalid GIPAW core indexing")
-            orbitals.append(
-                (
-                    integer(node.get("n", "-1")),
-                    integer(node.get("l", "-1")),
-                    values(node),
-                )
-            )
-        if qe_wfc is not None:
-            original = {(n, l): u for n, l, u in orbitals}
-            common = 0
-            w = weights(rab)
-            for n, l, u in qe_atomic_orbitals(qe_wfc, r):
-                if (n, l) not in original:
-                    orbitals.append((n, l, u))
-                    continue
-                a = original[n, l]
-                if len(a) != len(r):
-                    raise ValueError("Incomplete original GIPAW orbital")
-                norm = math.fsum(weight * x * x for weight, x in zip(w, a))
-                error = min(
-                    math.fsum(
-                        weight * (x - sign * y) ** 2 for weight, x, y in zip(w, a, u)
-                    )
-                    for sign in (-1, 1)
-                )
-                if not math.isfinite(norm) or not math.isfinite(error):
-                    raise ValueError("Nonfinite original GIPAW orbital")
-                if norm == 0 and error == 0:
-                    continue
-                if norm <= 0 or error > 1e-12 * norm:
-                    raise ValueError("QE and original GIPAW orbitals disagree")
-                common += 1
-            if not common:
-                raise ValueError("QE atomic waves have no shared GIPAW reference")
+        orbitals = gipaw_core_orbitals(tree, r, rab, qe_wfc)
         if len(occupations) != len(orbitals):
             raise ValueError(
                 "Supply occupations in GIPAW order, then missing QE header order"
@@ -546,6 +551,69 @@ def oncv_vanderbilt_reference(document, header, data):
     return r, reference
 
 
+def oncv_qe_reference(document, header, donor, log, qe_wfc):
+    """Match an independent scalar QE atom and extract normalized frozen shells."""
+    element, z, nc, xc, configuration = oncv_configuration(document, header)
+    functional = {4: "PBE", -116133: "PBESOL"}.get(xc)
+    tree = ET.fromstring(donor)
+    source = tree.find("PP_HEADER")
+    if (
+        functional is None
+        or source is None
+        or source.get("element", "").strip() != element
+        or source.get("functional", "").strip().upper() != functional
+        or source.get("relativistic", "").strip().lower() != "scalar"
+        or flag(source, "has_so")
+    ):
+        raise ValueError("Independent QE references require matching scalar PBE or PBEsol data")
+    report = re.search(rb" All-electron run (.*?) End of All-electron run ", log, re.S)
+    if report is None:
+        raise ValueError("Missing complete QE all-electron run")
+    ae = report[1].decode("utf8")
+    charge = re.search(r"atomic number is\s+([\d.]+)", ae)
+    dft = re.search(r"\bdft\s*=\s*(\w+)", ae)
+    error = re.search(r"final scf error:\s*(\S+)", ae)
+    if (
+        charge is None
+        or real(charge[1]) != z
+        or dft is None
+        or dft[1].upper() != functional
+        or error is None
+        or not 0 <= real(error[1]) <= 1e-10
+        or "scalar relativistic calculation" not in ae
+    ):
+        raise ValueError("QE log must identify a matching converged scalar atom")
+    records = re.findall(r"(?m)^\s*(\d+)\s+(\d+)\s+\S+\s+\d+\(\s*([\d.]+)\s*\)", ae)
+    occupied = [(int(n), int(l), real(f)) for n, l, f in records if real(f) > 0]
+    if sorted(occupied) != sorted(row for row in configuration if row[2] > 0):
+        raise ValueError("QE and ONCV occupied configurations disagree")
+
+    r, rab = (values(tree.find(tag)) for tag in ("PP_MESH/PP_R", "PP_MESH/PP_RAB"))
+    if (
+        len(r) < 5
+        or len(r) != int(source.get("mesh_size", "-1"))
+        or len(rab) != len(r)
+        or r[0] <= 0
+        or any(b <= a for a, b in zip(r, r[1:]))
+        or any(x <= 0 for x in rab)
+    ):
+        raise ValueError("Invalid QE reference radial mesh or quadrature")
+    orbitals = gipaw_core_orbitals(tree, r, rab, qe_wfc)
+    waves = {(n, l): u for n, l, u in orbitals}
+    if len(waves) != len(orbitals):
+        raise ValueError("Repeated QE reference orbital")
+    quadrature = weights(rab)
+    reference = []
+    for n, l, f in configuration[:nc]:
+        u = waves.get((n, l), [])
+        norm = math.fsum(w * v * v for w, v in zip(quadrature, u))
+        if len(u) != len(r) or not math.isfinite(norm) or abs(norm - 1) > 1e-4:
+            raise ValueError("Missing or unnormalized QE closed-core wave")
+        radial = [v / x for x, v in zip(r, u)]
+        reference.append((f, l, radial, slopes(r, radial)))
+    return r, reference
+
+
 def positive_amplitude_kinetic(r, density, native_r, reference):
     """Build the auxiliary NC kinetic field while retaining the signed NLCC table."""
     if min(density) < -1e-8 * max(density):
@@ -583,9 +651,17 @@ def positive_amplitude_kinetic(r, density, native_r, reference):
 
 
 def enrich(
-    data, occupations=None, vanderbilt=None, qe_wfc=None, oncv_core=None, *, oncv_vanderbilt=None
+    data,
+    occupations=None,
+    vanderbilt=None,
+    qe_wfc=None,
+    oncv_core=None,
+    *,
+    oncv_vanderbilt=None,
+    oncv_qe=None,
 ):
-    nc_model = oncv_core is not None or oncv_vanderbilt is not None
+    nc_inputs = (oncv_core, oncv_vanderbilt, oncv_qe)
+    nc_model = any(value is not None for value in nc_inputs)
     start, document, masked = oncv_document(data) if nc_model else (0, data, data)
     tree = ET.fromstring(masked)
     header = tree.find("PP_HEADER")
@@ -601,7 +677,7 @@ def enrich(
     elif (
         header.get("pseudo_type", "").strip().upper() != "NC"
         or flag(header, "is_ultrasoft")
-        or (oncv_core is not None and oncv_vanderbilt is not None)
+        or sum(value is not None for value in nc_inputs) != 1
         or any(value is not None for value in (occupations, vanderbilt, qe_wfc))
     ):
         raise ValueError(
@@ -630,10 +706,13 @@ def enrich(
         kinetic = model_kinetic(
             r, density, reference_orbitals(tree, r, rab, occupations, vanderbilt, qe_wfc)
         )
-    elif oncv_vanderbilt is None:
-        kinetic = positive_amplitude_kinetic(r, density, *oncv_reference(document, header, oncv_core))
     else:
-        reference = oncv_vanderbilt_reference(document, header, oncv_vanderbilt)
+        if oncv_core is not None:
+            reference = oncv_reference(document, header, oncv_core)
+        elif oncv_vanderbilt is not None:
+            reference = oncv_vanderbilt_reference(document, header, oncv_vanderbilt)
+        else:
+            reference = oncv_qe_reference(document, header, *oncv_qe)
         kinetic = positive_amplitude_kinetic(r, density, *reference)
     spans, end = top_level_spans(masked)
     first, last = spans["PP_HEADER"]
@@ -663,13 +742,25 @@ def enrich(
             "This field is a specified model, not recovered original generator tau. -->\n"
         )
     else:
-        source = (
-            f"ONCV core export SHA256 {sha256(oncv_core).hexdigest()}\n"
-            "Closed-core references follow the embedded ONCV atomic input.\n"
-            if oncv_vanderbilt is None
-            else f"Vanderbilt atom.ae SHA256 {sha256(oncv_vanderbilt).hexdigest()}\n"
-            "Independent neutral scalar PBE reference matched to the ONCV atomic configuration.\n"
-        )
+        if oncv_qe is not None:
+            donor, log, waves = oncv_qe
+            source = (
+                f"QE reference UPF SHA256 {sha256(donor).hexdigest()}\n"
+                f"QE all-electron log SHA256 {sha256(log).hexdigest()}\n"
+            )
+            if waves is not None:
+                source += f"QE ld1.wfc SHA256 {sha256(waves).hexdigest()}\n"
+            source += "Independent scalar QE reference matched to the ONCV atomic configuration.\n"
+        elif oncv_vanderbilt is not None:
+            source = (
+                f"Vanderbilt atom.ae SHA256 {sha256(oncv_vanderbilt).hexdigest()}\n"
+                "Independent neutral scalar PBE reference matched to the ONCV atomic configuration.\n"
+            )
+        else:
+            source = (
+                f"ONCV core export SHA256 {sha256(oncv_core).hexdigest()}\n"
+                "Closed-core references follow the embedded ONCV atomic input.\n"
+            )
         provenance = (
             "\n<!-- CP2K auxiliary NLCC core kinetic model POSITIVE_AMPLITUDE\n"
             f"Source SHA256 {sha256(data).hexdigest()}\n"
@@ -706,27 +797,40 @@ def main():
         type=Path,
         help="Use a retained Vanderbilt atom.ae file for USPP or the positive-amplitude PBE NC model",
     )
-    reference.add_argument(
+    parser.add_argument(
         "--qe-ae-wfc",
         type=Path,
         help="Complete GIPAW with missing scalar ld1.wfc columns on the original mesh; "
-        "append occupations in missing QE header order",
+        "for orbital-rescale, append occupations in missing QE header order",
     )
     reference.add_argument(
         "--oncv-core",
         type=Path,
         help="ONCV_AE_CORE_V1 closed-core export for the positive-amplitude NC model",
     )
+    reference.add_argument(
+        "--qe-reference-upf", type=Path, help="Matching independent QE UPF for the NC model"
+    )
+    parser.add_argument(
+        "--qe-reference-log", type=Path, help="All-electron log from the same QE atomic run"
+    )
     args = parser.parse_args()
+    has_qe_reference = args.qe_reference_upf is not None
+    if has_qe_reference != (args.qe_reference_log is not None):
+        parser.error("--qe-reference-upf and --qe-reference-log must be supplied together")
     if args.model == "positive-amplitude" and (
-        (args.oncv_core is None and args.vanderbilt_ae is None)
+        (args.oncv_core is None and args.vanderbilt_ae is None and not has_qe_reference)
         or args.core_occupations is not None
+        or (args.qe_ae_wfc is not None and not has_qe_reference)
     ):
         parser.error(
-            "positive-amplitude uses --oncv-core or --vanderbilt-ae and the embedded ONCV occupations"
+            "positive-amplitude uses ONCV, Vanderbilt or QE references and the embedded ONCV occupations"
         )
     if args.model == "orbital-rescale" and (
-        args.oncv_core is not None or args.core_occupations is None
+        args.oncv_core is not None
+        or has_qe_reference
+        or args.core_occupations is None
+        or (args.vanderbilt_ae is not None and args.qe_ae_wfc is not None)
     ):
         parser.error(
             "orbital-rescale requires --core-occupations and uses USPP reference data"
@@ -737,7 +841,16 @@ def main():
         qe_wfc = args.qe_ae_wfc.read_bytes() if args.qe_ae_wfc else None
         oncv_core = args.oncv_core.read_bytes() if args.oncv_core else None
         if args.model == "positive-amplitude":
-            output = enrich(original, oncv_core=oncv_core, oncv_vanderbilt=vanderbilt)
+            qe_reference = None
+            if has_qe_reference:
+                qe_reference = (
+                    args.qe_reference_upf.read_bytes(),
+                    args.qe_reference_log.read_bytes(),
+                    qe_wfc,
+                )
+            output = enrich(
+                original, oncv_core=oncv_core, oncv_vanderbilt=vanderbilt, oncv_qe=qe_reference
+            )
         else:
             output = enrich(original, args.core_occupations, vanderbilt, qe_wfc)
         with args.output.open("xb") as stream:
