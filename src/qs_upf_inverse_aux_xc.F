@@ -51,8 +51,7 @@ MODULE qs_upf_inverse_aux_xc
                                               qs_upf_inverse_xc_semilocal_kernel_available
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE rs_pw_interface,                 ONLY: pw_real_transfer
-   USE xc_input_constants,              ONLY: xc_deriv_pw,&
-                                              xc_rho_no_smooth
+   USE xc_input_constants,              ONLY: xc_deriv_pw
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -588,7 +587,6 @@ CONTAINS
 
       available = qs_upf_inverse_xc_semilocal_kernel_available(xc, ns == 2)
       available = available .AND. section_get_ival(xc, 'XC_GRID%XC_DERIV') == xc_deriv_pw .AND. &
-                  section_get_ival(xc, 'XC_GRID%XC_SMOOTH_RHO') == xc_rho_no_smooth .AND. &
                   section_get_ival(xc, 'VDW_POTENTIAL%POTENTIAL_TYPE') /= xc_vdw_fun_nonloc
    END FUNCTION qs_upf_inverse_aux_xc_kernel_available
 

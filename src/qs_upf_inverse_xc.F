@@ -13,7 +13,8 @@
 ! **************************************************************************************************
 MODULE qs_upf_inverse_xc
    USE cell_types,                      ONLY: cell_type
-   USE input_section_types,             ONLY: section_get_rval,&
+   USE input_section_types,             ONLY: section_get_ival,&
+                                              section_get_rval,&
                                               section_vals_get_subs_vals,&
                                               section_vals_get_subs_vals2,&
                                               section_vals_type,&
@@ -2052,7 +2053,7 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_xc_pw_response
 
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Differentiate the semilocal grid potential through the same density filter and gradient.
 !> \param xc ...
 !> \param density ...
 !> \param density_g ...
@@ -2069,22 +2070,26 @@ CONTAINS
                                             weights, pool, potential, kinetic_potential)
       TYPE(section_vals_type), POINTER                   :: xc
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
-      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: density_g(:)
+      TYPE(pw_c1d_gs_type), INTENT(IN), TARGET           :: density_g(:)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic(:), direction(:)
-      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: direction_g(:)
+      TYPE(pw_c1d_gs_type), INTENT(IN), TARGET           :: direction_g(:)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic_direction(:)
       TYPE(pw_r3d_rs_type), POINTER                      :: weights
       TYPE(pw_pool_type), POINTER                        :: pool
       TYPE(pw_r3d_rs_type), POINTER                      :: potential(:), kinetic_potential(:)
 
-      INTEGER                                            :: axis, dims(3), np, ns, orders(3), spin
+      INTEGER                                            :: axis, dims(3), np, ns, orders(3), &
+                                                            smooth_id, spin
       REAL(dp), ALLOCATABLE                              :: dgrad(:, :, :), drho(:, :), dtau(:, :), &
                                                             grad(:, :, :), rho(:, :), tau(:, :), &
                                                             vg(:, :, :), vn(:, :), vt(:, :), w(:)
       TYPE(pw_c1d_gs_type)                               :: derivative_g
+      TYPE(pw_c1d_gs_type), POINTER                      :: drho_g, rho_g
+      TYPE(pw_c1d_gs_type), TARGET                       :: smoothed_direction_g, smoothed_g
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: derivative_r, gradient_r, work_r
 
+      smooth_id = section_get_ival(xc, "XC_GRID%XC_SMOOTH_RHO")
       grid => density(1)%pw_grid
       np = SIZE(density(1)%array)
       ns = SIZE(density)
@@ -2100,21 +2105,38 @@ CONTAINS
       CALL gradient_r%create(grid)
       CALL work_r%create(grid)
       CALL derivative_r%create(grid)
+      IF (smooth_id /= xc_rho_no_smooth) THEN
+         CALL smoothed_g%create(grid)
+         CALL smoothed_direction_g%create(grid)
+      END IF
       DO spin = 1, ns
          CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
          CPASSERT(ASSOCIATED(direction(spin)%pw_grid, grid))
-         rho(:, spin) = RESHAPE(density(spin)%array, [np])
+         IF (smooth_id == xc_rho_no_smooth) THEN
+            rho(:, spin) = RESHAPE(density(spin)%array, [np])
+            drho(:, spin) = RESHAPE(direction(spin)%array, [np])
+            rho_g => density_g(spin)
+            drho_g => direction_g(spin)
+         ELSE
+            CALL xc_pw_smooth(density(spin), work_r, smooth_id)
+            rho(:, spin) = RESHAPE(work_r%array, [np])
+            CALL pw_transfer(work_r, smoothed_g)
+            CALL xc_pw_smooth(direction(spin), work_r, smooth_id)
+            drho(:, spin) = RESHAPE(work_r%array, [np])
+            CALL pw_transfer(work_r, smoothed_direction_g)
+            rho_g => smoothed_g
+            drho_g => smoothed_direction_g
+         END IF
          tau(:, spin) = RESHAPE(kinetic(spin)%array, [np])
-         drho(:, spin) = RESHAPE(direction(spin)%array, [np])
          dtau(:, spin) = RESHAPE(kinetic_direction(spin)%array, [np])
          DO axis = 1, 3
             orders = 0
             orders(axis) = 1
-            derivative_g%array = density_g(spin)%array
+            derivative_g%array = rho_g%array
             CALL pw_derive(derivative_g, orders)
             CALL pw_transfer(derivative_g, gradient_r)
             grad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
-            derivative_g%array = direction_g(spin)%array
+            derivative_g%array = drho_g%array
             CALL pw_derive(derivative_g, orders)
             CALL pw_transfer(derivative_g, gradient_r)
             dgrad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
@@ -2136,7 +2158,16 @@ CONTAINS
             CALL pw_transfer(derivative_g, derivative_r)
             potential(spin)%array = potential(spin)%array - derivative_r%array
          END DO
+         IF (smooth_id /= xc_rho_no_smooth) THEN
+            ! The native density stencils are self-adjoint on the XC grid.
+            CALL xc_pw_smooth(potential(spin), work_r, smooth_id)
+            potential(spin)%array = work_r%array
+         END IF
       END DO
+      IF (smooth_id /= xc_rho_no_smooth) THEN
+         CALL smoothed_g%release()
+         CALL smoothed_direction_g%release()
+      END IF
       CALL derivative_g%release()
       CALL gradient_r%release()
       CALL work_r%release()

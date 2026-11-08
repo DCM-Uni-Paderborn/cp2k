@@ -11,6 +11,13 @@ PROGRAM pw_unittest
                                               cp_logger_type
    USE fft_tools,                       ONLY: finalize_fft,&
                                               init_fft
+   USE input_cp2k_xc,                   ONLY: create_xc_section
+   USE input_section_types,             ONLY: section_release,&
+                                              section_type,&
+                                              section_vals_create,&
+                                              section_vals_release,&
+                                              section_vals_type,&
+                                              section_vals_val_set
    USE kinds,                           ONLY: dp
    USE libcp2k,                         ONLY: cp2k_finalize,&
                                               cp2k_init
@@ -32,7 +39,8 @@ PROGRAM pw_unittest
    USE pw_methods,                      ONLY: do_accurate_sum,&
                                               do_standard_sum,&
                                               pw_integral_ab,&
-                                              pw_real_fourier_aliases
+                                              pw_real_fourier_aliases,&
+                                              pw_transfer
    USE pw_poisson_methods,              ONLY: pw_green_strain_response,&
                                               pw_poisson_set,&
                                               pw_poisson_solve
@@ -51,13 +59,15 @@ PROGRAM pw_unittest
                                               pw_r3d_rs_type
    USE qs_external_potential,           ONLY: interpolate_external_potential
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_xc_transfer_real
-   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_pw_adjoint,&
+   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_grid_kernel,&
+                                              qs_upf_inverse_xc_pw_adjoint,&
                                               qs_upf_inverse_xc_pw_fields
    USE realspace_grid_cube,             ONLY: cube_read_values,&
                                               cube_value_format,&
                                               cube_values_format
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_gpw_functional,            ONLY: build_vxc_from_feature_grads
+   USE xc,                              ONLY: xc_vxc_pw_create
    USE xc_input_constants,              ONLY: xc_deriv_pw,&
                                               xc_rho_nn10,&
                                               xc_rho_nn50,&
@@ -180,6 +190,7 @@ CONTAINS
          CALL qs_upf_inverse_xc_transfer_real(fine_filtered, potential(1))
          CALL check_error(pw_integral_ab(density(1), potential(1)), sampled, 3.e-13_dp)
       END DO
+      CALL check_smoothed_xc_kernel(density(1), kinetic(1), pool)
       CALL density(1)%release()
       CALL kinetic(1)%release()
       CALL smooth(1)%release()
@@ -192,6 +203,112 @@ CONTAINS
       CALL pw_pool_release(pool)
       CALL pw_grid_release(grid)
    END SUBROUTINE check_upf_xc_smoothing
+
+! **************************************************************************************************
+!> \brief Compare the filtered semilocal kernel with differences of the native XC potential.
+!> \param base Positive nonuniform source density.
+!> \param perturbation Independent nonuniform direction.
+!> \param pool Native PW pool of both fields.
+! **************************************************************************************************
+   SUBROUTINE check_smoothed_xc_kernel(base, perturbation, pool)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: base, perturbation
+      TYPE(pw_pool_type), POINTER                        :: pool
+
+      INTEGER                                            :: functional, spin, trial
+#if defined(__LIBXC)
+      INTEGER, PARAMETER                                 :: functional_count = 2
+#else
+      INTEGER, PARAMETER                                 :: functional_count = 1
+#endif
+      REAL(dp), PARAMETER                                :: step = 1.0e-5_dp
+      REAL(dp)                                           :: energy, error, shift, virial(3, 3)
+      TYPE(pw_c1d_gs_type)                               :: direction_g(2)
+      TYPE(pw_c1d_gs_type), POINTER                      :: rho_g(:)
+      TYPE(pw_r3d_rs_type)                               :: direction(2), direction_tau(2), minus(2), minus_tau(2)
+      TYPE(pw_r3d_rs_type), POINTER                      :: rho(:), tau(:), weights, v(:), vt(:), kernel(:), kernel_tau(:)
+      TYPE(section_type), POINTER                        :: definition
+      TYPE(section_vals_type), POINTER                   :: xc
+
+      NULLIFY (definition, xc, weights, v, vt, kernel, kernel_tau)
+      CALL create_xc_section(definition)
+      CALL section_vals_create(xc, definition)
+      CALL section_vals_val_set(xc, 'XC_GRID%XC_SMOOTH_RHO', i_val=xc_rho_nn10)
+      ALLOCATE (rho(2), rho_g(2), tau(2))
+      DO spin = 1, 2
+         CALL pool%create_pw(rho(spin))
+         CALL pool%create_pw(rho_g(spin))
+         CALL pool%create_pw(tau(spin))
+         CALL pool%create_pw(direction(spin))
+         CALL pool%create_pw(direction_g(spin))
+         CALL pool%create_pw(direction_tau(spin))
+         CALL pool%create_pw(minus(spin))
+         CALL pool%create_pw(minus_tau(spin))
+         direction(spin)%array = perturbation%array/REAL(spin, dp)
+         direction_tau(spin)%array = 0.15_dp*direction(spin)%array
+         CALL pw_transfer(direction(spin), direction_g(spin))
+      END DO
+      DO functional = 1, functional_count
+         CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%PBE%_SECTION_PARAMETERS_', l_val=functional == 1)
+         IF (functional == 2) THEN
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_X_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
+            CALL section_vals_val_set(xc, 'XC_FUNCTIONAL%MGGA_C_R2SCAN%_SECTION_PARAMETERS_', l_val=.TRUE.)
+         END IF
+         DO trial = 0, 2
+            shift = 0.0_dp
+            IF (trial > 0) shift = REAL(2*trial - 3, dp)*step
+            DO spin = 1, 2
+               rho(spin)%array = base%array/REAL(spin, dp) + shift*direction(spin)%array
+               tau(spin)%array = 0.12_dp + 0.25_dp*base%array/REAL(spin, dp) + shift*direction_tau(spin)%array
+               CALL pw_transfer(rho(spin), rho_g(spin))
+            END DO
+            IF (trial == 0) THEN
+               CALL qs_upf_inverse_xc_grid_kernel(xc, rho, rho_g, tau, direction, direction_g, direction_tau, &
+                                                  weights, pool, kernel, kernel_tau)
+               CYCLE
+            END IF
+            CALL xc_vxc_pw_create(v, vt, energy, rho, rho_g, tau, xc, weights, pool, .FALSE., virial, &
+                                  project_density_potential=.FALSE.)
+            DO spin = 1, 2
+               IF (trial == 1) THEN
+                  minus(spin)%array = v(spin)%array
+                  minus_tau(spin)%array = 0.0_dp
+                  IF (ASSOCIATED(vt)) minus_tau(spin)%array = vt(spin)%array
+               ELSE
+                  error = MAXVAL(ABS((v(spin)%array - minus(spin)%array)/(2.0_dp*step) - kernel(spin)%array))
+                  CALL check_error(error, 0.0_dp, 3.e-8_dp)
+                  IF (functional == 2 .AND. .NOT. ASSOCIATED(vt)) ERROR STOP 'Missing meta-GGA tau potential'
+                  IF (ASSOCIATED(vt)) THEN
+                     error = MAXVAL(ABS((vt(spin)%array - minus_tau(spin)%array)/(2.0_dp*step) - kernel_tau(spin)%array))
+                     CALL check_error(error, 0.0_dp, 3.e-8_dp)
+                  END IF
+               END IF
+               CALL pool%give_back_pw(v(spin))
+               IF (ASSOCIATED(vt)) CALL pool%give_back_pw(vt(spin))
+            END DO
+            DEALLOCATE (v)
+            IF (ASSOCIATED(vt)) DEALLOCATE (vt)
+            NULLIFY (v, vt)
+         END DO
+         DO spin = 1, 2
+            CALL pool%give_back_pw(kernel(spin))
+            CALL pool%give_back_pw(kernel_tau(spin))
+         END DO
+         DEALLOCATE (kernel, kernel_tau)
+      END DO
+      DO spin = 1, 2
+         CALL pool%give_back_pw(rho(spin))
+         CALL pool%give_back_pw(rho_g(spin))
+         CALL pool%give_back_pw(tau(spin))
+         CALL pool%give_back_pw(direction(spin))
+         CALL pool%give_back_pw(direction_g(spin))
+         CALL pool%give_back_pw(direction_tau(spin))
+         CALL pool%give_back_pw(minus(spin))
+         CALL pool%give_back_pw(minus_tau(spin))
+      END DO
+      DEALLOCATE (rho, rho_g, tau)
+      CALL section_vals_release(xc)
+      CALL section_release(definition)
+   END SUBROUTINE check_smoothed_xc_kernel
 
 ! **************************************************************************************************
 !> \brief Preserve even-grid tensor-product Nyquist modes and the real-density/potential adjoint.
