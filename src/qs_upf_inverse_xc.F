@@ -74,10 +74,12 @@ MODULE qs_upf_inverse_xc
                                               xc_functionals_collect_floor_jumps,&
                                               xc_functionals_get_needs,&
                                               xc_functionals_select_floor_limits
+   USE xc_input_constants,              ONLY: xc_rho_no_smooth
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
                                               xc_rho_set_release,&
                                               xc_rho_set_type
+   USE xc_util,                         ONLY: xc_pw_smooth
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -1880,18 +1882,23 @@ CONTAINS
 !> \param fields Replicated descriptors, ordered as density,gx,gy,gz and optional tau per spin.
 !>               The gradient is the native Fourier derivative of the supplied grid density.
 !> \param kinetic Optional matching native kinetic densities, including prescribed core.
+!> \param xc_smooth_id Optional native smoothing of the density before taking its gradient.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_xc_pw_fields(density, fields, kinetic)
-      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
+   SUBROUTINE qs_upf_inverse_xc_pw_fields(density, fields, kinetic, xc_smooth_id)
+      TYPE(pw_r3d_rs_type), INTENT(IN), TARGET           :: density(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: fields(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
 
-      INTEGER                                            :: axis, bounds(2, 3), orders(3), spin, &
-                                                            stride
+      INTEGER                                            :: axis, bounds(2, 3), orders(3), &
+                                                            smooth_id, spin, stride
       TYPE(pw_c1d_gs_type)                               :: density_g, derivative_g
       TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_r3d_rs_type)                               :: work_r
+      TYPE(pw_r3d_rs_type), POINTER                      :: source
+      TYPE(pw_r3d_rs_type), TARGET                       :: work_r
 
+      smooth_id = xc_rho_no_smooth
+      IF (PRESENT(xc_smooth_id)) smooth_id = xc_smooth_id
       CPASSERT(SIZE(density) > 0)
       grid => density(1)%pw_grid
       CPASSERT(ASSOCIATED(grid))
@@ -1908,14 +1915,19 @@ CONTAINS
       CALL work_r%create(grid)
       DO spin = 1, SIZE(density)
          CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
+         source => density(spin)
+         IF (smooth_id /= xc_rho_no_smooth) THEN
+            CALL xc_pw_smooth(density(spin), work_r, smooth_id)
+            source => work_r
+         END IF
          fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
-                bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1) = density(spin)%array
+                bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1) = source%array
          IF (PRESENT(kinetic)) THEN
             CPASSERT(ASSOCIATED(kinetic(spin)%pw_grid, grid))
             fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
                    bounds(1, 3):bounds(2, 3), stride*spin) = kinetic(spin)%array
          END IF
-         CALL pw_transfer(density(spin), density_g)
+         CALL pw_transfer(source, density_g)
          DO axis = 1, 3
             derivative_g%array(:) = density_g%array
             orders = 0
@@ -1936,20 +1948,24 @@ CONTAINS
 !> \brief Fold weighted density/gradient covectors into the native unweighted scalar potential.
 !> \param fields Globally assembled Euclidean covectors from the atomic interpolation transpose.
 !> \param potential Created native spin potentials, with the same grid as the source density.
-!>                  Contains (lambda_n - div(lambda_g))/dvol on each owned native row.
+!>                  Contains the smoothed (lambda_n - div(lambda_g))/dvol on each owned row.
 !> \param kinetic_potential Optional created native kinetic potentials, receiving lambda_tau/dvol.
+!> \param xc_smooth_id Optional transpose of the same native density smoothing.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_xc_pw_adjoint(fields, potential, kinetic_potential)
+   SUBROUTINE qs_upf_inverse_xc_pw_adjoint(fields, potential, kinetic_potential, xc_smooth_id)
       REAL(dp), INTENT(IN)                               :: fields(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: potential(:)
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: kinetic_potential(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
 
-      INTEGER                                            :: axis, bounds(2, 3), orders(3), spin, &
-                                                            stride
+      INTEGER                                            :: axis, bounds(2, 3), orders(3), &
+                                                            smooth_id, spin, stride
       TYPE(pw_c1d_gs_type)                               :: derivative_g
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: derivative_r, work_r
 
+      smooth_id = xc_rho_no_smooth
+      IF (PRESENT(xc_smooth_id)) smooth_id = xc_smooth_id
       CPASSERT(SIZE(potential) > 0)
       grid => potential(1)%pw_grid
       CPASSERT(ASSOCIATED(grid))
@@ -1983,6 +1999,11 @@ CONTAINS
             CALL pw_transfer(derivative_g, derivative_r)
             potential(spin)%array(:, :, :) = potential(spin)%array - derivative_r%array
          END DO
+         IF (smooth_id /= xc_rho_no_smooth) THEN
+            ! The native periodic smoothing stencil is symmetric.
+            CALL xc_pw_smooth(potential(spin), work_r, smooth_id)
+            potential(spin)%array(:, :, :) = work_r%array
+         END IF
          potential(spin)%array(:, :, :) = potential(spin)%array/grid%dvol
       END DO
       CALL derivative_g%release()
@@ -1997,19 +2018,22 @@ CONTAINS
 !> \param lattice_response Response of the PW lattice, dh(:,axis)*npts(axis).
 !> \param fields_response Replicated density and gradient response, including delta(G)=-strain^T*G.
 !> \param kinetic_response Optional complete kinetic-density response at fixed native grid indices.
+!> \param xc_smooth_id Optional native smoothing with fixed stencil weights on the grid indices.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_xc_pw_response(density_response, fields, lattice_response, fields_response, kinetic_response)
+   SUBROUTINE qs_upf_inverse_xc_pw_response(density_response, fields, lattice_response, fields_response, &
+                                            kinetic_response, xc_smooth_id)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density_response(:)
       REAL(dp), INTENT(IN)                               :: fields(:, :, :, :), &
                                                             lattice_response(3, 3)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: fields_response(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic_response(:)
+      INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
 
       INTEGER                                            :: axis, other, spin, stride
       REAL(dp)                                           :: lattice_inverse(3, 3), strain(3, 3)
       TYPE(pw_grid_type), POINTER                        :: grid
 
-      CALL qs_upf_inverse_xc_pw_fields(density_response, fields_response, kinetic_response)
+      CALL qs_upf_inverse_xc_pw_fields(density_response, fields_response, kinetic_response, xc_smooth_id)
       stride = 4
       IF (PRESENT(kinetic_response)) stride = 5
       CPASSERT(ALL(SHAPE(fields) == SHAPE(fields_response)))

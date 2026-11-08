@@ -50,10 +50,17 @@ PROGRAM pw_unittest
                                               pw_r1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_external_potential,           ONLY: interpolate_external_potential
+   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_pw_adjoint,&
+                                              qs_upf_inverse_xc_pw_fields
    USE realspace_grid_cube,             ONLY: cube_read_values,&
                                               cube_value_format,&
                                               cube_values_format
    USE rs_pw_interface,                 ONLY: pw_real_transfer
+   USE xc_input_constants,              ONLY: xc_rho_nn10,&
+                                              xc_rho_nn50,&
+                                              xc_rho_spline2_smooth,&
+                                              xc_rho_spline3_smooth
+   USE xc_util,                         ONLY: xc_pw_smooth
 
    IMPLICIT NONE
 
@@ -73,6 +80,7 @@ PROGRAM pw_unittest
    CALL check_real_interpolation(.FALSE.)
    CALL check_real_interpolation(.TRUE.)
    max_error = 0.0_dp
+   CALL check_upf_xc_smoothing()
    CALL check_pw_integral_and_poisson()
    CALL check_mt2d_kernel()
    CALL check_green_strain()
@@ -81,6 +89,57 @@ PROGRAM pw_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+! **************************************************************************************************!
+!> \brief Use the native XC filter in both directions of the mixed UPF grid map.
+! **************************************************************************************************!
+   SUBROUTINE check_upf_xc_smoothing()
+      INTEGER                                            :: i, j, k, mode, modes(4)
+      REAL(dp)                                           :: cell(3, 3), phase, projected
+      REAL(dp), ALLOCATABLE                              :: fields(:, :, :, :), reference(:, :, :, :)
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: density(1), kinetic(1), potential(1), &
+                                                            smooth(1), tau_potential(1)
+
+      NULLIFY (grid)
+      CALL comm%set_handle(mp_comm_world%get_handle())
+      cell = 0.0_dp
+      DO i = 1, 3
+         cell(i, i) = REAL(6 + i, dp)
+      END DO
+      CALL pw_grid_create(grid, comm, cell, grid_span=HALFSPACE, npts=[8, 6, 8], odd=.FALSE., fft_usage=.TRUE.)
+      CALL density(1)%create(grid)
+      CALL kinetic(1)%create(grid)
+      CALL smooth(1)%create(grid)
+      CALL potential(1)%create(grid)
+      CALL tau_potential(1)%create(grid)
+      DO k = grid%bounds_local(1, 3), grid%bounds_local(2, 3)
+         DO j = grid%bounds_local(1, 2), grid%bounds_local(2, 2)
+            DO i = grid%bounds_local(1, 1), grid%bounds_local(2, 1)
+               phase = 2.0_dp*pi*(REAL(i, dp)/8.0_dp + REAL(j, dp)/6.0_dp + REAL(k, dp)/8.0_dp)
+               density(1)%array(i, j, k) = 0.2_dp + 0.1_dp*SIN(phase)
+               kinetic(1)%array(i, j, k) = 0.3_dp + 0.15_dp*COS(phase)
+            END DO
+         END DO
+      END DO
+      modes = [xc_rho_nn10, xc_rho_nn50, xc_rho_spline2_smooth, xc_rho_spline3_smooth]
+      DO mode = 1, SIZE(modes)
+         CALL xc_pw_smooth(density(1), smooth(1), modes(mode))
+         CALL qs_upf_inverse_xc_pw_fields(smooth, reference, kinetic)
+         CALL qs_upf_inverse_xc_pw_fields(density, fields, kinetic, modes(mode))
+         CALL check_error(MAXVAL(ABS(fields - reference)), 0.0_dp, 3.e-14_dp)
+         CALL qs_upf_inverse_xc_pw_adjoint(fields, potential, tau_potential, modes(mode))
+         projected = pw_integral_ab(density(1), potential(1)) + pw_integral_ab(kinetic(1), tau_potential(1))
+         CALL check_error(projected, SUM(fields**2), 3.e-13_dp)
+      END DO
+      CALL density(1)%release()
+      CALL kinetic(1)%release()
+      CALL smooth(1)%release()
+      CALL potential(1)%release()
+      CALL tau_potential(1)%release()
+      CALL pw_grid_release(grid)
+   END SUBROUTINE check_upf_xc_smoothing
 
 ! **************************************************************************************************
 !> \brief Preserve even-grid tensor-product Nyquist modes and the real-density/potential adjoint.

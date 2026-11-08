@@ -195,7 +195,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
       INTEGER                                            :: block, core_components, hi, ik, lo, nao, &
-                                                            nk, np, ns, spin
+                                                            nk, np, ns, smooth_id, spin
       INTEGER(KIND=int_8)                                :: core_bytes, retained_bytes
       LOGICAL                                            :: valid
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), core(:, :), &
@@ -233,9 +233,12 @@ CONTAINS
       IF (PRESENT(potential)) THEN
          CPASSERT(PRESENT(kinetic) .EQV. PRESENT(kinetic_potential))
       END IF
-      IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw .OR. &
-          section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO") /= xc_rho_no_smooth) THEN
-         CPABORT("Inverse mixed XC currently requires XC_DERIV PW and XC_SMOOTH_RHO NONE")
+      IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw) THEN
+         CPABORT("Inverse mixed XC requires XC_DERIV PW")
+      END IF
+      smooth_id = section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO")
+      IF (smooth_id /= xc_rho_no_smooth .AND. xc_section_uses_native_skala_evaluator(xc_section)) THEN
+         CPABORT("Inverse mixed Skala requires XC_SMOOTH_RHO NONE")
       END IF
       CALL frame_refs(state, frames, augmentation)
       nk = SIZE(frames)
@@ -287,7 +290,7 @@ CONTAINS
          END DO
       END IF
       state%xc_grid => density(1)%pw_grid
-      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic)
+      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic, smooth_id)
       ALLOCATE (core(np, ns), core_gradient(np, 3, ns))
       IF (PRESENT(kinetic)) ALLOCATE (core_tau(np, ns))
       core_components = 4
@@ -334,7 +337,7 @@ CONTAINS
             CALL background_potential(spin)%create(state%xc_grid)
             IF (PRESENT(kinetic_potential)) CALL background_kinetic(spin)%create(state%xc_grid)
          END DO
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, background_potential, background_kinetic)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, background_potential, background_kinetic, smooth_id)
          DO spin = 1, ns
             CPASSERT(ASSOCIATED(potential(spin)%pw_grid, state%xc_grid))
             potential(spin)%array = potential(spin)%array + background_potential(spin)%array
