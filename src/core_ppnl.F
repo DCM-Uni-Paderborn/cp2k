@@ -546,7 +546,7 @@ CONTAINS
 !$OMP          slot, iab, atom_a, f0, irow, icol, h_block, &
 !$OMP          l_block_x, l_block_y, l_block_z, lock_num, &
 !$OMP          r_2block, r_3block, atk, &
-!$OMP          found,p_block, iac, ibc, alist_ac, alist_bc, acint, bcint, &
+!$OMP          found,p_block, iac, ibc, alist_ac, alist_bc, acint, bcint, do_upf, &
 !$OMP          achint, bchint, alkint, blkint, &
 !$OMP          na, np, nb, katom, j, fa, fb, rbc, rac, &
 !$OMP          kkind, kac, kbc, i, img, hash, iatom8) &
@@ -624,8 +624,10 @@ CONTAINS
 !$             hash = INT(MOD(iatom8, INT(nlock, int_8)) + 1)
 
                DO kkind = 1, nkind
+                  do_upf = .FALSE.
                   IF (ASSOCIATED(spotential(kkind)%sgp_potential)) THEN
-                     IF (ALLOCATED(spotential(kkind)%sgp_potential%upf_data)) THEN
+                     do_upf = ALLOCATED(spotential(kkind)%sgp_potential%upf_data)
+                     IF (do_upf) THEN
                         IF (spotential(kkind)%sgp_potential%upf_data%is_ultrasoft) CYCLE
                      END IF
                   END IF
@@ -641,7 +643,11 @@ CONTAINS
                      DO kbc = 1, alist_bc%nclist
                         IF (alist_ac%clist(kac)%catom /= alist_bc%clist(kbc)%catom) CYCLE
                         IF (ALL(cell_b + alist_bc%clist(kbc)%cell - alist_ac%clist(kac)%cell == 0)) THEN
-                           IF (alist_ac%clist(kac)%maxac*alist_bc%clist(kbc)%maxach < eps_ppnl) CYCLE
+                           IF (alist_ac%clist(kac)%maxac*alist_bc%clist(kbc)%maxach < eps_ppnl) THEN
+                              IF (.NOT. do_upf) CYCLE
+                              ! Screen NC UPF contributions identically for opposite image pairs.
+                              IF (alist_ac%clist(kac)%maxach*alist_bc%clist(kbc)%maxac < eps_ppnl) CYCLE
+                           END IF
                            acint => alist_ac%clist(kac)%acint
                            bcint => alist_bc%clist(kbc)%acint
                            achint => alist_ac%clist(kac)%achint
