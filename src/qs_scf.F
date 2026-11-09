@@ -927,9 +927,9 @@ CONTAINS
                   IF (scf_control%smear%do_smear) THEN
                      inverse_ot_ready = MERGE(1, 0, scf_env%iter_delta < SQRT(scf_control%eps_scf) .OR. ot_energy_stagnated)
                   ELSE
-                     ! An energy-based OT line search can stall before the fixed-occupation gradient converges.
-                     inverse_ot_ready = MERGE(1, 0, scf_env%iter_delta < scf_control%eps_scf .OR. &
-                                              (ot_energy_stagnated .AND. scf_env%iter_delta < SQRT(scf_control%eps_scf)))
+                     ! Refine a small fixed-occupation OT residual before the energy-based search stalls.
+                     inverse_ot_ready = MERGE(1, 0, scf_env%iter_delta < &
+                                              MAX(scf_control%eps_scf, SQRT(scf_control%eps_scf)))
                   END IF
                END IF
                IF (do_kpoints) CALL para_env%min(inverse_ot_ready)
