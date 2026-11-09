@@ -7,7 +7,7 @@ With --install, use original NC/PAW files and prepared USPPs by default.
 PSLibrary and GBRV USPPs are available with --additional-uspp. All destinations are
 chosen explicitly. Downloads do not enable unsupported calculation methods.
 --paw-core supplies compatible complete frozen-core waves for selected PAW files.
---nc-core takes a local catalog of auxiliary NC core kinetic fields.
+--nc-core installs auxiliary NC core kinetic fields from a pinned release or a local catalog.
 """
 
 import argparse
@@ -287,7 +287,9 @@ def install_library(root, name, source, prepared=None, paw_core=None, nc_core=No
                     ):
                         row = models.get(original_hash)
                         if not isinstance(row, dict) or row.get("file") != filename:
-                            raise RuntimeError(f"No matching NC core kinetic field: {filename}")
+                            raise RuntimeError(
+                                f"No matching NC core kinetic field: {filename}"
+                            )
                         model = supplement_nc_core(data, row.get("tau"), catalog_sha256)
                         target = root / "prepared-nc-core" / functional / filename
                         stage_file(model, target, staging, pending)
@@ -370,9 +372,11 @@ def main():
     )
     parser.add_argument(
         "--nc-core",
+        nargs="?",
+        const=True,
         type=Path,
         metavar="CATALOG",
-        help="Install matching NC core kinetic fields from an SSSP 2.0 .json.gz catalog",
+        help="Install matching NC core kinetic fields from the pinned release or a local .json.gz catalog",
     )
     parser.add_argument(
         "--library",
@@ -390,7 +394,7 @@ def main():
     if args.nc_core and not args.install:
         parser.error("--nc-core requires --install")
     try:
-        nc_core = load_nc_core(args.nc_core) if args.nc_core else None
+        nc_core = load_nc_core(args.nc_core) if isinstance(args.nc_core, Path) else None
     except (OSError, EOFError, ValueError, AttributeError) as error:
         parser.error(f"Cannot read NC core catalog: {error}")
     root = args.directory.resolve()
@@ -398,6 +402,10 @@ def main():
     selected = list(dict.fromkeys(args.library or libraries))
     with tempfile.TemporaryDirectory(prefix="upf-download-", dir=root) as temporary:
         staging = Path(temporary)
+        if args.nc_core is True:
+            catalog_pin = Path(__file__).with_name("nc_core_release.json")
+            source = json.loads(catalog_pin.read_text())
+            nc_core = load_nc_core(download(source, root, staging))
         prepared = (
             PreparedCollection(root, staging)
             if args.install and args.uspp_source != "original"

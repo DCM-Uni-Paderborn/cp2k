@@ -57,11 +57,13 @@ files retain their original contents. Only the core-orbital table is supplemente
 potentials, augmentation, valence waves and core densities remain unchanged. This supplies the core
 reference data required by tau-dependent XC without establishing every SCF or geometry combination.
 
-Add `--nc-core CATALOG` to install auxiliary NC core kinetic fields from a local
-SSSP 2.0 compressed JSON catalog. The installer matches each field to the SHA-256 of its
-original UPF and records the catalog checksum in `selection.json`. The prepared NC files reside
-under `DIRECTORY/prepared-nc-core/`. The positive-amplitude model preserves the original signed
-core charge and operator tables. The installer retains the exact catalog as
+Add `--nc-core` after `DIRECTORY` to install auxiliary NC core kinetic fields from the pinned
+[SSSP v2.0 NC core prerelease](https://github.com/DCM-Uni-Paderborn/inverse-uspp/releases/tag/nc-core-v0.1.0).
+It covers the 40 distinct NC files with nonzero NLCC. Supply `--nc-core CATALOG` to use a local
+catalog instead. The installer matches each field to the SHA-256 of its original UPF and records the
+catalog checksum in `selection.json`. The prepared NC files reside under
+`DIRECTORY/prepared-nc-core/`. The positive-amplitude model preserves the original signed core
+charge and operator tables. The installer retains the exact catalog as
 `DIRECTORY/prepared-nc-core/catalog.json.gz` with the added fields and their provenance.
 
 ## Download original collections
@@ -179,20 +181,20 @@ All original sections are retained apart from the kinetic-data availability flag
 `PP_TAUMOD` declares the canonical spin-summed `hartree_per_volume` convention and records the model
 and source provenance. Valence kinetic augmentation still requires full partial waves.
 
-For scalar ONCV norm-conserving UPFs with signed NLCC samples, select the positive-amplitude
-model explicitly. It derives the kinetic field from the positive amplitude of the NLCC table and
-preserves the original signed charge. The tool checks the closed-shell occupations against the
-embedded atomic input and checks normalization on the native reference mesh.
+For scalar ONCV norm-conserving UPFs with signed NLCC samples, select the positive-amplitude model
+explicitly. It derives the kinetic field from the positive amplitude of the NLCC table and preserves
+the original signed charge. The tool checks the closed-shell occupations against the embedded atomic
+input and checks normalization on the native reference mesh.
 
 ```bash
 python3 tools/pseudopotentials/add_upf_core_tau.py original-NC.upf prepared-NC.upf \
   --model positive-amplitude --oncv-core core-waves.dat
 ```
 
-The export begins with `ONCV_AE_CORE_V1 element Z shell_count radial_count xc_code`.
-Each occupied core shell begins with `SHELL n l occupation`, followed by `radial_count` rows
-of radius in bohr and signed reduced radial wave `u(r)`. Supply compatible reference waves
-from the atomic generator. The converter records the export and original file hashes.
+The export begins with `ONCV_AE_CORE_V1 element Z shell_count radial_count xc_code`. Each occupied
+core shell begins with `SHELL n l occupation`, followed by `radial_count` rows of radius in bohr and
+signed reduced radial wave `u(r)`. Supply compatible reference waves from the atomic generator. The
+converter records the export and original file hashes.
 
 ## Use the supplied H example
 
