@@ -381,6 +381,7 @@ QS/regtest-gpw-6-3
 QS/regtest-md-lgvregion
 QS/regtest-hfx-stress                                       libint !ifx
 QS/regtest-upf
+QS/regtest-upf-hfx                                          libint !ifx
 QS/regtest-gapw-ext
 QMMM/QS/regtest-4
 xTB/regtest-tblite-ipea1                                    tblite
