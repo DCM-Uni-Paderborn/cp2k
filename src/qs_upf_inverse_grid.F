@@ -78,9 +78,10 @@ CONTAINS
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 !> \param basis_type Native basis role, ORB by default.
+!> \param center_rotations Fixed reference group for the full GAPW atom integrals.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct, store_fields, &
-                                          basis_type)
+                                          basis_type, center_rotations)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -89,6 +90,7 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
+      REAL(dp), INTENT(IN), OPTIONAL                     :: center_rotations(:, :, :)
 
       INTEGER                                            :: ix, iy, iz, n, point
       REAL(dp), ALLOCATABLE                              :: points(:, :), weights(:)
@@ -123,7 +125,7 @@ CONTAINS
          END DO
       END DO
       CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct, &
-                                  store_fields, basis_type)
+                                  store_fields, basis_type, center_rotations)
    END SUBROUTINE qs_upf_inverse_grid_prepare
 
 ! **************************************************************************************************

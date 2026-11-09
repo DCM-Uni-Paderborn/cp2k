@@ -10,6 +10,7 @@ MODULE qs_upf_inverse_atom_grid
    USE cryssym,                         ONLY: crys_sym_lattice_rotations
    USE kinds,                           ONLY: dp,&
                                               int_8
+   USE lebedev,                         ONLY: lebedev_average_points
    USE message_passing,                 ONLY: mp_comm_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_kind_types,                   ONLY: qs_kind_type
@@ -47,6 +48,7 @@ MODULE qs_upf_inverse_atom_grid
    PUBLIC :: qs_upf_inverse_atom_grid_ref_type, qs_upf_inverse_atom_grid_type
    PUBLIC :: qs_upf_inverse_atom_grid_prepare, qs_upf_inverse_atom_grid_response
    PUBLIC :: qs_upf_reference_rotations
+   PUBLIC :: qs_upf_atom_angular_average
 
 CONTAINS
 
@@ -80,6 +82,27 @@ CONTAINS
          RETURN
       END DO
    END SUBROUTINE qs_upf_reference_rotations
+
+! **************************************************************************************************
+!> \brief Extend the native atom directions by the reference group when needed.
+!> \param grid Native angular rule and weights.
+!> \param rotations Cartesian reference rotations.
+!> \param directions Expanded unit directions, unallocated when the native rule already suffices.
+!> \param weights Expanded weights with the original angular normalization.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_atom_angular_average(grid, rotations, directions, weights)
+      TYPE(grid_atom_type), INTENT(IN)                   :: grid
+      REAL(dp), INTENT(IN)                               :: rotations(:, :, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: directions(:, :), weights(:)
+
+      REAL(dp)                                           :: original(3, grid%ng_sphere)
+
+      original(1, :) = grid%sin_pol*grid%cos_azi
+      original(2, :) = grid%sin_pol*grid%sin_azi
+      original(3, :) = grid%cos_pol
+      CALL lebedev_average_points(original, grid%wa, directions, weights, rotations)
+      IF (SIZE(weights) == grid%ng_sphere) DEALLOCATE (directions, weights)
+   END SUBROUTINE qs_upf_atom_angular_average
 
 ! **************************************************************************************************
 !> \brief Build distributed atom rows from native radial/Lebedev quadratures.

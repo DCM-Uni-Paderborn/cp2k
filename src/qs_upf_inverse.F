@@ -32,6 +32,7 @@ MODULE qs_upf_inverse
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_atom_angular_average
    USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_centered_pairs
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
@@ -371,9 +372,10 @@ CONTAINS
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 !> \param basis_type Native basis role, ORB by default. Auxiliary bases retain independent AO columns.
+!> \param center_rotations Fixed reference group for the full GAPW atom integrals.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame, info, atom_local, direct, &
-                                     store_fields, basis_type)
+                                     store_fields, basis_type, center_rotations)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       REAL(dp), INTENT(IN)                               :: points(:, :), weights(:)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -383,6 +385,7 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
+      REAL(dp), INTENT(IN), OPTIONAL                     :: center_rotations(:, :, :)
 
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
@@ -401,7 +404,7 @@ CONTAINS
       END IF
       CALL qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
                                   comm, frame, info, atom_local, direct, store_fields, basis_type, &
-                                  centered_projection=control%qs_control%gapw)
+                                  centered_projection=control%qs_control%gapw, center_rotations=center_rotations)
    END SUBROUTINE qs_upf_inverse_from_ks
 
 ! **************************************************************************************************
@@ -425,9 +428,11 @@ CONTAINS
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 !> \param basis_type Native basis role, ORB by default. Potential and projector data are unchanged.
 !> \param centered_projection Define the full inverse on the native GAPW atom grids.
+!> \param center_rotations Fixed reference group for the full GAPW atom integrals.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
-                                     comm, frame, info, atom_local, direct, store_fields, basis_type, centered_projection)
+                                     comm, frame, info, atom_local, direct, store_fields, basis_type, &
+                                     centered_projection, center_rotations)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
       TYPE(cell_type), INTENT(IN)                        :: cell
@@ -440,6 +445,7 @@ CONTAINS
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields, centered_projection
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
+      REAL(dp), INTENT(IN), OPTIONAL                     :: center_rotations(:, :, :)
 
       CHARACTER(LEN=16)                                  :: role
       COMPLEX(dp), ALLOCATABLE                           :: coupling(:, :), overlaps(:, :)
@@ -459,6 +465,7 @@ CONTAINS
       IF (PRESENT(direct)) frame%direct = direct
       IF (PRESENT(store_fields)) frame%fields_stored = store_fields
       IF (frame%direct) use_atomic = .TRUE.
+      IF (PRESENT(center_rotations)) ALLOCATE (frame%center_rotations, SOURCE=center_rotations)
       IF (PRESENT(centered_projection) .AND. .NOT. use_atomic) THEN
          IF (centered_projection) ALLOCATE (frame%defining_atom_grids(SIZE(kinds)))
       END IF
@@ -532,7 +539,12 @@ CONTAINS
          CPASSERT(particles(atom)%atomic_kind%kind_number == ikind)
          IF (frame%beta_cache(ikind)%nproj == 0) THEN
             IF (ALLOCATED(frame%defining_atom_grids)) THEN
-               CALL get_qs_kind(kinds(ikind), grid_atom=frame%defining_atom_grids(ikind)%grid)
+               ASSOCIATE (rule => frame%defining_atom_grids(ikind))
+                  CALL get_qs_kind(kinds(ikind), grid_atom=rule%grid)
+                  IF (PRESENT(center_rotations)) THEN
+                     CALL qs_upf_atom_angular_average(rule%grid, center_rotations, rule%directions, rule%angular_weights)
+                  END IF
+               END ASSOCIATE
             END IF
             CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, &
                                          frame%beta_cache(ikind), frame%delta_cache(ikind), frame%direct)

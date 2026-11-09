@@ -29,7 +29,9 @@ MODULE qs_upf_inverse_charge_metric
                                               qs_upf_inverse_background_prepare
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_density_pair_integrate,&
                                               qs_upf_inverse_density_radial,&
-                                              qs_upf_inverse_density_radial_adjoint
+                                              qs_upf_inverse_density_radial_adjoint,&
+                                              qs_upf_inverse_gapw_grid,&
+                                              qs_upf_inverse_gapw_view_type
    USE qs_upf_inverse_gaussian,         ONLY: qs_upf_inverse_gaussian_integrate,&
                                               qs_upf_inverse_gaussian_radial
    USE qs_upf_inverse_gaussian_centers, ONLY: qs_upf_inverse_gaussian_centers_prepare,&
@@ -318,18 +320,19 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: response
 
       COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), part(:, :)
-      INTEGER                                            :: atom, ia, ir, kind, nh, nl, np, nr, p
+      INTEGER                                            :: atom, kind, nh, nl, np, nr
       REAL(dp), ALLOCATABLE :: dh(:, :), drh(:, :), drs(:, :), ds(:, :), h(:, :), &
          point_motion(:, :), point_potential(:), points(:, :), potential(:, :), radial(:, :), &
          rh(:, :), rs(:, :), s(:, :), weights(:), zero(:)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(qs_upf_inverse_gapw_view_type), TARGET         :: view
 
       atom = map%center_atoms(center)
       kind = map%center_kinds(center)
-      CALL get_qs_kind(map%row_kinds(kind), basis_set=basis, basis_type='GAPW_1C', grid_atom=grid, harmonics=harmonics)
-      CALL get_paw_basis_info(basis, nsatbas=nl)
+      CALL qs_upf_inverse_gapw_grid(row%ao, map%inverse_centers(center), map%row_kinds(kind), &
+                                    grid, harmonics, nl, points, view, atom)
       CALL get_qs_kind(map%column_kinds(kind), basis_set=basis, basis_type='GAPW_1C')
       CALL get_paw_basis_info(basis, nsatbas=nr)
       nh = harmonics%max_iso_not0
@@ -355,15 +358,8 @@ CONTAINS
       potential = 0.0_dp
       potential(:, 1) = SQRT(fourpi)
       CALL qs_upf_inverse_density_radial_adjoint(grid, harmonics, potential, point_potential, rh, rs)
-      ALLOCATE (points(3, np), point_motion(3, np), weights(np), part(SIZE(matrix, 1), SIZE(matrix, 2)), &
+      ALLOCATE (point_motion(3, np), weights(np), part(SIZE(matrix, 1), SIZE(matrix, 2)), &
                 derivative(SIZE(matrix, 1), SIZE(matrix, 2)))
-      DO ir = 1, grid%nr
-         DO ia = 1, grid%ng_sphere
-            p = ia + (ir - 1)*grid%ng_sphere
-            points(:, p) = row%ao%positions(:, atom) + grid%rad(ir)* &
-                           [grid%sin_pol(ia)*grid%cos_azi(ia), grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
-         END DO
-      END DO
       weights(:) = RESHAPE(grid%weight, [np])
       point_motion(:, :) = SPREAD(atom_response(:, atom), 2, np)
       CALL qs_upf_inverse_density_pair_integrate(row%ao, column%ao, augmentation, map%inverse_centers(center), &
@@ -389,24 +385,25 @@ CONTAINS
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
 
       COMPLEX(dp), ALLOCATABLE                           :: part(:, :)
-      INTEGER                                            :: atom, ia, ir, kind, nh, nl, np, nr, p
+      INTEGER                                            :: atom, kind, nh, nl, np, nr
       REAL(dp), ALLOCATABLE                              :: bh(:, :), bs(:, :), hard(:, :), &
                                                             point_potential(:), points(:, :), &
                                                             potential(:, :), soft(:, :), weights(:)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(qs_upf_inverse_gapw_view_type), TARGET         :: view
 
       atom = map%center_atoms(center)
       kind = map%center_kinds(center)
-      CALL get_qs_kind(map%row_kinds(kind), basis_set=basis, basis_type='GAPW_1C', grid_atom=grid, harmonics=harmonics)
-      CALL get_paw_basis_info(basis, nsatbas=nl)
+      CALL qs_upf_inverse_gapw_grid(row%ao, map%inverse_centers(center), map%row_kinds(kind), &
+                                    grid, harmonics, nl, points, view, atom)
       CALL get_qs_kind(map%column_kinds(kind), basis_set=basis, basis_type='GAPW_1C')
       CALL get_paw_basis_info(basis, nsatbas=nr)
       np = grid%nr*grid%ng_sphere
       nh = harmonics%max_iso_not0
       ALLOCATE (potential(grid%nr, nh), hard(grid%nr, nh), soft(grid%nr, nh), &
-                point_potential(np), weights(np), points(3, np), bh(nl, nr), bs(nl, nr), &
+                point_potential(np), weights(np), bh(nl, nr), bs(nl, nr), &
                 part(SIZE(map%values, 1), SIZE(map%values, 2)))
       potential = 0.0_dp
       potential(:, 1) = SQRT(fourpi)
@@ -422,13 +419,6 @@ CONTAINS
       map%values(:, :, k) = map%values(:, :, k) + part
       IF (map%inverse_centers(center) == 0) RETURN
       weights(:) = RESHAPE(grid%weight, [np])
-      DO ir = 1, grid%nr
-         DO ia = 1, grid%ng_sphere
-            p = ia + (ir - 1)*grid%ng_sphere
-            points(:, p) = row%ao%positions(:, atom) + grid%rad(ir)* &
-                           [grid%sin_pol(ia)*grid%cos_azi(ia), grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
-         END DO
-      END DO
       CALL qs_upf_inverse_density_pair_integrate(row%ao, column%ao, augmentation, map%inverse_centers(center), &
                                                  points, weights, point_potential, part)
       map%values(:, :, k) = map%values(:, :, k) + part

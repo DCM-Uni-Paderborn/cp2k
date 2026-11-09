@@ -17,6 +17,7 @@ MODULE qs_upf_inverse_lattice
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE qs_grid_atom,                    ONLY: grid_atom_type
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_ref_type
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_lattice_type,&
                                               qs_upf_inverse_type
    USE upf_inverse_lattice,             ONLY: upf_inverse_lattice_adjoint,&
@@ -1132,7 +1133,8 @@ CONTAINS
       INTEGER, TARGET                                    :: single_image(3, 1)
       INTEGER, POINTER                                   :: images(:, :)
       LOGICAL                                            :: derivative, values
-      REAL(dp), ALLOCATABLE                              :: directions(:, :), motion(:, :), points(:, :), radial_beta(:)
+      REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), motion(:, :), &
+                                                            points(:, :), radial_beta(:), weights(:)
       REAL(dp)                                           :: wavevector(3)
       TYPE(grid_atom_type), POINTER                      :: grid
 
@@ -1164,13 +1166,11 @@ CONTAINS
          last = frame%projector_last(center)
          grid => frame%defining_atom_grids(kind)%grid
          CPASSERT(ASSOCIATED(grid))
-         na = grid%ng_sphere
-         ALLOCATE (directions(3, na), points(3, na), radial_beta(last - first + 1), &
+         CALL centered_grid(frame%defining_atom_grids(kind), directions, angular_weights)
+         na = SIZE(angular_weights)
+         ALLOCATE (points(3, na), weights(na), radial_beta(last - first + 1), &
                    beta(na, last - first + 1), chi(na, nao), delta(na, nproj), &
                    pair_b(last - first + 1, nao), pair_k(last - first + 1, nproj))
-         directions(1, :) = grid%sin_pol*grid%cos_azi
-         directions(2, :) = grid%sin_pol*grid%sin_azi
-         directions(3, :) = grid%cos_pol
          IF (derivative) THEN
             ALLOCATE (motion(3, na), dchi(na, nao), ddelta(na, nproj))
             motion(:, :) = SPREAD(atom_response(:, atom), 2, na)
@@ -1178,6 +1178,7 @@ CONTAINS
          DO ir = 1, grid%nr
             IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
             CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
+            weights(:) = grid%wr(ir)*angular_weights
             DO basis_atom = 1, SIZE(frame%bases)
                p = frame%ao_first(basis_atom)
                q = frame%ao_last(basis_atom)
@@ -1207,19 +1208,19 @@ CONTAINS
                END ASSOCIATE
             END DO
             IF (values) THEN
-               CALL upf_inverse_pair(beta, chi, grid%weight(:, ir), pair_b)
-               CALL upf_inverse_pair(beta, delta, grid%weight(:, ir), pair_k)
+               CALL upf_inverse_pair(beta, chi, weights, pair_b)
+               CALL upf_inverse_pair(beta, delta, weights, pair_k)
                overlaps(first:last, :) = overlaps(first:last, :) + pair_b
                coupling(first:last, :) = coupling(first:last, :) + pair_k
             END IF
             IF (derivative) THEN
-               CALL upf_inverse_pair(beta, dchi, grid%weight(:, ir), pair_b)
-               CALL upf_inverse_pair(beta, ddelta, grid%weight(:, ir), pair_k)
+               CALL upf_inverse_pair(beta, dchi, weights, pair_b)
+               CALL upf_inverse_pair(beta, ddelta, weights, pair_k)
                overlaps_response(first:last, :) = overlaps_response(first:last, :) + pair_b
                coupling_response(first:last, :) = coupling_response(first:last, :) + pair_k
             END IF
          END DO
-         DEALLOCATE (directions, points, radial_beta, beta, chi, delta, pair_b, pair_k)
+         DEALLOCATE (directions, angular_weights, points, weights, radial_beta, beta, chi, delta, pair_b, pair_k)
          IF (derivative) DEALLOCATE (motion, dchi, ddelta)
       END DO
       IF (values) THEN
@@ -1252,7 +1253,8 @@ CONTAINS
                                                             g_delta(:, :), g_gaussian(:, :)
       INTEGER                                            :: atom, center, first, home, image, ir, kind, last, &
                                                             na, nao, nproj, p, q, single_image(3, 1)
-      REAL(dp), ALLOCATABLE                              :: directions(:, :), points(:, :), radial_beta(:)
+      REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), points(:, :), &
+                                                            radial_beta(:), weights(:)
       TYPE(grid_atom_type), POINTER                      :: grid
 
       atom_geometry = 0.0_dp
@@ -1266,22 +1268,21 @@ CONTAINS
          last = frame%projector_last(center)
          grid => frame%defining_atom_grids(kind)%grid
          CPASSERT(ASSOCIATED(grid))
-         na = grid%ng_sphere
-         ALLOCATE (directions(3, na), points(3, na), radial_beta(last - first + 1), beta(na, last - first + 1), &
+         CALL centered_grid(frame%defining_atom_grids(kind), directions, angular_weights)
+         na = SIZE(angular_weights)
+         ALLOCATE (points(3, na), weights(na), radial_beta(last - first + 1), beta(na, last - first + 1), &
                    delta(na, nproj), delta_gradient(na, nproj, 3), g_delta(na, nproj), &
                    gaussian(na, nao), gaussian_gradient(na, nao, 3), g_gaussian(na, nao))
-         directions(1, :) = grid%sin_pol*grid%cos_azi
-         directions(2, :) = grid%sin_pol*grid%sin_azi
-         directions(3, :) = grid%cos_pol
          DO ir = 1, grid%nr
             IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
             CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
+            weights(:) = grid%wr(ir)*angular_weights
             DO image = 1, SIZE(images, 2)
                IF (ALL(coupling_covector(first:last, :, image) == 0.0_dp) .AND. &
                    ALL(overlaps_covector(first:last, :, image) == 0.0_dp)) CYCLE
                single_image(:, 1) = images(:, image)
-               g_delta(:, :) = SPREAD(grid%weight(:, ir), 2, nproj)*MATMUL(beta, coupling_covector(first:last, :, image))
-               g_gaussian(:, :) = SPREAD(grid%weight(:, ir), 2, nao)*MATMUL(beta, overlaps_covector(first:last, :, image))
+               g_delta(:, :) = SPREAD(weights, 2, nproj)*MATMUL(beta, coupling_covector(first:last, :, image))
+               g_gaussian(:, :) = SPREAD(weights, 2, nao)*MATMUL(beta, overlaps_covector(first:last, :, image))
                CALL qs_upf_inverse_lattice_delta_fields(frame, points, images(:, image), delta, delta_gradient)
                DO atom = 1, SIZE(frame%center_atoms)
                   p = frame%projector_first(atom)
@@ -1297,7 +1298,7 @@ CONTAINS
                END DO
             END DO
          END DO
-         DEALLOCATE (directions, points, radial_beta, beta, delta, delta_gradient, g_delta, &
+         DEALLOCATE (directions, angular_weights, points, weights, radial_beta, beta, delta, delta_gradient, g_delta, &
                      gaussian, gaussian_gradient, g_gaussian)
       END DO
 
@@ -1324,6 +1325,30 @@ CONTAINS
          END DO
       END SUBROUTINE field_geometry
    END SUBROUTINE centered_kernel_adjoint
+
+! **************************************************************************************************
+!> \brief Select the same angular weights for the defining integrals and their adjoints.
+!> \param rule Native atom grid and optional rotated directions.
+!> \param directions ...
+!> \param weights ...
+! **************************************************************************************************
+   SUBROUTINE centered_grid(rule, directions, weights)
+      TYPE(qs_upf_inverse_atom_grid_ref_type), INTENT(IN) :: rule
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: directions(:, :), weights(:)
+
+      IF (ALLOCATED(rule%directions)) THEN
+         ALLOCATE (directions, SOURCE=rule%directions)
+         ALLOCATE (weights, SOURCE=rule%angular_weights)
+      ELSE
+         ASSOCIATE (grid => rule%grid)
+            ALLOCATE (directions(3, grid%ng_sphere), weights(grid%ng_sphere))
+            directions(1, :) = grid%sin_pol*grid%cos_azi
+            directions(2, :) = grid%sin_pol*grid%sin_azi
+            directions(3, :) = grid%cos_pol
+            weights = grid%wa
+         END ASSOCIATE
+      END IF
+   END SUBROUTINE centered_grid
 
 ! **************************************************************************************************
 !> \brief Evaluate one home-projector shell with fixed Cartesian offsets.

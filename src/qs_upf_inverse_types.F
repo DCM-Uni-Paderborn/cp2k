@@ -58,6 +58,7 @@ MODULE qs_upf_inverse_types
       LOGICAL :: atom_local = .FALSE., direct = .FALSE., fields_stored = .TRUE.
       TYPE(upf_inverse_atomic_type), ALLOCATABLE :: atomic_cache(:)
       TYPE(qs_upf_inverse_atom_grid_ref_type), ALLOCATABLE :: defining_atom_grids(:)
+      REAL(dp), ALLOCATABLE :: center_rotations(:, :, :)
       LOGICAL, ALLOCATABLE :: nc_kinds(:)
       TYPE(nc_coupling_grid_type), ALLOCATABLE :: nc_coupling_grid(:)
       TYPE(mp_comm_type) :: point_comm

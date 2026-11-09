@@ -269,6 +269,7 @@ CONTAINS
       INTEGER                                            :: ikind
       LOGICAL                                            :: auxiliary, do_kpoints, use_atomic, &
                                                             use_composite, use_kinetic
+      REAL(dp), POINTER                                  :: center_rotations(:, :, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: kinetic_k(:, :)
       TYPE(dft_control_type), POINTER                    :: control
@@ -308,6 +309,8 @@ CONTAINS
       IF (PRESENT(composite_paw)) use_composite = composite_paw
       CALL qs_upf_reference_rotations(cell, control%qs_control%upf_angular_reference_cell, kinds, &
                                       control%qs_control%gapw .OR. control%qs_control%gapw_xc, state%angular_rotations)
+      NULLIFY (center_rotations)
+      IF (control%qs_control%gapw .AND. ALLOCATED(state%angular_rotations)) center_rotations => state%angular_rotations
       CALL qs_upf_inverse_scf_xc_reference(kinds, use_kinetic, use_composite, state)
       use_atomic = .FALSE.
       IF (PRESENT(atom_local)) use_atomic = atom_local
@@ -340,7 +343,8 @@ CONTAINS
             CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info, use_atomic, direct, &
                                                 store_fields=.FALSE., basis_type=role)
          ELSE
-            CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info, use_atomic, direct, basis_type=role)
+            CALL qs_upf_inverse_kpoints_prepare(ks_env, grid, images, state%bloch, info, use_atomic, direct, &
+                                                basis_type=role, center_rotations=center_rotations)
          END IF
       ELSE
          IF (state%native_gaussian) THEN
@@ -348,7 +352,7 @@ CONTAINS
                                              use_atomic, direct, store_fields=.FALSE., basis_type=role)
          ELSE
             CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, [0.0_dp, 0.0_dp, 0.0_dp], state%frame, info, &
-                                             use_atomic, direct, basis_type=role)
+                                             use_atomic, direct, basis_type=role, center_rotations=center_rotations)
          END IF
          IF (info == 0) CALL qs_upf_inverse_augmentation_prepare(ks_env, state%frame%ao, state%augmentation)
       END IF

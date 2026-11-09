@@ -10,6 +10,7 @@ MODULE qs_upf_inverse_density
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE message_passing,                 ONLY: mp_comm_type
+   USE orbital_pointers,                ONLY: indso
    USE paw_basis_types,                 ONLY: get_paw_basis_info
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_harmonics_atom,               ONLY: harmonics_atom_type
@@ -18,6 +19,7 @@ MODULE qs_upf_inverse_density
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
                                               qs_upf_inverse_center_fields,&
                                               qs_upf_inverse_evaluate
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_atom_angular_average
    USE qs_upf_inverse_gaussian,         ONLY: qs_upf_inverse_gaussian_integrate,&
                                               qs_upf_inverse_gaussian_radial
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_density,&
@@ -26,6 +28,7 @@ MODULE qs_upf_inverse_density
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_augmentation_type,&
                                               qs_upf_inverse_density_cache_type,&
                                               qs_upf_inverse_type
+   USE spherical_harmonics,             ONLY: y_lm
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_evaluate,&
                                               upf_inverse_kinetic_type
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
@@ -39,6 +42,13 @@ MODULE qs_upf_inverse_density
 
    IMPLICIT NONE
    PRIVATE
+   TYPE qs_upf_inverse_gapw_view_type
+      TYPE(grid_atom_type) :: grid
+      TYPE(harmonics_atom_type) :: harmonics
+      REAL(dp), ALLOCATABLE :: angular_weights(:), weights(:, :), slm(:, :)
+   END TYPE qs_upf_inverse_gapw_view_type
+
+   PUBLIC :: qs_upf_inverse_gapw_grid, qs_upf_inverse_gapw_view_type
    PUBLIC :: qs_upf_inverse_density_center, qs_upf_inverse_density_integrate
    PUBLIC :: qs_upf_inverse_density_pair_integrate
    PUBLIC :: qs_upf_inverse_density_radial, qs_upf_inverse_density_radial_adjoint
@@ -71,11 +81,12 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: points(:, :)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(qs_upf_inverse_gapw_view_type), TARGET         :: view
 
       CPASSERT(remaining_bytes >= 0_int_8)
       IF (center == 0 .OR. frame%direct) RETURN
       IF (remaining_bytes == 0_int_8) RETURN
-      CALL get_qs_kind(kind, grid_atom=grid)
+      CALL qs_upf_inverse_gapw_grid(frame, center, kind, grid, harmonics, n, points, view)
       CPASSERT(ASSOCIATED(grid))
       CPASSERT(grid%nr > 0 .AND. grid%ng_sphere > 0)
       npoint = INT(grid%nr, int_8)*grid%ng_sphere
@@ -84,7 +95,6 @@ CONTAINS
               8_int_8*(3_int_8*npoint + SIZE(frame%positions, KIND=int_8) + 12_int_8) + &
               INT(STORAGE_SIZE(0)/8, int_8)*SIZE(frame%images, KIND=int_8)
       IF (bytes > remaining_bytes) RETURN
-      CALL gapw_grid(frame, center, kind, grid, harmonics, n, points)
       np = SIZE(points, 2)
       ALLOCATE (cache%left(np, nao), cache%right(np, nao), &
                 cache%left_gradient(np, nao, 3), cache%right_gradient(np, nao, 3))
@@ -480,8 +490,9 @@ CONTAINS
          es(:, :), hard(:, :), point_response(:, :), points(:, :), soft(:, :), values(:), zero(:)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(qs_upf_inverse_gapw_view_type), TARGET         :: view
 
-      CALL gapw_grid(frame, center, kind, grid, harmonics, n, points, atom_index)
+      CALL qs_upf_inverse_gapw_grid(frame, center, kind, grid, harmonics, n, points, view, atom_index)
       IF (center > 0) CALL check_center(frame, augmentation, center, points)
       nh = harmonics%max_iso_not0
       np = SIZE(points, 2)
@@ -561,8 +572,9 @@ CONTAINS
                                                             weights(:)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
+      TYPE(qs_upf_inverse_gapw_view_type), TARGET         :: view
 
-      CALL gapw_grid(frame, center, kind, grid, harmonics, n, points, atom_index)
+      CALL qs_upf_inverse_gapw_grid(frame, center, kind, grid, harmonics, n, points, view, atom_index)
       IF (center > 0) CALL check_center(frame, augmentation, center, points)
       nh = harmonics%max_iso_not0
       np = SIZE(points, 2)
@@ -587,13 +599,14 @@ CONTAINS
 !> \param frame ...
 !> \param center ...
 !> \param kind ...
-!> \param grid Borrowed native radial/Lebedev grid.
-!> \param harmonics Borrowed native harmonics and Gaunt coefficients.
+!> \param grid Native or averaged atomic quadrature.
+!> \param harmonics Harmonic values at the same angular nodes.
 !> \param n Number of compressed Gaussian primitives.
 !> \param points Replicated Cartesian atom-grid points with angular rows fastest.
+!> \param view Storage for a rotated grid and its harmonic values.
 !> \param atom_index Explicit native Gaussian center. Center zero has no inverse or Q contribution.
 ! **************************************************************************************************
-   SUBROUTINE gapw_grid(frame, center, kind, grid, harmonics, n, points, atom_index)
+   SUBROUTINE qs_upf_inverse_gapw_grid(frame, center, kind, grid, harmonics, n, points, view, atom_index)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center
       TYPE(qs_kind_type), INTENT(IN)                     :: kind
@@ -601,9 +614,11 @@ CONTAINS
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       INTEGER, INTENT(OUT)                               :: n
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: points(:, :)
+      TYPE(qs_upf_inverse_gapw_view_type), INTENT(OUT), TARGET :: view
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_index
 
-      INTEGER                                            :: atom, ia, ir, row
+      INTEGER                                            :: atom, first, ia, ir, iso, na, nh, row
+      REAL(dp), ALLOCATABLE                              :: directions(:, :)
       TYPE(gto_basis_set_type), POINTER                  :: basis
 
       CPASSERT(center >= 0 .AND. center <= SIZE(frame%center_atoms))
@@ -622,6 +637,33 @@ CONTAINS
       CPASSERT(ASSOCIATED(grid%rad) .AND. ASSOCIATED(grid%weight))
       CPASSERT(grid%nr > 0 .AND. grid%ng_sphere > 0)
       CALL get_paw_basis_info(basis, nsatbas=n)
+      IF (ALLOCATED(frame%center_rotations)) THEN
+         CALL qs_upf_atom_angular_average(grid, frame%center_rotations, directions, view%angular_weights)
+      END IF
+      IF (ALLOCATED(directions)) THEN
+         na = SIZE(directions, 2)
+         nh = harmonics%max_iso_not0
+         ALLOCATE (view%weights(na, grid%nr), view%slm(na, nh), points(3, na*grid%nr))
+         DO ir = 1, grid%nr
+            first = 1 + (ir - 1)*na
+            points(:, first:first + na - 1) = SPREAD(frame%positions(:, atom), 2, na) + grid%rad(ir)*directions
+            view%weights(:, ir) = grid%wr(ir)*view%angular_weights
+         END DO
+         DO iso = 1, nh
+            CALL y_lm(directions, view%slm(:, iso), indso(1, iso), indso(2, iso))
+         END DO
+         view%grid%nr = grid%nr
+         view%grid%ng_sphere = na
+         view%grid%rad => grid%rad
+         view%grid%wr => grid%wr
+         view%grid%wa => view%angular_weights
+         view%grid%weight => view%weights
+         view%harmonics%max_iso_not0 = nh
+         view%harmonics%slm => view%slm
+         grid => view%grid
+         harmonics => view%harmonics
+         RETURN
+      END IF
       ALLOCATE (points(3, grid%nr*grid%ng_sphere))
       DO ir = 1, grid%nr
          DO ia = 1, grid%ng_sphere
@@ -630,7 +672,7 @@ CONTAINS
                              [grid%sin_pol(ia)*grid%cos_azi(ia), grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
          END DO
       END DO
-   END SUBROUTINE gapw_grid
+   END SUBROUTINE qs_upf_inverse_gapw_grid
 
 ! **************************************************************************************************
 !> \brief Signed nR_a + Q_a from the full coupled inverse, without partition or image folding.
