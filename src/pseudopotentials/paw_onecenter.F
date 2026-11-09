@@ -788,6 +788,11 @@ CONTAINS
          c(3, :, i) = 2.0_dp*(products(i, :) - products(i + 1, :)) + h*(slopes(i, :) + slopes(i + 1, :))
       END DO
       integral = 0.0_dp
+      ! Each outer radial panel contributes an independent symmetric bilinear form.
+!$OMP PARALLEL DO DEFAULT(NONE) IF(n >= 256) SCHEDULE(GUIDED) &
+!$OMP SHARED(r, l, omega, n, nc, c, nodes, weights, angular_nodes, angular_weights) &
+!$OMP PRIVATE(a, b, chunk, chunks, factor, h, inner, j, k, kernel, left, lower, outer, outers, radius, right, &
+!$OMP         sample, source_h, source_left, source_panel, source_r, source_right, t, value) REDUCTION(+:integral)
       DO i = 1, n - 1
          IF (.NOT. ANY(c(:, :, i) /= 0.0_dp)) CYCLE
          h = r(i + 1) - r(i)
@@ -829,6 +834,7 @@ CONTAINS
             END DO
          END DO
       END DO
+!$OMP END PARALLEL DO
       integral = integral*fourpi/REAL(2*l + 1, dp)
       DO b = 1, nc
          DO a = b + 1, nc
