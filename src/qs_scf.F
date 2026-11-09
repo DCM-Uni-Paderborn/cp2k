@@ -686,7 +686,7 @@ CONTAINS
             IF (.NOT. just_energy .AND. scf_env%iter_count == 1) THEN
                ! Check the normalized native state before an ordinary OT update can move it.
                CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
-                                      inverse_ot_stopped, output_unit)
+                                      inverse_ot_stopped, output_unit, iter_count)
                IF (inverse_ot_handled) THEN
                   scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
                   iter_count = iter_count + inverse_ot_steps
@@ -937,7 +937,7 @@ CONTAINS
             IF (inverse_ot_ready == 1) THEN
                ! Refine with the original physical stationarity bound and remaining SCF budget.
                CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
-                                      inverse_ot_stopped, output_unit, refine_final=.TRUE.)
+                                      inverse_ot_stopped, output_unit, iter_count, refine_final=.TRUE.)
                IF (inverse_ot_handled) THEN
                   scf_env%iter_count = scf_env%iter_count + inverse_ot_steps
                   iter_count = iter_count + inverse_ot_steps
@@ -1161,16 +1161,18 @@ CONTAINS
 !> \param iterations Number of attempted minimization iterations.
 !> \param stopped Whether the minimization received an external stop request.
 !> \param output_unit Native SCF output stream for automatic virtual-space growth.
+!> \param restart_offset Current SCF iteration for restart print keys.
 !> \param refine_final Refine an ordinary OT candidate in the physical norm for fixed or thermal occupations.
 ! **************************************************************************************************
-   SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations, stopped, output_unit, refine_final)
+   SUBROUTINE qs_scf_inverse_ot(qs_env, scf_env, scf_control, handled, iterations, stopped, output_unit, &
+                                restart_offset, refine_final)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
       LOGICAL, INTENT(OUT)                               :: handled
       INTEGER, INTENT(OUT)                               :: iterations
       LOGICAL, INTENT(OUT)                               :: stopped
-      INTEGER, INTENT(IN)                                :: output_unit
+      INTEGER, INTENT(IN)                                :: output_unit, restart_offset
       LOGICAL, INTENT(IN), OPTIONAL                      :: refine_final
 
       INTEGER                                            :: i, inner_limit, n, remaining, steps
@@ -1335,7 +1337,8 @@ CONTAINS
                                         max_step=step_radius, iterations=steps, check_external=.TRUE., stopped=stopped, &
                                         targets=targets, max_coordinate_norm=coordinate_bound, &
                                         rechart=rechart, retain_progress=.TRUE., crossings=event, admit_crossings=.TRUE., &
-                                        output_unit=output_unit, iteration_offset=scf_env%iter_count + iterations)
+                                        output_unit=output_unit, iteration_offset=scf_env%iter_count + iterations, &
+                                        restart_offset=restart_offset + iterations)
          iterations = iterations + steps
          remaining = remaining - steps
          IF (event%encountered .AND. .NOT. stopped) THEN

@@ -14,6 +14,11 @@ MODULE qs_skala_scf
    USE cp_dbcsr_operations,             ONLY: dbcsr_allocate_matrix_set
    USE cp_external_control,             ONLY: external_control
    USE cp_fm_types,                     ONLY: cp_fm_set_all
+   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_type
+   USE cp_output_handling,              ONLY: cp_iterate,&
+                                              cp_p_file,&
+                                              cp_print_key_should_output
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: ot_precond_none,&
                                               smear_fermi_dirac
@@ -25,6 +30,7 @@ MODULE qs_skala_scf
                                               section_vals_val_get
    USE kinds,                           ONLY: dp,&
                                               int_8
+   USE kpoint_io,                       ONLY: write_kpoints_restart
    USE kpoint_methods,                  ONLY: kpoint_star_density,&
                                               kpoint_star_operator,&
                                               kpoint_star_orbitals
@@ -42,18 +48,21 @@ MODULE qs_skala_scf
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_ks_methods,                   ONLY: calc_mo_derivatives,&
                                               qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_did_change,&
                                               qs_ks_env_type,&
                                               set_ks_env
+   USE qs_mo_io,                        ONLY: write_mo_set_to_restart
    USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_native_grid_interpolation,    ONLY: native_grid_batch_adjoint
    USE qs_rho_methods,                  ONLY: qs_rho_update_rho
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_set,&
                                               qs_rho_type
+   USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE qs_skala_orbitals,               ONLY: &
         qs_skala_orbitals_adapt_symmetry, qs_skala_orbitals_canonical_gamma, &
         qs_skala_orbitals_canonical_kpoint, qs_skala_orbitals_canonicalize, &
@@ -190,7 +199,7 @@ MODULE qs_skala_scf
       TYPE(qs_skala_scf_crossing_type), POINTER :: crossings => NULL()
       INTEGER, ALLOCATABLE :: points(:, :), domains(:), spins(:), descriptors(:)
       REAL(dp), ALLOCATABLE :: targets(:), density_floors(:)
-      INTEGER :: iteration_unit = -1, iteration_offset = 0
+      INTEGER :: iteration_unit = -1, iteration_offset = 0, restart_offset = -1
       REAL(dp) :: gradient_tolerance = 0.0_dp
       REAL(dp) :: max_coordinate_norm = 0.0_dp
       LOGICAL :: rechart = .FALSE.
@@ -2613,12 +2622,13 @@ CONTAINS
 !>        Default false preserves the raw endpoint scan. Admission does not prove tangential stationarity.
 !> \param output_unit Optional native SCF output unit for stored iteration scalars.
 !> \param iteration_offset Previously consumed native SCF steps for the displayed counter.
+!> \param restart_offset Current print iteration. Omit for trial calculations without SCF restart output.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, &
                                         physical_tolerances, gradient_tolerance, energy, converged, &
                                         max_iterations, max_step, targets, iterations, check_external, stopped, crossings, &
                                         max_coordinate_norm, rechart, retain_progress, crossing_density_floor, admit_crossings, &
-                                        output_unit, iteration_offset)
+                                        output_unit, iteration_offset, restart_offset)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(INOUT)                            :: coordinate(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -2639,7 +2649,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: retain_progress
       REAL(dp), INTENT(IN), OPTIONAL                     :: crossing_density_floor
       LOGICAL, INTENT(IN), OPTIONAL                      :: admit_crossings
-      INTEGER, INTENT(IN), OPTIONAL                      :: output_unit, iteration_offset
+      INTEGER, INTENT(IN), OPTIONAL                      :: output_unit, iteration_offset, &
+                                                            restart_offset
 
       INTEGER                                            :: i, m
       LOGICAL                                            :: coupled_curvature, frozen_exchange, &
@@ -2662,6 +2673,7 @@ CONTAINS
       search_tolerance = gradient_tolerance
       IF (PRESENT(output_unit)) context%iteration_unit = output_unit
       IF (PRESENT(iteration_offset)) context%iteration_offset = iteration_offset
+      IF (PRESENT(restart_offset)) context%restart_offset = restart_offset
       IF (PRESENT(admit_crossings)) context%admit_crossings = admit_crossings
       IF (PRESENT(check_external)) context%check_external = check_external
       IF (PRESENT(crossings)) THEN
@@ -3718,7 +3730,7 @@ CONTAINS
    END SUBROUTINE evaluate_native_stationarity
 
 ! **************************************************************************************************
-!> \brief Print accepted-state scalars without changing fields, orbitals or operators.
+!> \brief Report the native step and write requested restarts for accepted orbitals.
 !>        The reduced covector norm is distinct from the final physical stationarity test.
 !> \param iteration Attempted step in the current orbital chart, zero at its reference.
 !> \param energy Last accepted energy.
@@ -3736,6 +3748,9 @@ CONTAINS
 
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
+         IF (moved .AND. context%restart_offset >= 0) THEN
+            CALL write_native_restart(context%state, context%restart_offset + iteration)
+         END IF
          IF (context%iteration_unit < 0) RETURN
          IF (context%state%para_env%mepos /= 0) RETURN
          action = 'reject'
@@ -3750,6 +3765,44 @@ CONTAINS
          FLUSH (context%iteration_unit)
       END SELECT
    END SUBROUTINE report_native_iteration
+
+! **************************************************************************************************
+!> \brief Write the accepted native state with the ordinary SCF restart print keys.
+!> \param state The accepted trial, with its matching orbitals and density already installed.
+!> \param iteration SCF print iteration of this accepted step.
+! **************************************************************************************************
+   SUBROUTINE write_native_restart(state, iteration)
+      TYPE(qs_skala_scf_type), INTENT(IN)                :: state
+      INTEGER, INTENT(IN)                                :: iteration
+
+      INTEGER                                            :: level, saved_iteration
+      LOGICAL                                            :: saved_last
+      TYPE(cp_logger_type), POINTER                      :: logger
+      TYPE(dbcsr_p_type), POINTER                        :: density(:, :)
+      TYPE(mo_set_type), POINTER                         :: mos(:)
+      TYPE(particle_type), POINTER                       :: particles(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(section_vals_type), POINTER                   :: dft_section
+
+      logger => cp_get_default_logger()
+      level = logger%iter_info%n_rlevel
+      saved_iteration = logger%iter_info%iteration(level)
+      saved_last = logger%iter_info%last_iter(level)
+      CALL cp_iterate(logger%iter_info, iter_nr=iteration)
+      dft_section => section_vals_get_subs_vals(state%qs_env%input, "DFT")
+      IF (BTEST(cp_print_key_should_output(logger%iter_info, dft_section, "SCF%PRINT%RESTART"), cp_p_file) .OR. &
+          BTEST(cp_print_key_should_output(logger%iter_info, dft_section, "SCF%PRINT%RESTART_HISTORY"), cp_p_file)) THEN
+         CALL get_qs_env(state%qs_env, particle_set=particles, qs_kind_set=kinds, scf_env=scf_env, mos=mos)
+         IF (state%bloch) THEN
+            CALL qs_rho_get(state%rho, rho_ao_kp=density)
+            CALL write_kpoints_restart(density, state%kpoints, scf_env, dft_section, particles, kinds)
+         ELSE
+            CALL write_mo_set_to_restart(mos, particles, dft_section, kinds)
+         END IF
+      END IF
+      CALL cp_iterate(logger%iter_info, last=saved_last, iter_nr=saved_iteration)
+   END SUBROUTINE write_native_restart
 
 ! **************************************************************************************************
 !> \brief Poll normal CP2K stop files, external communication and the target runtime.
