@@ -55,6 +55,7 @@ MODULE qs_skala_scf
                                               qs_ks_did_change,&
                                               qs_ks_env_type,&
                                               set_ks_env
+   USE qs_ks_utils,                     ONLY: sum_ks_energies
    USE qs_mo_io,                        ONLY: write_mo_set_to_restart
    USE qs_mo_types,                     ONLY: mo_set_type
    USE qs_native_grid_interpolation,    ONLY: native_grid_batch_adjoint
@@ -3653,7 +3654,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Evaluate the complete native energy and its coordinate derivative.
 !> \param coordinate Complete normalized orbital coordinates.
-!> \param energy Complete native energy of the trial.
+!> \param energy Trial energy relative to the fixed PAW frozen-core energy.
 !> \param gradient Energy derivative in the same orbital coordinates.
 !> \param context Borrowed native orbital and constraint state.
 ! **************************************************************************************************
@@ -3673,6 +3674,7 @@ CONTAINS
                                        sample_inputs=SIZE(context%points, 2) > 0, &
                                        reuse_fields=SIZE(context%points, 2) == 0)
          END IF
+         energy = sum_ks_energies(context%state%energy, .TRUE.)
       CLASS DEFAULT
          CPABORT("Invalid native Skala gradient context.")
       END SELECT
@@ -3742,7 +3744,7 @@ CONTAINS
 !> \brief Report the native step and write requested restarts for accepted orbitals.
 !>        The reduced covector norm is distinct from the final physical stationarity test.
 !> \param iteration Attempted step in the current orbital chart, zero at its reference.
-!> \param energy Last accepted energy.
+!> \param energy Last accepted energy relative to the fixed PAW frozen-core energy.
 !> \param gradient_norm Original-unit independent-coordinate covector norm.
 !> \param moved Whether a new feasible step was accepted.
 !> \param context Native state, original step offset and existing SCF print unit.
@@ -3770,7 +3772,8 @@ CONTAINS
                ' INVERSE_SCF|   Step State             Energy [Ha]     Reduced gradient [Ha] Constraints'
          END IF
          WRITE (context%iteration_unit, '(A,I6,1X,A6,2ES24.14,1X,I8)') ' INVERSE_SCF| ', &
-            context%iteration_offset + iteration, action, energy, gradient_norm, SIZE(context%points, 2)
+            context%iteration_offset + iteration, action, energy + context%state%energy%paw_core, &
+            gradient_norm, SIZE(context%points, 2)
          FLUSH (context%iteration_unit)
       END SELECT
    END SUBROUTINE report_native_iteration
@@ -4268,6 +4271,7 @@ CONTAINS
       ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)), gradient(SIZE(first)))
       pending(:) = [(i, i=1, SIZE(pending))]
       CALL qs_skala_scf_evaluate(context%state, first, first_energy)
+      first_energy = sum_ks_energies(context%state%energy, .TRUE.)
       DO WHILE (SIZE(pending) > 0)
          ALLOCATE (selected(SIZE(pending)), values(SIZE(pending)), windows(SIZE(pending)))
          windows(:) = MERGE(tolerance, kinetic_tolerance, event%descriptors(pending) == skala_density_descriptor)
@@ -4290,7 +4294,7 @@ CONTAINS
          ! Reject it before rebuilding every normal limit of the complete XC operator.
          CPASSERT(context%state%evaluated .AND. context%state%operator_current)
          CPASSERT(ALL(context%state%coordinate == root))
-         energy = context%state%energy%total
+         energy = sum_ks_energies(context%state%energy, .TRUE.)
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
          IF (energy > first_energy + roundoff) THEN
             ALLOCATE (remaining, SOURCE=PACK(pending,.NOT. selected))
@@ -4307,6 +4311,7 @@ CONTAINS
          IF (ANY(admissible)) THEN
             ! Restore the original operator only when an admissible root can be returned.
             CALL evaluate_limiting_state(context%state, root, energy, gradient, .TRUE.)
+            energy = sum_ks_energies(context%state%energy, .TRUE.)
             roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
             IF (energy <= first_energy + roundoff) THEN
                ALLOCATE (event%selected(SIZE(event%spins)), SOURCE=.FALSE.)

@@ -157,7 +157,7 @@ MODULE qs_ks_utils
 
    PUBLIC :: low_spin_roks, sic_explicit_orbitals, calc_v_sic_rspace, check_sum_energies, print_densities, &
              print_detailed_energy, compute_matrix_vxc, sum_up_and_integrate, &
-             calculate_zmp_potential, get_embed_potential_energy
+             calculate_zmp_potential, get_embed_potential_energy, sum_ks_energies
 
 CONTAINS
 
@@ -1049,47 +1049,59 @@ CONTAINS
    SUBROUTINE check_sum_energies(energy)
       TYPE(qs_energy_type), INTENT(INOUT), POINTER       :: energy
 
-      ! Reset the total energy counter, just in case
-      ! it is used to store some intermediate value
-      energy%total = 0.0_dp
+      energy%total = sum_ks_energies(energy, .FALSE.)
+   END SUBROUTINE check_sum_energies
 
-      CALL check_sum_energy(energy%total, energy%core_overlap, "Core overlap energy")
-      CALL check_sum_energy(energy%total, energy%core_self, "Core self energy")
-      CALL check_sum_energy(energy%total, energy%core_cneo, "Quantum nuclear core energy")
-      CALL check_sum_energy(energy%total, energy%core, "Core Hamiltonian energy")
-      CALL check_sum_energy(energy%total, energy%hartree, "Hartree energy")
-      CALL check_sum_energy(energy%total, energy%hartree_1c, "Energy from GAPW local Eh = 1 center integrals")
-      CALL check_sum_energy(energy%total, energy%exc, "Exchange-correlation energy")
-      CALL check_sum_energy(energy%total, energy%exc1, "Exc1 energy")
-      CALL check_sum_energy(energy%total, energy%paw_hartree, "PAW one-center Hartree energy")
-      CALL check_sum_energy(energy%total, energy%paw_xc, "PAW one-center XC energy")
-      CALL check_sum_energy(energy%total, energy%paw_core, "PAW frozen-core energy")
-      CALL check_sum_energy(energy%total, energy%ex, "Ex energy")
-      CALL check_sum_energy(energy%total, energy%dispersion, "Dispersion energy")
-      CALL check_sum_energy(energy%total, energy%gcp, "gCP energy")
-      CALL check_sum_energy(energy%total, energy%qmmm_el, "QM/MM Electrostatic energy")
-      CALL check_sum_energy(energy%total, energy%mulliken, "Mulliken restraint energy")
-      CALL check_sum_energy(energy%total, SUM(energy%ddapc_restraint), "DDAPC restraint energy")
-      CALL check_sum_energy(energy%total, energy%s2_restraint, "S2 restraint energy")
-      CALL check_sum_energy(energy%total, energy%dft_plus_u, "DFT+U energy")
-      CALL check_sum_energy(energy%total, energy%kTS, "Electronic entropic contribution energy")
-      CALL check_sum_energy(energy%total, energy%efield, "Electric field interaction energy")
-      CALL check_sum_energy(energy%total, energy%efield_core, "Electric field core interaction energy")
-      CALL check_sum_energy(energy%total, energy%ee, "External potential interaction energy")
-      CALL check_sum_energy(energy%total, energy%ee_core, "External potential core interaction energy")
-      CALL check_sum_energy(energy%total, energy%exc_aux_fit, "Wfn fit exchange-correlation energy")
-      CALL check_sum_energy(energy%total, energy%image_charge, "QM/MM image charge energy energy")
-      CALL check_sum_energy(energy%total, energy%sccs_pol, "SCCS polarisation energy")
-      CALL check_sum_energy(energy%total, energy%cdft, "CDFT constraint energy")
-      CALL check_sum_energy(energy%total, energy%exc1_aux_fit, "Wfn fit soft/hard atomic rho1 Exc contribution energy")
-      CALL check_sum_energy(energy%total, energy%embed_corr, "Embedding potential correction energy")
+! **************************************************************************************************
+!> \brief Sum the checked energy components.
+!> \param energy Quickstep energy components.
+!> \param omit_paw_core Exclude the constant frozen-core energy during orbital optimization.
+!> \return Sum of the selected energy components.
+! **************************************************************************************************
+   FUNCTION sum_ks_energies(energy, omit_paw_core) RESULT(total)
+      TYPE(qs_energy_type), INTENT(IN)                   :: energy
+      LOGICAL, INTENT(IN)                                :: omit_paw_core
+      REAL(KIND=dp)                                      :: total
 
-      IF (abnormal_value(energy%total)) THEN
+      total = 0.0_dp
+
+      CALL check_sum_energy(total, energy%core_overlap, "Core overlap energy")
+      CALL check_sum_energy(total, energy%core_self, "Core self energy")
+      CALL check_sum_energy(total, energy%core_cneo, "Quantum nuclear core energy")
+      CALL check_sum_energy(total, energy%core, "Core Hamiltonian energy")
+      CALL check_sum_energy(total, energy%hartree, "Hartree energy")
+      CALL check_sum_energy(total, energy%hartree_1c, "Energy from GAPW local Eh = 1 center integrals")
+      CALL check_sum_energy(total, energy%exc, "Exchange-correlation energy")
+      CALL check_sum_energy(total, energy%exc1, "Exc1 energy")
+      CALL check_sum_energy(total, energy%paw_hartree, "PAW one-center Hartree energy")
+      CALL check_sum_energy(total, energy%paw_xc, "PAW one-center XC energy")
+      IF (.NOT. omit_paw_core) CALL check_sum_energy(total, energy%paw_core, "PAW frozen-core energy")
+      CALL check_sum_energy(total, energy%ex, "Ex energy")
+      CALL check_sum_energy(total, energy%dispersion, "Dispersion energy")
+      CALL check_sum_energy(total, energy%gcp, "gCP energy")
+      CALL check_sum_energy(total, energy%qmmm_el, "QM/MM Electrostatic energy")
+      CALL check_sum_energy(total, energy%mulliken, "Mulliken restraint energy")
+      CALL check_sum_energy(total, SUM(energy%ddapc_restraint), "DDAPC restraint energy")
+      CALL check_sum_energy(total, energy%s2_restraint, "S2 restraint energy")
+      CALL check_sum_energy(total, energy%dft_plus_u, "DFT+U energy")
+      CALL check_sum_energy(total, energy%kTS, "Electronic entropic contribution energy")
+      CALL check_sum_energy(total, energy%efield, "Electric field interaction energy")
+      CALL check_sum_energy(total, energy%efield_core, "Electric field core interaction energy")
+      CALL check_sum_energy(total, energy%ee, "External potential interaction energy")
+      CALL check_sum_energy(total, energy%ee_core, "External potential core interaction energy")
+      CALL check_sum_energy(total, energy%exc_aux_fit, "Wfn fit exchange-correlation energy")
+      CALL check_sum_energy(total, energy%image_charge, "QM/MM image charge energy energy")
+      CALL check_sum_energy(total, energy%sccs_pol, "SCCS polarisation energy")
+      CALL check_sum_energy(total, energy%cdft, "CDFT constraint energy")
+      CALL check_sum_energy(total, energy%exc1_aux_fit, "Wfn fit soft/hard atomic rho1 Exc contribution energy")
+      CALL check_sum_energy(total, energy%embed_corr, "Embedding potential correction energy")
+
+      IF (abnormal_value(total)) THEN
          CALL cp_abort(__LOCATION__, &
                        "Total energy after summing up the terms is an abnormal value (NaN/Inf).")
       END IF
 
-   END SUBROUTINE check_sum_energies
+   END FUNCTION sum_ks_energies
 
 ! **************************************************************************************************
 !> \brief Check one term of the energy and sum to total if normal
