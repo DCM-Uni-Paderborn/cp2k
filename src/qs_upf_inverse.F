@@ -984,14 +984,16 @@ CONTAINS
                                                             reduced_k_response(3)
 
       INTEGER                                            :: atom, center, first, ikind, last, p, q
+      LOGICAL                                            :: fixed_lattice, correct_nc
 
       CPASSERT(ALLOCATED(frame%atomic_cache))
+      fixed_lattice = .FALSE.
       IF (PRESENT(response)) THEN
          CPASSERT(PRESENT(atom_response))
          CPASSERT(PRESENT(cell_response) .AND. PRESENT(reduced_k_response))
+         fixed_lattice = frame%atom_local .AND. ALL(cell_response == 0.0_dp) .AND. ALL(reduced_k_response == 0.0_dp)
          ! A rigid common translation leaves the prepared hard-projector coefficients unchanged.
-         IF (frame%atom_local .AND. SIZE(atom_response, 2) > 0 .AND. &
-             ALL(cell_response == 0.0_dp) .AND. ALL(reduced_k_response == 0.0_dp)) THEN
+         IF (fixed_lattice .AND. SIZE(atom_response, 2) > 0) THEN
             IF (ALL(atom_response == SPREAD(atom_response(:, 1), 2, SIZE(atom_response, 2)))) THEN
                CPASSERT(ALL(SHAPE(overlaps) == SHAPE(frame%coefficients)))
                overlaps(:, :) = frame%coefficients
@@ -1005,9 +1007,19 @@ CONTAINS
          atom = frame%center_atoms(center)
          p = frame%projector_first(center)
          q = frame%projector_last(center)
+         correct_nc = .FALSE.
+         IF (ALLOCATED(frame%nc_coupling_grid)) correct_nc = frame%nc_kinds(ikind)
          DO first = 1, SIZE(frame%bases)
             last = frame%ao_last(first)
             IF (PRESENT(response)) THEN
+               ! NC rows coupled to the reconstruction still need the bare overlaps below.
+               IF (fixed_lattice .AND. .NOT. correct_nc) THEN
+                  IF (ALL(atom_response(:, atom) == atom_response(:, first))) THEN
+                     overlaps(p:q, frame%ao_first(first):last) = frame%coefficients(p:q, frame%ao_first(first):last)
+                     response(p:q, frame%ao_first(first):last) = CMPLX(0.0_dp, 0.0_dp, dp)
+                     CYCLE
+                  END IF
+               END IF
                CALL qs_upf_inverse_atomic_overlap(frame%bases(first)%gto_basis_set, frame%atomic_cache(ikind)%hard, &
                                                   frame%positions(:, atom), frame%positions(:, first), frame%cell, frame%images, &
                                                   frame%reduced_k, overlaps(p:q, frame%ao_first(first):last), &
