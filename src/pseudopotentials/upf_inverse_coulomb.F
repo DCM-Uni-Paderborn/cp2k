@@ -57,6 +57,7 @@ MODULE upf_inverse_coulomb
       INTEGER, ALLOCATABLE :: first_term(:), powers(:, :)
       REAL(dp), ALLOCATABLE :: coefficients(:)
       REAL(dp), ALLOCATABLE :: values(:), response(:), gradient(:, :)
+      REAL(dp), ALLOCATABLE :: sampled_values(:, :), sampled_response(:, :)
    END TYPE harmonic_work_type
 
    TYPE contained_shell_type
@@ -1002,7 +1003,7 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: dr_a(:), dr_b(:), ddisplacement(3)
 
-      INTEGER                                            :: a, b, i, j, nq
+      INTEGER                                            :: a, b, i, j, nq, sample_count
       LOGICAL                                            :: separated
       REAL(dp)                                           :: da, db, delta(3), distance, factor, value
       REAL(dp), ALLOCATABLE                              :: ab(:, :), ba(:, :), dab(:, :), &
@@ -1068,9 +1069,10 @@ CONTAINS
       CALL init_spherical_harmonics(MAX(MAXVAL(l_a), MAXVAL(l_b)), -1)
       ALLOCATE (ab(SIZE(l_a), SIZE(l_b)), ba(SIZE(l_b), SIZE(l_a)))
       IF (PRESENT(response)) ALLOCATE (dab(SIZE(l_a), SIZE(l_b)), dba(SIZE(l_b), SIZE(l_a)))
-      CALL prepare_harmonic_work(l_a, indices_a, PRESENT(response), work_a)
-      CALL prepare_harmonic_work(l_b, indices_b, PRESENT(response), work_b)
       nq = MAX(32, MAXVAL(l_a) + MAXVAL(l_b) + 2)
+      sample_count = nq*(MAXVAL(l_a) + MAXVAL(l_b) + 1)
+      CALL prepare_harmonic_work(l_a, indices_a, sample_count, PRESENT(response), work_a)
+      CALL prepare_harmonic_work(l_b, indices_b, sample_count, PRESENT(response), work_b)
       ALLOCATE (nodes(nq), weights(nq))
       CALL polar_rule(nodes, weights)
       ALLOCATE (contained_a(SIZE(radii_a)), contained_b(SIZE(radii_b)))
@@ -1312,19 +1314,21 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: a, b
       INTEGER, INTENT(IN)                                :: la(:), lb(:)
       REAL(dp), INTENT(IN)                               :: d(3), da, db, dd(3)
-      REAL(dp), INTENT(OUT)                              :: value(:, :)
+      REAL(dp), CONTIGUOUS, INTENT(OUT)                  :: value(:, :)
       REAL(dp), INTENT(IN)                               :: nodes(:), weights(:)
       TYPE(harmonic_work_type), INTENT(INOUT)            :: work_a, work_b
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :)
+      REAL(dp), CONTIGUOUS, INTENT(OUT), OPTIONAL        :: response(:, :)
 
       INTEGER                                            :: axis, channel, iphi, iq, max_order, &
-                                                            min_order, nphi, nq, order
+                                                            min_order, nphi, nq, order, sample
       LOGICAL                                            :: active_order(0:20), derive, regular
       REAL(dp) :: azimuth, azimuth_directions(3, MAXVAL(la) + MAXVAL(lb) + 1), &
          azimuth_response(3, MAXVAL(la) + MAXVAL(lb) + 1), bound, dbound, dex(3), dey(3), dez(3), &
          dfactor, distance, dleft, dlength, dmu, dright, dt, du(3), dweight, dx(3), ex(3), ey(3), &
          ez(3), factor, left, length, mu, norm_x, radius_dot, reference(3), right, scale, sine, &
          source_factor(0:20), source_response(0:20), t, tmax, u(3), weight, x(3)
+
+      EXTERNAL dgemm
 
       derive = PRESENT(response)
       distance = SQRT(SUM(d**2))
@@ -1403,6 +1407,7 @@ CONTAINS
             sine = SQRT(MAX(0.0_dp, 1.0_dp - mu**2))
             CPASSERT(sine > 0.0_dp)
             DO iphi = 1, nphi
+               sample = (iq - 1)*nphi + iphi
                u = mu*ez + sine*azimuth_directions(:, iphi)
                x = d + a*u
                norm_x = SQRT(SUM(x**2))
@@ -1433,18 +1438,30 @@ CONTAINS
                   source_factor(order) = factor
                   IF (derive) source_response(order) = dfactor
                END DO
+               work_a%sampled_values(:, sample) = work_a%values
+               IF (derive) work_a%sampled_response(:, sample) = work_a%response
                DO channel = 1, SIZE(lb)
                   factor = source_factor(lb(channel))
-                  IF (derive) dfactor = source_response(lb(channel))
                   scale = factor*work_b%values(channel)
-                  value(:, channel) = value(:, channel) + weight*work_a%values*scale
-                  IF (derive) response(:, channel) = response(:, channel) + dweight*work_a%values*scale + &
-                                                     weight*(work_a%response*scale + &
-                                                             work_a%values*(dfactor*work_b%values(channel) + &
-                                                                            factor*work_b%response(channel)))
+                  work_b%sampled_values(channel, sample) = weight*scale
+                  IF (derive) THEN
+                     dfactor = source_response(lb(channel))
+                     work_b%sampled_response(channel, sample) = dweight*scale + &
+                        weight*(dfactor*work_b%values(channel) + factor*work_b%response(channel))
+                  END IF
                END DO
             END DO
          END DO
+         ! Each polar interval uses the original quadrature. Include the moving
+         ! quadrature weight in the source derivative before applying the product rule.
+         CALL dgemm('N', 'T', SIZE(la), SIZE(lb), nq*nphi, 1.0_dp, work_a%sampled_values, SIZE(la), &
+                    work_b%sampled_values, SIZE(lb), 1.0_dp, value, SIZE(la))
+         IF (derive) THEN
+            CALL dgemm('N', 'T', SIZE(la), SIZE(lb), nq*nphi, 1.0_dp, work_a%sampled_response, SIZE(la), &
+                       work_b%sampled_values, SIZE(lb), 1.0_dp, response, SIZE(la))
+            CALL dgemm('N', 'T', SIZE(la), SIZE(lb), nq*nphi, 1.0_dp, work_a%sampled_values, SIZE(la), &
+                       work_b%sampled_response, SIZE(lb), 1.0_dp, response, SIZE(la))
+         END IF
          left = right
          dleft = dright
          regular = .FALSE.
@@ -1456,11 +1473,13 @@ CONTAINS
 !>        The translated shells reuse these coefficients at every angular node.
 !> \param ls ...
 !> \param indices ...
+!> \param sample_count Angular nodes in one polar interval.
 !> \param derive Allocate scratch space for geometry derivatives.
 !> \param work Prepared harmonic terms and scratch fields.
 ! **************************************************************************************************
-   SUBROUTINE prepare_harmonic_work(ls, indices, derive, work)
+   SUBROUTINE prepare_harmonic_work(ls, indices, sample_count, derive, work)
       INTEGER, INTENT(IN)                                :: ls(:), indices(:)
+      INTEGER, INTENT(IN)                                :: sample_count
       LOGICAL, INTENT(IN)                                :: derive
       TYPE(harmonic_work_type), INTENT(OUT)              :: work
 
@@ -1468,8 +1487,9 @@ CONTAINS
       REAL(dp)                                           :: coefficient
 
       work%max_degree = MAXVAL(ls)
-      ALLOCATE (work%first_term(SIZE(ls) + 1), work%values(SIZE(ls)))
-      IF (derive) ALLOCATE (work%response(SIZE(ls)), work%gradient(3, SIZE(ls)))
+      ALLOCATE (work%first_term(SIZE(ls) + 1), work%values(SIZE(ls)), work%sampled_values(SIZE(ls), sample_count))
+      IF (derive) ALLOCATE (work%response(SIZE(ls)), work%gradient(3, SIZE(ls)), &
+                            work%sampled_response(SIZE(ls), sample_count))
       work%first_term(1) = 1
       DO channel = 1, SIZE(ls)
          l = ls(channel)
