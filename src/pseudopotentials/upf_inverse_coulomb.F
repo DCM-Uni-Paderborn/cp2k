@@ -42,7 +42,6 @@ MODULE upf_inverse_coulomb
 
    TYPE center_work_type
       REAL(dp), ALLOCATABLE :: compensation(:, :), residual(:, :), q(:, :), dq(:, :), potential(:, :)
-      COMPLEX(dp), ALLOCATABLE :: fourier(:, :, :)
    END TYPE center_work_type
 
    TYPE fourier_map_type
@@ -549,7 +548,7 @@ CONTAINS
                                                             gvecs_response(:, :), volume_response
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: background_response(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: poisson_weights_response(:)
-      TYPE(upf_inverse_coulomb_map_type), INTENT(IN), &
+      TYPE(upf_inverse_coulomb_map_type), INTENT(IN), TARGET, &
          OPTIONAL                                        :: map
       INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
       REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
@@ -559,7 +558,7 @@ CONTAINS
       INTEGER                                            :: a, b, channel, fourier_shape(3), i, &
                                                             image(3), info, j, limits(2, 3), na, &
                                                             nb, ng, nh, nr, REPEAT(3)
-      LOGICAL                                            :: derive, reuse_pair_geometry
+      LOGICAL                                            :: derive, reuse_fourier, reuse_pair_geometry
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
                                                             dmoment, dnorm, dpair, dpw, epair, &
                                                             inverse_cell(3, 3), moment, norm, &
@@ -567,6 +566,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE :: adjoint(:, :), dc(:, :), de(:, :), df(:), dkernel(:, :, :, :), &
          f(:), kernel(:, :, :, :), moments(:), ve(:, :), vh(:, :)
       TYPE(center_work_type), ALLOCATABLE                :: work(:)
+      TYPE(fourier_map_type), ALLOCATABLE, TARGET         :: scratch_fourier(:)
+      TYPE(fourier_map_type), POINTER                     :: fourier(:)
 
       ng = SIZE(background)
       fourier_shape = 0
@@ -595,6 +596,15 @@ CONTAINS
          CPASSERT(SIZE(poisson_weights_response) == ng)
       END IF
       IF (PRESENT(map)) CALL check_map(map, centers, cell, gvecs, volume, repeat)
+      ! The reciprocal coefficients are immutable at fixed geometry. Borrow them
+      ! for both the forward density and its adjoint without an SCF-sized copy.
+      reuse_fourier = PRESENT(map) .AND. .NOT. derive
+      IF (reuse_fourier) THEN
+         fourier => map%fourier
+      ELSE
+         ALLOCATE (scratch_fourier(SIZE(centers)))
+         fourier => scratch_fourier
+      END IF
       reuse_pair_geometry = .FALSE.
       IF (derive .AND. PRESENT(map) .AND. PRESENT(pair_geometry_response)) THEN
          reuse_pair_geometry = .TRUE.
@@ -613,16 +623,11 @@ CONTAINS
          nh = SIZE(centers(a)%l)
          ALLOCATE (work(a)%compensation(nr, nh), work(a)%residual(nr, nh), &
                    work(a)%q(nr, nh), work(a)%dq(nr, nh), work(a)%potential(nr, nh), &
-                   work(a)%fourier(ng, nr, nh), moments(nh))
+                   moments(nh))
+         IF (.NOT. reuse_fourier) ALLOCATE (fourier(a)%values(ng, nr, nh))
          CALL upf_inverse_coulomb_compensate(centers(a)%radii, centers(a)%weights, centers(a)%l, &
                                              centers(a)%density, centers(a)%shapes, work(a)%compensation, &
                                              work(a)%residual, moments)
-         IF (PRESENT(map)) THEN
-            work(a)%fourier(:, :, :) = map%fourier(a)%values
-         ELSE
-            CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
-                                                    gvecs, centers(a)%position, volume, work(a)%fourier)
-         END IF
          work(a)%q(:, :) = SPREAD(centers(a)%weights, 2, nh)*work(a)%residual
          work(a)%potential(:, :) = 0.0_dp
          work(a)%dq(:, :) = 0.0_dp
@@ -648,21 +653,24 @@ CONTAINS
             work(a)%dq(:, :) = SPREAD(center_response(a)%weights, 2, nh)*work(a)%residual + &
                                SPREAD(centers(a)%weights, 2, nh)*de
             CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
-                                                    gvecs, centers(a)%position, volume, work(a)%fourier, dfourier, &
+                                                    gvecs, centers(a)%position, volume, fourier(a)%values, dfourier, &
                                                     center_response(a)%radii, gvecs_response, &
                                                     center_response(a)%position, volume_response, &
                                                     cell=cell, grid_shape=fourier_shape, cell_response=cell_response)
+         ELSE IF (.NOT. reuse_fourier) THEN
+            CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                    gvecs, centers(a)%position, volume, fourier(a)%values)
          END IF
          DO channel = 1, nh
             DO i = 1, nr
-               h(:) = h + work(a)%fourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
-               e(:) = e + work(a)%fourier(:, i, channel)*work(a)%q(i, channel)
+               h(:) = h + fourier(a)%values(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
+               e(:) = e + fourier(a)%values(:, i, channel)*work(a)%q(i, channel)
                IF (.NOT. derive) CYCLE
                dh(:) = dh + dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel) + &
-                       work(a)%fourier(:, i, channel)*(center_response(a)%weights(i)*work(a)%compensation(i, channel) + &
-                                                       centers(a)%weights(i)*dc(i, channel))
+                       fourier(a)%values(:, i, channel)*(center_response(a)%weights(i)*work(a)%compensation(i, channel) + &
+                                                        centers(a)%weights(i)*dc(i, channel))
                dg(:) = dg + dfourier(:, i, channel)*work(a)%q(i, channel) + &
-                       work(a)%fourier(:, i, channel)*work(a)%dq(i, channel)
+                       fourier(a)%values(:, i, channel)*work(a)%dq(i, channel)
             END DO
          END DO
          DEALLOCATE (moments)
@@ -761,8 +769,8 @@ CONTAINS
          nr = SIZE(centers(a)%radii)
          nh = SIZE(centers(a)%l)
          ALLOCATE (potentials(a)%values(nr, nh), vh(nr, nh), ve(nr, nh), adjoint(nr, nh))
-         CALL fourier_density_adjoint(work(a)%fourier, poisson_weights*h, vh)
-         CALL fourier_density_adjoint(work(a)%fourier, background_adjoint, ve)
+         CALL fourier_density_adjoint(fourier(a)%values, poisson_weights*h, vh)
+         CALL fourier_density_adjoint(fourier(a)%values, background_adjoint, ve)
          IF (PRESENT(comm)) THEN
             CALL comm%sum(vh)
             CALL comm%sum(ve)
