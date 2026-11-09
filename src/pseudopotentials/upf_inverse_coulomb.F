@@ -1570,12 +1570,13 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: alias_kernel(:, :, :), &
                                                             alias_response(:, :, :)
       INTEGER                                            :: a, alias, axis, channel, count, ig, &
-                                                            info, ir, l, m, miller(3), powers(3), &
-                                                            reduced(3)
-      LOGICAL                                            :: valid_lattice
+                                                            info, ir, l, last_order, m, miller(3), &
+                                                            order, powers(3), reduced(3)
+      LOGICAL :: bessel_ready(0:MAXVAL(angular_momenta) + 1), valid_lattice
       REAL(dp) :: alias_steps(3, 3), angular, angular_gradient(3), deformation(3, 3), &
          direction(3), factor, g_response(3, 1), gradient(3), inverse_cell(3, 3), jl, jnext, &
-         lattice_error, lattice_index(3), norm_g, radial, vectors(3, 8)
+         lattice_error, lattice_index(3), norm_g, radial, vectors(3, 8), &
+         bessel_values(SIZE(radii), 0:MAXVAL(angular_momenta) + 1)
 
       CPASSERT(SIZE(harmonic_indices) == SIZE(angular_momenta))
       CPASSERT(SIZE(angular_momenta) > 0)
@@ -1602,6 +1603,7 @@ CONTAINS
       CALL init_spherical_harmonics(MAXVAL(angular_momenta), -1)
       DO ig = 1, SIZE(gvecs, 2)
          norm_g = SQRT(SUM(gvecs(:, ig)**2))
+         bessel_ready = .FALSE.
          direction = 0.0_dp
          IF (norm_g > 0.0_dp) direction = gvecs(:, ig)/norm_g
          phase = fourpi/volume*EXP(CMPLX(0.0_dp, -DOT_PRODUCT(gvecs(:, ig), position), dp))
@@ -1612,6 +1614,16 @@ CONTAINS
          END IF
          DO channel = 1, SIZE(angular_momenta)
             l = angular_momenta(channel)
+            last_order = l
+            IF (PRESENT(response) .AND. norm_g > 0.0_dp) last_order = l + 1
+            ! Radial Bessel factors depend on l, not on the harmonic index m.
+            DO order = l, last_order
+               IF (bessel_ready(order)) CYCLE
+               DO ir = 1, SIZE(radii)
+                  bessel_values(ir, order) = bessel0(norm_g*radii(ir), order)
+               END DO
+               bessel_ready(order) = .TRUE.
+            END DO
             m = harmonic_indices(channel) - l*l
             phase_l = phase*CMPLX(0.0_dp, -1.0_dp, dp)**l
             angular = 0.0_dp
@@ -1630,13 +1642,13 @@ CONTAINS
                END DO
             END DO
             DO ir = 1, SIZE(radii)
-               jl = bessel0(norm_g*radii(ir), l)
+               jl = bessel_values(ir, l)
                kernel(ig, ir, channel) = phase_l*angular*jl
                IF (.NOT. PRESENT(response)) CYCLE
                gradient = 0.0_dp
                radial = 0.0_dp
                IF (norm_g > 0.0_dp) THEN
-                  jnext = bessel0(norm_g*radii(ir), l + 1)
+                  jnext = bessel_values(ir, l + 1)
                   gradient = jl/norm_g*angular_gradient - radii(ir)*jnext*angular*direction
                   radial = angular*(l/radii(ir)*jl - norm_g*jnext)
                ELSE IF (l == 1) THEN
