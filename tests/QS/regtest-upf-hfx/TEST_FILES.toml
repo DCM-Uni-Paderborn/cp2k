@@ -1,15 +1,16 @@
 # General inverse RI fitting needs auxiliary images beyond the compact AO cell map.
 # The atoms have different folding vectors, so RI and inverse image conventions must agree.
+# References use the rotationally invariant periodic atomic quadrature.
 "H2_inverse_RI_images.inp"         = [
-  {matcher = "M011", tol = 1e-10, ref = 13.892551841738308},
+  {matcher = "M011", tol = 1e-10, ref = 13.892359223188198},
 ]
 # Native Gamma ACE retains the complete inverse USPP energy and geometry derivatives.
 "H_USPP_ACE.inp"                   = [
-  {matcher = "M011", tol = 1e-10, ref = 3.218400413680527},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 2.78743420},
-  {matcher = "M031", tol = 1e-10, ref = -24626.9095050},
+  {matcher = "M011", tol = 1e-10, ref = 3.218508954230071},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 2.78868961},
+  {matcher = "M031", tol = 1e-10, ref = -24869.1098219},
 ]
 # Auxiliary ACE refresh must agree across MPI ranks.
 "H_USPP_ADMM_ACE.inp"              = [
-  {matcher = "M011", tol = 1e-10, ref = 3.218788922604786},
+  {matcher = "M011", tol = 1e-10, ref = 3.218897463154330},
 ]
