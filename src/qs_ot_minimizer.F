@@ -1482,7 +1482,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'do_line_search_3pnt'
 
       INTEGER                                            :: best_index, count, handle, i
-      LOGICAL                                            :: derivative_accepted, &
+      LOGICAL                                            :: derivative_accepted, real_fixed_search, &
                                                             trial_gradient_available
       REAL(KIND=dp)                                      :: best_energy, ds, energy_resolution, pos, &
                                                             tol, val
@@ -1490,13 +1490,16 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       trial_gradient_available = .NOT. qs_ot_env(1)%energy_only
+      real_fixed_search = .NOT. qs_ot_env(1)%settings%do_ener .AND. .NOT. qs_ot_env(1)%has_complex_kpoint_state .AND. &
+                          qs_ot_env(1)%settings%ot_method == "LBFG"
       qs_ot_env(1)%line_search_might_be_done = .FALSE.
       qs_ot_env(1)%energy_only = .TRUE.
 
       ! a three point interpolation based on the energy
       qs_ot_env(1)%line_search_count = qs_ot_env(1)%line_search_count + 1
       count = qs_ot_env(1)%line_search_count
-      IF (count >= SIZE(qs_ot_env(1)%ot_pos)) THEN
+      IF (count > SIZE(qs_ot_env(1)%ot_pos) .OR. &
+          (count == SIZE(qs_ot_env(1)%ot_pos) .AND. .NOT. real_fixed_search)) THEN
          CPABORT("Mermin derivative line search exceeded its trial limit")
       END IF
       qs_ot_env(1)%ot_energy(count) = qs_ot_env(1)%etotal
@@ -1504,7 +1507,7 @@ CONTAINS
                           MAX(1.0_dp, ABS(qs_ot_env(1)%ot_energy(1)), ABS(qs_ot_env(1)%etotal))
       IF (count == 1) THEN
          qs_ot_env(1)%ot_grad(1) = 0.0_dp
-         IF (use_three_point_mermin_search(qs_ot_env)) THEN
+         IF (use_three_point_mermin_search(qs_ot_env) .OR. real_fixed_search) THEN
             IF (qs_ot_env(1)%gradient < 0.0_dp .AND. &
                 ABS(qs_ot_env(1)%gradient*qs_ot_env(1)%ds_min*0.8_dp) <= energy_resolution) THEN
                qs_ot_env(1)%ot_grad(1) = qs_ot_env(1)%gradient
@@ -1515,13 +1518,23 @@ CONTAINS
          CPASSERT(trial_gradient_available)
          CPASSERT(ieee_is_finite(qs_ot_env(1)%gradient))
          qs_ot_env(1)%ot_grad(count) = qs_ot_env(1)%gradient
-         CALL ot_derivative_search_step(qs_ot_env(1)%ot_pos(1:count), &
-                                        qs_ot_env(1)%ot_grad(1:count), qs_ot_env(1)%ot_energy(1:count), energy_resolution, &
-                                        qs_ot_env(1)%ot_pos(count + 1), derivative_accepted)
+         IF (count < SIZE(qs_ot_env(1)%ot_pos)) THEN
+            CALL ot_derivative_search_step(qs_ot_env(1)%ot_pos(1:count), &
+                                           qs_ot_env(1)%ot_grad(1:count), qs_ot_env(1)%ot_energy(1:count), energy_resolution, &
+                                           qs_ot_env(1)%ot_pos(count + 1), derivative_accepted)
+            pos = qs_ot_env(1)%ot_pos(count + 1)
+         ELSE
+            ! Return an evaluated point within the energy resolution if bracketing stalls.
+            ! The SCF iteration still has to satisfy its physical convergence criterion.
+            best_index = MINLOC(ABS(qs_ot_env(1)%ot_grad(1:count)), DIM=1, &
+                                MASK=qs_ot_env(1)%ot_energy(1:count) <= qs_ot_env(1)%ot_energy(1) + energy_resolution)
+            pos = qs_ot_env(1)%ot_pos(best_index)
+            derivative_accepted = .TRUE.
+         END IF
          qs_ot_env(1)%energy_only = .FALSE.
          qs_ot_env(1)%line_search_might_be_done = derivative_accepted
-         ds = qs_ot_env(1)%OT_pos(count + 1) - qs_ot_env(1)%OT_pos(count)
-         qs_ot_env(1)%ds_min = qs_ot_env(1)%OT_pos(count + 1)
+         ds = pos - qs_ot_env(1)%ot_pos(count)
+         IF (pos > 0.0_dp) qs_ot_env(1)%ds_min = pos
          CALL take_step(ds, qs_ot_env)
          CALL timestop(handle)
          RETURN
