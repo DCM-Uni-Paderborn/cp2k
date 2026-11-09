@@ -12,7 +12,6 @@
 MODULE qs_upf_inverse
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
-   USE cp_control_types,                ONLY: dft_control_type
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -373,7 +372,7 @@ CONTAINS
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 !> \param basis_type Native basis role, ORB by default. Auxiliary bases retain independent AO columns.
-!> \param center_rotations Fixed reference group for the full GAPW atom integrals.
+!> \param center_rotations Fixed reference group for the atom-centered integrals.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame, info, atom_local, direct, &
                                      store_fields, basis_type, center_rotations)
@@ -389,15 +388,13 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: center_rotations(:, :, :)
 
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(dft_control_type), POINTER                    :: control
       TYPE(particle_type), POINTER                       :: particles(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(qs_uspp_type), TARGET                         :: nc_context
 
-      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=particles, cell=cell, uspp=uspp, dft_control=control)
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=particles, cell=cell, uspp=uspp)
       CPASSERT(ASSOCIATED(kinds) .AND. ASSOCIATED(particles) .AND. ASSOCIATED(cell))
-      CPASSERT(ASSOCIATED(control))
       IF (.NOT. ASSOCIATED(uspp)) THEN
          ! Pure NC-UPF has no native ultrasoft environment and has identity reconstruction.
          ALLOCATE (nc_context%center_atoms(0), nc_context%center_kinds(0))
@@ -405,7 +402,7 @@ CONTAINS
       END IF
       CALL qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
                                   comm, frame, info, atom_local, direct, store_fields, basis_type, &
-                                  centered_projection=control%qs_control%gapw, center_rotations=center_rotations)
+                                  centered_projection=.TRUE., center_rotations=center_rotations)
    END SUBROUTINE qs_upf_inverse_from_ks
 
 ! **************************************************************************************************
@@ -428,8 +425,8 @@ CONTAINS
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 !> \param basis_type Native basis role, ORB by default. Potential and projector data are unchanged.
-!> \param centered_projection Define the full inverse on the native GAPW atom grids.
-!> \param center_rotations Fixed reference group for the full GAPW atom integrals.
+!> \param centered_projection Define the coupled inverse on the native atom grids.
+!> \param center_rotations Fixed reference group for the atom-centered integrals.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
                                      comm, frame, info, atom_local, direct, store_fields, basis_type, &

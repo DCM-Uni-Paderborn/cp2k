@@ -273,7 +273,7 @@ CONTAINS
       INTEGER                                            :: ikind
       LOGICAL                                            :: auxiliary, do_kpoints, gaussian_kinetic, use_atomic, &
                                                             use_composite, use_kinetic
-      REAL(dp), ALLOCATABLE, TARGET                       :: kinetic_rotations(:, :, :)
+      REAL(dp), ALLOCATABLE, TARGET                       :: projector_rotations(:, :, :)
       REAL(dp), POINTER                                  :: center_rotations(:, :, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: kinetic_k(:, :)
@@ -327,19 +327,19 @@ CONTAINS
       ! Auxiliary XC needs the same soft Gaussian source as full GAPW, without owning Hartree data.
       state%gaussian_background = auxiliary .AND. control%qs_control%gapw
       gaussian_kinetic = use_atomic .OR. .NOT. auxiliary
-      IF (.NOT. (use_atomic .OR. auxiliary .OR. control%qs_control%gapw)) THEN
+      IF (.NOT. (use_atomic .OR. control%qs_control%gapw)) THEN
          IF (ALLOCATED(state%angular_rotations)) THEN
             center_rotations => state%angular_rotations
          ELSE
             CALL qs_upf_reference_rotations(cell, control%qs_control%upf_angular_reference_cell, kinds, &
-                                            .TRUE., kinetic_rotations)
-            IF (ALLOCATED(kinetic_rotations)) center_rotations => kinetic_rotations
+                                            .TRUE., projector_rotations)
+            IF (ALLOCATED(projector_rotations)) center_rotations => projector_rotations
          END IF
          CALL init_lebedev_grids()
          DO ikind = 1, SIZE(kinds)
             IF (kinds(ikind)%ghost .OR. ASSOCIATED(kinds(ikind)%gth_potential)) CYCLE
             ASSOCIATE (pot => kinds(ikind)%sgp_potential%upf_data)
-               IF (.NOT. (pot%is_paw .OR. pot%is_ultrasoft)) CYCLE
+               IF (pot%number_of_proj == 0) CYCLE
             END ASSOCIATE
             CALL qs_upf_atom_kind_grid(kinds(ikind), control%qs_control%gapw_control%quadrature, atom_grid)
          END DO

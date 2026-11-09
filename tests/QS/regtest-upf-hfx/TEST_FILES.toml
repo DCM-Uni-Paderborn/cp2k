@@ -2,7 +2,7 @@
 # The atoms have different folding vectors, so RI and inverse image conventions must agree.
 # References use the rotationally invariant periodic atomic quadrature.
 "H2_inverse_RI_images.inp"         = [
-  {matcher = "M011", tol = 1e-10, ref = 13.270046762725013},
+  {matcher = "M011", tol = 1e-10, ref = 13.323533568179489},
 ]
 # Native Gamma ACE retains the complete inverse USPP energy and geometry derivatives.
 "H_USPP_ACE.inp"                   = [

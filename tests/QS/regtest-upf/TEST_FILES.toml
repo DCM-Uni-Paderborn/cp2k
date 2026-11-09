@@ -19,20 +19,20 @@
 # Original full-wave USPP with the native inverse GPW density, metric and derivatives.
 # General-inverse kinetic energy uses Gaussian integrals and radial corrections.
 "H2_inverse_GPW.inp"               = [
-  {matcher = "M011", tol = 1e-10, ref = -1.205902663906344},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.899180993},
-  {matcher = "M031", tol = 1e-7, ref = 1626714.91144},
+  {matcher = "M011", tol = 1e-10, ref = -1.466016119308363},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.652231370},
+  {matcher = "M031", tol = 1e-7, ref = 979824.473898},
   {matcher = "Hirshfeld_total_charge", tol = 1e-3, ref = 0.0},
 ]
 # Complete complex Bloch density and native OT with unequal k-point weights.
 "H2_inverse_GPW_kpoints.inp"       = [
-  {matcher = "M011", tol = 1e-10, ref = -1.187952018190599},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.892535132},
-  {matcher = "M031", tol = 1e-7, ref = 1658514.92244},
+  {matcher = "M011", tol = 1e-10, ref = -1.455196594016673},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.644007358},
+  {matcher = "M031", tol = 1e-7, ref = 992082.68932},
 ]
 # Native complex operators and density restart preserve the OT state in one diagonalization step.
 "H2_inverse_GPW_restart.inp"       = [
-  {matcher = "M011", tol = 1e-10, ref = -1.187952018190599},
+  {matcher = "M011", tol = 1e-10, ref = -1.455196594016673},
 ]
 # CDIIS convergence must satisfy the unchanged-H density map.
 "H2_USPP_cdiis.inp"                = [
@@ -44,9 +44,9 @@
 # Native time-reversal reduction retains the density, metric and geometry derivatives.
 "H2_inverse_GPW_time_reversal.inp" = [
   {matcher = "Kpoint_count", tol = 0, ref = 2},
-  {matcher = "M011", tol = 1e-10, ref = -1.186728309267085},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.890172404},
-  {matcher = "M031", tol = 1e-7, ref = 1662314.94523},
+  {matcher = "M011", tol = 1e-10, ref = -1.454845576537346},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.643040789},
+  {matcher = "M031", tol = 1e-7, ref = 993197.177108},
 ]
 # Matched USPP representations with energy, atomic force and analytical stress.
 "H2_USPP_DIRECT.inp"               = [
@@ -55,9 +55,9 @@
   {matcher = "M031", tol = 1e-7, ref = 2254717.95047},
 ]
 "H2_USPP_INVERSE.inp"              = [
-  {matcher = "M011", tol = 1e-10, ref = 1.144442436260918},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -1.33664228},
-  {matcher = "M031", tol = 1e-7, ref = 3044256.61934},
+  {matcher = "M011", tol = 1e-10, ref = -0.809684256883059},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -1.85212661},
+  {matcher = "M031", tol = 1e-7, ref = 2392267.2104},
 ]
 "H2_USPP_INVERSE_1C.inp"           = [
   {matcher = "M011", tol = 1e-10, ref = -0.792216979335634},

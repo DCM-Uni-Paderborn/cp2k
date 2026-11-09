@@ -26,7 +26,8 @@ MODULE qs_environment_methods
    USE ewald_environment_types,         ONLY: ewald_environment_type
    USE ewald_pw_methods,                ONLY: ewald_pw_grid_update
    USE ewald_pw_types,                  ONLY: ewald_pw_type
-   USE input_constants,                 ONLY: do_ppl_grid
+   USE input_constants,                 ONLY: do_ppl_grid,&
+                                              uspp_method_inverse
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp
@@ -157,7 +158,8 @@ CONTAINS
          grids(level + 1) = crys_sym_grid_type(grid%npts, grid%spherical)
       END IF
       CALL qs_upf_reference_rotations(cell, control%qs_control%upf_angular_reference_cell, kinds, &
-                                      control%qs_control%gapw .OR. control%qs_control%gapw_xc, rotations)
+                                      control%qs_control%gapw .OR. control%qs_control%gapw_xc .OR. &
+                                      control%qs_control%uspp_method == uspp_method_inverse, rotations)
    END SUBROUTINE qs_env_symmetry_grids
 
 ! **************************************************************************************************

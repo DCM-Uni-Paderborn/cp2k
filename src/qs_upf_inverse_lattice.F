@@ -1107,11 +1107,10 @@ CONTAINS
       END SUBROUTINE field_geometry
    END SUBROUTINE qs_upf_inverse_lattice_kernel_adjoint
 ! **************************************************************************************************
-!> \brief Unfold each Bloch projector bra to its home atom's GAPW quadrature.
+!> \brief Unfold each Bloch projector bra to its home atom's quadrature.
 !>        The Gaussian and difference-wave kets retain all periodic images and interatomic
 !>        couplings. The home offsets and weights are Cartesian and fixed under strain.
-!>        Using the same atom quadrature as the charge residual avoids cancellation between
-!>        coarse uniform-grid projections and finely resolved one-center norm corrections.
+!>        The defining overlap is independent of the uniform density grid.
 !> \param frame Original projector, Gaussian and difference-wave fields.
 !> \param coupling Original beta-Delta integrals without the identity.
 !> \param overlaps Original beta-Gaussian integrals.
