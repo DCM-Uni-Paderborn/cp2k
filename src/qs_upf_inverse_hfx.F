@@ -2815,10 +2815,10 @@ CONTAINS
       TYPE(lattice_potential_cache_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: projection_cache
 
-      COMPLEX(dp), ALLOCATABLE :: cl(:, :), cr(:, :), delta(:, :), dl(:, :), dr(:, :), gcl(:, :), &
-         gcr(:, :), gdl(:, :), gdr(:, :), gl(:, :), gr(:, :), lattice_gl(:, :, :), &
-         lattice_gr(:, :, :), q(:, :), unused_c(:, :), unused_d(:, :), unused_w(:, :), wl(:, :), &
-         work(:, :), wr(:, :)
+      COMPLEX(dp), ALLOCATABLE :: bare_left_gradient(:, :, :), bare_right_gradient(:, :, :), &
+         cl(:, :), cr(:, :), delta(:, :), dl(:, :), dr(:, :), gcl(:, :), gcr(:, :), gdl(:, :), &
+         gdr(:, :), gl(:, :), gr(:, :), lattice_gl(:, :, :), lattice_gr(:, :, :), q(:, :), &
+         unused_c(:, :), unused_d(:, :), unused_w(:, :), wl(:, :), work(:, :), wr(:, :)
       INTEGER                                            :: atom, aux, axis, cache_row, first, ia, &
                                                             image, ir, kind, last, left_image, &
                                                             nang, nl, np, nr, right_image, &
@@ -2931,6 +2931,11 @@ CONTAINS
          IF (.NOT. frame%atom_local) THEN
             ALLOCATE (lattice_gl(SIZE(coupled_coefficients, 1), nl, SIZE(coefficient_images, 2)), &
                       lattice_gr(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))
+            IF (geometry) THEN
+               ! The reverse pass uses the Gaussian gradient from the same angular points.
+               ALLOCATE (bare_left_gradient(nang, nl, 3))
+               IF (.NOT. same_ao_block) ALLOCATE (bare_right_gradient(nang, nr, 3))
+            END IF
          END IF
          IF (geometry) ALLOCATE (potential_gradient(3, fields%nfunction, nang), potential_covector(nang))
          zero = 0
@@ -2964,14 +2969,16 @@ CONTAINS
                                             [0.0_dp, 0.0_dp, 0.0_dp], delta)
             CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, left_fields, &
                                          unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
-                                         coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
+                                         coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                         bare_gradient=bare_left_gradient)
             IF (same_ao_block) THEN
                cr(:, :) = cl
                dr(:, :) = dl
             ELSE
                CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, right_fields, &
                                             unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
-                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
+                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                            bare_gradient=bare_right_gradient)
             END IF
             weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
             gcl = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -3025,7 +3032,8 @@ CONTAINS
                ELSE
                   CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, [0, 0, 0], coefficient_images, &
                                                                coupled_coefficients(:, left_range(1):left_range(2), :), &
-                                   left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp, workspace=left_fields%gaussian)
+                                                               left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp, &
+                                                               workspace=left_fields%gaussian, bare_gradient=bare_left_gradient)
                END IF
                atom_geometry(:, :) = atom_geometry + local_atoms
                cell_geometry(:, :) = cell_geometry + local_cell
@@ -3039,7 +3047,8 @@ CONTAINS
                      CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, &
                                                                   coupled_coefficients(:, right_range(1):right_range(2), :), &
                                                                   right_range, gcr, point_geometry, local_atoms, local_cell, &
-                                                                  2.0_dp, workspace=right_fields%gaussian)
+                                                                  2.0_dp, workspace=right_fields%gaussian, &
+                                                                  bare_gradient=bare_right_gradient)
                   END IF
                   atom_geometry(:, :) = atom_geometry + local_atoms
                   cell_geometry(:, :) = cell_geometry + local_cell
@@ -4249,11 +4258,12 @@ CONTAINS
 !> \param coefficient_images ...
 !> \param coupled_coefficients ...
 !> \param coupled_response ...
+!> \param bare_gradient Optional unscaled Gaussian gradient for the coupled geometry adjoint.
 ! **************************************************************************************************
    SUBROUTINE lattice_residual_fields(frame, ao_range, image, points, delta, coefficients, complete, difference, &
                                       workspace, complete_response, difference_response, coefficients_response, &
                                       atom_response, cell_response, point_response, derivatives, &
-                                      coefficient_images, coupled_coefficients, coupled_response)
+                                      coefficient_images, coupled_coefficients, coupled_response, bare_gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: ao_range(2), image(3)
       REAL(dp), INTENT(IN)                               :: points(:, :)
@@ -4269,10 +4279,12 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: coefficient_images(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coupled_coefficients(:, :, :), &
                                                             coupled_response(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: bare_gradient(:, :, :)
 
       INTEGER                                            :: atom, first, hi, images(3, 1), last, lo, &
                                                             max_basis, np
 
+      CPASSERT(.NOT. PRESENT(bare_gradient) .OR. .NOT. frame%atom_local)
       difference(:, :) = -MATMUL(delta, coefficients)
       IF (derivatives) difference_response(:, :) = -MATMUL(delta, coefficients_response)
       IF (.NOT. frame%atom_local) THEN
@@ -4286,11 +4298,11 @@ CONTAINS
                                                coefficients_response=coupled_response(:, ao_range(1):ao_range(2), :), &
                                                point_response=point_response, atom_response=atom_response, &
                                                cell_response=cell_response, gaussian_factor=2.0_dp, &
-                                               workspace=workspace%gaussian)
+                                               workspace=workspace%gaussian, bare_gradient=bare_gradient)
          ELSE
             CALL qs_upf_inverse_lattice_fields(frame, points, image, coefficient_images, &
                                                coupled_coefficients(:, ao_range(1):ao_range(2), :), ao_range, complete, &
-                                               gaussian_factor=2.0_dp, workspace=workspace%gaussian)
+                                               gaussian_factor=2.0_dp, workspace=workspace%gaussian, bare_gradient=bare_gradient)
          END IF
          RETURN
       END IF

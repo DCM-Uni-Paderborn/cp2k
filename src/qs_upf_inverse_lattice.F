@@ -213,10 +213,12 @@ CONTAINS
 !> \param cell_response Cell-vector displacement at fixed integer images.
 !> \param gaussian_factor Optional Gaussian multiplier, one for soft and two for soft-plus-Gaussian fields.
 !> \param workspace Optional Gaussian scratch storage per atom. Every requested field is recomputed.
+!> \param bare_gradient Optional unscaled Cartesian gradient of the original Gaussian image.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_fields(frame, points, ao_image, coefficient_images, coefficients, ao_range, &
                                             value, gradient, response, gradient_response, coefficients_response, &
-                                            point_response, atom_response, cell_response, gaussian_factor, workspace)
+                                            point_response, atom_response, cell_response, gaussian_factor, workspace, &
+                                            bare_gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), coefficient_images(:, :)
@@ -231,6 +233,7 @@ CONTAINS
                                                             cell_response(3, 3), gaussian_factor
       TYPE(gaussian_basis_workspace_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: workspace(:)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: bare_gradient(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE :: delta(:, :), delta_gradient(:, :, :), &
          delta_gradient_response(:, :, :), delta_response(:, :), gaussian(:, :), &
@@ -260,6 +263,10 @@ CONTAINS
       CPASSERT(.NOT. PRESENT(gradient_response) .OR. (derivative .AND. gradients))
       IF (gradients) THEN
          CPASSERT(ALL(SHAPE(gradient) == [n, nao, 3]))
+      END IF
+      IF (PRESENT(bare_gradient)) THEN
+         CPASSERT(ALL(SHAPE(bare_gradient) == [n, nao, 3]))
+         bare_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       IF (derivative) THEN
          CPASSERT(PRESENT(coefficients_response))
@@ -291,7 +298,7 @@ CONTAINS
          scratch => local_workspace
          IF (PRESENT(workspace)) scratch => workspace(atom)
          ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf))
-         IF (gradients) ALLOCATE (gaussian_gradient(n, SIZE(gaussian, 2), 3))
+         IF (gradients .OR. PRESENT(bare_gradient)) ALLOCATE (gaussian_gradient(n, SIZE(gaussian, 2), 3))
          IF (derivative) ALLOCATE (gaussian_response(n, SIZE(gaussian, 2)))
          IF (PRESENT(gradient_response)) ALLOCATE (gaussian_gradient_response(n, SIZE(gaussian, 2), 3))
          IF (derivative) THEN
@@ -310,13 +317,14 @@ CONTAINS
          last = last - ao_range(1) + 1
          value(:, first:last) = factor*gaussian(:, source_first:source_last)
          IF (gradients) gradient(:, first:last, :) = factor*gaussian_gradient(:, source_first:source_last, :)
+         IF (PRESENT(bare_gradient)) bare_gradient(:, first:last, :) = gaussian_gradient(:, source_first:source_last, :)
          IF (derivative) response(:, first:last) = factor*gaussian_response(:, source_first:source_last)
          IF (PRESENT(gradient_response)) THEN
             gradient_response(:, first:last, :) = factor*gaussian_gradient_response(:, source_first:source_last, :)
             DEALLOCATE (gaussian_gradient_response)
          END IF
          IF (derivative) DEALLOCATE (gaussian_response)
-         IF (gradients) DEALLOCATE (gaussian_gradient)
+         IF (ALLOCATED(gaussian_gradient)) DEALLOCATE (gaussian_gradient)
          DEALLOCATE (gaussian)
       END DO
       ALLOCATE (delta(n, np))
@@ -473,10 +481,11 @@ CONTAINS
 !> \param cell_geometry New lattice covector, in (axis,cell vector) order.
 !> \param gaussian_factor Optional fixed Gaussian multiplier, two for soft-plus-Gaussian fields.
 !> \param workspace Optional original per-atom Gaussian scratch fields.
+!> \param bare_gradient Optional unscaled Gaussian gradient from the matching forward evaluation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, coefficients, &
                                                       ao_range, covector, point_geometry, atom_geometry, cell_geometry, &
-                                                      gaussian_factor, workspace)
+                                                      gaussian_factor, workspace, bare_gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), coefficient_images(:, :)
@@ -489,6 +498,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_factor
       TYPE(gaussian_basis_workspace_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: workspace(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: bare_gradient(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), delta_covector(:, :), &
                                                             delta_gradient(:, :, :)
@@ -515,7 +525,8 @@ CONTAINS
       atom_geometry = 0.0_dp
       cell_geometry = 0.0_dp
       CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, ao_range, covector, &
-                                                   point_geometry, atom_geometry, cell_geometry, gaussian_factor, workspace)
+                                                   point_geometry, atom_geometry, cell_geometry, gaussian_factor, workspace, &
+                                                   bare_gradient)
       ALLOCATE (point_component(n))
       ALLOCATE (delta(n, np), delta_gradient(n, np, 3), delta_covector(n, np))
       IF (n > 0) THEN
@@ -561,9 +572,11 @@ CONTAINS
 !> \param cell_geometry Derivative of the physical Gaussian translation.
 !> \param gaussian_factor Optional multiplier of the Gaussian field.
 !> \param workspace Optional original per-atom Gaussian scratch fields.
+!> \param bare_gradient Optional unscaled Gaussian gradient from the matching forward evaluation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, ao_range, covector, &
-                                                      point_geometry, atom_geometry, cell_geometry, gaussian_factor, workspace)
+                                                      point_geometry, atom_geometry, cell_geometry, gaussian_factor, &
+                                                      workspace, bare_gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), ao_range(2)
@@ -574,9 +587,11 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_factor
       TYPE(gaussian_basis_workspace_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: workspace(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: bare_gradient(:, :, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), &
-                                                            gaussian_gradient(:, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: gaussian_gradient(:, :, :)
+      COMPLEX(dp), POINTER                               :: gradient(:, :, :)
       INTEGER                                            :: atom, axis, first, last, n, nao, &
                                                             single_image(3, 1), source_first, &
                                                             source_last
@@ -597,6 +612,9 @@ CONTAINS
       IF (PRESENT(workspace)) THEN
          CPASSERT(SIZE(workspace) == SIZE(frame%bases))
       END IF
+      IF (PRESENT(bare_gradient)) THEN
+         CPASSERT(ALL(SHAPE(bare_gradient) == [n, nao, 3]))
+      END IF
       point_geometry = 0.0_dp
       atom_geometry = 0.0_dp
       cell_geometry = 0.0_dp
@@ -608,26 +626,31 @@ CONTAINS
          first = MAX(frame%ao_first(atom), ao_range(1))
          last = MIN(frame%ao_last(atom), ao_range(2))
          IF (last < first) CYCLE
-         ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf), &
-                   gaussian_gradient(n, frame%bases(atom)%gto_basis_set%nsgf, 3))
-         scratch => local_workspace
-         IF (PRESENT(workspace)) scratch => workspace(atom)
-         CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient, &
-                                             workspace=scratch)
          source_first = first - frame%ao_first(atom) + 1
          source_last = last - frame%ao_first(atom) + 1
          first = first - ao_range(1) + 1
          last = last - ao_range(1) + 1
+         IF (PRESENT(bare_gradient)) THEN
+            gradient => bare_gradient(:, first:last, :)
+         ELSE
+            ALLOCATE (gaussian(n, frame%bases(atom)%gto_basis_set%nsgf), &
+                      gaussian_gradient(n, frame%bases(atom)%gto_basis_set%nsgf, 3))
+            scratch => local_workspace
+            IF (PRESENT(workspace)) scratch => workspace(atom)
+            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                                                frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian, gaussian_gradient, &
+                                                workspace=scratch)
+            gradient => gaussian_gradient(:, source_first:source_last, :)
+         END IF
          DO axis = 1, 3
             point_component(:) = factor*REAL(SUM(CONJG(covector(:, first:last))* &
-                                                 gaussian_gradient(:, source_first:source_last, axis), DIM=2), dp)
+                                                 gradient(:, :, axis), DIM=2), dp)
             point_geometry(axis, :) = point_geometry(axis, :) + point_component
             total = SUM(point_component)
             atom_geometry(axis, atom) = atom_geometry(axis, atom) - total
             cell_geometry(axis, :) = cell_geometry(axis, :) - total*REAL(ao_image, dp)
          END DO
-         DEALLOCATE (gaussian, gaussian_gradient)
+         IF (ALLOCATED(gaussian)) DEALLOCATE (gaussian, gaussian_gradient)
       END DO
    END SUBROUTINE qs_upf_inverse_lattice_gaussian_adjoint
 
