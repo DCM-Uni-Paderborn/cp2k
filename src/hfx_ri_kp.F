@@ -1598,6 +1598,7 @@ CONTAINS
          DO i_img = 1, nimg
             CALL dbt_finalize(inverse_covectors(i_img))
          END DO
+         CALL balance_inverse_lattice_covectors(inverse_covectors)
          CALL inverse_lattice_forces(qs_env, ri_data, inverse_covectors, para_env_sub, use_virial_prv, force, fock_virial)
          DO i_img = 1, nimg
             CALL dbt_destroy(inverse_covectors(i_img))
@@ -1729,6 +1730,57 @@ CONTAINS
       CALL dbt_iterator_stop(iterator)
 !$OMP END PARALLEL
    END SUBROUTINE add_inverse_lattice_covector
+
+! **************************************************************************************************
+!> \brief Rotate sparse RI block ownership across independent AO images.
+!>        A native distribution with few atomic blocks can leave entire process-grid
+!>        coordinates unused. The geometry adjoint can use these ranks because each
+!>        image contributes independently before the final subgroup reduction.
+!> \param covectors Complete native energy covectors, in their original image order.
+! **************************************************************************************************
+   SUBROUTINE balance_inverse_lattice_covectors(covectors)
+      TYPE(dbt_type), ALLOCATABLE, INTENT(INOUT)           :: covectors(:)
+
+      INTEGER                                            :: axis, coord, dims(3), image, nblks(3), &
+                                                            period(3), shift(3), step, task_coord(3)
+      INTEGER, ALLOCATABLE                               :: dist_i(:), dist_j(:), dist_k(:)
+      TYPE(dbt_distribution_type)                        :: dist
+      TYPE(dbt_type), ALLOCATABLE                         :: balanced(:)
+
+      IF (SIZE(covectors) < 2) RETURN
+      IF (covectors(1)%pgrid%mp_comm_2d%num_pe == 1) RETURN
+      CALL dbt_mp_environ_pgrid(covectors(1)%pgrid, dims, task_coord)
+      CALL dbt_get_info(covectors(1), nblks_total=nblks)
+      ALLOCATE (dist_i(nblks(1)), dist_j(nblks(2)), dist_k(nblks(3)))
+      CALL dbt_get_info(covectors(1), proc_dist_1=dist_i, proc_dist_2=dist_j, proc_dist_3=dist_k)
+      period = 1
+      DO coord = 0, dims(1) - 1
+         IF (ALL(dist_i /= coord)) period(1) = dims(1)
+      END DO
+      DO coord = 0, dims(2) - 1
+         IF (ALL(dist_j /= coord)) period(2) = dims(2)
+      END DO
+      DO coord = 0, dims(3) - 1
+         IF (ALL(dist_k /= coord)) period(3) = dims(3)
+      END DO
+      IF (ALL(period == 1)) RETURN
+
+      ALLOCATE (balanced(SIZE(covectors)))
+      DO image = 1, SIZE(covectors)
+         step = image - 1
+         DO axis = 1, 3
+            shift(axis) = MODULO(step, period(axis))
+            step = step/period(axis)
+         END DO
+         CALL dbt_distribution_new(dist, covectors(image)%pgrid, MODULO(dist_i + shift(1), dims(1)), &
+                                   MODULO(dist_j + shift(2), dims(2)), MODULO(dist_k + shift(3), dims(3)))
+         CALL dbt_create(covectors(image), balanced(image), dist=dist)
+         CALL dbt_distribution_destroy(dist)
+         CALL dbt_copy(covectors(image), balanced(image), move_data=.TRUE.)
+         CALL dbt_destroy(covectors(image))
+      END DO
+      CALL MOVE_ALLOC(balanced, covectors)
+   END SUBROUTINE balance_inverse_lattice_covectors
 
 ! **************************************************************************************************
 !> \brief Add original image transition derivatives from one native RI subgroup exactly once.

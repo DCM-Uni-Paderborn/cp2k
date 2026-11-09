@@ -932,7 +932,7 @@ CONTAINS
       CPASSERT(SIZE(active) == SIZE(covectors) .AND. SIZE(active) > 0)
       active = 0
       DO image = 1, SIZE(covectors)
-         CALL matching_tensor(covectors(1), covectors(image))
+         CALL matching_tensor(covectors(1), covectors(image), match_owners=.FALSE.)
          CALL dbt_get_info(covectors(image), nblks_total=nblks)
          DO i = 1, nblks(1)
          DO j = 1, nblks(2)
@@ -2358,9 +2358,12 @@ CONTAINS
 !> \brief Check identical native block shapes and ownership for paired real tensors.
 !> \param reference ...
 !> \param TARGET ...
+!> \param match_owners Require identical ownership by default. Independent AO images
+!>        can use different distributions on the same process grid.
 ! **************************************************************************************************
-   SUBROUTINE matching_tensor(reference, TARGET)
+   SUBROUTINE matching_tensor(reference, TARGET, match_owners)
       TYPE(dbt_type), INTENT(IN)                         :: reference, TARGET
+      LOGICAL, INTENT(IN), OPTIONAL                      :: match_owners
 
       INTEGER                                            :: i, j, k, nr(3), nt(3), owner_r, owner_t
       INTEGER, ALLOCATABLE                               :: ri(:), rj(:), rk(:), ti(:), tj(:), tk(:)
@@ -2374,6 +2377,9 @@ CONTAINS
       CPASSERT(ALL(ri == ti) .AND. ALL(rj == tj) .AND. ALL(rk == tk))
       CPASSERT(reference%pgrid%mp_comm_2d%mepos == target%pgrid%mp_comm_2d%mepos)
       CPASSERT(reference%pgrid%mp_comm_2d%num_pe == target%pgrid%mp_comm_2d%num_pe)
+      IF (PRESENT(match_owners)) THEN
+         IF (.NOT. match_owners) RETURN
+      END IF
       DO i = 1, nr(1)
       DO j = 1, nr(2)
       DO k = 1, nr(3)
