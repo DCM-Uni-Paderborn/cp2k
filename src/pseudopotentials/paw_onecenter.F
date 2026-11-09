@@ -16,6 +16,7 @@ MODULE paw_onecenter
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: fourpi,&
                                               pi
+   USE message_passing,                 ONLY: mp_comm_type
    USE paw_core_kinetic,                ONLY: paw_core_kinetic_build_ae
    USE paw_types,                       ONLY: paw_core_exchange_type,&
                                               paw_onecenter_type
@@ -174,14 +175,16 @@ CONTAINS
 !> \param cutoff_radius Fixed physical interaction radius, in bohr.
 !> \param cache_index Index of the prepared interaction cache, including unavailable-data diagnostics.
 !> \param omega Optional inverse erfc screening length instead of a cutoff_radius.
+!> \param comm Optional communicator sharing this cache and the screened radial quadrature.
 ! **************************************************************************************************
-   SUBROUTINE paw_onecenter_core_exchange_prepare(pot, projectors, onecenter, cutoff_radius, cache_index, omega)
+   SUBROUTINE paw_onecenter_core_exchange_prepare(pot, projectors, onecenter, cutoff_radius, cache_index, omega, comm)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       TYPE(paw_onecenter_type), INTENT(INOUT)            :: onecenter
       REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius
       INTEGER, INTENT(OUT)                               :: cache_index
       REAL(dp), INTENT(IN), OPTIONAL                     :: omega
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm
 
       INTEGER                                            :: i, n
       TYPE(paw_core_exchange_type), ALLOCATABLE          :: extended(:)
@@ -210,7 +213,7 @@ CONTAINS
       END IF
       ALLOCATE (extended(n + 1))
       IF (n > 0) extended(:n) = onecenter%interaction_core_exchange
-      CALL paw_core_exchange_build(pot, projectors, onecenter%nproj, extended(n + 1), cutoff_radius, omega)
+      CALL paw_core_exchange_build(pot, projectors, onecenter%nproj, extended(n + 1), cutoff_radius, omega, comm)
       CALL MOVE_ALLOC(extended, onecenter%interaction_core_exchange)
       cache_index = n + 1
    END SUBROUTINE paw_onecenter_core_exchange_prepare
@@ -223,13 +226,15 @@ CONTAINS
 !> \param core Prepared data or an explicit unavailable-data reason.
 !> \param cutoff_radius Optional truncated interaction; absence selects Coulomb.
 !> \param omega ...
+!> \param comm Optional communicator sharing the screened radial quadrature.
 ! **************************************************************************************************
-   SUBROUTINE paw_core_exchange_build(pot, projectors, nproj, core, cutoff_radius, omega)
+   SUBROUTINE paw_core_exchange_build(pot, projectors, nproj, core, cutoff_radius, omega, comm)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       INTEGER, INTENT(IN)                                :: nproj
       TYPE(paw_core_exchange_type), INTENT(OUT)          :: core
       REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius, omega
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm
 
       INTEGER                                            :: c, d, first_c, first_d, i, j, l, lc, ld, &
                                                             lm, nb, nr, nshell, p, q, shell, t
@@ -294,7 +299,7 @@ CONTAINS
                products(:, j) = pot%paw%ae_wfc(:, j)*pot%paw%gipaw_core_orbitals%wfc(:, i)
             END DO
             IF (.NOT. ANY(products /= 0.0_dp)) CYCLE
-            CALL paw_core_radial_integral(pot%r, products, l, coulomb, cutoff_radius, omega)
+            CALL paw_core_radial_integral(pot%r, products, l, coulomb, cutoff_radius, omega, comm)
             DO q = 1, nproj
                DO p = 1, q
                   angular_factor = 0.0_dp
@@ -319,7 +324,7 @@ CONTAINS
             scalar_product(:, 1) = pot%paw%gipaw_core_orbitals%wfc(:, i)* &
                                    pot%paw%gipaw_core_orbitals%wfc(:, j)
             DO l = ABS(lc - ld), lc + ld, 2
-               CALL paw_core_radial_integral(pot%r, scalar_product, l, scalar_coulomb, cutoff_radius, omega)
+               CALL paw_core_radial_integral(pot%r, scalar_product, l, scalar_coulomb, cutoff_radius, omega, comm)
                angular_factor = 0.0_dp
                DO d = first_d, first_d + 2*ld
                   DO c = first_c, first_c + 2*lc
@@ -512,16 +517,18 @@ CONTAINS
 !> \param integral Symmetric bilinear matrix.
 !> \param cutoff_radius Optional truncated interaction; absence selects Coulomb.
 !> \param omega ...
+!> \param comm Optional communicator sharing the screened radial quadrature.
 ! **************************************************************************************************
-   SUBROUTINE paw_core_radial_integral(r, products, l, integral, cutoff_radius, omega)
+   SUBROUTINE paw_core_radial_integral(r, products, l, integral, cutoff_radius, omega, comm)
       REAL(dp), INTENT(IN)                               :: r(:), products(:, :)
       INTEGER, INTENT(IN)                                :: l
       REAL(dp), INTENT(OUT)                              :: integral(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius, omega
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm
 
       CPASSERT(.NOT. (PRESENT(cutoff_radius) .AND. PRESENT(omega)))
       IF (PRESENT(omega)) THEN
-         CALL paw_radial_short(r, products, l, omega, integral)
+         CALL paw_radial_short(r, products, l, omega, integral, comm)
       ELSE IF (PRESENT(cutoff_radius)) THEN
          CALL paw_radial_truncated(r, products, l, cutoff_radius, integral)
       ELSE
@@ -745,14 +752,16 @@ CONTAINS
 !> \param l Angular momentum.
 !> \param omega Nonnegative inverse screening length in bohr**-1; zero selects Coulomb.
 !> \param integral Symmetric bilinear matrix including 4*pi/(2*l+1).
+!> \param comm Optional communicator receiving the full integral on every rank.
 ! **************************************************************************************************
-   SUBROUTINE paw_radial_short(r, products, l, omega, integral)
+   SUBROUTINE paw_radial_short(r, products, l, omega, integral, comm)
       REAL(dp), INTENT(IN)                               :: r(:), products(:, :)
       INTEGER, INTENT(IN)                                :: l
       REAL(dp), INTENT(IN)                               :: omega
       REAL(dp), INTENT(OUT)                              :: integral(:, :)
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm
 
-      INTEGER                                            :: a, b, chunk, chunks, i, j, k, n, nc, &
+      INTEGER                                            :: a, b, chunk, chunks, first_panel, i, j, k, n, nc, nprocs, &
                                                             outer, outers, source_panel
       REAL(dp)                                           :: factor, h, kernel, left, lower, &
                                                             nodes(8), radius, right, source_h, &
@@ -761,6 +770,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: angular_nodes(:), angular_weights(:), &
                                                             c(:, :, :), inner(:), sample(:), &
                                                             slopes(:, :), value(:)
+      TYPE(mp_comm_type)                                 :: radial_comm
 
       n = SIZE(r)
       nc = SIZE(products, 2)
@@ -788,12 +798,19 @@ CONTAINS
          c(3, :, i) = 2.0_dp*(products(i, :) - products(i + 1, :)) + h*(slopes(i, :) + slopes(i + 1, :))
       END DO
       integral = 0.0_dp
-      ! Each outer radial panel contributes an independent symmetric bilinear form.
+      first_panel = 1
+      nprocs = 1
+      IF (PRESENT(comm)) THEN
+         CALL radial_comm%set_handle(comm%get_handle())
+         first_panel = radial_comm%mepos + 1
+         nprocs = radial_comm%num_pe
+      END IF
+      ! Interleave independent outer panels across MPI ranks and share them among local threads.
 !$OMP PARALLEL DO DEFAULT(NONE) IF(n >= 256) SCHEDULE(GUIDED) &
-!$OMP SHARED(r, l, omega, n, nc, c, nodes, weights, angular_nodes, angular_weights) &
+!$OMP SHARED(r, l, omega, n, nc, c, nodes, weights, angular_nodes, angular_weights, first_panel, nprocs) &
 !$OMP PRIVATE(a, b, chunk, chunks, factor, h, inner, j, k, kernel, left, lower, outer, outers, radius, right, &
 !$OMP         sample, source_h, source_left, source_panel, source_r, source_right, t, value) REDUCTION(+:integral)
-      DO i = 1, n - 1
+      DO i = first_panel, n - 1, nprocs
          IF (.NOT. ANY(c(:, :, i) /= 0.0_dp)) CYCLE
          h = r(i + 1) - r(i)
          outers = MAX(1, CEILING(omega*h))
@@ -835,6 +852,7 @@ CONTAINS
          END DO
       END DO
 !$OMP END PARALLEL DO
+      IF (nprocs > 1) CALL radial_comm%sum(integral)
       integral = integral*fourpi/REAL(2*l + 1, dp)
       DO b = 1, nc
          DO a = b + 1, nc

@@ -377,14 +377,16 @@ CONTAINS
 !> \param nspins Number of physical valence spins, used for the native RI activity threshold.
 !> \param energy Frozen core-core exchange constant, summed over the selected HF contributions.
 !> \param potential Spin-independent core-valence projector operator, without an extra factor 1/2.
+!> \param comm Communicator sharing the PAW kinds and their original-data caches.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_paw_core_prepare(pot, projectors, kind, exchange, nspins, energy, potential)
+   SUBROUTINE qs_upf_inverse_paw_core_prepare(pot, projectors, kind, exchange, nspins, energy, potential, comm)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       TYPE(paw_kind_type), INTENT(INOUT)                 :: kind
       TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
       INTEGER, INTENT(IN)                                :: nspins
       REAL(dp), INTENT(OUT)                              :: energy, potential(:, :)
+      CLASS(mp_comm_type), INTENT(IN)                    :: comm
 
       INTEGER                                            :: cache, contribution, interaction(2), term
       REAL(dp)                                           :: coefficient(2), fraction, value
@@ -445,7 +447,7 @@ CONTAINS
                   cache = 0
                CASE (1)
                   CALL paw_onecenter_core_exchange_prepare(pot, projectors, kind%onecenter, cache_index=cache, &
-                                                           omega=hf%potential_parameter%omega)
+                                                           omega=hf%potential_parameter%omega, comm=comm)
                CASE (2)
                   CALL paw_onecenter_core_exchange_prepare(pot, projectors, kind%onecenter, cache_index=cache, &
                                                            cutoff_radius=hf%potential_parameter%cutoff_radius)

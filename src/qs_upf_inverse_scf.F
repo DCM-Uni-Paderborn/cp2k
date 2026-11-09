@@ -38,6 +38,7 @@ MODULE qs_upf_inverse_scf
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: kpoint_native_operator_clear
    USE mathlib,                         ONLY: invmat
+   USE message_passing,                 ONLY: mp_para_env_type
    USE particle_types,                  ONLY: particle_type
    USE paw_types,                       ONLY: paw_potential_type
    USE pw_env_types,                    ONLY: pw_env_get,&
@@ -444,6 +445,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: core_energy(:)
       TYPE(dbcsr_p_type), POINTER                        :: density(:, :)
       TYPE(dft_control_type), POINTER                    :: control
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(paw_potential_type), ALLOCATABLE              :: core_potential(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_rho_type), POINTER                         :: rho
@@ -453,7 +455,8 @@ CONTAINS
       TYPE(skala_density_constraints_type), POINTER      :: samples
 
       energies = 0.0_dp
-      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, dft_control=control, qs_kind_set=kinds, skala_constraints=samples)
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, dft_control=control, qs_kind_set=kinds, &
+                      para_env=para_env, skala_constraints=samples)
       IF (.NOT. ASSOCIATED(state)) RETURN
       IF (.NOT. ANY(state%paw%active)) RETURN
       CALL check_geometry(ks_env, state)
@@ -470,7 +473,7 @@ CONTAINS
                        projectors => kinds(ikind)%sgp_potential%upf_projectors)
                ALLOCATE (core_potential(ikind)%matrix(projectors%nproj, projectors%nproj, 1))
                CALL qs_upf_inverse_paw_core_prepare(pot, projectors, state%paw(ikind), exchange, ns, &
-                                                    core_energy(ikind), core_potential(ikind)%matrix(:, :, 1))
+                                                    core_energy(ikind), core_potential(ikind)%matrix(:, :, 1), para_env)
             END ASSOCIATE
          END DO
       END IF

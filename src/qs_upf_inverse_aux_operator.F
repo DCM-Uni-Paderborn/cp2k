@@ -1691,12 +1691,13 @@ CONTAINS
       REAL(dp)                                           :: energies(3)
       REAL(dp), ALLOCATABLE                              :: core_energy(:), reduced_k_response(:, :)
       TYPE(admm_type), POINTER                           :: admm
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(paw_potential_type), ALLOCATABLE              :: core_potential(:), potential(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(section_vals_type), POINTER                   :: no_functional
 
-      CALL get_qs_env(qs_env, admm_env=admm, qs_kind_set=kinds)
+      CALL get_qs_env(qs_env, admm_env=admm, qs_kind_set=kinds, para_env=para_env)
       CPASSERT(ASSOCIATED(admm))
       CPASSERT(admm%upf_density%valid)
       state => admm%upf_inverse
@@ -1724,7 +1725,7 @@ CONTAINS
          ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data, projectors => kinds(kind)%sgp_potential%upf_projectors)
             ALLOCATE (core_potential(kind)%matrix(projectors%nproj, projectors%nproj, 1))
             CALL qs_upf_inverse_paw_core_prepare(pot, projectors, state%paw(kind), exchange, ns, &
-                                                 core_energy(kind), core_potential(kind)%matrix(:, :, 1))
+                                                 core_energy(kind), core_potential(kind)%matrix(:, :, 1), para_env)
          END ASSOCIATE
       END DO
       matrices => admm%upf_density%matrices
