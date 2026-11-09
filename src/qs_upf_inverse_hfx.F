@@ -3613,7 +3613,7 @@ CONTAINS
                                                             collect_support, compute_self_moment
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
       REAL(dp), ALLOCATABLE :: batch_local_delta(:, :), batch_moment(:, :), batch_orbitals(:, :), &
-         batch_self(:, :), batch_weighted(:, :), local_points(:, :), potential(:, :), weights(:)
+         batch_self(:, :), batch_weighted(:, :), local_points(:, :), shell_potentials(:, :, :), weights(:)
       REAL(dp), ALLOCATABLE, TARGET                      :: coordinates(:, :, :)
       REAL(dp), POINTER                                  :: batch_points(:, :)
       TYPE(linear_moment_type), POINTER                  :: entry, retained
@@ -3637,13 +3637,15 @@ CONTAINS
       ELSE
          CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coefficients))
       END IF
-      words = INT(nang, int_8)*INT(nrow, int_8)*(2_int_8*INT(nproj, int_8)*INT(fields%nfunction, int_8) + 3_int_8)
+      words = INT(nang, int_8)*INT(nrow, int_8)*(3_int_8 + INT(fields%nfunction, int_8))
       words = words + 2_int_8*INT(nproj, int_8)*INT(np, int_8)*INT(fields%nfunction, int_8)
       words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(np, int_8)
       IF (frame%atom_local) THEN
-         words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)* &
-                 (INT(nproj, int_8)*INT(fields%nfunction, int_8) + INT(nao, int_8))
-         words = words + 2_int_8*INT(nproj, int_8)*INT(fields%nfunction, int_8)*INT(nao + nproj, int_8)
+         words = words + INT(nang, int_8)*INT(nrow, int_8)* &
+                 (INT(nproj, int_8)*INT(fields%nfunction, int_8) + INT(nao + nproj, int_8))
+         words = words + INT(nproj, int_8)*INT(fields%nfunction, int_8)*INT(nao + nproj, int_8)
+      ELSE
+         words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(nproj, int_8)*INT(fields%nfunction, int_8)
       END IF
       IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
       cached_support = ALLOCATED(support_indices)
@@ -3665,8 +3667,7 @@ CONTAINS
          END IF
       END IF
       position = frame%positions(:, frame%center_atoms(center)) + MATMUL(frame%cell, REAL(center_image, dp))
-      ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), weighted(nang, nproj, fields%nfunction, nrow), &
-                potential(nang, fields%nfunction), weights(nang))
+      ALLOCATE (coordinates(3, nang, nrow), local_points(3, nang), shell_potentials(nang, fields%nfunction, nrow), weights(nang))
       row = 0
       DO ir = 1, SIZE(r)
          IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
@@ -3676,19 +3677,15 @@ CONTAINS
             coordinates(:, ia, row) = position + local_points(:, ia)
          END DO
          IF (ALLOCATED(potentials%potential_fields)) THEN
-            potential(:, :) = potentials%potential_fields%values(:, :, row)
+            shell_potentials(:, :, row) = potentials%potential_fields%values(:, :, row)
          ELSE
-            CALL gaussian_coulomb_fields_evaluate_batch(fields, &
-                                                        coordinates(:, :, row) - SPREAD(auxiliary_center, 2, nang), potential)
+            CALL gaussian_coulomb_fields_evaluate_batch(fields, coordinates(:, :, row) - SPREAD(auxiliary_center, 2, nang), &
+                                                        shell_potentials(:, :, row))
          END IF
-         ! Reuse the first projector plane until the original difference products are formed.
-         DO aux = 1, fields%nfunction
-            weighted(:, 1, aux, row) = CMPLX(potential(:, aux), 0.0_dp, dp)
-         END DO
       END DO
       ! Exact zeros require no Gaussian or coupled difference fields. In particular, leave
       ! the shared Gaussian cache unallocated rather than exposing uninitialized rows later.
-      IF (ALL(weighted(:, 1, :, :) == CMPLX(0.0_dp, 0.0_dp, dp))) RETURN
+      IF (ALL(shell_potentials == 0.0_dp)) RETURN
       ! The overlap entry fixes all Gaussian arguments across auxiliary shells. Retain their
       ! values within its original lifetime, sharing the budget with the other point fields.
       cached_gaussian = ALLOCATED(gaussian_fields)
@@ -3750,6 +3747,8 @@ CONTAINS
          ALLOCATE (batch_weighted(npoint, ncomponent), batch_orbitals(npoint, nao), &
                    batch_moment(ncomponent, nao), batch_self(ncomponent, nproj))
          IF (compute_self_moment) ALLOCATE (batch_local_delta(npoint, nproj))
+      ELSE
+         ALLOCATE (weighted(nang, nproj, fields%nfunction, nrow))
       END IF
       row = 0
       zero = 0
@@ -3765,13 +3764,7 @@ CONTAINS
                                             [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
                                             [0.0_dp, 0.0_dp, 0.0_dp], delta(:, :nproj))
          END IF
-         potential(:, :) = REAL(weighted(:, 1, :, row), dp)
          weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
-         DO aux = 1, fields%nfunction
-            DO j = 1, nproj
-               weighted(:, j, aux, row) = delta(:, j)*(weights*potential(:, aux))
-            END DO
-         END DO
          IF (cached_gaussian) THEN
             phi(:, :) = gaussian_fields(:, :, row)
          ELSE
@@ -3791,14 +3784,20 @@ CONTAINS
             IF (ALLOCATED(gaussian_fields)) gaussian_fields(:, :, row) = phi
          END IF
          IF (frame%atom_local) THEN
-            ! Keep every original quadrature point and contract the complete point set at once.
+            ! Pack the real products directly into the BLAS layout.
             batch_orbitals((row - 1)*nang + 1:row*nang, :) = REAL(phi, dp)
             IF (compute_self_moment) batch_local_delta((row - 1)*nang + 1:row*nang, :) = REAL(delta(:, :nproj), dp)
             DO aux = 1, fields%nfunction
-               batch_weighted((row - 1)*nang + 1:row*nang, (aux - 1)*nproj + 1:aux*nproj) = REAL(weighted(:, :, aux, row), dp)
+               DO j = 1, nproj
+                  batch_weighted((row - 1)*nang + 1:row*nang, (aux - 1)*nproj + j) = &
+                     REAL(delta(:, j), dp)*(weights*shell_potentials(:, aux, row))
+               END DO
             END DO
          ELSE
             DO aux = 1, fields%nfunction
+               DO j = 1, nproj
+                  weighted(:, j, aux, row) = delta(:, j)*(weights*shell_potentials(:, aux, row))
+               END DO
                CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
             END DO
          END IF
