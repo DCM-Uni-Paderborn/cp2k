@@ -710,7 +710,7 @@ CONTAINS
       COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
                                                             nproj, timing_handle
-      LOGICAL                                            :: use_orbitals
+      LOGICAL                                            :: use_gradients, use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
                                                             volume_response
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:), dvg(:, :), &
@@ -756,28 +756,41 @@ CONTAINS
       operator_response = CMPLX(0.0_dp, 0.0_dp, dp)
       metric_response = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (use_orbitals) THEN
-         ALLOCATE (soft_response(block, nao), gradient_response(block, nao, 3), &
-                   soft(block, nao), gradient(block, nao, 3), partial(nao, nao))
+         use_gradients = ANY(dg /= 0.0_dp) .OR. ANY(dt /= 0.0_dp) .OR. &
+                         ANY(dvg /= 0.0_dp) .OR. ANY(dvt /= 0.0_dp)
+         ALLOCATE (soft_response(block, nao), soft(block, nao), partial(nao, nao))
+         IF (use_gradients) ALLOCATE (gradient_response(block, nao, 3), gradient(block, nao, 3))
          DO lo = 1, n, block
             hi = MIN(n, lo + block - 1)
             m = hi - lo + 1
-            IF (ANY(dg(lo:hi, :) /= 0.0_dp) .OR. ANY(dt(lo:hi) /= 0.0_dp)) THEN
-               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
-                                            soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
-                                            atom_response, cell_response, reduced_k_response, dw)
-            ELSE
-               ! Gradient responses enter only through the unperturbed gradient and tau potentials.
-               gradient_response(:m, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
-               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+            IF (.NOT. use_gradients) THEN
+               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), &
                                             soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
                                             atom_response=atom_response, cell_response=cell_response, &
                                             reduced_k_response=reduced_k_response, coefficients_response=dw)
+               ! Differentiate the product of the quadrature measure and the scalar potential.
+               CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi)*dn(lo:hi), &
+                                              soft_response(:m, :), soft_response(:m, :), &
+                                              weights_response(lo:hi)*dn(lo:hi) + frame%ao%weights(lo:hi)*dvn(lo:hi), partial)
+            ELSE
+               IF (ANY(dg(lo:hi, :) /= 0.0_dp) .OR. ANY(dt(lo:hi) /= 0.0_dp)) THEN
+                  CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                               soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
+                                               atom_response, cell_response, reduced_k_response, dw)
+               ELSE
+                  ! Gradient responses enter only through the unperturbed gradient and tau potentials.
+                  gradient_response(:m, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+                  CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                                               soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
+                                               atom_response=atom_response, cell_response=cell_response, &
+                                               reduced_k_response=reduced_k_response, coefficients_response=dw)
+               END IF
+               CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
+                                                   frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
+                                                   soft_response(:m, :), soft_response(:m, :), &
+                                                   gradient_response(:m, :, :), gradient_response(:m, :, :), &
+                                                   weights_response(lo:hi), dvn(lo:hi), dvg(lo:hi, :), dvt(lo:hi), partial)
             END IF
-            CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
-                                                frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
-                                                soft_response(:m, :), soft_response(:m, :), &
-                                                gradient_response(:m, :, :), gradient_response(:m, :, :), &
-                                                weights_response(lo:hi), dvn(lo:hi), dvg(lo:hi, :), dvt(lo:hi), partial)
             operator_response(:, :) = operator_response + partial
             CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), &
                                            soft_response(:m, :), soft_response(:m, :), weights_response(lo:hi), partial)
