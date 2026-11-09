@@ -284,8 +284,12 @@ CONTAINS
       DO ip = 1, SIZE(zeta)
          alpha = zeta(ip)
          envelope(:) = EXP(-alpha*(projectors%r - distance)**2)
+         ! The scaled Bessel factor cannot recover an envelope that underflowed to zero.
+         IF (ALL(envelope == 0.0_dp)) CYCLE
          DO lambda = 0, nh
+            radial_work = 0.0_dp
             DO i = 1, nr
+               IF (envelope(i) == 0.0_dp) CYCLE
                radial_work(i) = envelope(i)*scaled_bessel(INT(lambda, C_INT), &
                                                           REAL(2.0_dp*alpha*projectors%r(i)*distance, C_DOUBLE))
             END DO
