@@ -2147,6 +2147,7 @@ CONTAINS
       INTEGER                                            :: ia, ir, nang, naux, ncomponent, nrow, row
       LOGICAL                                            :: new_gradients, new_values
       REAL(dp)                                           :: point(3), value_words, words
+      REAL(dp), ALLOCATABLE                              :: displacement(:, :)
       REAL(dp), POINTER :: cached_cell_gradient(:, :, :, :, :), cached_gradient(:, :, :, :), &
          cached_values(:, :, :)
 
@@ -2190,28 +2191,32 @@ CONTAINS
          cached_gradient => cache%potential_fields%gradient
          IF (PRESENT(auxiliary_images)) cached_cell_gradient => cache%potential_fields%cell_gradient
       END IF
+      IF (.NOT. PRESENT(auxiliary_images)) ALLOCATE (displacement(3, nang))
       row = 0
       DO ir = 1, SIZE(r)
          IF (r(ir) >= radius .OR. radial_weights(ir) == 0.0_dp) CYCLE
          row = row + 1
+         IF (.NOT. PRESENT(auxiliary_images)) THEN
+            DO ia = 1, nang
+               displacement(:, ia) = (position + r(ir)*directions(:, ia)) - auxiliary_center
+            END DO
+            IF (new_gradients) THEN
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, displacement, cached_values(:, :, row), &
+                                                           cached_gradient(:, :, :, row))
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, displacement, cached_values(:, :, row))
+            END IF
+            CYCLE
+         END IF
          DO ia = 1, nang
             point = position + r(ir)*directions(:, ia)
             IF (new_gradients) THEN
-               IF (PRESENT(auxiliary_images)) THEN
-                  CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
-                                                        cached_values(ia, :, row), cached_gradient(:, :, ia, row), &
-                                                        cached_cell_gradient(:, :, :, ia, row))
-               ELSE
-                  CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cached_values(ia, :, row), &
-                                                        cached_gradient(:, :, ia, row))
-               END IF
+               CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
+                                                     cached_values(ia, :, row), cached_gradient(:, :, ia, row), &
+                                                     cached_cell_gradient(:, :, :, ia, row))
             ELSE
-               IF (PRESENT(auxiliary_images)) THEN
-                  CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
-                                                        cached_values(ia, :, row))
-               ELSE
-                  CALL gaussian_coulomb_fields_evaluate(fields, point - auxiliary_center, cached_values(ia, :, row))
-               END IF
+               CALL gaussian_coulomb_fields_periodic(fields, point - auxiliary_center, cell, auxiliary_images, &
+                                                     cached_values(ia, :, row))
             END IF
          END DO
       END DO
@@ -3142,6 +3147,7 @@ CONTAINS
       INTEGER                                            :: atom, aux, cache_row, cache_rows, ia, &
                                                             ir, j, kind, nang, nl, np, nr, &
                                                             zero(3, 1)
+      INTEGER, TARGET                                    :: temporary_potential_words
       INTEGER(int_8)                                     :: batch_words, field_words
       LOGICAL :: batch_moments, cache_fields, cache_ready, cached_potentials, derivatives, &
          factored, left_compute, left_needed, left_zero, right_compute, right_needed, right_zero, &
@@ -3152,7 +3158,7 @@ CONTAINS
       TYPE(inverse_field_workspace_type)                 :: left_fields, right_fields
       TYPE(linear_moment_type), POINTER                  :: left_integrals, right_integrals
       TYPE(radial_difference_fields_type), POINTER       :: own_fields
-      TYPE(transition_augmentation_type), POINTER        :: qi
+      TYPE(transition_augmentation_type), POINTER        :: potential_cache, qi
       TYPE(transition_augmentation_type), TARGET         :: temporary_augmentation
 
       CPASSERT(center >= 1 .AND. center <= SIZE(frame%center_atoms))
@@ -3237,6 +3243,7 @@ CONTAINS
       END IF
       qi => temporary_augmentation
       IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
+      potential_cache => qi
       IF (.NOT. frame%direct .AND. radius > 0.0_dp) THEN
          ALLOCATE (moment_left(np, nl, fields%nfunction), moment_right(np, nr, fields%nfunction))
          moment_left = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -3279,27 +3286,38 @@ CONTAINS
             END IF
             CALL prepare_transition_potentials(qi, fields, r, radial_weights, directions, position, auxiliary_center, &
                                                radius, frame%cell, gradients=derivatives)
+            IF (.NOT. derivatives .AND. left_compute .AND. right_compute .AND. PRESENT(moment_cache) .AND. &
+                .NOT. ALLOCATED(qi%potential_fields)) THEN
+               ! Both moments use the same auxiliary field even if the assembly cache is full.
+               temporary_potential_words = max_cached_lattice_field_words/8
+               temporary_augmentation%potential_budget => temporary_potential_words
+               potential_cache => temporary_augmentation
+               CALL prepare_transition_potentials(potential_cache, fields, r, radial_weights, directions, position, &
+                                                  auxiliary_center, radius, frame%cell, gradients=.FALSE.)
+            END IF
             ! A value-only zero auxiliary field contributes no linear moment. The original
             ! Q or PAW transition term below is integrated separately and remains required.
-            IF (.NOT. derivatives .AND. ALLOCATED(qi%potential_fields)) THEN
-               factored = qi%potential_fields%zero_values
+            IF (.NOT. derivatives .AND. ALLOCATED(potential_cache%potential_fields)) THEN
+               factored = potential_cache%potential_fields%zero_values
             END IF
             IF (.NOT. factored .AND. .NOT. derivatives .AND. PRESENT(moment_cache)) THEN
                factored = .TRUE.
                IF (left_compute) THEN
                   CALL lattice_factored_moment(frame, center, center_image, left_range, [0, 0, 0], fields, &
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
-                                               coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
-                                               moment_key, left_fields, overlaps%gaussian_left, overlaps%field_budget, &
-                                               moment_left, valid_moment, overlaps%support_left, local_coefficients=wl)
+                                               coefficient_images, coupled_coefficients, own_fields, potential_cache, &
+                                               moment_cache, moment_key, left_fields, overlaps%gaussian_left, &
+                                               overlaps%field_budget, moment_left, valid_moment, overlaps%support_left, &
+                                               local_coefficients=wl)
                   factored = factored .AND. valid_moment
                END IF
                IF (right_compute) THEN
                   CALL lattice_factored_moment(frame, center, center_image, right_range, ao_image, fields, &
                                                auxiliary_center, r, radial_weights, directions, angular_weights, &
-                                               coefficient_images, coupled_coefficients, own_fields, qi, moment_cache, &
-                                               moment_key, right_fields, overlaps%gaussian_right, overlaps%field_budget, &
-                                               moment_right, valid_moment, overlaps%support_right, local_coefficients=wr)
+                                               coefficient_images, coupled_coefficients, own_fields, potential_cache, &
+                                               moment_cache, moment_key, right_fields, overlaps%gaussian_right, &
+                                               overlaps%field_budget, moment_right, valid_moment, overlaps%support_right, &
+                                               local_coefficients=wr)
                   factored = factored .AND. valid_moment
                END IF
             END IF
@@ -3307,8 +3325,8 @@ CONTAINS
          IF ((left_compute .OR. right_compute) .AND. .NOT. factored) THEN
             IF (left_compute) moment_left = CMPLX(0.0_dp, 0.0_dp, dp)
             IF (right_compute) moment_right = CMPLX(0.0_dp, 0.0_dp, dp)
-            cached_potentials = ALLOCATED(qi%potential_fields)
-            IF (cached_potentials .AND. derivatives) cached_potentials = ALLOCATED(qi%potential_fields%gradient)
+            cached_potentials = ALLOCATED(potential_cache%potential_fields)
+            IF (cached_potentials .AND. derivatives) cached_potentials = ALLOCATED(potential_cache%potential_fields%gradient)
             ! The quadrature and orbital fields are fixed for this AO pair and physical center image.
             ! Auxiliary shells change only their potential. Bound the shared per-pair cache in DP words.
             cache_rows = COUNT(r < radius .AND. radial_weights /= 0.0_dp)
@@ -3422,8 +3440,8 @@ CONTAINS
                weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
                IF (cached_potentials) THEN
                   DO ia = 1, nang
-                     CALL transition_potential_point(qi%potential_fields, ia, cache_row, potentials(ia, :))
-                     IF (derivatives) potential_gradient(:, :, ia) = qi%potential_fields%gradient(:, :, ia, cache_row)
+                     CALL transition_potential_point(potential_cache%potential_fields, ia, cache_row, potentials(ia, :))
+                     IF (derivatives) potential_gradient(:, :, ia) = potential_cache%potential_fields%gradient(:, :, ia, cache_row)
                   END DO
                ELSE IF (derivatives) THEN
                   CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), &
