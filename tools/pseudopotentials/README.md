@@ -31,6 +31,11 @@ locations relative to that directory. In CP2K input, set `POTENTIAL UPF` and giv
 in `POTENTIAL_FILE_NAME` in the same `&KIND` section. This keyword accepts paths longer than the
 80-character limit of `POTENTIAL UPF <filename>`. Choose the matching basis separately.
 
+Set `METHOD` in `&QS` to `GPW`, `GAPW_XC`, or `GAPW` to choose the density evaluation.
+For prepared USPPs with overlapping reconstruction or projector supports, set `USPP_METHOD INVERSE`.
+The default `INVERSE_1C` requires disjoint supports. For LDA/GGA with original USPPs, choose
+`USPP_METHOD DIRECT` to use the tabulated projectors and augmentation without full reference waves.
+
 The prepared collection stores the SSSP selection under `data/{pbe,pbesol}/sssp/`. Add
 `--additional-uspp` to install non-SSSP PSLibrary and GBRV USPPs for the selected functionals. They
 reside under `data/{pbe,pbesol}/additional/{pslibrary,gbrv}/` and do not replace the SSSP selection.
