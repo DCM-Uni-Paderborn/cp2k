@@ -245,13 +245,17 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: cell_derivative(:, :, :, :, :)
 
       INTEGER                                            :: auxiliary, axis, i, ia, ir, j, l, lm, m, &
-                                                            n, naux, p, pair, q
+                                                            n, nang, naux, nlm, p, pair, q
       LOGICAL                                            :: derivatives
       REAL(dp)                                           :: coupling, point(3), radial
-      REAL(dp), ALLOCATABLE :: angular_points(:, :), batch_gradient(:, :, :), &
+      REAL(dp), ALLOCATABLE :: angular_points(:, :), batch_d_projected(:, :), &
          batch_potential(:, :), cell_gradient(:, :, :), cell_projected(:, :, :, :), &
          d_integrals(:, :, :, :), d_projected(:, :, :), gradient(:, :), harmonics(:, :), &
          potential(:), projected(:, :), values(:)
+      REAL(dp), ALLOCATABLE, TARGET                      :: batch_gradient(:, :, :)
+      REAL(dp), POINTER                                  :: gradient_rows(:, :)
+
+      EXTERNAL dgemm
 
       n = augmentation%nproj
       naux = fields%nfunction
@@ -281,18 +285,22 @@ CONTAINS
       IF (.NOT. (MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)) THEN
          CPABORT("Spherical directions are not normalized")
       END IF
-      ALLOCATE (harmonics(SIZE(weights), (augmentation%lmax + 1)**2), values(SIZE(weights)), &
-                potential(naux), projected((augmentation%lmax + 1)**2, naux))
+      nang = SIZE(weights)
+      nlm = (augmentation%lmax + 1)**2
+      ALLOCATE (harmonics(nang, nlm), values(nang), potential(naux), projected(nlm, naux))
       IF (derivatives) THEN
-         ALLOCATE (gradient(3, naux), d_projected((augmentation%lmax + 1)**2, naux, 3), &
+         ALLOCATE (gradient(3, naux), d_projected(nlm, naux, 3), &
                    d_integrals(n, n, naux, 3), SOURCE=0.0_dp)
       END IF
       IF (PRESENT(cell_derivative)) THEN
-         ALLOCATE (cell_gradient(3, 3, naux), cell_projected((augmentation%lmax + 1)**2, naux, 3, 3))
+         ALLOCATE (cell_gradient(3, 3, naux), cell_projected(nlm, naux, 3, 3))
       END IF
       IF (.NOT. PRESENT(auxiliary_images)) THEN
-         ALLOCATE (angular_points(3, SIZE(weights)), batch_potential(SIZE(weights), naux))
-         IF (derivatives) ALLOCATE (batch_gradient(3, naux, SIZE(weights)))
+         ALLOCATE (angular_points(3, nang), batch_potential(nang, naux))
+         IF (derivatives) THEN
+            ALLOCATE (batch_gradient(3, naux, nang), batch_d_projected(nlm, 3*naux))
+            gradient_rows(1:3*naux, 1:nang) => batch_gradient
+         END IF
       END IF
       DO l = 0, augmentation%lmax
          DO m = -l, l
@@ -303,62 +311,60 @@ CONTAINS
       END DO
       DO ir = 1, SIZE(augmentation%weighted_q, 1)
          IF (ALL(augmentation%weighted_q(ir, :, :) == 0.0_dp)) CYCLE
-         projected(:, :) = 0.0_dp
-         IF (derivatives) d_projected(:, :, :) = 0.0_dp
-         IF (PRESENT(cell_derivative)) cell_projected(:, :, :, :) = 0.0_dp
-         IF (.NOT. PRESENT(auxiliary_images)) THEN
-            angular_points(:, :) = SPREAD(displacement, 2, SIZE(weights)) + augmentation%r(ir)*directions
-            IF (derivatives) THEN
-               CALL gaussian_coulomb_fields_evaluate_batch(fields, angular_points, batch_potential, batch_gradient)
-            ELSE
-               CALL gaussian_coulomb_fields_evaluate_batch(fields, angular_points, batch_potential)
-            END IF
-         END IF
-         DO ia = 1, SIZE(weights)
-            point = displacement + augmentation%r(ir)*directions(:, ia)
-            IF (derivatives) THEN
-               IF (PRESENT(auxiliary_images)) THEN
-                  IF (PRESENT(cell_derivative)) THEN
-                     CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, &
-                                                           potential, gradient, cell_gradient)
-                     DO j = 1, 3
-                        DO axis = 1, 3
-                           DO auxiliary = 1, naux
-                              DO lm = 1, SIZE(harmonics, 2)
-                                 cell_projected(lm, auxiliary, axis, j) = cell_projected(lm, auxiliary, axis, j) + &
-                                                                          harmonics(ia, lm)*cell_gradient(axis, j, auxiliary)
-                              END DO
+         IF (PRESENT(auxiliary_images)) THEN
+            projected(:, :) = 0.0_dp
+            IF (derivatives) d_projected(:, :, :) = 0.0_dp
+            IF (PRESENT(cell_derivative)) cell_projected(:, :, :, :) = 0.0_dp
+            DO ia = 1, nang
+               point = displacement + augmentation%r(ir)*directions(:, ia)
+               IF (PRESENT(cell_derivative)) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, &
+                                                        potential, gradient, cell_gradient)
+                  DO j = 1, 3
+                     DO axis = 1, 3
+                        DO auxiliary = 1, naux
+                           DO lm = 1, nlm
+                              cell_projected(lm, auxiliary, axis, j) = cell_projected(lm, auxiliary, axis, j) + &
+                                                                       harmonics(ia, lm)*cell_gradient(axis, j, auxiliary)
                            END DO
                         END DO
                      END DO
-                  ELSE
-                     CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential, gradient)
-                  END IF
+                  END DO
+               ELSE IF (derivatives) THEN
+                  CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential, gradient)
                ELSE
-                  potential(:) = batch_potential(ia, :)
-                  gradient(:, :) = batch_gradient(:, :, ia)
+                  CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential)
                END IF
-               DO axis = 1, 3
-                  DO auxiliary = 1, naux
-                     DO lm = 1, SIZE(harmonics, 2)
-                        d_projected(lm, auxiliary, axis) = d_projected(lm, auxiliary, axis) + &
-                                                           harmonics(ia, lm)*gradient(axis, auxiliary)
+               IF (derivatives) THEN
+                  DO axis = 1, 3
+                     DO auxiliary = 1, naux
+                        DO lm = 1, nlm
+                           d_projected(lm, auxiliary, axis) = d_projected(lm, auxiliary, axis) + &
+                                                              harmonics(ia, lm)*gradient(axis, auxiliary)
+                        END DO
                      END DO
                   END DO
-               END DO
-            ELSE
-               IF (PRESENT(auxiliary_images)) THEN
-                  CALL gaussian_coulomb_fields_periodic(fields, point, auxiliary_cell, auxiliary_images, potential)
-               ELSE
-                  potential(:) = batch_potential(ia, :)
                END IF
-            END IF
-            DO auxiliary = 1, naux
-               DO lm = 1, SIZE(harmonics, 2)
-                  projected(lm, auxiliary) = projected(lm, auxiliary) + harmonics(ia, lm)*potential(auxiliary)
+               DO auxiliary = 1, naux
+                  DO lm = 1, nlm
+                     projected(lm, auxiliary) = projected(lm, auxiliary) + harmonics(ia, lm)*potential(auxiliary)
+                  END DO
                END DO
             END DO
-         END DO
+         ELSE
+            angular_points(:, :) = SPREAD(displacement, 2, nang) + augmentation%r(ir)*directions
+            IF (derivatives) THEN
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, angular_points, batch_potential, batch_gradient)
+               CALL dgemm('T', 'T', nlm, 3*naux, nang, 1.0_dp, harmonics, nang, gradient_rows, 3*naux, &
+                          0.0_dp, batch_d_projected, nlm)
+               DO axis = 1, 3
+                  d_projected(:, :, axis) = batch_d_projected(:, axis::3)
+               END DO
+            ELSE
+               CALL gaussian_coulomb_fields_evaluate_batch(fields, angular_points, batch_potential)
+            END IF
+            CALL dgemm('T', 'N', nlm, naux, nang, 1.0_dp, harmonics, nang, batch_potential, nang, 0.0_dp, projected, nlm)
+         END IF
          DO q = 1, n
             j = augmentation%radial_index(q)
             DO p = 1, q
