@@ -3617,15 +3617,15 @@ CONTAINS
       INTEGER, ALLOCATABLE, INTENT(INOUT)                :: support_indices(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: local_coefficients(:, :)
 
-      COMPLEX(dp), ALLOCATABLE :: batch_delta(:, :), delta(:, :), gaussian(:, :), phi(:, :), weighted(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE :: batch_delta(:, :), delta(:, :), gaussian(:, :), phi(:, :)
       INTEGER :: atom, aux, first, hi, ia, image, index, ir, j, kind, last, lo, max_ao, nang, nao, &
          nimage, ncomponent, np, npoint, nproj, nrow, nsupport, row, single_image(3, 1), zero(3, 1)
-      INTEGER(int_8)                                     :: gaussian_words, support_words, words
+      INTEGER(int_8)                                     :: component_words, gaussian_words, point_words, support_words, words
       INTEGER, ALLOCATABLE                               :: selected_images(:)
       LOGICAL                                            :: cached_gaussian, cached_support, &
                                                             collect_support, compute_self_moment
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
-      REAL(dp), ALLOCATABLE :: batch_local_delta(:, :), batch_moment(:, :), batch_orbitals(:, :), &
+      REAL(dp), ALLOCATABLE :: batch_difference(:, :), batch_moment(:, :), batch_orbitals(:, :), &
          batch_self(:, :), batch_weighted(:, :), local_points(:, :), shell_potentials(:, :, :), weights(:)
       REAL(dp), ALLOCATABLE, TARGET                      :: coordinates(:, :, :)
       REAL(dp), POINTER                                  :: batch_points(:, :)
@@ -3650,16 +3650,12 @@ CONTAINS
       ELSE
          CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coefficients))
       END IF
-      words = INT(nang, int_8)*INT(nrow, int_8)*(3_int_8 + INT(fields%nfunction, int_8))
-      words = words + 2_int_8*INT(nproj, int_8)*INT(np, int_8)*INT(fields%nfunction, int_8)
-      words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(np, int_8)
-      IF (frame%atom_local) THEN
-         words = words + INT(nang, int_8)*INT(nrow, int_8)* &
-                 (INT(nproj, int_8)*INT(fields%nfunction, int_8) + INT(nao + nproj, int_8))
-         words = words + INT(nproj, int_8)*INT(fields%nfunction, int_8)*INT(nao + nproj, int_8)
-      ELSE
-         words = words + 2_int_8*INT(nang, int_8)*INT(nrow, int_8)*INT(nproj, int_8)*INT(fields%nfunction, int_8)
-      END IF
+      point_words = INT(nang, int_8)*INT(nrow, int_8)
+      component_words = INT(nproj, int_8)*INT(fields%nfunction, int_8)
+      words = point_words*(3_int_8 + INT(fields%nfunction, int_8) + 2_int_8*INT(np, int_8)) + &
+              2_int_8*component_words*INT(np, int_8)
+      words = words + point_words*(component_words + INT(nao + np, int_8)) + &
+              component_words*INT(nao + np, int_8)
       IF (words > INT(max_cached_lattice_field_words, int_8)) RETURN
       cached_support = ALLOCATED(support_indices)
       collect_support = .FALSE.
@@ -3742,6 +3738,10 @@ CONTAINS
       ALLOCATE (delta(nang, MAX(np, nproj)), &
                 gaussian(nang, MAXVAL(frame%ao_last - frame%ao_first + 1)), phi(nang, nao))
       IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
+      npoint = nang*nrow
+      ncomponent = nproj*fields%nfunction
+      ALLOCATE (batch_weighted(npoint, ncomponent), batch_orbitals(npoint, nao), &
+                batch_moment(ncomponent, nao), batch_self(ncomponent, np))
       compute_self_moment = .FALSE.
       IF (frame%atom_local) THEN
          ! The local Delta*V*Delta integral does not depend on the Gaussian range or W.
@@ -3753,16 +3753,8 @@ CONTAINS
          IF (compute_self_moment) THEN
             ALLOCATE (entry%values(nproj, nproj, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
          END IF
-         ! The translated Gaussian, partial-wave and projector fields have zero Bloch phase here.
-         npoint = nang*nrow
-         ncomponent = nproj*fields%nfunction
-         IF (ALLOCATED(batch_delta)) DEALLOCATE (batch_delta)
-         ALLOCATE (batch_weighted(npoint, ncomponent), batch_orbitals(npoint, nao), &
-                   batch_moment(ncomponent, nao), batch_self(ncomponent, nproj))
-         IF (compute_self_moment) ALLOCATE (batch_local_delta(npoint, nproj))
-      ELSE
-         ALLOCATE (weighted(nang, nproj, fields%nfunction, nrow))
       END IF
+      IF (compute_self_moment .OR. .NOT. frame%atom_local) ALLOCATE (batch_difference(npoint, np))
       row = 0
       zero = 0
       single_image(:, 1) = ao_image
@@ -3796,33 +3788,22 @@ CONTAINS
             END DO
             IF (ALLOCATED(gaussian_fields)) gaussian_fields(:, :, row) = phi
          END IF
-         IF (frame%atom_local) THEN
-            ! Pack the real products directly into the BLAS layout.
-            batch_orbitals((row - 1)*nang + 1:row*nang, :) = REAL(phi, dp)
-            IF (compute_self_moment) batch_local_delta((row - 1)*nang + 1:row*nang, :) = REAL(delta(:, :nproj), dp)
-            DO aux = 1, fields%nfunction
-               DO j = 1, nproj
-                  batch_weighted((row - 1)*nang + 1:row*nang, (aux - 1)*nproj + j) = &
-                     REAL(delta(:, j), dp)*(weights*shell_potentials(:, aux, row))
-               END DO
+         ! The fields use explicit images at zero phase. Coupled coefficients enter after integration.
+         batch_orbitals((row - 1)*nang + 1:row*nang, :) = REAL(phi, dp)
+         IF (compute_self_moment) batch_difference((row - 1)*nang + 1:row*nang, :) = REAL(delta(:, :nproj), dp)
+         DO aux = 1, fields%nfunction
+            DO j = 1, nproj
+               batch_weighted((row - 1)*nang + 1:row*nang, (aux - 1)*nproj + j) = &
+                  REAL(delta(:, j), dp)*(weights*shell_potentials(:, aux, row))
             END DO
-         ELSE
-            DO aux = 1, fields%nfunction
-               DO j = 1, nproj
-                  weighted(:, j, aux, row) = delta(:, j)*(weights*shell_potentials(:, aux, row))
-               END DO
-               CALL field_product(weighted(:, :, aux, row), phi, moment(:, :, aux), .TRUE., .TRUE., .FALSE.)
-            END DO
-         END IF
+         END DO
       END DO
+      CALL dgemm('T', 'N', ncomponent, nao, npoint, 1.0_dp, batch_weighted, npoint, &
+                 batch_orbitals, npoint, 0.0_dp, batch_moment, ncomponent)
       IF (frame%atom_local) THEN
-         ! All auxiliary components share the same pointwise Gaussian and difference fields.
-         ! Contract their projector rows together, retaining the original cache and quadrature.
-         CALL dgemm('T', 'N', ncomponent, nao, npoint, 1.0_dp, batch_weighted, npoint, &
-                    batch_orbitals, npoint, 0.0_dp, batch_moment, ncomponent)
          IF (compute_self_moment) THEN
             CALL dgemm('T', 'N', ncomponent, nproj, npoint, 1.0_dp, batch_weighted, npoint, &
-                       batch_local_delta, npoint, 0.0_dp, batch_self, ncomponent)
+                       batch_difference, npoint, 0.0_dp, batch_self, ncomponent)
          END IF
          DO aux = 1, fields%nfunction
             IF (compute_self_moment) THEN
@@ -3832,12 +3813,12 @@ CONTAINS
             END IF
          END DO
          batch_moment = batch_moment - MATMUL(batch_self, REAL(local_coefficients, dp))
-         DO aux = 1, fields%nfunction
-            moment(:, :, aux) = batch_moment((aux - 1)*nproj + 1:aux*nproj, :)
-         END DO
          IF (.NOT. ASSOCIATED(retained)) DEALLOCATE (temporary%values)
-         RETURN
       END IF
+      DO aux = 1, fields%nfunction
+         moment(:, :, aux) = batch_moment((aux - 1)*nproj + 1:aux*nproj, :)
+      END DO
+      IF (frame%atom_local) RETURN
       nimage = SIZE(coefficient_images, 2)
       IF (cached_support) THEN
          nimage = SIZE(support_indices)
@@ -3866,16 +3847,13 @@ CONTAINS
          IF (ASSOCIATED(retained)) ENTRY => retained
          IF (.NOT. ALLOCATED(entry%values)) THEN
             ALLOCATE (entry%values(nproj, np, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-            ! The original fields are independent at each quadrature point. Evaluate one
-            ! complete image batch, retaining the radial-row order of every contraction.
-            IF (.NOT. ALLOCATED(batch_delta)) ALLOCATE (batch_delta(nang*nrow, np))
+            IF (.NOT. ALLOCATED(batch_delta)) ALLOCATE (batch_delta(npoint, np))
             CALL qs_upf_inverse_lattice_delta_fields(frame, batch_points, single_image(:, 1), batch_delta(:, :np))
-            DO row = 1, nrow
-               delta(:, :np) = batch_delta((row - 1)*nang + 1:row*nang, :np)
-               DO aux = 1, fields%nfunction
-                  CALL field_product(weighted(:, :, aux, row), delta(:, :np), entry%values(:, :, aux), &
-                                     .TRUE., .TRUE., .FALSE.)
-               END DO
+            batch_difference(:, :) = REAL(batch_delta(:, :np), dp)
+            CALL dgemm('T', 'N', ncomponent, np, npoint, 1.0_dp, batch_weighted, npoint, &
+                       batch_difference, npoint, 0.0_dp, batch_self, ncomponent)
+            DO aux = 1, fields%nfunction
+               entry%values(:, :, aux) = batch_self((aux - 1)*nproj + 1:aux*nproj, :)
             END DO
          END IF
          DO aux = 1, fields%nfunction
