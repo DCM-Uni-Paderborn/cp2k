@@ -75,10 +75,10 @@ CONTAINS
                                                             other, spin, timing_handle
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       LOGICAL                                            :: complete_coulomb
-      REAL(dp) :: coulomb_cell_gradient(3, 3), external_energy, external_response, field_measure, &
+      REAL(dp) :: coulomb_cell_gradient(3, 3), coulomb_source_virial(3, 3), external_energy, external_response, field_measure, &
          metric_response, response, source_virial(3, 3), strain(3, 3), work_virial(3, 3), &
          xc_response
-      REAL(dp), ALLOCATABLE :: atom_response(:, :), coulomb_atom_gradient(:, :), positions(:, :), &
+      REAL(dp), ALLOCATABLE :: atom_response(:, :), coulomb_atom_gradient(:, :), coulomb_source_forces(:, :), positions(:, :), &
          reduced_k_response(:, :), source_forces(:, :), work_forces(:, :)
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(cell_type), POINTER                           :: cell
@@ -129,9 +129,10 @@ CONTAINS
       END DO
       IF (complete_coulomb) THEN
          CALL stationary_matrices(ks_env, state, total_density, total_weighted, spin_density)
-         ALLOCATE (coulomb_atom_gradient(3, SIZE(atoms)))
+         ALLOCATE (coulomb_atom_gradient(3, SIZE(atoms)), coulomb_source_forces(3, SIZE(atoms)))
          CALL qs_upf_inverse_coulomb_pair_geometry(qs_env, state, state%coulomb, total_density, &
-                                                   coulomb_atom_gradient, coulomb_cell_gradient)
+                                                   coulomb_atom_gradient, coulomb_cell_gradient, &
+                                                   coulomb_source_forces, coulomb_source_virial)
          ALLOCATE (source_forces(3, SIZE(atoms)), work_forces(3, SIZE(atoms)))
          source_forces = 0.0_dp
          source_virial = 0.0_dp
@@ -159,7 +160,8 @@ CONTAINS
             IF (complete_coulomb) THEN
                CALL complete_response(qs_env, ks_env, state, total_density, total_weighted, vgradient, vgradient(1, :), &
                                       atom_response, 0.0_dp*cell%hmat, reduced_k_response, response, metric_response, &
-                                      coefficients_response, pair_geometry_response=coulomb_atom_gradient(axis, atom))
+                                      coefficients_response, pair_geometry_response=coulomb_atom_gradient(axis, atom), &
+                                      source_forces=coulomb_source_forces, source_virial=coulomb_source_virial)
                response = response - SUM(source_forces*atom_response)
             ELSE
                CALL qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, &
@@ -214,7 +216,8 @@ CONTAINS
                                          atom_response, MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response, &
                                          coefficients_response, pair_geometry_response= &
                                          SUM(coulomb_atom_gradient*atom_response) + &
-                                         SUM(coulomb_cell_gradient*MATMUL(strain, cell%hmat)))
+                                         SUM(coulomb_cell_gradient*MATMUL(strain, cell%hmat)), &
+                                         source_forces=coulomb_source_forces, source_virial=coulomb_source_virial)
                   ! The folded XC source has fixed fractional rows. Native XC owns its explicit measure.
                   response = response - SUM(source_virial*strain)
                ELSE
@@ -317,9 +320,12 @@ CONTAINS
 !> \param metric_response Signed complete Pulay contribution, already included in response.
 !> \param coefficients_response ...
 !> \param pair_geometry_response Explicit residual-kernel geometry contraction at this accepted density.
+!> \param source_forces Smooth-source forces prepared at the same accepted density.
+!> \param source_virial Corresponding smooth-source virial.
 ! **************************************************************************************************
    SUBROUTINE complete_response(qs_env, ks_env, state, density, weighted, zeros, zero, atom_response, cell_response, &
-                                reduced_k_response, response, metric_response, coefficients_response, pair_geometry_response)
+                                reduced_k_response, response, metric_response, coefficients_response, pair_geometry_response, &
+                                source_forces, source_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
@@ -330,7 +336,7 @@ CONTAINS
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response, metric_response
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: coefficients_response(:, :, :)
-      REAL(dp), INTENT(IN)                               :: pair_geometry_response
+      REAL(dp), INTENT(IN)                               :: pair_geometry_response, source_forces(:, :), source_virial(3, 3)
 
       REAL(dp)                                           :: coulomb_response, radial_metric
 
@@ -343,7 +349,8 @@ CONTAINS
       response = response - radial_metric + metric_response
       CALL qs_upf_inverse_coulomb_response(qs_env, state, state%coulomb, density, atom_response, cell_response, &
                                            coulomb_response, coefficients_response=coefficients_response, &
-                                           pair_geometry_response=pair_geometry_response)
+                                           pair_geometry_response=pair_geometry_response, &
+                                           source_forces=source_forces, source_virial=source_virial)
       response = response + coulomb_response
    END SUBROUTINE complete_response
 

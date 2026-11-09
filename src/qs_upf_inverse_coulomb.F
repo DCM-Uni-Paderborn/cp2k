@@ -1366,6 +1366,30 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_coulomb_operator_response
 
 ! **************************************************************************************************
+!> \brief Geometry covectors of the smooth Gaussian Coulomb sources at the prepared density.
+!> \param qs_env Native Gaussian and ionic owners.
+!> \param map Prepared source and potential.
+!> \param matrix Fixed spin-summed AO occupations.
+!> \param forces Negative Cartesian energy gradients.
+!> \param virial Native virial, including both electronic and ionic sources.
+! **************************************************************************************************
+   SUBROUTINE coulomb_source_geometry(qs_env, map, matrix, forces, virial)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: forces(:, :), virial(3, 3)
+
+      REAL(dp)                                           :: ionic_virial(3, 3)
+      REAL(dp), ALLOCATABLE                              :: ionic_forces(:, :)
+
+      ALLOCATE (ionic_forces, MOLD=forces)
+      CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, map%potential, forces, virial)
+      CALL qs_upf_inverse_coulomb_ionic_geometry(qs_env, map%potential, ionic_forces, ionic_virial)
+      forces(:, :) = forces + ionic_forces
+      virial(:, :) = virial + ionic_virial
+   END SUBROUTINE coulomb_source_geometry
+
+! **************************************************************************************************
 !> \brief Joint atom/cell derivative of the complete native Coulomb functional at fixed AO occupations.
 !>        Includes the actual Gaussian electron/ion grid sources, complete center densities, coupled
 !>        inverse coefficients, compensation, periodic pair kernels and native Coulomb measure.
@@ -1380,9 +1404,12 @@ CONTAINS
 !> \param charge_response Optional derivative of the same complete electronic charge metric contraction.
 !> \param coefficients_response Optional defining-frame responses at fixed reduced k for this geometry variation.
 !> \param pair_geometry_response Optional residual-kernel contraction captured at this accepted density.
+!> \param source_forces Optional smooth-source forces prepared with the pair geometry at this density.
+!> \param source_virial Corresponding smooth-source virial. Both arguments must be supplied together.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_coulomb_response(qs_env, state, map, matrix, atom_response, cell_response, &
-                                              response, charge_response, coefficients_response, pair_geometry_response)
+                                              response, charge_response, coefficients_response, pair_geometry_response, &
+                                              source_forces, source_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
@@ -1391,17 +1418,17 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: response
       REAL(dp), INTENT(OUT), OPTIONAL                    :: charge_response
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
-      REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
+      REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response, source_forces(:, :), &
+                                                            source_virial(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), background(:), &
                                                             background_response(:)
       INTEGER                                            :: a, info
       REAL(dp)                                           :: energy, inverse_cell(3, 3), &
-                                                            ionic_virial(3, 3), kernel_response, &
+                                                            kernel_response, &
                                                             strain(3, 3), trace_strain, &
                                                             virial(3, 3)
       REAL(dp), ALLOCATABLE                              :: forces(:, :), gvecs_response(:, :), &
-                                                            ionic_forces(:, :), &
                                                             poisson_weights_response(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_poisson_type), POINTER                     :: poisson
@@ -1413,20 +1440,23 @@ CONTAINS
       CPASSERT(map%ready)
       CPASSERT(ALL(SHAPE(atom_response) == SHAPE(map%positions)))
       CALL prepare_pair_responses(qs_env, state, map)
-      CALL evaluate_coulomb_sources(qs_env, state, map, matrix, energy, potentials)
+      CPASSERT(PRESENT(source_forces) .EQV. PRESENT(source_virial))
       inverse_cell = map%cell
       CALL invmat(inverse_cell, info)
       CPASSERT(info == 0)
       strain = MATMUL(cell_response, inverse_cell)
       trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
-      ALLOCATE (forces, MOLD=atom_response)
-      ALLOCATE (ionic_forces, MOLD=atom_response)
-      CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, map%potential, forces, virial)
-      CALL qs_upf_inverse_coulomb_ionic_geometry(qs_env, map%potential, ionic_forces, ionic_virial)
       ! Fourier coefficients use a grid average. Its source derivative has no volume-measure term.
-      response = -SUM((forces + ionic_forces)*(atom_response - MATMUL(strain, map%positions))) - &
-                 SUM((virial + ionic_virial)*strain)
+      IF (PRESENT(source_forces)) THEN
+         response = -SUM(source_forces*(atom_response - MATMUL(strain, map%positions))) - SUM(source_virial*strain)
+      ELSE
+         CALL evaluate_coulomb_sources(qs_env, state, map, matrix, energy, potentials)
+         ALLOCATE (forces, MOLD=atom_response)
+         CALL coulomb_source_geometry(qs_env, map, matrix, forces, virial)
+         response = -SUM(forces*(atom_response - MATMUL(strain, map%positions))) - SUM(virial*strain)
+      END IF
       IF (PRESENT(charge_response)) THEN
+         IF (.NOT. ALLOCATED(forces)) ALLOCATE (forces, MOLD=atom_response)
          CALL unit%create(map%grid)
          unit%array = 1.0_dp
          CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, unit, forces, virial)
@@ -1485,13 +1515,17 @@ CONTAINS
 !> \param matrix Accepted spin-summed Hermitian matrices in global k order.
 !> \param atom_gradient Covector for physical Cartesian atom positions.
 !> \param cell_gradient Covector for lattice vectors at fixed atom positions.
+!> \param source_forces Optional negative Cartesian gradients of the smooth sources at these occupations.
+!> \param source_virial Corresponding smooth-source virial.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_coulomb_pair_geometry(qs_env, state, map, matrix, atom_gradient, cell_gradient)
+   SUBROUTINE qs_upf_inverse_coulomb_pair_geometry(qs_env, state, map, matrix, atom_gradient, cell_gradient, &
+                                                   source_forces, source_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
       REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :), cell_gradient(3, 3)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: source_forces(:, :), source_virial(3, 3)
 
       INTEGER                                            :: a
       REAL(dp)                                           :: energy
@@ -1502,7 +1536,9 @@ CONTAINS
 
       CPASSERT(map%ready)
       CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(map%positions)))
+      CPASSERT(PRESENT(source_forces) .EQV. PRESENT(source_virial))
       CALL evaluate_coulomb_sources(qs_env, state, map, matrix, energy, potentials)
+      IF (PRESENT(source_forces)) CALL coulomb_source_geometry(qs_env, map, matrix, source_forces, source_virial)
       CALL get_qs_env(qs_env, para_env=para_env)
       ALLOCATE (center_gradient(3, SIZE(map%centers)))
       CALL upf_inverse_coulomb_pair_geometry(map%centers, map%maps, center_gradient, cell_gradient, &
