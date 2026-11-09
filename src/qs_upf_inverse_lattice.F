@@ -17,7 +17,10 @@ MODULE qs_upf_inverse_lattice
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
    USE qs_grid_atom,                    ONLY: grid_atom_type
-   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_ref_type
+   USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              qs_kind_type
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_atom_angular_average,&
+                                              qs_upf_inverse_atom_grid_ref_type
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_lattice_type,&
                                               qs_upf_inverse_type
    USE upf_inverse_lattice,             ONLY: upf_inverse_lattice_adjoint,&
@@ -1244,12 +1247,14 @@ CONTAINS
 !> \param atom_response Cartesian atom displacements.
 !> \param cell_response Lattice displacement at fixed Cartesian home offsets.
 !> \param reduced_k_response Displacement of the reduced Bloch vector.
+!> \param kinds Native kind grids when the defining projection uses the uniform grid.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_cross_kinetic(frame, matrix, response, atom_response, cell_response, reduced_k_response)
-      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+   SUBROUTINE qs_upf_inverse_cross_kinetic(frame, matrix, response, atom_response, cell_response, reduced_k_response, kinds)
+      TYPE(qs_upf_inverse_type), INTENT(IN), TARGET      :: frame
       COMPLEX(dp), INTENT(OUT)                           :: matrix(:, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3), reduced_k_response(3)
+      TYPE(qs_kind_type), INTENT(IN), OPTIONAL            :: kinds(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: bra(:, :, :), ket(:, :, :), dket(:, :, :), &
                                                             value(:, :), pair(:, :)
@@ -1259,8 +1264,10 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), &
                                                             gradient(:, :), motion(:, :), points(:, :), scratch(:), weights(:)
       TYPE(grid_atom_type), POINTER                      :: grid
+      TYPE(qs_upf_inverse_atom_grid_ref_type), TARGET    :: borrowed
+      TYPE(qs_upf_inverse_atom_grid_ref_type), POINTER   :: rule
 
-      CPASSERT(ALLOCATED(frame%defining_atom_grids))
+      CPASSERT(ALLOCATED(frame%defining_atom_grids) .OR. PRESENT(kinds))
       IF (PRESENT(response)) THEN
          CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
          CPASSERT(PRESENT(reduced_k_response))
@@ -1274,8 +1281,19 @@ CONTAINS
          IF (radius <= 0.0_dp) CYCLE
          p = frame%projector_first(a)
          q = frame%projector_last(a)
-         grid => frame%defining_atom_grids(ka)%grid
-         CALL centered_grid(frame%defining_atom_grids(ka), directions, angular_weights)
+         IF (ALLOCATED(frame%defining_atom_grids)) THEN
+            rule => frame%defining_atom_grids(ka)
+         ELSE
+            CALL get_qs_kind(kinds(ka), grid_atom=borrowed%grid)
+            CPASSERT(ASSOCIATED(borrowed%grid))
+            IF (ALLOCATED(frame%center_rotations)) THEN
+               CALL qs_upf_atom_angular_average(borrowed%grid, frame%center_rotations, &
+                                                borrowed%directions, borrowed%angular_weights)
+            END IF
+            rule => borrowed
+         END IF
+         grid => rule%grid
+         CALL centered_grid(rule, directions, angular_weights)
          na = SIZE(angular_weights)
          ALLOCATE (bra(na, q - p + 1, 3), gradient(3, q - p + 1), scratch(q - p + 1), &
                    points(3, na), weights(na))

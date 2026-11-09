@@ -18,7 +18,6 @@ MODULE qs_upf_inverse_scf_xc
    USE lebedev,                         ONLY: deallocate_lebedev_grids,&
                                               get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
-                                              lebedev_grid,&
                                               lebedev_rotational_average
    USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
@@ -35,9 +34,7 @@ MODULE qs_upf_inverse_scf_xc
                                               pw_r3d_rs_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
-   USE qs_grid_atom,                    ONLY: allocate_grid_atom,&
-                                              create_grid_atom,&
-                                              grid_atom_type
+   USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
@@ -49,7 +46,8 @@ MODULE qs_upf_inverse_scf_xc
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
                                               qs_upf_inverse_evaluate,&
                                               qs_upf_inverse_response
-   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_prepare,&
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_atom_kind_grid,&
+                                              qs_upf_inverse_atom_grid_prepare,&
                                               qs_upf_inverse_atom_grid_ref_type,&
                                               qs_upf_inverse_atom_grid_response
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_integrate
@@ -1093,7 +1091,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: atom_blocks
 
       CHARACTER(LEN=256)                                 :: core_reason
-      INTEGER                                            :: atom, exponent, ikind, ll, m, na, nr, &
+      INTEGER                                            :: atom, exponent, ikind, ll, m, &
                                                             quadrature
       INTEGER, ALLOCATABLE                               :: kind_of(:), nct(:)
       LOGICAL                                            :: core_available
@@ -1120,18 +1118,7 @@ CONTAINS
       ALLOCATE (native_radius(SIZE(kinds)), SOURCE=0.0_dp)
       CALL init_lebedev_grids()
       DO ikind = 1, SIZE(kinds)
-         CALL get_qs_kind(kinds(ikind), grid_atom=grid, ngrid_ang=na, ngrid_rad=nr)
-         IF (.NOT. ASSOCIATED(grid)) THEN
-            CALL allocate_grid_atom(kinds(ikind)%grid_atom)
-            grid => kinds(ikind)%grid_atom
-         END IF
-         IF (.NOT. ASSOCIATED(grid%weight)) THEN
-            ll = get_number_of_lebedev_grid(n=na)
-            na = lebedev_grid(ll)%n
-            grid%nr = nr
-            grid%ng_sphere = na
-            CALL create_grid_atom(grid, nr, na, 0, ll, quadrature)
-         END IF
+         CALL qs_upf_atom_kind_grid(kinds(ikind), quadrature, grid)
          grids(ikind)%grid => grid
          IF (ALLOCATED(state%angular_rotations)) THEN
             ll = get_number_of_lebedev_grid(n=grid%ng_sphere)

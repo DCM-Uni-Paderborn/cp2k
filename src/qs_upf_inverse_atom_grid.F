@@ -10,10 +10,15 @@ MODULE qs_upf_inverse_atom_grid
    USE cryssym,                         ONLY: crys_sym_lattice_rotations
    USE kinds,                           ONLY: dp,&
                                               int_8
-   USE lebedev,                         ONLY: lebedev_average_points
+   USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
+                                              lebedev_average_points,&
+                                              lebedev_grid
    USE message_passing,                 ONLY: mp_comm_type
-   USE qs_grid_atom,                    ONLY: grid_atom_type
-   USE qs_kind_types,                   ONLY: qs_kind_type
+   USE qs_grid_atom,                    ONLY: allocate_grid_atom,&
+                                              create_grid_atom,&
+                                              grid_atom_type
+   USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              qs_kind_type
    USE skala_periodic_partition,        ONLY: build_periodic_atom_image_layout,&
                                               periodic_atom_image_partition_from_layout,&
                                               skala_periodic_partition_type
@@ -49,8 +54,35 @@ MODULE qs_upf_inverse_atom_grid
    PUBLIC :: qs_upf_inverse_atom_grid_prepare, qs_upf_inverse_atom_grid_response
    PUBLIC :: qs_upf_reference_rotations
    PUBLIC :: qs_upf_atom_angular_average
+   PUBLIC :: qs_upf_atom_kind_grid
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Reuse or initialize the radial and angular quadrature owned by the kind.
+!> \param kind Native kind with the requested radial and angular grid sizes.
+!> \param quadrature Native radial quadrature identifier.
+!> \param grid Borrowed grid. The caller initializes the Lebedev table before this call.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_atom_kind_grid(kind, quadrature, grid)
+      TYPE(qs_kind_type), INTENT(INOUT)                  :: kind
+      INTEGER, INTENT(IN)                                :: quadrature
+      TYPE(grid_atom_type), POINTER                      :: grid
+
+      INTEGER                                            :: ll, na, nr
+
+      CALL get_qs_kind(kind, grid_atom=grid, ngrid_ang=na, ngrid_rad=nr)
+      IF (.NOT. ASSOCIATED(grid)) THEN
+         CALL allocate_grid_atom(kind%grid_atom)
+         grid => kind%grid_atom
+      END IF
+      IF (ASSOCIATED(grid%weight)) RETURN
+      ll = get_number_of_lebedev_grid(n=na)
+      na = lebedev_grid(ll)%n
+      grid%nr = nr
+      grid%ng_sphere = na
+      CALL create_grid_atom(grid, nr, na, 0, ll, quadrature)
+   END SUBROUTINE qs_upf_atom_kind_grid
 
 ! **************************************************************************************************
 !> \brief Select the shared angular reference for periodic USPP and PAW quadratures.

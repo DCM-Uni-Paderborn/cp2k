@@ -626,7 +626,7 @@ CONTAINS
          zeros(axis)%array = 0.0_dp
       END DO
       IF (ALLOCATED(state%gaussian_kinetic)) THEN
-         CALL atomic_kinetic(state, state%frame, 1, atomic_t)
+         CALL atomic_kinetic(state, state%frame, kinds, 1, atomic_t)
          CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
          unit_tau%array = 0.0_dp
       ELSE
@@ -1087,13 +1087,13 @@ CONTAINS
                                         atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
                                         core_response, metric_response, frame%ao%dion, orbital_fields=orbital_fields, &
                                         saved_coefficients_response=dw)
-      IF (ALLOCATED(frame%ao%atomic_cache) .AND. use_atomic_kinetic) THEN
-         CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, atomic_t, atomic_m, dt, dm, &
-                                              atom_response, cell_response, reduced_k_response, dw)
-         core_response(:, :) = core_response + dt
-      END IF
       CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, upf_inverse=state)
       CPASSERT(ASSOCIATED(state))
+      IF (ALLOCATED(frame%ao%atomic_cache) .AND. use_atomic_kinetic) THEN
+         CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, atomic_t, atomic_m, dt, dm, &
+                                              atom_response, cell_response, reduced_k_response, dw, kinds)
+         core_response(:, :) = core_response + dt
+      END IF
       CALL gth_core_operator(ks_env, state, frame, response=core_response, coefficients_response=dw, &
                              atom_response=atom_response, cell_response=cell_response, &
                              reduced_k_response=reduced_k_response)
@@ -1156,13 +1156,14 @@ CONTAINS
       TYPE(dbcsr_p_type), POINTER                        :: density_gamma(:, :), energy_gamma(:)
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_ks_env_type), POINTER                      :: native_ks
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
 
       CALL timeset(routineN, timing_handle)
-      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho)
+      CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, qs_kind_set=kinds)
       CPASSERT(ASSOCIATED(state))
       CALL check_geometry(ks_env, state)
       nspin = SIZE(vdensity)
@@ -1225,7 +1226,7 @@ CONTAINS
                    state%bloch%frames(1)%ao%point_comm%mepos) CYCLE
                CALL qs_upf_inverse_atomic_operators(state%bloch%frames(ik)%ao, state%bloch%frames(ik)%ao%radial_q, &
                                                     atomic_t, atomic_m, dt, dm, atom_response, cell_response, &
-                                                    reduced_k_response(:, ik), dw_all(:, :, ik))
+                                                    reduced_k_response(:, ik), dw_all(:, :, ik), kinds)
                atomic_core(:, :, ik) = dt
             END DO
             CALL state%bloch%frames(1)%ao%point_comm%sum(atomic_core)
@@ -1737,20 +1738,24 @@ CONTAINS
 !>        The original density quadrature continues to define the installed charge metric.
 !> \param state Native Gaussian kinetic operators captured before the inverse core replaced them.
 !> \param frame Prepared inverse at the current geometry and k point.
+!> \param kinds Native atom quadratures.
 !> \param ik Global k-point index in the captured native Gaussian operators.
 !> \param matrix New complete transformed kinetic operator.
 ! **************************************************************************************************
-   SUBROUTINE atomic_kinetic(state, frame, ik, matrix)
+   SUBROUTINE atomic_kinetic(state, frame, kinds, ik, matrix)
       TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       INTEGER, INTENT(IN)                                :: ik
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: matrix(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: metric(:, :)
 
       CPASSERT(ALLOCATED(state%gaussian_kinetic))
-      CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, matrix, metric)
+      CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, matrix, metric, kinds=kinds)
       matrix(:, :) = matrix + state%gaussian_kinetic(:, :, ik)
+      ! Cancellation between radial terms can amplify roundoff before scattering.
+      matrix(:, :) = 0.5_dp*(matrix + CONJG(TRANSPOSE(matrix)))
    END SUBROUTINE atomic_kinetic
 
 ! **************************************************************************************************
@@ -1817,7 +1822,7 @@ CONTAINS
       state%gth_paw_energy = fixed_core
       DO ik = 1, nk
          IF (ALLOCATED(state%gaussian_kinetic)) THEN
-            CALL atomic_kinetic(state, state%bloch%frames(ik), ik, matrix)
+            CALL atomic_kinetic(state, state%bloch%frames(ik), kinds, ik, matrix)
          ELSE
             CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(ik), zero, zeros, unit_tau, matrix)
          END IF

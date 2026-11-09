@@ -531,7 +531,7 @@ CONTAINS
       END DO
       ALLOCATE (frame%projector_first(ncenter), frame%projector_last(ncenter), &
                 frame%beta_cache(SIZE(kinds)), frame%delta_cache(SIZE(kinds)))
-      IF (use_atomic .OR. (ALLOCATED(frame%defining_atom_grids) .AND. role == 'ORB')) THEN
+      IF (use_atomic .OR. role == 'ORB') THEN
          ALLOCATE (frame%atomic_cache(SIZE(kinds)))
       END IF
       nproj = 0
@@ -1040,9 +1040,10 @@ CONTAINS
 !> \param cell_response Optional lattice displacement.
 !> \param reduced_k_response Optional reduced Bloch-vector displacement.
 !> \param coefficients_response Optional precomputed coefficient response for this frame and geometry variation.
+!> \param kinds Native atom grids for intercenter terms with a uniform-grid defining projection.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_atomic_operators(frame, projector_metric, kinetic, metric, kinetic_response, metric_response, &
-                                              atom_response, cell_response, reduced_k_response, coefficients_response)
+                                              atom_response, cell_response, reduced_k_response, coefficients_response, kinds)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: kinetic(:, :), metric(:, :)
@@ -1052,6 +1053,7 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :)
+      TYPE(qs_kind_type), INTENT(IN), OPTIONAL            :: kinds(:)
 
       COMPLEX(dp), ALLOCATABLE :: cross(:, :), dcross(:, :), dl(:, :), dz(:, :), laplacian(:, :), &
          mixed(:, :), overlaps(:, :), rs(:, :), rt(:, :), z(:, :), zero_ao(:, :), zero_projectors(:, :)
@@ -1141,12 +1143,12 @@ CONTAINS
       ALLOCATE (cross(np, np))
       IF (calculate_response) THEN
          ALLOCATE (dcross(np, np))
-         CALL qs_upf_inverse_cross_kinetic(frame, cross, dcross, atom_response, cell_response, reduced_k_response)
+         CALL qs_upf_inverse_cross_kinetic(frame, cross, dcross, atom_response, cell_response, reduced_k_response, kinds)
          mixed = MATMUL(CONJG(TRANSPOSE(dw)), MATMUL(cross, frame%coefficients))
          kinetic_response = kinetic_response + mixed + CONJG(TRANSPOSE(mixed)) + &
                             MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(dcross, frame%coefficients))
       ELSE
-         CALL qs_upf_inverse_cross_kinetic(frame, cross)
+         CALL qs_upf_inverse_cross_kinetic(frame, cross, kinds=kinds)
       END IF
       kinetic = kinetic + MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(cross, frame%coefficients))
    END SUBROUTINE qs_upf_inverse_atomic_operators

@@ -16,18 +16,22 @@ MODULE qs_upf_inverse_basis
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp
+   USE lebedev,                         ONLY: deallocate_lebedev_grids,&
+                                              init_lebedev_grids
    USE particle_types,                  ONLY: particle_type
    USE pw_grid_types,                   ONLY: pw_grid_type
    USE pw_types,                        ONLY: pw_c1d_gs_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
    USE qs_kinetic,                      ONLY: build_kinetic_matrix
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get
-   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_reference_rotations
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_atom_kind_grid,&
+                                              qs_upf_reference_rotations
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_operator,&
                                               qs_upf_inverse_background_prepare
@@ -148,8 +152,8 @@ CONTAINS
       reciprocal_norm = SQRT(SUM(cell%h_inv**2, DIM=2))
       domain_lower = 0.0_dp
       domain_upper = 1.0_dp
-      IF (control%qs_control%gapw .AND. control%qs_control%uspp_method == uspp_method_inverse) THEN
-         ! The defining projector quadratures extend beyond the primary cell.
+      IF (control%qs_control%uspp_method == uspp_method_inverse) THEN
+         ! The atom-centered difference-wave integrals extend beyond the primary cell.
          DO atom = 1, SIZE(atoms)
             radius = radial_radius(atoms(atom)%atomic_kind%kind_number)
             IF (radius == 0.0_dp) CYCLE
@@ -269,10 +273,12 @@ CONTAINS
       INTEGER                                            :: ikind
       LOGICAL                                            :: auxiliary, do_kpoints, gaussian_kinetic, use_atomic, &
                                                             use_composite, use_kinetic
+      REAL(dp), ALLOCATABLE, TARGET                       :: kinetic_rotations(:, :, :)
       REAL(dp), POINTER                                  :: center_rotations(:, :, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: kinetic_k(:, :)
       TYPE(dft_control_type), POINTER                    :: control
+      TYPE(grid_atom_type), POINTER                      :: atom_grid
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_ks_env_type), POINTER                      :: native_ks
 
@@ -320,7 +326,25 @@ CONTAINS
       END IF
       ! Auxiliary XC needs the same soft Gaussian source as full GAPW, without owning Hartree data.
       state%gaussian_background = auxiliary .AND. control%qs_control%gapw
-      gaussian_kinetic = use_atomic .OR. (control%qs_control%gapw .AND. .NOT. auxiliary)
+      gaussian_kinetic = use_atomic .OR. .NOT. auxiliary
+      IF (.NOT. (use_atomic .OR. auxiliary .OR. control%qs_control%gapw)) THEN
+         IF (ALLOCATED(state%angular_rotations)) THEN
+            center_rotations => state%angular_rotations
+         ELSE
+            CALL qs_upf_reference_rotations(cell, control%qs_control%upf_angular_reference_cell, kinds, &
+                                            .TRUE., kinetic_rotations)
+            IF (ALLOCATED(kinetic_rotations)) center_rotations => kinetic_rotations
+         END IF
+         CALL init_lebedev_grids()
+         DO ikind = 1, SIZE(kinds)
+            IF (kinds(ikind)%ghost .OR. ASSOCIATED(kinds(ikind)%gth_potential)) CYCLE
+            ASSOCIATE (pot => kinds(ikind)%sgp_potential%upf_data)
+               IF (.NOT. (pot%is_paw .OR. pot%is_ultrasoft)) CYCLE
+            END ASSOCIATE
+            CALL qs_upf_atom_kind_grid(kinds(ikind), control%qs_control%gapw_control%quadrature, atom_grid)
+         END DO
+         CALL deallocate_lebedev_grids()
+      END IF
       IF (gaussian_kinetic .OR. state%native_gth_local .OR. state%gaussian_background) THEN
          CALL qs_upf_inverse_background_prepare(ks_env, state%gaussian, soft_basis=control%qs_control%gapw, &
                                                 qs_env=qs_env, basis_type=role)
