@@ -54,6 +54,9 @@ MODULE upf_inverse_coulomb
    END TYPE pair_map_type
 
    TYPE harmonic_work_type
+      INTEGER :: max_degree
+      INTEGER, ALLOCATABLE :: first_term(:), powers(:, :)
+      REAL(dp), ALLOCATABLE :: coefficients(:)
       REAL(dp), ALLOCATABLE :: values(:), response(:), gradient(:, :)
    END TYPE harmonic_work_type
 
@@ -1025,12 +1028,8 @@ CONTAINS
       CALL init_spherical_harmonics(MAX(MAXVAL(l_a), MAXVAL(l_b)), -1)
       ALLOCATE (ab(SIZE(l_a), SIZE(l_b)), ba(SIZE(l_b), SIZE(l_a)))
       IF (PRESENT(response)) ALLOCATE (dab(SIZE(l_a), SIZE(l_b)), dba(SIZE(l_b), SIZE(l_a)))
-      ! Reuse harmonic fields for every radial-shell pair and both orientations.
-      ALLOCATE (work_a%values(SIZE(l_a)), work_b%values(SIZE(l_b)))
-      IF (PRESENT(response)) THEN
-         ALLOCATE (work_a%response(SIZE(l_a)), work_a%gradient(3, SIZE(l_a)))
-         ALLOCATE (work_b%response(SIZE(l_b)), work_b%gradient(3, SIZE(l_b)))
-      END IF
+      CALL prepare_harmonic_work(l_a, indices_a, PRESENT(response), work_a)
+      CALL prepare_harmonic_work(l_b, indices_b, PRESENT(response), work_b)
       nq = MAX(32, MAXVAL(l_a) + MAXVAL(l_b) + 2)
       ALLOCATE (nodes(nq), weights(nq))
       CALL polar_rule(nodes, weights)
@@ -1069,25 +1068,25 @@ CONTAINS
             END IF
             IF (ABS(radii_a(i) - radii_b(j)) > distance) THEN
                IF (PRESENT(response)) THEN
-                  CALL contained_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
+                  CALL contained_shell(radii_a(i), radii_b(j), l_a, l_b, &
                                        displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i), dab)
-                  CALL contained_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
+                  CALL contained_shell(radii_b(j), radii_a(i), l_b, l_a, &
                                        -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j), dba)
                ELSE
-                  CALL contained_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
+                  CALL contained_shell(radii_a(i), radii_b(j), l_a, l_b, &
                                        displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i))
-                  CALL contained_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
+                  CALL contained_shell(radii_b(j), radii_a(i), l_b, l_a, &
                                        -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j))
                END IF
             ELSE IF (PRESENT(response)) THEN
-               CALL translated_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
+               CALL translated_shell(radii_a(i), radii_b(j), l_a, l_b, &
                                      displacement, da, db, delta, ab, nodes, weights, work_a, work_b, dab)
-               CALL translated_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
+               CALL translated_shell(radii_b(j), radii_a(i), l_b, l_a, &
                                      -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, dba)
             ELSE
-               CALL translated_shell(radii_a(i), radii_b(j), l_a, indices_a, l_b, indices_b, &
+               CALL translated_shell(radii_a(i), radii_b(j), l_a, l_b, &
                                      displacement, da, db, delta, ab, nodes, weights, work_a, work_b)
-               CALL translated_shell(radii_b(j), radii_a(i), l_b, indices_b, l_a, indices_a, &
+               CALL translated_shell(radii_b(j), radii_a(i), l_b, l_a, &
                                      -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a)
             END IF
             kernel(i, :, j, :) = 0.5_dp*(ab + TRANSPOSE(ba))
@@ -1104,9 +1103,7 @@ CONTAINS
 !> \param a Target radius, fixed across calls using the same cache.
 !> \param b Source radius.
 !> \param la Target harmonic orders.
-!> \param ia Target harmonic indices.
 !> \param lb Source harmonic orders.
-!> \param ib Source harmonic indices.
 !> \param d Target center minus source center, fixed for this cache.
 !> \param da Target radial motion, fixed for this cache.
 !> \param db Source radial motion.
@@ -1119,9 +1116,9 @@ CONTAINS
 !> \param cache Owned maps for source shells enclosing or enclosed by the target.
 !> \param response Optional joint response, requested consistently for this cache.
 ! **************************************************************************************************
-   SUBROUTINE contained_shell(a, b, la, ia, lb, ib, d, da, db, dd, value, nodes, weights, work_a, work_b, cache, response)
+   SUBROUTINE contained_shell(a, b, la, lb, d, da, db, dd, value, nodes, weights, work_a, work_b, cache, response)
       REAL(dp), INTENT(IN)                               :: a, b
-      INTEGER, INTENT(IN)                                :: la(:), ia(:), lb(:), ib(:)
+      INTEGER, INTENT(IN)                                :: la(:), lb(:)
       REAL(dp), INTENT(IN)                               :: d(3), da, db, dd(3)
       REAL(dp), INTENT(OUT)                              :: value(:, :)
       REAL(dp), INTENT(IN)                               :: nodes(:), weights(:)
@@ -1139,10 +1136,10 @@ CONTAINS
       END IF
       IF (.NOT. cache%ready(side)) THEN
          IF (PRESENT(response)) THEN
-            CALL translated_shell(a, b, la, ia, lb, ib, d, da, 0.0_dp, dd, cache%values(:, :, side), &
+            CALL translated_shell(a, b, la, lb, d, da, 0.0_dp, dd, cache%values(:, :, side), &
                                   nodes, weights, work_a, work_b, cache%response(:, :, side))
          ELSE
-            CALL translated_shell(a, b, la, ia, lb, ib, d, da, 0.0_dp, dd, cache%values(:, :, side), &
+            CALL translated_shell(a, b, la, lb, d, da, 0.0_dp, dd, cache%values(:, :, side), &
                                   nodes, weights, work_a, work_b)
          END IF
          cache%source_radius(side) = b
@@ -1259,9 +1256,7 @@ CONTAINS
 !> \param a ...
 !> \param b ...
 !> \param la ...
-!> \param ia ...
 !> \param lb ...
-!> \param ib ...
 !> \param d ...
 !> \param da ...
 !> \param db ...
@@ -1273,9 +1268,9 @@ CONTAINS
 !> \param work_b Harmonic fields reused across source shells.
 !> \param response ...
 ! **************************************************************************************************
-   SUBROUTINE translated_shell(a, b, la, ia, lb, ib, d, da, db, dd, value, nodes, weights, work_a, work_b, response)
+   SUBROUTINE translated_shell(a, b, la, lb, d, da, db, dd, value, nodes, weights, work_a, work_b, response)
       REAL(dp), INTENT(IN)                               :: a, b
-      INTEGER, INTENT(IN)                                :: la(:), ia(:), lb(:), ib(:)
+      INTEGER, INTENT(IN)                                :: la(:), lb(:)
       REAL(dp), INTENT(IN)                               :: d(3), da, db, dd(3)
       REAL(dp), INTENT(OUT)                              :: value(:, :)
       REAL(dp), INTENT(IN)                               :: nodes(:), weights(:)
@@ -1358,21 +1353,18 @@ CONTAINS
                u = mu*ez + sine*(COS(azimuth)*ex + SIN(azimuth)*ey)
                x = d + a*u
                norm_x = SQRT(SUM(x**2))
+               CALL solid_fields(u, work_a, derive)
+               CALL solid_fields(x, work_b, derive)
                IF (derive) THEN
                   du = dmu*ez + mu*dez - mu*dmu/sine*(COS(azimuth)*ex + SIN(azimuth)*ey) + &
                        sine*(COS(azimuth)*dex + SIN(azimuth)*dey)
                   dx = dd + da*u + a*du
-                  CALL solid_fields(u, la, ia, work_a%values, work_a%gradient)
-                  CALL solid_fields(x, lb, ib, work_b%values, work_b%gradient)
                   DO channel = 1, SIZE(la)
                      work_a%response(channel) = DOT_PRODUCT(du, work_a%gradient(:, channel))
                   END DO
                   DO channel = 1, SIZE(lb)
                      work_b%response(channel) = DOT_PRODUCT(dx, work_b%gradient(:, channel))
                   END DO
-               ELSE
-                  CALL solid_fields(u, la, ia, work_a%values)
-                  CALL solid_fields(x, lb, ib, work_b%values)
                END IF
                DO channel = 1, SIZE(lb)
                   IF (norm_x < b) THEN
@@ -1400,48 +1392,83 @@ CONTAINS
    END SUBROUTINE translated_shell
 
 ! **************************************************************************************************
-!> \brief Native regular solid harmonics and Cartesian gradients, including their origin limits.
-!> \param x ...
+!> \brief Retain the nonzero Cartesian terms in the native solid harmonics.
+!>        The translated shells reuse these coefficients at every angular node.
 !> \param ls ...
 !> \param indices ...
-!> \param values ...
-!> \param gradients ...
+!> \param derive Allocate scratch space for geometry derivatives.
+!> \param work Prepared harmonic terms and scratch fields.
 ! **************************************************************************************************
-   SUBROUTINE solid_fields(x, ls, indices, values, gradients)
-      REAL(dp), INTENT(IN)                               :: x(3)
+   SUBROUTINE prepare_harmonic_work(ls, indices, derive, work)
       INTEGER, INTENT(IN)                                :: ls(:), indices(:)
-      REAL(dp), INTENT(OUT)                              :: values(:)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradients(:, :)
+      LOGICAL, INTENT(IN)                                :: derive
+      TYPE(harmonic_work_type), INTENT(OUT)              :: work
 
-      INTEGER                                            :: axis, channel, i, l, m, power, &
-                                                            powers(3), reduced(3)
-      REAL(dp)                                           :: factor, xpowers(0:20, 3)
+      INTEGER                                            :: channel, i, l, m, term
+      REAL(dp)                                           :: coefficient
 
-      values = 0.0_dp
-      IF (PRESENT(gradients)) gradients = 0.0_dp
-      xpowers(0, :) = 1.0_dp
-      DO axis = 1, 3
-         DO power = 1, MAXVAL(ls)
-            xpowers(power, axis) = x(axis)*xpowers(power - 1, axis)
-         END DO
+      work%max_degree = MAXVAL(ls)
+      ALLOCATE (work%first_term(SIZE(ls) + 1), work%values(SIZE(ls)))
+      IF (derive) ALLOCATE (work%response(SIZE(ls)), work%gradient(3, SIZE(ls)))
+      work%first_term(1) = 1
+      DO channel = 1, SIZE(ls)
+         l = ls(channel)
+         m = indices(channel) - l*l
+         work%first_term(channel + 1) = work%first_term(channel) + COUNT(orbtramat(l)%slm(m, :) /= 0.0_dp)
       END DO
+      term = work%first_term(SIZE(ls) + 1) - 1
+      ALLOCATE (work%powers(3, term), work%coefficients(term))
+      term = 0
       DO channel = 1, SIZE(ls)
          l = ls(channel)
          m = indices(channel) - l*l
          DO i = 1, nco(l)
-            powers = indco(:, ncoset(l - 1) + i)
-            factor = orbtramat(l)%slm(m, i)
-            IF (factor == 0.0_dp) CYCLE
-            values(channel) = values(channel) + factor* &
-                              xpowers(powers(1), 1)*xpowers(powers(2), 2)*xpowers(powers(3), 3)
-            IF (.NOT. PRESENT(gradients)) CYCLE
+            coefficient = orbtramat(l)%slm(m, i)
+            IF (coefficient == 0.0_dp) CYCLE
+            term = term + 1
+            work%powers(:, term) = indco(:, ncoset(l - 1) + i)
+            work%coefficients(term) = coefficient
+         END DO
+      END DO
+   END SUBROUTINE prepare_harmonic_work
+
+! **************************************************************************************************
+!> \brief Native regular solid harmonics and Cartesian gradients, including their origin limits.
+!> \param x ...
+!> \param work Prepared Cartesian terms and output fields.
+!> \param derive Evaluate Cartesian gradients.
+! **************************************************************************************************
+   SUBROUTINE solid_fields(x, work, derive)
+      REAL(dp), INTENT(IN)                               :: x(3)
+      TYPE(harmonic_work_type), INTENT(INOUT)            :: work
+      LOGICAL, INTENT(IN)                                :: derive
+
+      INTEGER                                            :: axis, channel, i, power, &
+                                                            powers(3), reduced(3)
+      REAL(dp)                                           :: factor, xpowers(0:20, 3)
+
+      work%values = 0.0_dp
+      IF (derive) work%gradient = 0.0_dp
+      xpowers(0, :) = 1.0_dp
+      DO axis = 1, 3
+         DO power = 1, work%max_degree
+            xpowers(power, axis) = x(axis)*xpowers(power - 1, axis)
+         END DO
+      END DO
+      DO channel = 1, SIZE(work%values)
+         DO i = work%first_term(channel), work%first_term(channel + 1) - 1
+            powers = work%powers(:, i)
+            factor = work%coefficients(i)
+            work%values(channel) = work%values(channel) + &
+                                   factor*xpowers(powers(1), 1)*xpowers(powers(2), 2)*xpowers(powers(3), 3)
+            IF (.NOT. derive) CYCLE
             DO axis = 1, 3
                IF (powers(axis) == 0) CYCLE
                reduced = powers
                reduced(axis) = reduced(axis) - 1
-               gradients(axis, channel) = gradients(axis, channel) + &
-                                          factor*powers(axis)*xpowers(reduced(1), 1)* &
-                                          xpowers(reduced(2), 2)*xpowers(reduced(3), 3)
+               work%gradient(axis, channel) = work%gradient(axis, channel) + &
+                                              factor*powers(axis)*xpowers(reduced(1), 1)* &
+                                              xpowers(reduced(2), 2)*xpowers(reduced(3), 3)
             END DO
          END DO
       END DO
