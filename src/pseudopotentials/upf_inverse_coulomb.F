@@ -1503,12 +1503,8 @@ CONTAINS
       TYPE(harmonic_work_type), INTENT(INOUT)            :: work
       LOGICAL, INTENT(IN)                                :: derive
 
-      INTEGER                                            :: axis, channel, i, power, &
-                                                            powers(3), reduced(3)
-      REAL(dp)                                           :: factor, xpowers(0:20, 3)
-
-      work%values = 0.0_dp
-      IF (derive) work%gradient = 0.0_dp
+      INTEGER                                            :: axis, channel, i, power, px, py, pz
+      REAL(dp)                                           :: dx, dy, dz, factor, value, xp, xpowers(0:20, 3), yp, zp
       xpowers(0, :) = 1.0_dp
       DO axis = 1, 3
          DO power = 1, work%max_degree
@@ -1516,21 +1512,26 @@ CONTAINS
          END DO
       END DO
       DO channel = 1, SIZE(work%values)
+         value = 0.0_dp
+         dx = 0.0_dp
+         dy = 0.0_dp
+         dz = 0.0_dp
          DO i = work%first_term(channel), work%first_term(channel + 1) - 1
-            powers = work%powers(:, i)
+            px = work%powers(1, i)
+            py = work%powers(2, i)
+            pz = work%powers(3, i)
+            xp = xpowers(px, 1)
+            yp = xpowers(py, 2)
+            zp = xpowers(pz, 3)
             factor = work%coefficients(i)
-            work%values(channel) = work%values(channel) + &
-                                   factor*xpowers(powers(1), 1)*xpowers(powers(2), 2)*xpowers(powers(3), 3)
+            value = value + factor*xp*yp*zp
             IF (.NOT. derive) CYCLE
-            DO axis = 1, 3
-               IF (powers(axis) == 0) CYCLE
-               reduced = powers
-               reduced(axis) = reduced(axis) - 1
-               work%gradient(axis, channel) = work%gradient(axis, channel) + &
-                                              factor*powers(axis)*xpowers(reduced(1), 1)* &
-                                              xpowers(reduced(2), 2)*xpowers(reduced(3), 3)
-            END DO
+            IF (px > 0) dx = dx + factor*px*xpowers(px - 1, 1)*yp*zp
+            IF (py > 0) dy = dy + factor*py*xp*xpowers(py - 1, 2)*zp
+            IF (pz > 0) dz = dz + factor*pz*xp*yp*xpowers(pz - 1, 3)
          END DO
+         work%values(channel) = value
+         IF (derive) work%gradient(:, channel) = [dx, dy, dz]
       END DO
    END SUBROUTINE solid_fields
 
