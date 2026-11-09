@@ -3586,22 +3586,22 @@ CONTAINS
       INTEGER, ALLOCATABLE, INTENT(INOUT)                :: support_indices(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: local_coefficients(:, :)
 
-      COMPLEX(dp), ALLOCATABLE :: batch_delta(:, :), batch_moment(:, :), batch_orbitals(:, :), &
-         batch_self(:, :), batch_weighted(:, :), delta(:, :), gaussian(:, :), phi(:, :), &
-         weighted(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE :: batch_delta(:, :), delta(:, :), gaussian(:, :), phi(:, :), weighted(:, :, :, :)
       INTEGER :: atom, aux, first, hi, ia, image, index, ir, j, kind, last, lo, max_ao, nang, nao, &
-         nimage, np, nproj, nrow, nsupport, row, single_image(3, 1), zero(3, 1)
+         nimage, ncomponent, np, npoint, nproj, nrow, nsupport, row, single_image(3, 1), zero(3, 1)
       INTEGER(int_8)                                     :: gaussian_words, support_words, words
       INTEGER, ALLOCATABLE                               :: selected_images(:)
       LOGICAL                                            :: cached_gaussian, cached_support, &
                                                             collect_support, compute_self_moment
       REAL(dp)                                           :: bounds(3, 2), position(3), radius
-      REAL(dp), ALLOCATABLE                              :: local_points(:, :), potential(:, :), &
-                                                            weights(:)
+      REAL(dp), ALLOCATABLE :: batch_local_delta(:, :), batch_moment(:, :), batch_orbitals(:, :), &
+         batch_self(:, :), batch_weighted(:, :), local_points(:, :), potential(:, :), weights(:)
       REAL(dp), ALLOCATABLE, TARGET                      :: coordinates(:, :, :)
       REAL(dp), POINTER                                  :: batch_points(:, :)
       TYPE(linear_moment_type), POINTER                  :: entry, retained
       TYPE(linear_moment_type), TARGET                   :: temporary
+
+      EXTERNAL dgemm
 
       valid = .FALSE.
       kind = frame%center_kinds(center)
@@ -3614,6 +3614,7 @@ CONTAINS
       IF (frame%atom_local) THEN
          CPASSERT(PRESENT(local_coefficients))
          CPASSERT(ALL(SHAPE(local_coefficients) == [nproj, nao]))
+         CPASSERT(ALL(AIMAG(local_coefficients) == 0.0_dp))
          np = nproj
       ELSE
          CPASSERT(PRESENT(coefficient_images) .AND. PRESENT(coefficients))
@@ -3724,9 +3725,13 @@ CONTAINS
          IF (compute_self_moment) THEN
             ALLOCATE (entry%values(nproj, nproj, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
          END IF
-         ALLOCATE (batch_weighted(nang*nrow, nproj*fields%nfunction), batch_orbitals(nang*nrow, nao), &
-                   batch_moment(nproj*fields%nfunction, nao), batch_self(nproj*fields%nfunction, nproj))
-         IF (compute_self_moment .AND. .NOT. ALLOCATED(batch_delta)) ALLOCATE (batch_delta(nang*nrow, nproj))
+         ! The translated Gaussian, partial-wave and projector fields have zero Bloch phase here.
+         npoint = nang*nrow
+         ncomponent = nproj*fields%nfunction
+         IF (ALLOCATED(batch_delta)) DEALLOCATE (batch_delta)
+         ALLOCATE (batch_weighted(npoint, ncomponent), batch_orbitals(npoint, nao), &
+                   batch_moment(ncomponent, nao), batch_self(ncomponent, nproj))
+         IF (compute_self_moment) ALLOCATE (batch_local_delta(npoint, nproj))
       END IF
       row = 0
       zero = 0
@@ -3769,10 +3774,10 @@ CONTAINS
          END IF
          IF (frame%atom_local) THEN
             ! Keep every original quadrature point and contract the complete point set at once.
-            batch_orbitals((row - 1)*nang + 1:row*nang, :) = phi
-            IF (compute_self_moment) batch_delta((row - 1)*nang + 1:row*nang, :nproj) = delta(:, :nproj)
+            batch_orbitals((row - 1)*nang + 1:row*nang, :) = REAL(phi, dp)
+            IF (compute_self_moment) batch_local_delta((row - 1)*nang + 1:row*nang, :) = REAL(delta(:, :nproj), dp)
             DO aux = 1, fields%nfunction
-               batch_weighted((row - 1)*nang + 1:row*nang, (aux - 1)*nproj + 1:aux*nproj) = weighted(:, :, aux, row)
+               batch_weighted((row - 1)*nang + 1:row*nang, (aux - 1)*nproj + 1:aux*nproj) = REAL(weighted(:, :, aux, row), dp)
             END DO
          ELSE
             DO aux = 1, fields%nfunction
@@ -3783,18 +3788,20 @@ CONTAINS
       IF (frame%atom_local) THEN
          ! All auxiliary components share the same pointwise Gaussian and difference fields.
          ! Contract their projector rows together, retaining the original cache and quadrature.
-         CALL field_product(batch_weighted, batch_orbitals, batch_moment, .FALSE., .TRUE., .FALSE.)
+         CALL dgemm('T', 'N', ncomponent, nao, npoint, 1.0_dp, batch_weighted, npoint, &
+                    batch_orbitals, npoint, 0.0_dp, batch_moment, ncomponent)
          IF (compute_self_moment) THEN
-            CALL field_product(batch_weighted, batch_delta(:, :nproj), batch_self, .FALSE., .TRUE., .FALSE.)
+            CALL dgemm('T', 'N', ncomponent, nproj, npoint, 1.0_dp, batch_weighted, npoint, &
+                       batch_local_delta, npoint, 0.0_dp, batch_self, ncomponent)
          END IF
          DO aux = 1, fields%nfunction
             IF (compute_self_moment) THEN
                entry%values(:, :, aux) = batch_self((aux - 1)*nproj + 1:aux*nproj, :)
             ELSE
-               batch_self((aux - 1)*nproj + 1:aux*nproj, :) = entry%values(:, :, aux)
+               batch_self((aux - 1)*nproj + 1:aux*nproj, :) = REAL(entry%values(:, :, aux), dp)
             END IF
          END DO
-         CALL field_product(batch_self, local_coefficients, batch_moment, .TRUE., .FALSE., .FALSE., -1.0_dp)
+         batch_moment = batch_moment - MATMUL(batch_self, REAL(local_coefficients, dp))
          DO aux = 1, fields%nfunction
             moment(:, :, aux) = batch_moment((aux - 1)*nproj + 1:aux*nproj, :)
          END DO
