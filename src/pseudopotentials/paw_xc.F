@@ -319,6 +319,7 @@ CONTAINS
       CPASSERT(SIZE(a) == SIZE(b))
       value = twofold_real_type()
       DO i = 1, SIZE(a)
+         IF (b(i) == 0.0_dp) CYCLE
          value = twofold_add(value, twofold_multiply(a(i), twofold_real_type(b(i), 0.0_dp)))
       END DO
    END FUNCTION component_dot
@@ -874,7 +875,9 @@ CONTAINS
       CALL xc_dset_create(derivatives, local_bounds=bounds)
       coefficient_response = twofold_real_type()
       DO side = 1, 2
-         DO first = 1, grid%nr, nr
+         ! The orbital density direction and its transpose have valence support.
+         ! Whole batches outside that support contribute no projector response.
+         DO first = 1, grid%nval, nr
             rho = 0.0_dp; drho = 0.0_dp; tau = 0.0_dp; weights = 0.0_dp
             delta_rho = 0.0_dp; delta_drho = 0.0_dp; delta_tau = 0.0_dp
             DO jr = 1, nr
