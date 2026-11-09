@@ -2823,7 +2823,8 @@ CONTAINS
                                                             image, ir, kind, last, left_image, &
                                                             nang, nl, np, nr, right_image, &
                                                             zero(3, 1)
-      LOGICAL                                            :: cached_potentials, geometry, same_ao_block
+      LOGICAL                                            :: cached_potentials, geometry, left_zero, &
+                                                            q_geometry, right_zero, same_ao_block
       REAL(dp)                                           :: local_cell(3, 3), position(3), &
                                                             potential_geometry(3), radius, &
                                                             sphere_geometry(3)
@@ -2912,6 +2913,10 @@ CONTAINS
          ! zero coefficient is still a variable and must retain its coefficient derivative.
          IF (left_image == 0 .AND. right_image == 0) RETURN
       END IF
+      left_zero = ALL(wl == CMPLX(0.0_dp, 0.0_dp, dp))
+      right_zero = ALL(wr == CMPLX(0.0_dp, 0.0_dp, dp))
+      ! Both first derivatives of the quadratic DIRECT correction vanish at zero overlap.
+      IF (frame%direct .AND. left_zero .AND. right_zero) RETURN
       qi => temporary_augmentation
       IF (PRESENT(augmentation_integrals)) qi => augmentation_integrals
       IF (radius > 0.0_dp) THEN
@@ -3051,16 +3056,18 @@ CONTAINS
             END IF
          END DO
       END IF
-      IF (augmentation%nproj > 0) THEN
+      IF (augmentation%nproj > 0 .AND. .NOT. (left_zero .AND. right_zero)) THEN
+         ! The Q derivative multiplies both overlaps. Each overlap derivative needs only the other overlap.
+         q_geometry = geometry .AND. .NOT. (left_zero .OR. right_zero)
          ALLOCATE (q(np, np))
          CALL prepare_transition_augmentation(fields, augmentation, position - auxiliary_center, &
-                                              directions, angular_weights, qi, geometry, frame%cell)
+                                              directions, angular_weights, qi, q_geometry, frame%cell)
          potential_geometry = 0.0_dp
          DO aux = 1, fields%nfunction
             q(:, :) = CMPLX(qi%values(:, :, aux), 0.0_dp, dp)
-            gl(:, :) = gl + MATMUL(MATMUL(q, wr), CONJG(TRANSPOSE(covector(:, :, aux))))
-            gr(:, :) = gr + MATMUL(MATMUL(CONJG(TRANSPOSE(q)), wl), covector(:, :, aux))
-            IF (geometry) THEN
+            IF (.NOT. right_zero) gl(:, :) = gl + MATMUL(MATMUL(q, wr), CONJG(TRANSPOSE(covector(:, :, aux))))
+            IF (.NOT. left_zero) gr(:, :) = gr + MATMUL(MATMUL(CONJG(TRANSPOSE(q)), wl), covector(:, :, aux))
+            IF (q_geometry) THEN
                DO axis = 1, 3
                   q(:, :) = CMPLX(qi%gradient(:, :, aux, axis), 0.0_dp, dp)
                   potential_geometry(axis) = potential_geometry(axis) + &
@@ -3068,7 +3075,7 @@ CONTAINS
                END DO
             END IF
          END DO
-         IF (geometry) THEN
+         IF (q_geometry) THEN
             atom_geometry(:, atom) = atom_geometry(:, atom) + potential_geometry
             DO axis = 1, 3
                cell_geometry(:, axis) = cell_geometry(:, axis) + potential_geometry*REAL(center_image(axis), dp)
