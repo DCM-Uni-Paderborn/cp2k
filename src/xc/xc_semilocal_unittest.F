@@ -961,8 +961,8 @@ CONTAINS
 
       INTEGER                                            :: side, spin, variant
       LOGICAL                                            :: active
-      REAL(dp)                                           :: energy, error, first, gradient(5), &
-                                                            hessian(5, 5), limits(5, 2), selected, &
+      REAL(dp)                                           :: delta, energy, error, first, gradient(5), &
+                                                            hessian(5, 5), limits(5, 2), selected, scratch(5, 5), &
                                                             slopes(2), trial(5), values(2), x(5)
       TYPE(xc_rho_cflags_type)                           :: needs
 
@@ -1009,6 +1009,31 @@ CONTAINS
       END DO
       WRITE (*, '(A,ES15.6)') 'Native PBE selected spin-floor energy derivative error:', error
       IF (error > 2.e-8_dp) ERROR STOP 'A native PBE floor limit is not a one-sided energy derivative'
+
+      ! PBEsol exchange at a symmetry point with a negative Fourier spin density.
+      CALL section_vals_val_set(functional, 'PBE%SCALE_C', r_val=0.0_dp)
+      x = [-1.e-3_dp, 4.e-4_dp, 1.6e-16_dp, 8.e-17_dp, 8.e-17_dp]
+      CALL evaluate(x, energy, gradient, hessian)
+      IF (gradient(4) /= 0.0_dp .OR. ANY(hessian(:, 4) /= 0.0_dp)) THEN
+         ERROR STOP 'PBEsol exchange amplifies gradient noise at a negative spin density'
+      END IF
+
+      x(1:2) = [-0.37_dp, 2.0_dp]*level
+      x(3:5) = [0.7_dp, 0.4_dp, 0.3_dp]*level**(4.0_dp/3.0_dp)
+      CALL evaluate(x, energy, gradient, hessian)
+      DO side = 1, 4, 3
+         delta = 1.e-4_dp*ABS(x(side))
+         trial = x
+         trial(side) = x(side) - delta
+         CALL evaluate(trial, values(1), limits(:, 1), scratch)
+         trial(side) = x(side) + delta
+         CALL evaluate(trial, values(2), limits(:, 2), scratch)
+         first = (values(2) - values(1))/(2.0_dp*delta)
+         IF (ABS(first - gradient(side)) > 2.e-7_dp) ERROR STOP 'Incorrect PBEsol exchange derivative in the taper'
+         IF (ANY(ABS((limits(:, 2) - limits(:, 1))/(2.0_dp*delta) - hessian(:, side)) > &
+                 1.e-5_dp*MAX(1.0_dp, ABS(hessian(:, side))))) ERROR STOP 'Incorrect PBEsol exchange kernel in the taper'
+      END DO
+      CALL section_vals_val_set(functional, 'PBE%SCALE_C', r_val=1.0_dp)
    END SUBROUTINE check_pbe_floor_limits
 
 ! **************************************************************************************************

@@ -1501,7 +1501,9 @@ CONTAINS
       REAL(dp), PARAMETER :: spin_floor = pbe_spin_density_floor
 
       INTEGER                                            :: ii
-      REAL(dp)                                           :: slope_a, slope_b
+      REAL(dp)                                           :: exchange_a, exchange_b, slope_a, slope_b, &
+                                                            weight_a, weight_b, dweight_a, dweight_b, &
+                                                            d2weight_a, d2weight_b
       REAL(kind=dp) :: A, A1rhoa, A1rhob, A_1, A_2, A_3, alpha_1_1, alpha_1_2, alpha_1_3, alpha_c, &
          alpha_c1rhoa, alpha_c1rhob, alpha_crhoa, alpha_crhob, Arhoa, Arhoarhoa, Arhoarhob, Arhob, &
          Arhobrhob, beta, beta_1_1, beta_1_2, beta_1_3, beta_2_1, beta_2_2, beta_2_3, beta_3_1, &
@@ -1729,7 +1731,9 @@ CONTAINS
             t133 = s_a**2
             t135 = 0.1e1_dp/kappa
             t137 = 0.1e1_dp + mu*t133*t135
-            Fx_a = 0.1e1_dp + kappa - kappa/t137
+            CALL pbe_spin_exchange_weight(rhoa(ii), spin_floor, weight_a, dweight_a, d2weight_a)
+            exchange_a = mu*t133/t137
+            Fx_a = 1.0_dp + weight_a*exchange_a
             t140 = my_rhoa*ex_unif_a
             t142 = t90*my_rhob
             t143 = t142**(0.1e1_dp/0.3e1_dp)
@@ -1741,7 +1745,9 @@ CONTAINS
             s_b = t147*t148/0.2e1_dp
             t150 = s_b**2
             t153 = 0.1e1_dp + mu*t150*t135
-            Fx_b = 0.1e1_dp + kappa - kappa/t153
+            CALL pbe_spin_exchange_weight(rhob(ii), spin_floor, weight_b, dweight_b, d2weight_b)
+            exchange_b = mu*t150/t153
+            Fx_b = 1.0_dp + weight_b*exchange_b
             t156 = my_rhob*ex_unif_b
 
             e_0(ii) = e_0(ii) + &
@@ -1864,7 +1870,7 @@ CONTAINS
                s_arhoa = -t337*t131*kf_arhoa/0.2e1_dp - t130*t341/0.2e1_dp
                t344 = t137**2
                t346 = 0.1e1_dp/t344*mu
-               Fx_arhoa = 0.2e1_dp*t346*s_a*s_arhoa
+               Fx_arhoa = weight_a*0.2e1_dp*t346*s_a*s_arhoa
                t350 = my_rhoa*ex_unif_arhoa
 
                IF (slope_a /= 0.0_dp) THEN
@@ -1873,6 +1879,7 @@ CONTAINS
                                                 t350*Fx_a + 0.2e1_dp*t140*Fx_arhoa)/0.2e1_dp + scale_ec*( &
                                       epsilon_cGGA + my_rho*epsilon_cGGArhoa))
                END IF
+               e_ra(ii) = e_ra(ii) + scale_ex*t140*exchange_a*dweight_a
 
                chirhob = -t2 - t164
                rsrhob = rsrhoa
@@ -1929,7 +1936,7 @@ CONTAINS
                s_brhob = -t468*t148*kf_brhob/0.2e1_dp - t147*t472/0.2e1_dp
                t475 = t153**2
                t477 = 0.1e1_dp/t475*mu
-               Fx_brhob = 0.2e1_dp*t477*s_b*s_brhob
+               Fx_brhob = weight_b*0.2e1_dp*t477*s_b*s_brhob
                t481 = my_rhob*ex_unif_brhob
 
                IF (slope_b /= 0.0_dp) THEN
@@ -1938,6 +1945,7 @@ CONTAINS
                                                 t481*Fx_b + 0.2e1_dp*t156*Fx_brhob)/0.2e1_dp + scale_ec*( &
                                       epsilon_cGGA + my_rho*epsilon_cGGArhob))
                END IF
+               e_rb(ii) = e_rb(ii) + scale_ex*t156*exchange_b*dweight_b
 
                t488 = t95*t97
                tnorm_drho = t488*t2/0.2e1_dp
@@ -1956,15 +1964,19 @@ CONTAINS
                Fx_anorm_drhoa = 0.2e1_dp*t346*s_a*s_anorm_drhoa
 
                e_ndra(ii) = e_ndra(ii) + &
-                            scale_ex*t140*Fx_anorm_drhoa
+                            scale_ex*t140*Fx_anorm_drhoa*weight_a
 
                s_bnorm_drhob = t146*t148/0.2e1_dp
                Fx_bnorm_drhob = 0.2e1_dp*t477*s_b*s_bnorm_drhob
 
                e_ndrb(ii) = e_ndrb(ii) + &
-                            scale_ex*t156*Fx_bnorm_drhob
+                            scale_ex*t156*Fx_bnorm_drhob*weight_b
 
                IF (grad_deriv >= 2) THEN
+                  e_ra_ra(ii) = e_ra_ra(ii) + scale_ex*t140*exchange_a*d2weight_a
+                  e_rb_rb(ii) = e_rb_rb(ii) + scale_ex*t156*exchange_b*d2weight_b
+                  e_ra_ndra(ii) = e_ra_ndra(ii) + scale_ex*t140*Fx_anorm_drhoa*dweight_a
+                  e_rb_ndrb(ii) = e_rb_ndrb(ii) + scale_ex*t156*Fx_bnorm_drhob*dweight_b
                   t518 = 0.1e1_dp/t162/my_rho
                   t519 = t1*t518
                   chirhoarhoa = -0.2e1_dp*t163 + 0.2e1_dp*t519
@@ -2442,7 +2454,7 @@ CONTAINS
                   t1922 = s_anorm_drhoa**2
 
                   e_ndra_ndra(ii) = e_ndra_ndra(ii) + &
-                                    scale_ex*t140*(-0.8e1_dp*t999* &
+                                    scale_ex*t140*weight_a*(-0.8e1_dp*t999* &
                                                    t133*t1922*t135 + 0.2e1_dp*t346*t1922)
 
                   IF (rhob(ii) > spin_floor) THEN
@@ -2456,7 +2468,7 @@ CONTAINS
 
                   t1949 = s_bnorm_drhob**2
                   e_ndrb_ndrb(ii) = e_ndrb_ndrb(ii) + &
-                                    scale_ex*t156*(-0.8e1_dp*t1711* &
+                                    scale_ex*t156*weight_b*(-0.8e1_dp*t1711* &
                                                    t150*t1949*t135 + 0.2e1_dp*t477*t1949)
                END IF
             END IF
@@ -2464,5 +2476,27 @@ CONTAINS
       END DO
 !$OMP END DO
    END SUBROUTINE pbe_lsd_calc
+
+! **************************************************************************************************
+!> \brief Continue the spin-exchange gradient correction through negative grid densities.
+!>        Below minus the spin floor, a vanishing gradient of a negative density must not be
+!>        amplified by the inverse powers of the positive floor used in the PBE enhancement.
+!> \param density Original spin density.
+!> \param floor Positive spin-density floor that sets the transition width.
+!> \param weight C2 switch multiplying the gradient correction.
+!> \param derivative First derivative of the switch with respect to the original density.
+!> \param curvature Second derivative of the switch with respect to the original density.
+! **************************************************************************************************
+   PURE SUBROUTINE pbe_spin_exchange_weight(density, floor, weight, derivative, curvature)
+      REAL(dp), INTENT(IN)                               :: density, floor
+      REAL(dp), INTENT(OUT)                              :: weight, derivative, curvature
+
+      REAL(dp)                                          :: x
+
+      x = MIN(1.0_dp, MAX(0.0_dp, 1.0_dp + density/floor))
+      weight = x**3*(10.0_dp + x*(-15.0_dp + 6.0_dp*x))
+      derivative = 30.0_dp*(x*(1.0_dp - x))**2/floor
+      curvature = 60.0_dp*x*(1.0_dp - x)*(1.0_dp - 2.0_dp*x)/floor**2
+   END SUBROUTINE pbe_spin_exchange_weight
 
 END MODULE xc_pbe
