@@ -2364,9 +2364,54 @@ CONTAINS
       TYPE(skala_constraint_chart_type), INTENT(IN), &
          OPTIONAL                                        :: curve
 
+      CALL boundary_root(state, first, last, points, domains, spins, descriptors, targets, tolerances, &
+                         root, values, selected, found, max_iterations, evaluations, check_external, stopped, curve)
+   END SUBROUTINE qs_skala_scf_boundary_root
+
+! **************************************************************************************************
+!> \brief Internal boundary evaluation with an optional energy-only check.
+!> \param state Native normalized-orbital state.
+!> \param first Initial orbital coordinates.
+!> \param last Final orbital coordinates.
+!> \param points Global physical sample keys.
+!> \param domains Physical evaluation domain per candidate.
+!> \param spins Physical spin selector per candidate.
+!> \param descriptors Density or kinetic density per candidate.
+!> \param targets Physical target per candidate.
+!> \param tolerances Physical feasibility window per candidate.
+!> \param root Returned coordinates.
+!> \param values Actual physical inputs at the returned coordinates.
+!> \param selected Candidates in their physical windows at the root.
+!> \param found Whether a physical boundary was found.
+!> \param max_iterations Maximum number of bracket refinements.
+!> \param evaluations Number of field requests and complete root checks.
+!> \param check_external Poll the normal external stop conditions.
+!> \param stopped Whether an external stop was requested.
+!> \param curve Original minimization chart for restoring active constraints.
+!> \param energy_only Evaluate the complete energy without constructing the KS operator.
+! **************************************************************************************************
+   SUBROUTINE boundary_root(state, first, last, points, domains, spins, descriptors, &
+                            targets, tolerances, root, values, selected, found, &
+                            max_iterations, evaluations, check_external, stopped, curve, energy_only)
+      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
+                                                            descriptors(:)
+      REAL(dp), INTENT(IN)                               :: targets(:), tolerances(:)
+      REAL(dp), INTENT(OUT)                              :: root(:), values(:)
+      LOGICAL, INTENT(OUT)                               :: selected(:), found
+      INTEGER, INTENT(IN), OPTIONAL                      :: max_iterations
+      INTEGER, INTENT(OUT), OPTIONAL                     :: evaluations
+      LOGICAL, INTENT(IN), OPTIONAL                      :: check_external
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
+      TYPE(skala_constraint_chart_type), INTENT(IN), &
+         OPTIONAL                                        :: curve
+      LOGICAL, INTENT(IN), OPTIONAL                      :: energy_only
+
       INTEGER                                            :: count, i, iteration, limit, m, n
       INTEGER, ALLOCATABLE                               :: rows(:)
-      LOGICAL                                            :: bracketed, EXTERNAL, requested, valid
+      LOGICAL                                            :: bracketed, EXTERNAL, need_operator, &
+                                                            requested, valid
       REAL(dp)                                           :: energy, fraction, left, previous_width, &
                                                             right, scale, trial_fraction
       REAL(dp), ALLOCATABLE                              :: direction(:), edge_values(:, :), &
@@ -2387,7 +2432,10 @@ CONTAINS
       IF (PRESENT(check_external)) EXTERNAL = check_external
       requested = .FALSE.
       IF (PRESENT(stopped)) stopped = .FALSE.
-      ALLOCATE (initial(m), sides(m), edge_values(2, m), direction(n), gradient(n))
+      need_operator = .TRUE.
+      IF (PRESENT(energy_only)) need_operator = .NOT. energy_only
+      ALLOCATE (initial(m), sides(m), edge_values(2, m), direction(n))
+      IF (need_operator) ALLOCATE (gradient(n))
       ALLOCATE (rows(m), SOURCE=-1)
       IF (PRESENT(curve)) THEN
          context%state => state
@@ -2412,8 +2460,8 @@ CONTAINS
       values(:) = initial
       selected(:) = ABS(values - targets) <= tolerances
       IF (ANY(selected)) THEN
-         ! Keep the fields that passed the physical window while rebuilding full KS.
-         CALL evaluate_limiting_state(state, first, energy, gradient, .TRUE.)
+         ! Keep the fields that passed the physical window during the complete evaluation.
+         CALL qs_skala_scf_evaluate(state, first, energy, physical_gradient=gradient, reuse_fields=.TRUE.)
          count = count + 1
          CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
          values(:) = initial
@@ -2467,7 +2515,7 @@ CONTAINS
                CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
                selected(:) = ABS(values - targets) <= tolerances
                IF (ANY(selected) .AND. ALL(sides*(values - targets) >= -tolerances)) THEN
-                  CALL evaluate_limiting_state(state, root, energy, gradient, .TRUE.)
+                  CALL qs_skala_scf_evaluate(state, root, energy, physical_gradient=gradient, reuse_fields=.TRUE.)
                   count = count + 1
                   CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
                   selected(:) = ABS(values - targets) <= tolerances
@@ -2493,7 +2541,7 @@ CONTAINS
       END IF
       IF (PRESENT(evaluations)) evaluations = count
       IF (PRESENT(stopped)) stopped = requested
-   END SUBROUTINE qs_skala_scf_boundary_root
+   END SUBROUTINE boundary_root
 
 ! **************************************************************************************************
 !> \brief Select the requested density or kinetic-density values from recorded samples.
@@ -3386,10 +3434,12 @@ CONTAINS
       IF (PRESENT(restore_operator)) restore = restore_operator
       ALLOCATE (positive(n))
       hold_orbitals = at_native_coordinate(state, coordinate)
-      IF (hold_orbitals .AND. state%operator_current) THEN
-         energy = state%energy%total
-      ELSE
-         CALL evaluate_limiting_state(state, coordinate, energy, positive, hold_orbitals)
+      IF (restore) THEN
+         IF (.NOT. (hold_orbitals .AND. state%operator_current)) THEN
+            CALL evaluate_limiting_state(state, coordinate, energy, positive, hold_orbitals)
+         END IF
+      ELSE IF (.NOT. native_samples_match(state, coordinate)) THEN
+         CALL sample_native_constraints(state, coordinate)
       END IF
       CALL qs_skala_scf_selected(state, old_points, old_domains, old_spins, old_descriptors, &
                                  old_targets, values, feasible)
@@ -4275,10 +4325,11 @@ CONTAINS
       DO WHILE (SIZE(pending) > 0)
          ALLOCATE (selected(SIZE(pending)), values(SIZE(pending)), windows(SIZE(pending)))
          windows(:) = MERGE(tolerance, kinetic_tolerance, event%descriptors(pending) == skala_density_descriptor)
-         CALL qs_skala_scf_boundary_root(context%state, first, last, event%points(:, pending), &
-                                         event%domains(pending), event%spins(pending), event%descriptors(pending), &
-                                         event%targets(pending), windows, root, values, selected, found, &
-                                         check_external=context%check_external, stopped=stopped, curve=event%curve)
+         CALL boundary_root(context%state, first, last, event%points(:, pending), &
+                            event%domains(pending), event%spins(pending), event%descriptors(pending), &
+                            event%targets(pending), windows, root, values, selected, found, &
+                            check_external=context%check_external, stopped=stopped, curve=event%curve, &
+                            energy_only=.TRUE.)
          IF (stopped) THEN
             context%external_stopped = .TRUE.
             EXIT
@@ -4292,8 +4343,7 @@ CONTAINS
          END IF
          ! An uphill boundary cannot be accepted, regardless of its limiting derivatives.
          ! Reject it before rebuilding every normal limit of the complete XC operator.
-         CPASSERT(context%state%evaluated .AND. context%state%operator_current)
-         CPASSERT(ALL(context%state%coordinate == root))
+         CPASSERT(native_samples_match(context%state, root))
          energy = sum_ks_energies(context%state%energy, .TRUE.)
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
          IF (energy > first_energy + roundoff) THEN
