@@ -317,7 +317,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), residual(:, :), sg(:, :, :), soft(:, :)
       INTEGER                                            :: axis, block, hi, lo, m, n, nao, nproj
-      LOGICAL                                            :: use_fourier, use_orbitals
+      LOGICAL                                            :: use_fourier, use_gradients, use_orbitals
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
@@ -339,13 +339,20 @@ CONTAINS
       END DO
       h = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (use_orbitals) THEN
-         ALLOCATE (soft(block, nao), sg(block, nao, 3))
+         use_gradients = ANY(dg /= 0.0_dp) .OR. ANY(dt /= 0.0_dp)
+         ALLOCATE (soft(block, nao))
+         IF (use_gradients) ALLOCATE (sg(block, nao, 3))
          DO lo = 1, n, block
             hi = MIN(n, lo + block - 1)
             m = hi - lo + 1
-            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :))
-            CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), sg(:m, :, :), sg(:m, :, :), &
-                                            frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
+            IF (use_gradients) THEN
+               CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :))
+               CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), sg(:m, :, :), sg(:m, :, :), &
+                                               frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
+            ELSE
+               CALL point_fields(frame%ao, lo, hi, soft(:m, :))
+               CALL upf_inverse_pair(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi)*dn(lo:hi), residual)
+            END IF
             h(:, :) = h + residual
          END DO
       END IF
@@ -819,16 +826,17 @@ CONTAINS
 !> \param first First local row, inclusive.
 !> \param last Last local row, inclusive.
 !> \param soft Transformed orbital values.
-!> \param gradient Physical spatial gradients.
+!> \param gradient Optional physical spatial gradients.
 ! **************************************************************************************************
    SUBROUTINE point_fields(frame, first, last, soft, gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: first, last
-      COMPLEX(dp), INTENT(OUT)                           :: soft(:, :), gradient(:, :, :)
+      COMPLEX(dp), INTENT(OUT)                           :: soft(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gradient(:, :, :)
 
       IF (frame%fields_stored) THEN
          soft(:, :) = frame%soft(first:last, :)
-         gradient(:, :, :) = frame%soft_gradient(first:last, :, :)
+         IF (PRESENT(gradient)) gradient(:, :, :) = frame%soft_gradient(first:last, :, :)
       ELSE
          CALL qs_upf_inverse_evaluate(frame, frame%points(:, first:last), soft, gradient)
       END IF

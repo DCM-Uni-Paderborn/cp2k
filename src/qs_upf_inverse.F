@@ -1140,7 +1140,7 @@ CONTAINS
 !> \param frame Prepared inverse frame, including borrowed live native bases.
 !> \param points New local Cartesian points, indexed (axis,point), possibly empty.
 !> \param soft Inverse-transformed basis values, overwritten.
-!> \param gradient Their physical spatial gradients, overwritten.
+!> \param gradient Optional physical spatial gradients, overwritten.
 !> \param soft_response Optional joint response, required with the other response arguments.
 !> \param gradient_response Optional physical-gradient response.
 !> \param point_response Optional Cartesian motion of the evaluation points.
@@ -1159,8 +1159,8 @@ CONTAINS
                                       gaussian_response, gaussian_gradient_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
-      COMPLEX(dp), INTENT(OUT)                           :: soft(:, :), gradient(:, :, :)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: soft_response(:, :), &
+      COMPLEX(dp), INTENT(OUT)                           :: soft(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gradient(:, :, :), soft_response(:, :), &
                                                             gradient_response(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             atom_response(:, :), &
@@ -1172,10 +1172,12 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), ddelta(:, :), &
                                                             delta(:, :), dgc(:, :, :), &
-                                                            dgd(:, :, :), gc(:, :, :), gd(:, :, :)
+                                                            dgd(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: gc(:, :, :), gd(:, :, :)
+      COMPLEX(dp), POINTER                               :: field_gradient(:, :, :)
       INTEGER                                            :: atom, axis, center, first, ikind, last, &
                                                             nao, npoint, nproj
-      LOGICAL                                            :: calculate_response
+      LOGICAL                                            :: calculate_gradient, calculate_response
 
       CPASSERT(frame%atom_local .OR. frame%inverse%ready)
       CPASSERT(SIZE(points, 1) == 3)
@@ -1183,7 +1185,10 @@ CONTAINS
       nao = SIZE(frame%coefficients, 2)
       nproj = SIZE(frame%coefficients, 1)
       CPASSERT(ALL(SHAPE(soft) == [npoint, nao]))
-      CPASSERT(ALL(SHAPE(gradient) == [npoint, nao, 3]))
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == [npoint, nao, 3]))
+      END IF
+      calculate_gradient = PRESENT(gradient) .OR. PRESENT(gaussian_gradient) .OR. PRESENT(gradient_response)
       calculate_response = PRESENT(soft_response) .OR. PRESENT(gradient_response) .OR. &
                            PRESENT(point_response) .OR. PRESENT(atom_response) .OR. &
                            PRESENT(cell_response) .OR. PRESENT(reduced_k_response) .OR. &
@@ -1202,28 +1207,31 @@ CONTAINS
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
          CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
       END IF
-      ALLOCATE (chi(npoint, nao), gc(npoint, nao, 3), delta(npoint, nproj), gd(npoint, nproj, 3))
+      ALLOCATE (chi(npoint, nao), delta(npoint, nproj))
+      IF (calculate_gradient) ALLOCATE (gc(npoint, nao, 3), gd(npoint, nproj, 3))
       IF (calculate_response) THEN
          ALLOCATE (dchi(npoint, nao), ddelta(npoint, nproj))
          IF (PRESENT(gradient_response)) ALLOCATE (dgc(npoint, nao, 3), dgd(npoint, nproj, 3))
       END IF
+      NULLIFY (field_gradient)
       DO atom = 1, SIZE(frame%bases)
          first = frame%ao_first(atom)
          last = frame%ao_last(atom)
+         IF (calculate_gradient) field_gradient => gc(:, first:last, :)
          IF (PRESENT(gradient_response)) THEN
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, frame%images, frame%reduced_k, chi(:, first:last), &
-                                                gc(:, first:last, :), dchi(:, first:last), dgc(:, first:last, :), &
+                                                field_gradient, dchi(:, first:last), dgc(:, first:last, :), &
                                                 point_response, atom_response(:, atom), cell_response, reduced_k_response)
          ELSE IF (calculate_response) THEN
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, frame%images, frame%reduced_k, chi(:, first:last), &
-                                                gc(:, first:last, :), response=dchi(:, first:last), &
+                                                field_gradient, response=dchi(:, first:last), &
                                                 point_response=point_response, center_response=atom_response(:, atom), &
                                                 cell_response=cell_response, reduced_k_response=reduced_k_response)
          ELSE
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                                frame%cell, frame%images, frame%reduced_k, chi(:, first:last), gc(:, first:last, :))
+                                                frame%cell, frame%images, frame%reduced_k, chi(:, first:last), field_gradient)
          END IF
       END DO
       IF (PRESENT(gaussian)) THEN
@@ -1243,25 +1251,27 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gaussian_gradient_response) == [npoint, nao, 3]))
          gaussian_gradient_response = dgc
       END IF
+      NULLIFY (field_gradient)
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
          first = frame%projector_first(center)
          last = frame%projector_last(center)
+         IF (calculate_gradient) field_gradient => gd(:, first:last, :)
          IF (PRESENT(gradient_response)) THEN
             CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
-                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), gd(:, first:last, :), &
+                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient, &
                                             ddelta(:, first:last), dgd(:, first:last, :), point_response, atom_response(:, atom), &
                                             cell_response, reduced_k_response)
          ELSE IF (calculate_response) THEN
             CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
-                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), gd(:, first:last, :), &
+                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient, &
                                             response=ddelta(:, first:last), points_response=point_response, &
                                             center_response=atom_response(:, atom), cell_response=cell_response, &
                                             reduced_k_response=reduced_k_response)
          ELSE
             CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
-                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), gd(:, first:last, :))
+                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient)
          END IF
       END DO
       CALL upf_inverse_basis(chi, delta, frame%coefficients, soft)
@@ -1269,7 +1279,9 @@ CONTAINS
          CALL upf_inverse_basis_response(dchi, delta, ddelta, frame%coefficients, coefficients_response, soft_response)
       END IF
       DO axis = 1, 3
-         CALL upf_inverse_basis(gc(:, :, axis), gd(:, :, axis), frame%coefficients, gradient(:, :, axis))
+         IF (PRESENT(gradient)) THEN
+            CALL upf_inverse_basis(gc(:, :, axis), gd(:, :, axis), frame%coefficients, gradient(:, :, axis))
+         END IF
          IF (PRESENT(gradient_response)) THEN
             CALL upf_inverse_basis_response(dgc(:, :, axis), gd(:, :, axis), dgd(:, :, axis), frame%coefficients, &
                                             coefficients_response, gradient_response(:, :, axis))
