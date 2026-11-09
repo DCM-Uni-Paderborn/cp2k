@@ -1135,7 +1135,7 @@ CONTAINS
                                                             na, nao, nproj, other, p, q
       INTEGER, TARGET                                    :: single_image(3, 1)
       INTEGER, POINTER                                   :: images(:, :)
-      LOGICAL                                            :: derivative, values
+      LOGICAL                                            :: derivative, shared_response, values
       REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), motion(:, :), &
                                                             points(:, :), radial_beta(:), weights(:)
       REAL(dp)                                           :: wavevector(3)
@@ -1154,9 +1154,11 @@ CONTAINS
          coupling = CMPLX(0.0_dp, 0.0_dp, dp)
          overlaps = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
+      shared_response = .FALSE.
       IF (derivative) THEN
          CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
          CPASSERT(PRESENT(reduced_k_response))
+         shared_response = ANY(cell_response /= 0.0_dp) .OR. ANY(reduced_k_response /= 0.0_dp)
          coupling_response = CMPLX(0.0_dp, 0.0_dp, dp)
          overlaps_response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
@@ -1186,11 +1188,18 @@ CONTAINS
                p = frame%ao_first(basis_atom)
                q = frame%ao_last(basis_atom)
                IF (derivative) THEN
-                  CALL gaussian_basis_fields_periodic(frame%bases(basis_atom)%gto_basis_set, points, &
+                  ! The bra and its integration points move together. Equal ket motion
+                  ! contributes no derivative at fixed cell and reduced wave vector.
+                  IF (shared_response .OR. ANY(atom_response(:, basis_atom) /= atom_response(:, atom))) THEN
+                     CALL gaussian_basis_fields_periodic(frame%bases(basis_atom)%gto_basis_set, points, &
                             frame%positions(:, basis_atom), frame%cell, images, wavevector, chi(:, p:q), &
                             response=dchi(:, p:q), point_response=motion, center_response=atom_response(:, basis_atom), &
                             cell_response=cell_response, reduced_k_response=reduced_k_response)
-               ELSE
+                     CYCLE
+                  END IF
+                  dchi(:, p:q) = CMPLX(0.0_dp, 0.0_dp, dp)
+               END IF
+               IF (values) THEN
                   CALL gaussian_basis_fields_periodic(frame%bases(basis_atom)%gto_basis_set, points, &
                             frame%positions(:, basis_atom), frame%cell, images, wavevector, chi(:, p:q))
                END IF
@@ -1200,11 +1209,16 @@ CONTAINS
                q = frame%projector_last(other)
                ASSOCIATE (field => frame%delta_cache(frame%center_kinds(other)), other_atom => frame%center_atoms(other))
                   IF (derivative) THEN
-                     CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
+                     IF (shared_response .OR. ANY(atom_response(:, other_atom) /= atom_response(:, atom))) THEN
+                        CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
                                images, wavevector, delta(:, p:q), response=ddelta(:, p:q), &
                                points_response=motion, center_response=atom_response(:, other_atom), &
                                cell_response=cell_response, reduced_k_response=reduced_k_response)
-                  ELSE
+                        CYCLE
+                     END IF
+                     ddelta(:, p:q) = CMPLX(0.0_dp, 0.0_dp, dp)
+                  END IF
+                  IF (values) THEN
                      CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
                                images, wavevector, delta(:, p:q))
                   END IF
