@@ -481,13 +481,13 @@ CONTAINS
 
       CHARACTER(LEN=default_string_length)               :: description, name
       INTEGER :: accepted_ot_kp_searches, ext_master_id, handle, handle2, i_tmp, ic, &
-         inverse_ot_steps, ispin, iter_count, kp_ot_entry_reason, ot_kp_subspace_refresh_count, &
+         inverse_ot_ready, inverse_ot_steps, ispin, iter_count, kp_ot_entry_reason, ot_kp_subspace_refresh_count, &
          ot_kp_subspace_refresh_iter_count, output_unit, scf_energy_message_tag, total_steps
       LOGICAL :: added_mos_auto_grow, adiis_pushed, adiis_restarted, adiis_stagnated, &
          adiis_validation, density_full_step, diis_step, do_kpoints, energy_only, exit_inner_loop, &
          exit_outer_loop, inner_loop_converged, internal_tblite_density_full_step, &
          internal_tblite_mixer, inverse_ot_handled, inverse_ot_stopped, just_energy, &
-         ot_kp_subspace_refresh, ot_kp_subspace_refresh_pending, outer_loop_converged, &
+         ot_energy_stagnated, ot_kp_subspace_refresh, ot_kp_subspace_refresh_pending, outer_loop_converged, &
          tblite_native_mixer, u_changed
       REAL(dp), POINTER                                  :: subspace_density(:, :), &
                                                             subspace_fock(:, :)
@@ -918,17 +918,24 @@ CONTAINS
                   scf_env%iter_param = dft_control%qs_control%xtb_control%tblite_mixer_damping
                END IF
             END IF
-            IF (.NOT. inverse_ot_handled .AND. scf_env%method == ot_method_nr .AND. .NOT. just_energy .AND. &
-                ((scf_control%smear%do_smear .AND. &
-                  (scf_env%iter_delta < SQRT(scf_control%eps_scf) .OR. &
-                   (scf_env%iter_count > 1 .AND. &
-                    ABS(energy%total - energy%tot_old) <= 64.0_dp*EPSILON(1.0_dp)* &
-                    MAX(ABS(energy%total), ABS(energy%tot_old), TINY(1.0_dp))))) .OR. &
-                 (.NOT. scf_control%smear%do_smear .AND. scf_env%iter_delta < scf_control%eps_scf))) THEN
-               ! Certify the complete physical USPP/PAW state before reporting convergence.
-               ! Fixed occupations enter at the ordinary OT tolerance. Thermal searches
-               ! retain their earlier handover threshold. Both use the original physical
-               ! stationarity bound and count refinement against the same SCF budget.
+            inverse_ot_ready = 0
+            IF (.NOT. inverse_ot_handled .AND. scf_env%method == ot_method_nr .AND. qs_upf_inverse_scf_active(ks_env)) THEN
+               ot_energy_stagnated = scf_env%iter_count > 1 .AND. &
+                                     ABS(energy%total - energy%tot_old) <= 64.0_dp*EPSILON(1.0_dp)* &
+                                     MAX(ABS(energy%total), ABS(energy%tot_old), TINY(1.0_dp))
+               IF (.NOT. just_energy) THEN
+                  IF (scf_control%smear%do_smear) THEN
+                     inverse_ot_ready = MERGE(1, 0, scf_env%iter_delta < SQRT(scf_control%eps_scf) .OR. ot_energy_stagnated)
+                  ELSE
+                     ! An energy-based OT line search can stall before the fixed-occupation gradient converges.
+                     inverse_ot_ready = MERGE(1, 0, scf_env%iter_delta < scf_control%eps_scf .OR. &
+                                              (ot_energy_stagnated .AND. scf_env%iter_delta < SQRT(scf_control%eps_scf)))
+                  END IF
+               END IF
+               IF (do_kpoints) CALL para_env%min(inverse_ot_ready)
+            END IF
+            IF (inverse_ot_ready == 1) THEN
+               ! Refine with the original physical stationarity bound and remaining SCF budget.
                CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
                                       inverse_ot_stopped, output_unit, refine_final=.TRUE.)
                IF (inverse_ot_handled) THEN
@@ -1170,10 +1177,10 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), reached(:), &
                                                             release_side(:), spins(:)
-      LOGICAL :: accepted, balanced, converged, do_kpoints, final_stage, rechart, &
+      LOGICAL :: accepted, balanced, converged, do_kpoints, final_stage, rebase_fixed, rechart, &
          reference_refreshed, released, retained_symmetry, space_grown, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
-      REAL(dp)                                           :: energy, omitted_charge, step_radius
+      REAL(dp)                                           :: energy, omitted_charge, previous_residual, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
                                                             full_physical(:), gradient(:), &
                                                             physical(:), targets(:), tolerances(:)
@@ -1320,6 +1327,9 @@ CONTAINS
             IF (.NOT. do_kpoints .OR. SIZE(tolerances) > 0 .OR. &
                 NORM2(physical) > SQRT(scf_control%eps_scf)) inner_limit = 1
          END IF
+         rebase_fixed = final_stage .AND. .NOT. scf_control%smear%do_smear .AND. SIZE(tolerances) == 0
+         previous_residual = NORM2(physical)
+         IF (rebase_fixed) inner_limit = 1
          CALL qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, tolerances, &
                                         scf_control%eps_scf, energy, converged, max_iterations=inner_limit, &
                                         max_step=step_radius, iterations=steps, check_external=.TRUE., stopped=stopped, &
@@ -1380,6 +1390,8 @@ CONTAINS
          END IF
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
          scf_env%iter_delta = MAX(NORM2(gradient), NORM2(physical))
+         ! Near stationarity, rebuild the fixed-occupation chart after verified physical progress.
+         IF (rebase_fixed .AND. steps > 0) rechart = rechart .OR. NORM2(physical) < previous_residual
          ! Small search-coordinate derivatives do not establish physical thermal stationarity.
          IF (converged .OR. (scf_control%smear%do_smear .AND. do_kpoints .AND. &
                              SIZE(tolerances) == 0 .AND. NORM2(gradient) <= scf_control%eps_scf .AND. &
