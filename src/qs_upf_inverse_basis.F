@@ -267,7 +267,7 @@ CONTAINS
 
       CHARACTER(LEN=16)                                  :: role
       INTEGER                                            :: ikind
-      LOGICAL                                            :: auxiliary, do_kpoints, use_atomic, &
+      LOGICAL                                            :: auxiliary, do_kpoints, gaussian_kinetic, use_atomic, &
                                                             use_composite, use_kinetic
       REAL(dp), POINTER                                  :: center_rotations(:, :, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -320,11 +320,12 @@ CONTAINS
       END IF
       ! Auxiliary XC needs the same soft Gaussian source as full GAPW, without owning Hartree data.
       state%gaussian_background = auxiliary .AND. control%qs_control%gapw
-      IF (use_atomic .OR. state%native_gth_local .OR. state%gaussian_background) THEN
+      gaussian_kinetic = use_atomic .OR. (control%qs_control%gapw .AND. .NOT. auxiliary)
+      IF (gaussian_kinetic .OR. state%native_gth_local .OR. state%gaussian_background) THEN
          CALL qs_upf_inverse_background_prepare(ks_env, state%gaussian, soft_basis=control%qs_control%gapw, &
                                                 qs_env=qs_env, basis_type=role)
       END IF
-      IF (use_atomic) THEN
+      IF (gaussian_kinetic) THEN
          IF (auxiliary) THEN
             native_ks => ks_env
             NULLIFY (kinetic_k)

@@ -35,6 +35,7 @@ MODULE qs_upf_inverse_lattice
    PRIVATE
 
    PUBLIC :: qs_upf_inverse_centered_pairs, qs_upf_inverse_lattice_kernel
+   PUBLIC :: qs_upf_inverse_cross_kinetic
    PUBLIC :: qs_upf_inverse_lattice_kernel_adjoint
    PUBLIC :: qs_upf_inverse_lattice_fields, qs_upf_inverse_lattice_field_adjoint
    PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint, qs_upf_inverse_lattice_gaussian_adjoint
@@ -1232,6 +1233,105 @@ CONTAINS
          CALL frame%point_comm%sum(coupling_response)
       END IF
    END SUBROUTINE qs_upf_inverse_centered_pairs
+
+! **************************************************************************************************
+!> \brief Kinetic overlap of compact difference waves on distinct centers or images.
+!>        The home bra and its quadrature move together. Both bra quadratures enter the
+!>        Hermitian average, including for a pair of periodic images of the same atom.
+!> \param frame Coupled inverse with the native atom-centered quadratures.
+!> \param matrix Intercenter part of the Bloch difference-wave kinetic matrix.
+!> \param response Optional joint derivative of the same finite quadrature.
+!> \param atom_response Cartesian atom displacements.
+!> \param cell_response Lattice displacement at fixed Cartesian home offsets.
+!> \param reduced_k_response Displacement of the reduced Bloch vector.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_cross_kinetic(frame, matrix, response, atom_response, cell_response, reduced_k_response)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      COMPLEX(dp), INTENT(OUT)                           :: matrix(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3), reduced_k_response(3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: bra(:, :, :), ket(:, :, :), dket(:, :, :), &
+                                                            value(:, :), pair(:, :)
+      INTEGER                                            :: a, b, axis, ia, image, ir, ka, kb, na, ni, p, q, u, v
+      INTEGER, ALLOCATABLE                               :: images(:, :)
+      REAL(dp)                                           :: displacement(3), radius, radius_sum
+      REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), &
+                                                            gradient(:, :), motion(:, :), points(:, :), scratch(:), weights(:)
+      TYPE(grid_atom_type), POINTER                      :: grid
+
+      CPASSERT(ALLOCATED(frame%defining_atom_grids))
+      IF (PRESENT(response)) THEN
+         CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
+         CPASSERT(PRESENT(reduced_k_response))
+         response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      matrix = CMPLX(0.0_dp, 0.0_dp, dp)
+      ALLOCATE (images(3, SIZE(frame%images, 2)))
+      DO a = 1, SIZE(frame%center_atoms)
+         ka = frame%center_kinds(a)
+         radius = frame%delta_cache(ka)%radius
+         IF (radius <= 0.0_dp) CYCLE
+         p = frame%projector_first(a)
+         q = frame%projector_last(a)
+         grid => frame%defining_atom_grids(ka)%grid
+         CALL centered_grid(frame%defining_atom_grids(ka), directions, angular_weights)
+         na = SIZE(angular_weights)
+         ALLOCATE (bra(na, q - p + 1, 3), gradient(3, q - p + 1), scratch(q - p + 1), &
+                   points(3, na), weights(na))
+         IF (PRESENT(response)) motion = SPREAD(atom_response(:, frame%center_atoms(a)), 2, na)
+         DO b = 1, SIZE(frame%center_atoms)
+            kb = frame%center_kinds(b)
+            IF (frame%delta_cache(kb)%radius <= 0.0_dp) CYCLE
+            radius_sum = radius + frame%delta_cache(kb)%radius
+            ni = 0
+            DO image = 1, SIZE(frame%images, 2)
+               IF (a == b .AND. ALL(frame%images(:, image) == 0)) CYCLE
+               displacement = frame%positions(:, frame%center_atoms(a)) - frame%positions(:, frame%center_atoms(b)) - &
+                              MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+               IF (SUM(displacement**2) >= radius_sum**2) CYCLE
+               ni = ni + 1
+               images(:, ni) = frame%images(:, image)
+            END DO
+            IF (ni == 0) CYCLE
+            u = frame%projector_first(b)
+            v = frame%projector_last(b)
+            ALLOCATE (value(na, v - u + 1), ket(na, v - u + 1, 3), pair(q - p + 1, v - u + 1))
+            IF (PRESENT(response)) ALLOCATE (dket, MOLD=ket)
+            DO ir = 1, grid%nr
+               IF (grid%rad(ir) >= radius) CYCLE
+               points = SPREAD(frame%positions(:, frame%center_atoms(a)), 2, na) + grid%rad(ir)*directions
+               weights = 0.5_dp*grid%wr(ir)*angular_weights
+               DO ia = 1, na
+                  CALL upf_radial_fields_evaluate(frame%delta_cache(ka), grid%rad(ir)*directions(:, ia), scratch, gradient)
+                  bra(ia, :, :) = TRANSPOSE(gradient)
+               END DO
+               IF (PRESENT(response)) THEN
+                  CALL upf_radial_fields_periodic(frame%delta_cache(kb), points, frame%positions(:, frame%center_atoms(b)), &
+                                                  frame%cell, images(:, :ni), frame%reduced_k, value, gradient=ket, &
+                                                  gradient_response=dket, points_response=motion, &
+                                                  center_response=atom_response(:, frame%center_atoms(b)), &
+                                                  cell_response=cell_response, reduced_k_response=reduced_k_response)
+               ELSE
+                  CALL upf_radial_fields_periodic(frame%delta_cache(kb), points, frame%positions(:, frame%center_atoms(b)), &
+                                                  frame%cell, images(:, :ni), frame%reduced_k, value, gradient=ket)
+               END IF
+               DO axis = 1, 3
+                  CALL upf_inverse_pair(bra(:, :, axis), ket(:, :, axis), weights, pair)
+                  matrix(p:q, u:v) = matrix(p:q, u:v) + pair
+                  IF (.NOT. PRESENT(response)) CYCLE
+                  CALL upf_inverse_pair(bra(:, :, axis), dket(:, :, axis), weights, pair)
+                  response(p:q, u:v) = response(p:q, u:v) + pair
+               END DO
+            END DO
+            DEALLOCATE (value, ket, pair)
+            IF (PRESENT(response)) DEALLOCATE (dket)
+         END DO
+         DEALLOCATE (bra, gradient, scratch, points, weights, directions, angular_weights)
+      END DO
+      matrix = 0.5_dp*(matrix + CONJG(TRANSPOSE(matrix)))
+      IF (PRESENT(response)) response = 0.5_dp*(response + CONJG(TRANSPOSE(response)))
+   END SUBROUTINE qs_upf_inverse_cross_kinetic
 
 ! **************************************************************************************************
 !> \brief Transpose the home-centered defining integrals for the coupled RI representation.

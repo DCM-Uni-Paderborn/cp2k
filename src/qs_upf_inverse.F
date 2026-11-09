@@ -33,11 +33,12 @@ MODULE qs_upf_inverse
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_atom_angular_average
-   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_centered_pairs
+   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_centered_pairs,&
+                                              qs_upf_inverse_cross_kinetic
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE upf_inverse,                     ONLY: &
-        upf_inverse_atomic_init, upf_inverse_atomic_residual, upf_inverse_basis, &
+        upf_inverse_atomic_difference_init, upf_inverse_atomic_init, upf_inverse_atomic_residual, upf_inverse_basis, &
         upf_inverse_basis_response, upf_inverse_fields_init, upf_inverse_init, &
         upf_inverse_operator_response, upf_inverse_project, upf_inverse_project_adjoint, &
         upf_inverse_project_response
@@ -530,7 +531,9 @@ CONTAINS
       END DO
       ALLOCATE (frame%projector_first(ncenter), frame%projector_last(ncenter), &
                 frame%beta_cache(SIZE(kinds)), frame%delta_cache(SIZE(kinds)))
-      IF (use_atomic) ALLOCATE (frame%atomic_cache(SIZE(kinds)))
+      IF (use_atomic .OR. (ALLOCATED(frame%defining_atom_grids) .AND. role == 'ORB')) THEN
+         ALLOCATE (frame%atomic_cache(SIZE(kinds)))
+      END IF
       nproj = 0
       DO center = 1, ncenter
          ikind = frame%center_kinds(center)
@@ -552,6 +555,8 @@ CONTAINS
                CALL upf_inverse_atomic_init(kinds(ikind)%sgp_potential%upf_data, degree, &
                                             frame%atomic_cache(ikind), info, frame%direct)
                IF (info /= 0) RETURN
+            ELSE IF (ALLOCATED(frame%atomic_cache) .AND. frame%delta_cache(ikind)%radius > 0.0_dp) THEN
+               CALL upf_inverse_atomic_difference_init(kinds(ikind)%sgp_potential%upf_data, degree, frame%atomic_cache(ikind))
             END IF
          END IF
          p = kinds(ikind)%sgp_potential%upf_projectors%nproj
@@ -1022,13 +1027,13 @@ CONTAINS
    END SUBROUTINE atomic_coefficients
 
 ! **************************************************************************************************
-!> \brief Atomic corrections to native Gaussian kinetic and overlap matrices, retaining closure.
+!> \brief Reconstruction correction to the native Gaussian kinetic matrix and the one-center overlap correction.
 !>        The kinetic correction equals -W^dagger T W plus its finite-map residual.
 !>        Adding the transformed original D gives the intended hard D-T representation.
-!> \param frame Nonoverlapping atom-local inverse with native hard projector coefficients.
+!> \param frame Atomic radial data and either local or coupled inverse coefficients.
 !> \param projector_metric Original metric selected by the functional, without substituting q_wave.
 !> \param kinetic Owned correction to the ordinary Gaussian kinetic matrix.
-!> \param metric Owned correction to the ordinary Gaussian overlap matrix.
+!> \param metric Owned one-center overlap correction. Full GAPW assembles its charge metric separately.
 !> \param kinetic_response Optional owned joint kinetic response, with metric_response and geometry.
 !> \param metric_response Optional owned joint metric response.
 !> \param atom_response Optional nuclear and Gaussian-center displacement.
@@ -1048,15 +1053,15 @@ CONTAINS
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :)
 
-      COMPLEX(dp), ALLOCATABLE :: dl(:, :), dz(:, :), laplacian(:, :), overlaps(:, :), rs(:, :), &
-         rt(:, :), z(:, :), zero_ao(:, :), zero_projectors(:, :)
+      COMPLEX(dp), ALLOCATABLE :: cross(:, :), dcross(:, :), dl(:, :), dz(:, :), laplacian(:, :), &
+         mixed(:, :), overlaps(:, :), rs(:, :), rt(:, :), z(:, :), zero_ao(:, :), zero_projectors(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
       COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: atom, b, center, first, ikind, last, n, &
                                                             np, p, q
       LOGICAL                                            :: calculate_response
 
-      CPASSERT(frame%atom_local .AND. ALLOCATED(frame%atomic_cache))
+      CPASSERT(ALLOCATED(frame%atomic_cache))
       n = SIZE(frame%coefficients, 2)
       np = SIZE(frame%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [np, np]))
@@ -1081,6 +1086,7 @@ CONTAINS
             CPASSERT(ALL(SHAPE(coefficients_response) == [np, n]))
             dw => coefficients_response
          ELSE
+            CPASSERT(frame%atom_local)
             ALLOCATE (owned_dw(np, n), overlaps(np, n))
             dw => owned_dw
             CALL atomic_coefficients(frame, overlaps, dw, atom_response, cell_response, reduced_k_response)
@@ -1088,6 +1094,7 @@ CONTAINS
       END IF
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)
+         IF (.NOT. frame%atom_local .AND. frame%delta_cache(ikind)%radius <= 0.0_dp) CYCLE
          atom = frame%center_atoms(center)
          p = frame%projector_first(center)
          q = frame%projector_last(center)
@@ -1130,6 +1137,18 @@ CONTAINS
          DEALLOCATE (z, laplacian, rt, rs)
          IF (calculate_response) DEALLOCATE (dz, dl, zero_projectors)
       END DO
+      IF (frame%atom_local) RETURN
+      ALLOCATE (cross(np, np))
+      IF (calculate_response) THEN
+         ALLOCATE (dcross(np, np))
+         CALL qs_upf_inverse_cross_kinetic(frame, cross, dcross, atom_response, cell_response, reduced_k_response)
+         mixed = MATMUL(CONJG(TRANSPOSE(dw)), MATMUL(cross, frame%coefficients))
+         kinetic_response = kinetic_response + mixed + CONJG(TRANSPOSE(mixed)) + &
+                            MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(dcross, frame%coefficients))
+      ELSE
+         CALL qs_upf_inverse_cross_kinetic(frame, cross)
+      END IF
+      kinetic = kinetic + MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(cross, frame%coefficients))
    END SUBROUTINE qs_upf_inverse_atomic_operators
 
 ! **************************************************************************************************

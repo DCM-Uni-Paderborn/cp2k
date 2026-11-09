@@ -625,7 +625,7 @@ CONTAINS
          CALL zeros(axis)%create(grid)
          zeros(axis)%array = 0.0_dp
       END DO
-      IF (state%frame%ao%atom_local) THEN
+      IF (ALLOCATED(state%gaussian_kinetic)) THEN
          CALL atomic_kinetic(state, state%frame, 1, atomic_t)
          CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
          unit_tau%array = 0.0_dp
@@ -667,7 +667,7 @@ CONTAINS
       CALL qs_upf_inverse_matrix_scatter(state%frame%ao, atomic_t, overlap(1)%matrix, real_part, imaginary)
       CALL check_real(state, real_part, imaginary)
       CALL dbcsr_copy(h(1)%matrix, real_part)
-      IF (state%frame%ao%atom_local) CALL dbcsr_add(h(1)%matrix, kinetic(1)%matrix, 1.0_dp, 1.0_dp)
+      IF (ALLOCATED(state%gaussian_kinetic)) CALL dbcsr_add(h(1)%matrix, kinetic(1)%matrix, 1.0_dp, 1.0_dp)
       CALL dbcsr_release(real_part)
       CALL dbcsr_release(imaginary)
       CALL local_r%release()
@@ -1030,7 +1030,7 @@ CONTAINS
 !> \param metric_response New response of the same radial-Q metric used by inverse SCF.
 !> \param orbital_fields Include soft-orbital grid responses. False retains only augmentation and kinetic corrections.
 !> \param coefficients_response Optional owned coefficient response for this frame and geometry variation.
-!> \param include_atomic_kinetic Include the atom-local kinetic response, unless contracted separately.
+!> \param include_atomic_kinetic Include the reconstruction kinetic response, unless contracted separately.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_core_response(ks_env, frame, augmentation, grid, atom_response, cell_response, &
                                                reduced_k_response, core_response, metric_response, orbital_fields, &
@@ -1076,7 +1076,7 @@ CONTAINS
       CALL unit_tau%create(grid)
       CALL zero%create(grid)
       unit_tau%array = 1.0_dp
-      IF (frame%ao%atom_local) unit_tau%array = 0.0_dp
+      IF (ALLOCATED(frame%ao%atomic_cache)) unit_tau%array = 0.0_dp
       zero%array = 0.0_dp
       DO axis = 1, 3
          CALL zeros(axis)%create(grid)
@@ -1087,7 +1087,7 @@ CONTAINS
                                         atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
                                         core_response, metric_response, frame%ao%dion, orbital_fields=orbital_fields, &
                                         saved_coefficients_response=dw)
-      IF (frame%ao%atom_local .AND. use_atomic_kinetic) THEN
+      IF (ALLOCATED(frame%ao%atomic_cache) .AND. use_atomic_kinetic) THEN
          CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, atomic_t, atomic_m, dt, dm, &
                                               atom_response, cell_response, reduced_k_response, dw)
          core_response(:, :) = core_response + dt
@@ -1736,7 +1736,7 @@ CONTAINS
 !> \brief Native Gaussian kinetic energy plus the exact finite atomic reconstruction correction.
 !>        The original density quadrature continues to define the installed charge metric.
 !> \param state Native Gaussian kinetic operators captured before the inverse core replaced them.
-!> \param frame Nonoverlapping atomic inverse at the current geometry and k point.
+!> \param frame Prepared inverse at the current geometry and k point.
 !> \param ik Global k-point index in the captured native Gaussian operators.
 !> \param matrix New complete transformed kinetic operator.
 ! **************************************************************************************************
@@ -1748,7 +1748,7 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: metric(:, :)
 
-      CPASSERT(frame%ao%atom_local .AND. ALLOCATED(state%gaussian_kinetic))
+      CPASSERT(ALLOCATED(state%gaussian_kinetic))
       CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, matrix, metric)
       matrix(:, :) = matrix + state%gaussian_kinetic(:, :, ik)
    END SUBROUTINE atomic_kinetic
@@ -1791,7 +1791,7 @@ CONTAINS
       CALL unit_tau%create(grid)
       zero%array = 0.0_dp
       unit_tau%array = 1.0_dp
-      IF (state%bloch%frames(1)%ao%atom_local) unit_tau%array = 0.0_dp
+      IF (ALLOCATED(state%gaussian_kinetic)) unit_tau%array = 0.0_dp
       DO axis = 1, 3
          CALL zeros(axis)%create(grid)
          zeros(axis)%array = 0.0_dp
@@ -1816,7 +1816,7 @@ CONTAINS
       CALL gth_paw_core_energy(ks_env, state, state%bloch%frames(1), fixed_core)
       state%gth_paw_energy = fixed_core
       DO ik = 1, nk
-         IF (state%bloch%frames(ik)%ao%atom_local) THEN
+         IF (ALLOCATED(state%gaussian_kinetic)) THEN
             CALL atomic_kinetic(state, state%bloch%frames(ik), ik, matrix)
          ELSE
             CALL qs_upf_inverse_grid_integrate_dense(state%bloch%frames(ik), zero, zeros, unit_tau, matrix)
@@ -1834,7 +1834,7 @@ CONTAINS
          END IF
          state%core_k(:, :, ik) = matrix
          IF (state%native_gaussian) state%core_k(:, :, ik) = state%core_k(:, :, ik) + gaussian_local(:, :, ik)
-         IF (state%bloch%frames(ik)%ao%atom_local) THEN
+         IF (ALLOCATED(state%gaussian_kinetic)) THEN
             state%core_k(:, :, ik) = state%core_k(:, :, ik) + state%kinetic_k(:, :, ik)
          END IF
       END DO
@@ -1903,7 +1903,13 @@ CONTAINS
       IF (PRESENT(atom_local)) atom_local = .FALSE.
       IF (PRESENT(was_enabled)) was_enabled = .FALSE.
       IF (ASSOCIATED(state)) THEN
-         IF (PRESENT(atom_local)) atom_local = ALLOCATED(state%gaussian_kinetic)
+         IF (PRESENT(atom_local)) THEN
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               atom_local = state%bloch%frames(1)%ao%atom_local
+            ELSE
+               atom_local = state%frame%ao%atom_local
+            END IF
+         END IF
          IF (PRESENT(was_enabled)) was_enabled = state%enabled
       END IF
       CALL qs_upf_inverse_scf_release(state)
