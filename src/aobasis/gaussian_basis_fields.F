@@ -16,6 +16,7 @@ MODULE gaussian_basis_fields
    USE mathconstants,                   ONLY: twopi
    USE orbital_pointers,                ONLY: indco,&
                                               ncoset
+   USE util,                            ONLY: sort
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, omp_get_thread_num
 #include "../base/base_uses.f90"
@@ -385,12 +386,13 @@ CONTAINS
          moments(:, :, :), phase_moment(:), primitive_cell(:, :, :), primitive_gradient(:, :), &
          primitive_gradient_response(:, :), primitive_response(:), primitive_value(:)
       INTEGER :: axis, column, degree, expected(3), first, ico, image, ipgf, irow, iset, isgf, &
-         ishell, l, last, lower(3), maxl, moment_degree, ncart, npoint, other, powers(3), &
+         ishell, l, last, lower(3), maxl, moment_degree, ncart, ncoord, ncoordinates(3), npoint, other, point, powers(3), &
          translation, upper(3), width(3)
+      INTEGER, ALLOCATABLE                               :: coordinate_index(:, :), order(:)
       LOGICAL                                            :: cell_derivatives, derivatives, &
                                                             image_derivatives
       REAL(dp)                                           :: alpha, weight
-      REAL(dp), ALLOCATABLE                              :: displacement(:), exponential(:), power(:)
+      REAL(dp), ALLOCATABLE                              :: coordinates(:, :), displacement(:), exponential(:), power(:)
 
       factored = .FALSE.
       IF (SIZE(images, 2) < 8) RETURN
@@ -414,6 +416,25 @@ CONTAINS
       maxl = MAXVAL(basis%lmax)
       CPASSERT(UBOUND(ncoset, 1) >= maxl)
       npoint = SIZE(points, 2)
+      ALLOCATE (coordinates(npoint, 3), coordinate_index(npoint, 3), order(npoint))
+      coordinates(:, :) = TRANSPOSE(points)
+      ncoordinates = npoint
+      DO axis = 1, 3
+         ! Grid rows repeat Cartesian coordinates. Only exact equalities may share a moment.
+         IF (npoint < 2) CYCLE
+         IF (.NOT. ANY(coordinates(2:, axis) == coordinates(1, axis))) CYCLE
+         CALL sort(coordinates(:, axis), npoint, order)
+         ncoord = 1
+         coordinate_index(order(1), axis) = ncoord
+         DO point = 2, npoint
+            IF (coordinates(point, axis) /= coordinates(ncoord, axis)) THEN
+               ncoord = ncoord + 1
+               coordinates(ncoord, axis) = coordinates(point, axis)
+            END IF
+            coordinate_index(order(point), axis) = ncoord
+         END DO
+         ncoordinates(axis) = ncoord
+      END DO
       cell_derivatives = PRESENT(cell_gradient)
       IF (PRESENT(response)) cell_derivatives = cell_derivatives .OR. ANY(cell_response /= 0.0_dp)
       ! Gradient responses use image-weighted Hessians and Bloch derivatives of the spatial gradient.
@@ -441,23 +462,32 @@ CONTAINS
          ncart = ncoset(basis%lmax(iset))
          DO ipgf = 1, basis%npgf(iset)
             alpha = basis%zet(ipgf, iset)
-            moments = CMPLX(0.0_dp, 0.0_dp, dp)
-            image_moments = CMPLX(0.0_dp, 0.0_dp, dp)
             DO axis = 1, 3
+               ncoord = ncoordinates(axis)
+               moments(:ncoord, :, axis) = CMPLX(0.0_dp, 0.0_dp, dp)
+               IF (image_derivatives) image_moments(:ncoord, :, axis) = CMPLX(0.0_dp, 0.0_dp, dp)
                DO translation = lower(axis), upper(axis)
                   phase = EXP(CMPLX(0.0_dp, twopi*reduced_k(axis)*REAL(translation, dp), dp))
-                  displacement(:) = points(axis, :) - center(axis) - cell(axis, axis)*REAL(translation, dp)
-                  exponential(:) = EXP(-alpha*displacement**2)
-                  power = 1.0_dp
-                  WHERE (exponential == 0.0_dp) power = 0.0_dp
+                  displacement(:ncoord) = coordinates(:ncoord, axis) - center(axis) - cell(axis, axis)*REAL(translation, dp)
+                  exponential(:ncoord) = EXP(-alpha*displacement(:ncoord)**2)
+                  power(:ncoord) = 1.0_dp
+                  WHERE (exponential(:ncoord) == 0.0_dp) power(:ncoord) = 0.0_dp
                   DO degree = 0, moment_degree
-                     moments(:, degree, axis) = moments(:, degree, axis) + phase*power*exponential
+                     moments(:ncoord, degree, axis) = moments(:ncoord, degree, axis) + &
+                                                       phase*power(:ncoord)*exponential(:ncoord)
                      IF (image_derivatives) THEN
-                        image_moments(:, degree, axis) = image_moments(:, degree, axis) + &
-                                                         REAL(translation, dp)*phase*power*exponential
+                        image_moments(:ncoord, degree, axis) = image_moments(:ncoord, degree, axis) + &
+                                                              REAL(translation, dp)*phase*power(:ncoord)*exponential(:ncoord)
                      END IF
-                     power(:) = power*displacement
+                     power(:ncoord) = power(:ncoord)*displacement(:ncoord)
                   END DO
+               END DO
+               IF (ncoord == npoint) CYCLE
+               DO degree = 0, moment_degree
+                  moments(:, degree, axis) = moments(coordinate_index(:, axis), degree, axis)
+                  IF (image_derivatives) THEN
+                     image_moments(:, degree, axis) = image_moments(coordinate_index(:, axis), degree, axis)
+                  END IF
                END DO
             END DO
             DO ishell = 1, basis%nshell(iset)
