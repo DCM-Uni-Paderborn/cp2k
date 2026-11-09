@@ -482,10 +482,11 @@ CONTAINS
 !> \param gaussian_factor Optional fixed Gaussian multiplier, two for soft-plus-Gaussian fields.
 !> \param workspace Optional original per-atom Gaussian scratch fields.
 !> \param bare_gradient Optional unscaled Gaussian gradient from the matching forward evaluation.
+!> \param coefficients_covector Optional coefficient derivative from the same difference fields.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, coefficients, &
                                                       ao_range, covector, point_geometry, atom_geometry, cell_geometry, &
-                                                      gaussian_factor, workspace, bare_gradient)
+                                                      gaussian_factor, workspace, bare_gradient, coefficients_covector)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       INTEGER, INTENT(IN)                                :: ao_image(3), coefficient_images(:, :)
@@ -499,6 +500,7 @@ CONTAINS
       TYPE(gaussian_basis_workspace_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: workspace(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: bare_gradient(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: coefficients_covector(:, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: delta(:, :), delta_covector(:, :), &
                                                             delta_gradient(:, :, :)
@@ -524,6 +526,10 @@ CONTAINS
       point_geometry = 0.0_dp
       atom_geometry = 0.0_dp
       cell_geometry = 0.0_dp
+      IF (PRESENT(coefficients_covector)) THEN
+         CPASSERT(ALL(SHAPE(coefficients_covector) == SHAPE(coefficients)))
+         coefficients_covector = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, ao_range, covector, &
                                                    point_geometry, atom_geometry, cell_geometry, gaussian_factor, workspace, &
                                                    bare_gradient)
@@ -539,6 +545,9 @@ CONTAINS
          image = ao_image - coefficient_images(:, q)
          IF (.NOT. qs_upf_inverse_lattice_intersects(frame, point_bounds, image)) CYCLE
          CALL qs_upf_inverse_lattice_delta_fields(frame, points, image, delta, delta_gradient)
+         IF (PRESENT(coefficients_covector)) THEN
+            CALL subtract_product(delta, covector, coefficients_covector(:, :, q), left_adjoint=.TRUE.)
+         END IF
          IF (ALL(delta_gradient == CMPLX(0.0_dp, 0.0_dp, dp))) CYCLE
          delta_covector = CMPLX(0.0_dp, 0.0_dp, dp)
          CALL subtract_product(covector, coefficients(:, :, q), delta_covector, right_adjoint=.TRUE.)

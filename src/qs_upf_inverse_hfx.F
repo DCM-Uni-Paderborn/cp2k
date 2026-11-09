@@ -2835,8 +2835,10 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE :: bare_left_gradient(:, :, :), bare_right_gradient(:, :, :), &
          cl(:, :), cr(:, :), delta(:, :), dl(:, :), dr(:, :), gcl(:, :), gcr(:, :), gdl(:, :), &
-         gdr(:, :), gl(:, :), gr(:, :), lattice_gl(:, :, :), lattice_gr(:, :, :), q(:, :), &
+         gdr(:, :), gl(:, :), gr(:, :), lattice_gr(:, :, :), q(:, :), &
          unused_c(:, :), unused_d(:, :), unused_w(:, :), wl(:, :), work(:, :), wr(:, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: lattice_gl(:, :, :)
+      COMPLEX(dp), POINTER                               :: left_geometry_coefficients(:, :, :)
       INTEGER                                            :: atom, aux, axis, cache_row, first, ia, &
                                                             image, ir, kind, last, left_image, &
                                                             nang, nl, np, nr, right_image, &
@@ -2951,6 +2953,7 @@ CONTAINS
                    weights(nang), weighted_potential(nang), delta(nang, np), work(nang, nr), &
                    cl(nang, nl), dl(nang, nl), cr(nang, nr), dr(nang, nr), &
                    gcl(nang, nl), gdl(nang, nl), gcr(nang, nr), gdr(nang, nr))
+         NULLIFY (left_geometry_coefficients)
          IF (.NOT. frame%atom_local) THEN
             ALLOCATE (lattice_gl(SIZE(coupled_coefficients, 1), nl, SIZE(coefficient_images, 2)), &
                       lattice_gr(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))
@@ -2958,6 +2961,7 @@ CONTAINS
                ! The reverse pass uses the Gaussian gradient from the same angular points.
                IF (left_term) ALLOCATE (bare_left_gradient(nang, nl, 3))
                IF (right_term .AND. .NOT. same_ao_block) ALLOCATE (bare_right_gradient(nang, nr, 3))
+               IF (.NOT. same_ao_block) left_geometry_coefficients => lattice_gl
             END IF
          END IF
          IF (geometry) ALLOCATE (potential_gradient(3, fields%nfunction, nang), potential_covector(nang))
@@ -3051,7 +3055,8 @@ CONTAINS
             IF (frame%atom_local) THEN
                CALL field_product(delta, gcl, gl, .TRUE., .TRUE., .FALSE., -1.0_dp)
                CALL field_product(delta, gcr, gr, .TRUE., .TRUE., .FALSE., -1.0_dp)
-            ELSE
+            ELSE IF (.NOT. geometry .OR. same_ao_block) THEN
+               ! An identical block retains both coefficient covectors even when its geometry is combined.
                IF (left_term) THEN
                   CALL qs_upf_inverse_lattice_field_adjoint(frame, points, [0, 0, 0], coefficient_images, gcl, lattice_gl)
                   left_coefficients_covector(:, :, :) = left_coefficients_covector + lattice_gl
@@ -3073,7 +3078,11 @@ CONTAINS
                      CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, [0, 0, 0], coefficient_images, &
                                                                coupled_coefficients(:, left_range(1):left_range(2), :), &
                                                                left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp, &
-                                                               workspace=left_fields%gaussian, bare_gradient=bare_left_gradient)
+                                                               workspace=left_fields%gaussian, bare_gradient=bare_left_gradient, &
+                                                               coefficients_covector=left_geometry_coefficients)
+                     IF (ASSOCIATED(left_geometry_coefficients)) THEN
+                        left_coefficients_covector(:, :, :) = left_coefficients_covector + lattice_gl
+                     END IF
                   END IF
                   atom_geometry(:, :) = atom_geometry + local_atoms
                   cell_geometry(:, :) = cell_geometry + local_cell
@@ -3089,7 +3098,9 @@ CONTAINS
                                                                   coupled_coefficients(:, right_range(1):right_range(2), :), &
                                                                   right_range, gcr, point_geometry, local_atoms, local_cell, &
                                                                   2.0_dp, workspace=right_fields%gaussian, &
-                                                                  bare_gradient=bare_right_gradient)
+                                                                  bare_gradient=bare_right_gradient, &
+                                                                  coefficients_covector=lattice_gr)
+                     right_coefficients_covector(:, :, :) = right_coefficients_covector + lattice_gr
                   END IF
                   atom_geometry(:, :) = atom_geometry + local_atoms
                   cell_geometry(:, :) = cell_geometry + local_cell
