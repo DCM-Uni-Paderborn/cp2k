@@ -605,6 +605,10 @@ CONTAINS
 
       CLASS(upf_partial_waves_type), POINTER             :: waves
 
+      CHARACTER(LEN=*), PARAMETER :: missing_uspp_waves = &
+         "USPP inversion and valence kinetic augmentation require "// &
+         "projector-indexed AE/PS pairs in PP_FULL_WFC. Supply a prepared UPF. "// &
+         "For LDA or GGA, USPP_METHOD DIRECT accepts the original UPF."
       INTEGER                                            :: n, nb
 
       IF (pot%has_so) THEN
@@ -617,7 +621,7 @@ CONTAINS
          waves => pot%paw
       ELSE
          IF (.NOT. ALLOCATED(pot%partial_waves)) THEN
-            CPABORT("Reconstruction or kinetic density needs AE/PS pairs per projector")
+            CPABORT(missing_uspp_waves)
          END IF
          waves => pot%partial_waves
       END IF
