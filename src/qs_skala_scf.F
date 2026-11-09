@@ -575,7 +575,8 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:), physical_gradient(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: sample_inputs, reuse_fields
 
-      LOGICAL                                            :: need_gradient, record_inputs, trial_current
+      LOGICAL                                            :: need_gradient, record_inputs, &
+                                                            trial_current
 
       trial_current = .FALSE.
       IF (PRESENT(reuse_fields)) THEN
@@ -2953,7 +2954,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals, restore_operator, &
                                                             assemble_jumps
 
-      INTEGER                                            :: i, m, n
+      INTEGER                                            :: i, last_limit, m, n
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             jump_owners(:), points(:, :), spins(:)
       LOGICAL                                            :: capture_jumps, fixed_orbitals, restore, &
@@ -3033,6 +3034,7 @@ CONTAINS
             IF (assembled(i)) negative_changes(:, i) = jump_values(i)*physical
          END IF
       END DO
+      last_limit = 0
       DO i = 1, m
          IF (assembled(i)) CYCLE
          weights(i) = 1.0_dp
@@ -3040,7 +3042,11 @@ CONTAINS
          CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
          negative_changes(:, i) = physical - positive_gradient
          weights(i) = 0.0_dp
+         last_limit = i
       END DO
+      ! The positive limit or the last explicit negative limit may already use the original weights.
+      IF (last_limit > 0) weights(last_limit) = 1.0_dp
+      IF (restore .AND. ALL(weights == original_weights)) RETURN
       CALL skala_density_constraints_update_weights(state%constraints, original_weights)
       IF (restore) THEN
          CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
