@@ -41,7 +41,24 @@
     &END SCF
     &XC
       &HF
-        FRACTION 0.25
+        FRACTION 0.10
+        &INTERACTION_POTENTIAL
+          OMEGA 10.0
+          POTENTIAL_TYPE SHORTRANGE
+        &END INTERACTION_POTENTIAL
+        &RI
+          EPS_FILTER 1.E-10
+          EPS_PGF_ORB 1.E-10
+          KP_NGROUPS 1
+          RI_FLAVOR RHO
+          RI_METRIC IDENTITY
+        &END RI
+        &SCREENING
+          EPS_SCHWARZ 1.E-10
+        &END SCREENING
+      &END HF
+      &HF
+        FRACTION 0.15
         &INTERACTION_POTENTIAL
           OMEGA 10.0
           POTENTIAL_TYPE SHORTRANGE

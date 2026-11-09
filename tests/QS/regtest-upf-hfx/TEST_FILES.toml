@@ -15,5 +15,6 @@
   {matcher = "M011", tol = 1e-10, ref = 3.218897463154330},
 ]
 # A Bloch calculation with one AO image still uses the k-point RI exchange path.
+# Splitting its exchange fraction into two terms preserves the energy and stress.
 "H_USPP_RI_single_image.inp" = [{matcher = "M011", tol = 1e-10, ref = 4.654840844364726},
                                 {matcher = "M031", tol = 1e-8, ref = -7048.79813418}]

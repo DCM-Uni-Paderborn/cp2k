@@ -991,8 +991,7 @@ CONTAINS
                                                             nimages, nspins
       LOGICAL                                            :: do_adiabatic_rescaling, &
                                                             s_mstruct_changed, use_virial
-      REAL(dp)                                           :: eh1, ehfx, eold
-      REAL(dp), ALLOCATABLE, DIMENSION(:)                :: hf_energy
+      REAL(dp)                                           :: ehfx
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks_aux_fit_im, matrix_ks_im
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_h, matrix_ks_aux_fit_hfx_kp, &
                                                             matrix_ks_aux_fit_kp, matrix_ks_orb, &
@@ -1076,9 +1075,7 @@ CONTAINS
          END DO
       END DO
 
-      ALLOCATE (hf_energy(n_rep_hf))
-
-      eold = 0.0_dp
+      energy%ex = 0.0_dp
 
       DO irep = 1, n_rep_hf
 
@@ -1090,9 +1087,6 @@ CONTAINS
          END IF
          CALL qs_rho_get(rho_struct=rho_orb, rho_ao_kp=rho_ao_orb)
 
-         ! Finally the real hfx calulation
-         ehfx = 0.0_dp
-
          IF (.NOT. x_data(irep, 1)%do_hfx_ri) THEN
             CPABORT("Only RI-HFX is implemented for K-points")
          END IF
@@ -1100,6 +1094,8 @@ CONTAINS
          CALL hfx_ri_update_ks_kp(qs_env, x_data(irep, 1)%ri_data, matrix_ks_orb, ehfx, &
                                   rho_ao_orb, s_mstruct_changed, nspins, &
                                   x_data(irep, 1)%general_parameter%fraction)
+         ! The RI contraction returns the energy of this exchange contribution only.
+         energy%ex = energy%ex + ehfx
 
          IF (calculate_forces) THEN
             !Scale auxiliary density matrix for ADMMP (see Merlot2014) with gsi(ispin) to scale force
@@ -1117,14 +1113,9 @@ CONTAINS
          END IF
 
          CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool, poisson_env=poisson_env)
-         eh1 = ehfx - eold
-         CALL pw_hfx(qs_env, eh1, hfx_sections, poisson_env, auxbas_pw_pool, irep)
-         eold = ehfx
+         CALL pw_hfx(qs_env, ehfx, hfx_sections, poisson_env, auxbas_pw_pool, irep)
 
       END DO
-
-      ! *** Set the total HFX energy
-      energy%ex = ehfx
 
       ! *** Add Core-Hamiltonian-Matrix ***
       DO ispin = 1, nspins
