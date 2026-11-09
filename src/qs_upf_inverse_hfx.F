@@ -736,7 +736,8 @@ CONTAINS
                                                 atom_geometry=local_atoms, cell_geometry=local_cell, &
                                                 auxiliary_geometry=local_auxiliary, ao_image=ao_images(:, image), &
                                                 coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
-                                                coupled_coefficients_covector=shared, shared_potentials=lattice_potentials)
+                                                coupled_coefficients_covector=shared, shared_potentials=lattice_potentials, &
+                                                owner_local=.TRUE.)
          DEALLOCATE (selected_centers)
          IF (PRESENT(coefficients_covector)) coefficients_covector(:, :, :) = coefficients_covector + shared
          atom_geometry(:, :) = atom_geometry + local_atoms
@@ -751,6 +752,11 @@ CONTAINS
             END DO
          END DO
       END DO
+      ! All images use the process grid checked by active_lattice_covectors.
+      ! Accumulate auxiliary-center motion before reducing the complete geometry.
+      IF (PRESENT(coefficients_covector)) CALL covectors(1)%pgrid%mp_comm_2d%sum(coefficients_covector)
+      CALL covectors(1)%pgrid%mp_comm_2d%sum(atom_geometry)
+      CALL covectors(1)%pgrid%mp_comm_2d%sum(cell_geometry)
    END SUBROUTINE qs_upf_inverse_hfx_lattice_adjoint
 
 ! **************************************************************************************************
@@ -839,7 +845,7 @@ CONTAINS
                                    selected, covectors(image), metric=metric, atom_geometry=local_atoms, cell_geometry=local_cell, &
                                auxiliary_geometry=local_auxiliary, ao_image=physical_image, coefficient_images=coefficient_images, &
                                                   coupled_coefficients=coupled_coefficients, coupled_coefficients_covector=shared, &
-                                                      shared_potentials=cache, ao_mask=pair_mask)
+                                                      shared_potentials=cache, ao_mask=pair_mask, owner_local=.TRUE.)
                IF (PRESENT(coefficients_covector)) coefficients_covector = coefficients_covector + shared
                atom_geometry = atom_geometry + local_atoms
                cell_geometry = cell_geometry + local_cell
@@ -854,6 +860,10 @@ CONTAINS
             END DO
          END DO
       END DO
+      ! The folded groups only change the image and auxiliary-center mapping.
+      IF (PRESENT(coefficients_covector)) CALL covectors(1)%pgrid%mp_comm_2d%sum(coefficients_covector)
+      CALL covectors(1)%pgrid%mp_comm_2d%sum(atom_geometry)
+      CALL covectors(1)%pgrid%mp_comm_2d%sum(cell_geometry)
    END SUBROUTINE native_lattice_adjoint
 
 ! **************************************************************************************************
@@ -1484,6 +1494,7 @@ CONTAINS
 !> \param coupled_coefficients_covector Optional full replicated derivative of the shared W_Q.
 !> \param shared_potentials Optional wrapper-owned fields for the same geometry, auxiliary sites and interaction.
 !> \param ao_mask Left and right AO columns in the fixed coordinate-gauge group.
+!> \param owner_local Return unreduced contributions for a physical lattice geometry batch.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_hfx_tensor_adjoint(left_frame, right_frame, kinds, augmentation, auxiliary_bases, &
                                                 auxiliary_positions, auxiliary_factors, center_images, covector_real, &
@@ -1492,7 +1503,7 @@ CONTAINS
                                                 right_k_response, auxiliary_positions_response, auxiliary_factors_response, &
                                                 metric, auxiliary_images, atom_geometry, cell_geometry, auxiliary_geometry, &
                                                 ao_image, coefficient_images, coupled_coefficients, coupled_coefficients_covector, &
-                                                shared_potentials, ao_mask)
+                                                shared_potentials, ao_mask, owner_local)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: left_frame, right_frame
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(uspp_augmentation_type), INTENT(IN), TARGET   :: augmentation(:)
@@ -1519,6 +1530,7 @@ CONTAINS
       TYPE(lattice_potential_cache_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: shared_potentials
       LOGICAL, INTENT(IN), OPTIONAL                      :: ao_mask(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: owner_local
 
       COMPLEX(dp), ALLOCATABLE :: correction(:, :, :), dc(:, :, :), factor_covector(:, :, :), &
          g(:, :, :), gl(:, :), gl_lattice(:, :, :), gr(:, :), gr_lattice(:, :, :), local(:, :, :), &
@@ -1847,6 +1859,12 @@ CONTAINS
          END DO
          IF (ALLOCATED(qcache)) DEALLOCATE (qcache)
       END DO
+      IF (PRESENT(owner_local)) THEN
+         IF (owner_local) THEN
+            CPASSERT(physical .AND. full_geometry .AND. .NOT. derivatives)
+            RETURN
+         END IF
+      END IF
       IF (PRESENT(left_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(left_coefficients_covector)
       IF (PRESENT(right_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(right_coefficients_covector)
       IF (PRESENT(coupled_coefficients_covector)) CALL covector_real%pgrid%mp_comm_2d%sum(coupled_coefficients_covector)
