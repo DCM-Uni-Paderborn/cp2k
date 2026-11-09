@@ -211,7 +211,7 @@ def load_nc_core(path):
         or not isinstance(catalog.get("models"), dict)
     ):
         raise ValueError("Expected an SSSP 2.0 positive-amplitude NC core catalog")
-    return sha256(data).hexdigest(), catalog["models"]
+    return sha256(data).hexdigest(), catalog["models"], data
 
 
 def install_library(root, name, source, prepared=None, paw_core=None, nc_core=None):
@@ -222,6 +222,14 @@ def install_library(root, name, source, prepared=None, paw_core=None, nc_core=No
         archive = download(source, root, staging)
         names, pending, selection, replacements = set(), {}, {}, []
         core_replacements = []
+        if nc_core is not None:
+            catalog_sha256, models, catalog_data = nc_core
+            stage_file(
+                catalog_data,
+                root / "prepared-nc-core" / "catalog.json.gz",
+                staging,
+                pending,
+            )
         with tarfile.open(archive) as contents:
             for member in contents:
                 if member.isdir():
@@ -277,7 +285,6 @@ def install_library(root, name, source, prepared=None, paw_core=None, nc_core=No
                         and pseudo_type == "NC"
                         and flag(header, "core_correction")
                     ):
-                        catalog_sha256, models = nc_core
                         row = models.get(original_hash)
                         if not isinstance(row, dict) or row.get("file") != filename:
                             raise RuntimeError(f"No matching NC core kinetic field: {filename}")
@@ -310,7 +317,7 @@ def install_library(root, name, source, prepared=None, paw_core=None, nc_core=No
         if paw_core is not None:
             index["paw_core_release"] = paw_core.release["version"]
         if nc_core is not None:
-            index["nc_core_catalog_sha256"] = nc_core[0]
+            index["nc_core_catalog_sha256"] = catalog_sha256
         stage_file(
             (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
             destination / "selection.json",

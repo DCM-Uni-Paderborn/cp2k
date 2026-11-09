@@ -60,7 +60,8 @@ Add `--nc-core CATALOG` to install auxiliary NC core kinetic fields from a local
 SSSP 2.0 compressed JSON catalog. The installer matches each field to the SHA-256 of its
 original UPF and records the catalog checksum in `selection.json`. The prepared NC files reside
 under `DIRECTORY/prepared-nc-core/`. The positive-amplitude model preserves the original signed
-core charge and operator tables. The catalog contains only the added fields and their provenance.
+core charge and operator tables. The installer retains the exact catalog as
+`DIRECTORY/prepared-nc-core/catalog.json.gz` with the added fields and their provenance.
 
 ## Download original collections
 
