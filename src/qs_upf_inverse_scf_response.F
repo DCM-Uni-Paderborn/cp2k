@@ -391,6 +391,19 @@ CONTAINS
          combined_rho(spin)%array = combined_rho(spin)%array + response_rho(spin)%array
          combined_tau(spin)%array = combined_tau(spin)%array + response_tau(spin)%array
       END DO
+      IF (.NOT. state%gaussian_background .AND. .NOT. fine) THEN
+         ! The XC and Hartree responses use the same native density map.
+         ! Add their covectors before applying its linear AO transpose.
+         work_g%array = direction_g(1)%array
+         DO spin = 2, ns
+            work_g%array = work_g%array + direction_g(spin)%array
+         END DO
+         work_g%array = poisson%green_fft%influence_fn%array*work_g%array
+         CALL pw_transfer(work_g, direction(1))
+         DO spin = 1, ns
+            combined_rho(spin)%array = combined_rho(spin)%array + direction(1)%array
+         END DO
+      END IF
       CALL qs_upf_inverse_scf_xc_source_adjoint(ks_env, combined_rho, combined_tau, operators_direction)
       IF (atomic_xc) operators_direction(:, :, :, :) = operators_direction + atomic
       ALLOCATE (hartree(n, n, nk))
@@ -401,7 +414,7 @@ CONTAINS
          DO spin = 1, ns
             operators_direction(:, :, :, spin) = operators_direction(:, :, :, spin) + hartree
          END DO
-      ELSE
+      ELSE IF (fine) THEN
          CALL native_hartree_response(ks_env, matrices_direction, atomic)
          operators_direction(:, :, :, :) = operators_direction + atomic
       END IF
