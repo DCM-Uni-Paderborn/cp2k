@@ -46,9 +46,8 @@ MODULE qs_upf_inverse_grid
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_grid_type
    USE upf_inverse,                     ONLY: upf_inverse_kinetic_type
    USE upf_inverse_quadrature,          ONLY: &
-        upf_inverse_density_residual, upf_inverse_pair, upf_inverse_pair_response, &
-        upf_inverse_projector_density, upf_inverse_projector_pair, upf_inverse_semilocal_pair, &
-        upf_inverse_semilocal_residual, upf_inverse_semilocal_response, upf_inverse_smooth_density
+        upf_inverse_pair, upf_inverse_pair_response, upf_inverse_projector_density, upf_inverse_projector_pair, &
+        upf_inverse_semilocal_pair, upf_inverse_semilocal_response, upf_inverse_smooth_density
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -194,13 +193,10 @@ CONTAINS
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
-      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), gg(:, :, :), &
-                                                            projected(:, :), sg(:, :, :), &
-                                                            soft(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), sg(:, :, :), soft(:, :)
       INTEGER                                            :: axis, block, hi, lo, m, n, nao, nproj
       LOGICAL                                            :: use_fourier, use_orbitals
-      REAL(dp), ALLOCATABLE                              :: dn(:, :), dn_reference(:, :), rho(:), &
-                                                            rho_reference(:), t(:), t_reference(:)
+      REAL(dp), ALLOCATABLE                              :: dn(:, :), rho(:), t(:), t_augmentation(:)
 
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       use_fourier = .FALSE.
@@ -214,23 +210,18 @@ CONTAINS
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%coefficients, 2)
       block = qs_upf_inverse_block_size(frame%ao)
-      ALLOCATE (rho(n), dn(n, 3), t(n), rho_reference(n), dn_reference(n, 3), t_reference(n))
+      ALLOCATE (rho(n), dn(n, 3), t(n))
       rho = 0.0_dp
       dn = 0.0_dp
       t = 0.0_dp
-      rho_reference = 0.0_dp
-      dn_reference = 0.0_dp
-      t_reference = 0.0_dp
       IF (use_orbitals) THEN
-         ALLOCATE (soft(block, nao), sg(block, nao, 3), gaussian(block, nao), gg(block, nao, 3))
+         ALLOCATE (soft(block, nao), sg(block, nao, 3))
          DO lo = 1, n, block
             hi = MIN(n, lo + block - 1)
             m = hi - lo + 1
-            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
-            CALL upf_inverse_smooth_density(gaussian(:m, :), gg(:m, :, :), p, &
-                                            rho_reference(lo:hi), dn_reference(lo:hi, :), t_reference(lo:hi))
-            CALL upf_inverse_density_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), p, &
-                                              rho(lo:hi), dn(lo:hi, :), t(lo:hi))
+            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :))
+            ! The complete orbital density equals the Gaussian density plus its inverse residual.
+            CALL upf_inverse_smooth_density(soft(:m, :), sg(:m, :, :), p, rho(lo:hi), dn(lo:hi, :), t(lo:hi))
          END DO
       END IF
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
@@ -245,12 +236,10 @@ CONTAINS
             projector_density = projected
          END IF
       END IF
-      rho(:) = rho + rho_reference
-      dn(:, :) = dn + dn_reference
-      t(:) = t + t_reference
       IF (PRESENT(kinetic)) THEN
-         CALL qs_upf_inverse_kinetic_collocate(frame%ao, kinetic, frame%ao%points, p, t_reference)
-         t(:) = t + t_reference
+         ALLOCATE (t_augmentation(n))
+         CALL qs_upf_inverse_kinetic_collocate(frame%ao, kinetic, frame%ao%points, p, t_augmentation)
+         t(:) = t + t_augmentation
       END IF
       CALL unpack_grid(frame, rho, density)
       CALL unpack_grid(frame, t, tau)
@@ -326,9 +315,7 @@ CONTAINS
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
-      COMPLEX(dp), ALLOCATABLE                           :: gaussian(:, :), gg(:, :, :), &
-                                                            partial(:, :), projected(:, :), &
-                                                            residual(:, :), sg(:, :, :), soft(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), residual(:, :), sg(:, :, :), soft(:, :)
       INTEGER                                            :: axis, block, hi, lo, m, n, nao, nproj
       LOGICAL                                            :: use_fourier, use_orbitals
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
@@ -352,17 +339,14 @@ CONTAINS
       END DO
       h = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (use_orbitals) THEN
-         ALLOCATE (partial(nao, nao), soft(block, nao), sg(block, nao, 3), &
-                   gaussian(block, nao), gg(block, nao, 3))
+         ALLOCATE (soft(block, nao), sg(block, nao, 3))
          DO lo = 1, n, block
             hi = MIN(n, lo + block - 1)
             m = hi - lo + 1
-            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :), gaussian(:m, :), gg(:m, :, :))
-            CALL upf_inverse_semilocal_pair(gaussian(:m, :), gaussian(:m, :), gg(:m, :, :), gg(:m, :, :), &
-                                            frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), partial)
-            CALL upf_inverse_semilocal_residual(gaussian(:m, :), gg(:m, :, :), soft(:m, :), sg(:m, :, :), &
-                                                frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
-            h(:, :) = h + partial + residual
+            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :))
+            CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), sg(:m, :, :), sg(:m, :, :), &
+                                            frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
+            h(:, :) = h + residual
          END DO
       END IF
       CALL frame%ao%point_comm%sum(h)
@@ -836,24 +820,17 @@ CONTAINS
 !> \param last Last local row, inclusive.
 !> \param soft Transformed orbital values.
 !> \param gradient Physical spatial gradients.
-!> \param gaussian Optional original Gaussian values for the reference/residual decomposition.
-!> \param gaussian_gradient Optional original Gaussian gradients.
 ! **************************************************************************************************
-   SUBROUTINE point_fields(frame, first, last, soft, gradient, gaussian, gaussian_gradient)
+   SUBROUTINE point_fields(frame, first, last, soft, gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: first, last
       COMPLEX(dp), INTENT(OUT)                           :: soft(:, :), gradient(:, :, :)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gaussian(:, :), &
-                                                            gaussian_gradient(:, :, :)
 
       IF (frame%fields_stored) THEN
          soft(:, :) = frame%soft(first:last, :)
          gradient(:, :, :) = frame%soft_gradient(first:last, :, :)
-         IF (PRESENT(gaussian)) gaussian(:, :) = frame%gaussian(first:last, :)
-         IF (PRESENT(gaussian_gradient)) gaussian_gradient(:, :, :) = frame%gaussian_gradient(first:last, :, :)
       ELSE
-         CALL qs_upf_inverse_evaluate(frame, frame%points(:, first:last), soft, gradient, &
-                                      gaussian=gaussian, gaussian_gradient=gaussian_gradient)
+         CALL qs_upf_inverse_evaluate(frame, frame%points(:, first:last), soft, gradient)
       END IF
    END SUBROUTINE point_fields
 
