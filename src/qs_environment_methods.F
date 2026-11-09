@@ -113,7 +113,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: rotations(:, :, :)
 
       INTEGER                                            :: kind, level, ngrid
-      LOGICAL                                            :: has_upf
+      LOGICAL                                            :: has_paw, has_upf, has_uspp, interpolate_xc
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(pw_env_type), POINTER                         :: pw_env
@@ -122,12 +122,20 @@ CONTAINS
 
       CALL get_qs_env(qs_env, qs_kind_set=kinds, pw_env=pw_env, cell=cell, dft_control=control)
       has_upf = .FALSE.
+      has_uspp = .FALSE.
+      has_paw = .FALSE.
       DO kind = 1, SIZE(kinds)
          IF (kinds(kind)%ghost) CYCLE
          IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
-         has_upf = has_upf .OR. ALLOCATED(kinds(kind)%sgp_potential%upf_data)
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         has_upf = .TRUE.
+         has_uspp = has_uspp .OR. kinds(kind)%sgp_potential%upf_data%is_ultrasoft
+         has_paw = has_paw .OR. kinds(kind)%sgp_potential%upf_data%is_paw
       END DO
       IF (.NOT. has_upf) RETURN
+      ! The atomic XC background is sampled with a separable stencil on the native grid.
+      interpolate_xc = ((has_uspp .OR. has_paw) .AND. (control%qs_control%gapw .OR. control%qs_control%gapw_xc)) .OR. &
+                       (has_paw .AND. control%use_gauxc)
       CPASSERT(ASSOCIATED(pw_env))
       CPASSERT(ASSOCIATED(pw_env%pw_pools))
       ngrid = SIZE(pw_env%pw_pools)
@@ -136,13 +144,13 @@ CONTAINS
       ALLOCATE (grids(ngrid))
       DO level = 1, SIZE(pw_env%pw_pools)
          grid => pw_env%pw_pools(level)%pool%pw_grid
-         grids(level) = crys_sym_grid_type(grid%npts, grid%spherical)
+         grids(level) = crys_sym_grid_type(grid%npts, grid%spherical, interpolate_xc)
       END DO
       level = SIZE(pw_env%pw_pools)
       IF (ASSOCIATED(pw_env%xc_pw_pool)) THEN
          level = level + 1
          grid => pw_env%xc_pw_pool%pw_grid
-         grids(level) = crys_sym_grid_type(grid%npts, grid%spherical)
+         grids(level) = crys_sym_grid_type(grid%npts, grid%spherical, interpolate_xc)
       END IF
       IF (ASSOCIATED(pw_env%vdw_pw_pool)) THEN
          grid => pw_env%vdw_pw_pool%pw_grid

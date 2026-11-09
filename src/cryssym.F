@@ -39,10 +39,11 @@ MODULE cryssym
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'cryssym'
 
-   !> Uniform quadrature and the shape of its retained reciprocal frequencies.
+   !> Uniform quadrature, reciprocal cutoff shape and optional tensor-product interpolation.
    TYPE crys_sym_grid_type
       INTEGER                                     :: npts(3)
       LOGICAL                                     :: spherical
+      LOGICAL                                     :: tensor_interpolation = .FALSE.
    END TYPE crys_sym_grid_type
 
 ! **************************************************************************************************
@@ -169,6 +170,7 @@ CONTAINS
 !>        In reciprocal space a physical rotation preserves a spherical cutoff.
 !>        A Fourier box must also contain its rotated frequencies, including both
 !>        physical signs of the even-grid boundary.
+!>        A tensor-product interpolation stencil requires signed grid-axis permutations.
 !> \param rotation Fractional direct-space rotation.
 !> \param translation Fractional direct-space translation, modulo lattice vectors.
 !> \param grids Active integration grids and their reciprocal cutoff shapes.
@@ -193,6 +195,9 @@ CONTAINS
             END DO
          END DO
          IF (MAXVAL(ABS(mapped - ANINT(mapped))) > tolerance*MAX(1.0_dp, MAXVAL(ABS(mapped)))) RETURN
+         IF (grids(grid)%tensor_interpolation) THEN
+            IF (ANY(SUM(ABS(ANINT(mapped)), DIM=1) /= 1.0_dp)) RETURN
+         END IF
          shifted = REAL(npts, dp)*(translation - ANINT(translation))
          IF (MAXVAL(ABS(shifted - ANINT(shifted))) > tolerance*REAL(MAXVAL(npts), dp)) RETURN
          IF (.NOT. grids(grid)%spherical) THEN

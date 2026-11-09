@@ -176,6 +176,10 @@ PROGRAM kpsym_unittest
                       angular_rotations=angular_rotations)
       CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), cell, &
                       1.e-8_dp, 8, .FALSE., .TRUE., use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE., &
+                      integration_grids=[crys_sym_grid_type([20, 20, 40], .TRUE., .TRUE.)], expected_operations=8, &
+                      angular_rotations=angular_rotations)
+      CALL check_mesh(RESHAPE([0.0_dp, 0.0_dp, 0.0_dp], [3, 1]), cell, &
+                      1.e-8_dp, 8, .FALSE., .TRUE., use_spglib_reduction=.TRUE., use_spglib_backend=.TRUE., &
                       integration_grids=[crys_sym_grid_type([20, 20, 40], .FALSE.)], expected_operations=8, &
                       angular_rotations=angular_rotations)
       ! A previously defined orthorhombic angular grid does not acquire the new sixfold symmetry.
