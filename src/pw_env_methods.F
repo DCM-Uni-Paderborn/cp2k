@@ -521,6 +521,7 @@ CONTAINS
          DO igrid_level = 1, SIZE(pw_pools)
             CALL pw_grid_change(cell%hmat, pw_pools(igrid_level)%pool%pw_grid)
          END DO
+         IF (uf_grid) CALL pw_grid_change(cell%hmat, pw_env%xc_pw_pool%pw_grid)
          IF (set_vdw_pool) CALL pw_grid_change(cell%hmat, pw_env%vdw_pw_pool%pw_grid)
          CALL pw_poisson_read_parameters(poisson_section, poisson_params)
          CALL pw_poisson_set(pw_env%poisson_env, cell_hmat=cell%hmat, pw_pools=pw_env%pw_pools, &
