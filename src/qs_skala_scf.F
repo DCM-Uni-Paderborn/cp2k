@@ -3151,7 +3151,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Check native limiting derivatives along attainable physical constraint normals.
-!>        Retain the original weights and the complete native MOs, P, fields, energy and KS.
+!>        Retain the original weights and native MOs, P and fields.
+!>        Restore the complete energy and KS unless the caller will reevaluate the trial.
 !>        Proportional samples switch together. Other dependent groups return invalid.
 !>        Normal admissibility alone does not
 !>        establish tangential stationarity, stability or automatic SCF convergence.
@@ -3161,14 +3162,16 @@ CONTAINS
 !> \param release_side Minus one for negative-side descent, plus one for positive-side descent.
 !> \param valid Whether the selected normals have independent proportional groups.
 !> \param hold_orbitals Keep native MOs and density fixed while evaluating the normal limits.
+!> \param restore_operator Rebuild the operator for the original weights, true by default.
 ! **************************************************************************************************
-   SUBROUTINE qs_skala_scf_admissibility(state, coordinate, admissible, release_side, valid, hold_orbitals)
+   SUBROUTINE qs_skala_scf_admissibility(state, coordinate, admissible, release_side, valid, &
+                                        hold_orbitals, restore_operator)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       LOGICAL, INTENT(OUT)                               :: admissible(:)
       INTEGER, INTENT(OUT)                               :: release_side(:)
       LOGICAL, INTENT(OUT)                               :: valid
-      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals
+      LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals, restore_operator
 
       INTEGER                                            :: m, n
       REAL(dp), ALLOCATABLE                              :: changes(:, :), jacobian(:, :), &
@@ -3182,7 +3185,7 @@ CONTAINS
       release_side = 0
       valid = .FALSE.
       ALLOCATE (positive(n), changes(n, m), jacobian(m, n))
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, hold_orbitals)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, hold_orbitals, restore_operator)
       CALL skala_cusp_admissibility(positive, changes, jacobian, admissible, release_side, valid)
    END SUBROUTINE qs_skala_scf_admissibility
 
@@ -3881,15 +3884,16 @@ CONTAINS
 
       INTEGER, ALLOCATABLE :: release_side(:)
       LOGICAL, ALLOCATABLE :: admissible(:)
-      LOGICAL :: valid
+      LOGICAL :: different_endpoints, valid
 
       interrupted = .FALSE.
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
          IF (context%admit_crossings) THEN
             ! Equal endpoints only ask whether an existing normal remains admissible.
-            ! The solver evaluates the next required operator after a descriptor scan.
-            IF (ANY(first /= last)) THEN
+            ! The following constraint restoration or the stationarity exit rebuilds KS.
+            different_endpoints = ANY(first /= last)
+            IF (different_endpoints) THEN
                CALL check_native_segment(first, last, curve, context, interrupted, restore_operator=.FALSE., &
                                          leave_trial=SIZE(context%spins) == 0)
             END IF
@@ -3897,7 +3901,8 @@ CONTAINS
                ! A selected normal can cease to bracket a minimum before the tangent converges.
                ! Return the accepted state so the caller can test a finite downhill release.
                ALLOCATE (admissible(SIZE(context%spins)), release_side(SIZE(context%spins)))
-               CALL qs_skala_scf_admissibility(context%state, first, admissible, release_side, valid)
+               CALL qs_skala_scf_admissibility(context%state, first, admissible, release_side, valid, &
+                                               restore_operator=different_endpoints)
                IF (valid .AND. ANY(.NOT. admissible)) THEN
                   context%rechart = .TRUE.
                   interrupted = .TRUE.
