@@ -509,7 +509,7 @@ CONTAINS
 !> \param poisson_weights Native Coulomb kernel times volume and Fourier multiplicity. The caller
 !>        supplies the zero-mode convention. These weights are nonnegative.
 !> \param energy Full Coulomb energy, excluding any separately defined ionic self energies.
-!> \param potentials Radial-measure density adjoints, one for each supplied center.
+!> \param potentials Optional radial-measure density adjoints, one for each supplied center.
 !> \param background_adjoint Local Fourier covector, including the residual/background interaction.
 !> \param comm Optional communicator distributing Fourier rows. Centered data are replicated.
 !> \param response Optional joint energy derivative of this same finite representation.
@@ -538,7 +538,7 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: poisson_weights(:)
       REAL(dp), INTENT(OUT)                              :: energy
       TYPE(upf_inverse_coulomb_potential_type), &
-         ALLOCATABLE, INTENT(OUT)                        :: potentials(:)
+         ALLOCATABLE, INTENT(OUT), OPTIONAL              :: potentials(:)
       COMPLEX(dp), INTENT(OUT)                           :: background_adjoint(:)
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
       REAL(dp), INTENT(OUT), OPTIONAL                    :: response
@@ -555,10 +555,12 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
                                                             h(:)
+      COMPLEX(dp), CONTIGUOUS, POINTER                   :: kernel_values(:, :, :)
       INTEGER                                            :: a, b, channel, fourier_shape(3), i, &
                                                             image(3), info, j, limits(2, 3), na, &
                                                             nb, ng, nh, nr, REPEAT(3)
-      LOGICAL                                            :: derive, reuse_fourier, reuse_pair_geometry
+      LOGICAL                                            :: derive, derive_kernel, fixed_reciprocal, &
+                                                            reuse_fourier, reuse_pair_geometry
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
                                                             dmoment, dnorm, dpair, dpw, epair, &
                                                             inverse_cell(3, 3), moment, norm, &
@@ -585,6 +587,7 @@ CONTAINS
       CALL invmat(inverse_cell, info)
       CPASSERT(info == 0)
       derive = PRESENT(response)
+      fixed_reciprocal = .FALSE.
       IF (derive) THEN
          CPASSERT(PRESENT(center_response) .AND. PRESENT(cell_response))
          CPASSERT(PRESENT(gvecs_response) .AND. PRESENT(volume_response))
@@ -594,6 +597,8 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gvecs_response) == SHAPE(gvecs)))
          CPASSERT(SIZE(background_response) == ng)
          CPASSERT(SIZE(poisson_weights_response) == ng)
+         fixed_reciprocal = PRESENT(map) .AND. ALL(cell_response == 0.0_dp) .AND. &
+                            ALL(gvecs_response == 0.0_dp) .AND. volume_response == 0.0_dp
       END IF
       IF (PRESENT(map)) CALL check_map(map, centers, cell, gvecs, volume, repeat)
       ! The reciprocal coefficients are immutable at fixed geometry. Borrow them
@@ -612,7 +617,7 @@ CONTAINS
             IF (ANY(center_response(a)%radii /= 0.0_dp)) reuse_pair_geometry = .FALSE.
          END DO
       END IF
-      ALLOCATE (work(SIZE(centers)), potentials(SIZE(centers)), h(ng), e(ng), dh(ng), dg(ng))
+      ALLOCATE (work(SIZE(centers)), h(ng), e(ng), dh(ng), dg(ng))
       h(:) = background
       e(:) = CMPLX(0.0_dp, 0.0_dp, dp)
       dh(:) = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -624,7 +629,13 @@ CONTAINS
          ALLOCATE (work(a)%compensation(nr, nh), work(a)%residual(nr, nh), &
                    work(a)%q(nr, nh), work(a)%dq(nr, nh), work(a)%potential(nr, nh), &
                    moments(nh))
-         IF (.NOT. reuse_fourier) ALLOCATE (fourier(a)%values(ng, nr, nh))
+         derive_kernel = derive
+         IF (fixed_reciprocal) THEN
+            ! Density and compensation can respond even at a stationary center.
+            derive_kernel = ANY(center_response(a)%position /= 0.0_dp) .OR. &
+                            ANY(center_response(a)%radii /= 0.0_dp)
+         END IF
+         IF (derive_kernel .OR. (.NOT. derive .AND. .NOT. reuse_fourier)) ALLOCATE (fourier(a)%values(ng, nr, nh))
          CALL upf_inverse_coulomb_compensate(centers(a)%radii, centers(a)%weights, centers(a)%l, &
                                              centers(a)%density, centers(a)%shapes, work(a)%compensation, &
                                              work(a)%residual, moments)
@@ -636,7 +647,7 @@ CONTAINS
             CPASSERT(SIZE(center_response(a)%radii) == nr)
             CPASSERT(SIZE(center_response(a)%weights) == nr)
             CPASSERT(ALL(SHAPE(center_response(a)%shapes) == [nr, nh]))
-            ALLOCATE (dc(nr, nh), de(nr, nh), f(nr), df(nr), dfourier(ng, nr, nh))
+            ALLOCATE (dc(nr, nh), de(nr, nh), f(nr), df(nr))
             DO channel = 1, nh
                f(:) = centers(a)%radii**centers(a)%l(channel)
                df(:) = f*centers(a)%l(channel)*center_response(a)%radii/centers(a)%radii
@@ -652,29 +663,43 @@ CONTAINS
             de(:, :) = center_response(a)%density - dc
             work(a)%dq(:, :) = SPREAD(center_response(a)%weights, 2, nh)*work(a)%residual + &
                                SPREAD(centers(a)%weights, 2, nh)*de
-            CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
-                                                    gvecs, centers(a)%position, volume, fourier(a)%values, dfourier, &
-                                                    center_response(a)%radii, gvecs_response, &
-                                                    center_response(a)%position, volume_response, &
-                                                    cell=cell, grid_shape=fourier_shape, cell_response=cell_response)
+            IF (derive_kernel) THEN
+               ALLOCATE (dfourier(ng, nr, nh))
+               CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                       gvecs, centers(a)%position, volume, fourier(a)%values, dfourier, &
+                                                       center_response(a)%radii, gvecs_response, &
+                                                       center_response(a)%position, volume_response, &
+                                                       cell=cell, grid_shape=fourier_shape, cell_response=cell_response)
+            END IF
          ELSE IF (.NOT. reuse_fourier) THEN
             CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                     gvecs, centers(a)%position, volume, fourier(a)%values)
          END IF
+         IF (ALLOCATED(fourier(a)%values)) THEN
+            kernel_values => fourier(a)%values
+         ELSE
+            kernel_values => map%fourier(a)%values
+         END IF
          DO channel = 1, nh
             DO i = 1, nr
-               h(:) = h + fourier(a)%values(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
-               e(:) = e + fourier(a)%values(:, i, channel)*work(a)%q(i, channel)
+               h(:) = h + kernel_values(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
+               e(:) = e + kernel_values(:, i, channel)*work(a)%q(i, channel)
                IF (.NOT. derive) CYCLE
-               dh(:) = dh + dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel) + &
-                       fourier(a)%values(:, i, channel)*(center_response(a)%weights(i)*work(a)%compensation(i, channel) + &
-                                                        centers(a)%weights(i)*dc(i, channel))
-               dg(:) = dg + dfourier(:, i, channel)*work(a)%q(i, channel) + &
-                       fourier(a)%values(:, i, channel)*work(a)%dq(i, channel)
+               IF (derive_kernel) THEN
+                  dh(:) = dh + dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
+                  dg(:) = dg + dfourier(:, i, channel)*work(a)%q(i, channel)
+               END IF
+               dh(:) = dh + kernel_values(:, i, channel)*(center_response(a)%weights(i)*work(a)%compensation(i, channel) + &
+                                                         centers(a)%weights(i)*dc(i, channel))
+               dg(:) = dg + kernel_values(:, i, channel)*work(a)%dq(i, channel)
             END DO
          END DO
          DEALLOCATE (moments)
-         IF (derive) DEALLOCATE (dc, de, f, df, dfourier)
+         IF (derive) DEALLOCATE (dc, de, f, df)
+         IF (derive_kernel) DEALLOCATE (dfourier)
+         IF (.NOT. PRESENT(potentials) .AND. .NOT. reuse_fourier) THEN
+            IF (ALLOCATED(fourier(a)%values)) DEALLOCATE (fourier(a)%values)
+         END IF
       END DO
       ! Preserve small geometry differences when summing the reciprocal energy terms.
       energy = accurate_sum(poisson_weights*(0.5_dp*ABS(h)**2 + REAL(CONJG(h)*e, dp)))
@@ -765,12 +790,19 @@ CONTAINS
       IF (reuse_pair_geometry) dpair = dpair + pair_geometry_response
       energy = energy + epair
       IF (derive) response = dpw + dpair
+      IF (.NOT. PRESENT(potentials)) RETURN
+      ALLOCATE (potentials(SIZE(centers)))
       DO a = 1, SIZE(centers)
          nr = SIZE(centers(a)%radii)
          nh = SIZE(centers(a)%l)
          ALLOCATE (potentials(a)%values(nr, nh), vh(nr, nh), ve(nr, nh), adjoint(nr, nh))
-         CALL fourier_density_adjoint(fourier(a)%values, poisson_weights*h, vh)
-         CALL fourier_density_adjoint(fourier(a)%values, background_adjoint, ve)
+         IF (ALLOCATED(fourier(a)%values)) THEN
+            kernel_values => fourier(a)%values
+         ELSE
+            kernel_values => map%fourier(a)%values
+         END IF
+         CALL fourier_density_adjoint(kernel_values, poisson_weights*h, vh)
+         CALL fourier_density_adjoint(kernel_values, background_adjoint, ve)
          IF (PRESENT(comm)) THEN
             CALL comm%sum(vh)
             CALL comm%sum(ve)

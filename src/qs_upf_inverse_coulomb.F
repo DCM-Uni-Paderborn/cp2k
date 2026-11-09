@@ -1454,7 +1454,7 @@ CONTAINS
       background_response = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (map%grid%para%mode == PW_MODE_LOCAL) THEN
          CALL upf_inverse_coulomb_periodic(map%centers, map%cell, map%grid%g, map%grid%vol, &
-                                           background, map%poisson_weights, energy, potentials, adjoint, &
+                                           background, map%poisson_weights, energy, background_adjoint=adjoint, &
                                            response=kernel_response, center_response=centers_response, &
                                            cell_response=cell_response, &
                                            gvecs_response=gvecs_response, volume_response=trace_strain*map%grid%vol, &
@@ -1463,7 +1463,7 @@ CONTAINS
                                            pair_geometry_response=pair_geometry_response)
       ELSE
          CALL upf_inverse_coulomb_periodic(map%centers, map%cell, map%grid%g, map%grid%vol, &
-                                           background, map%poisson_weights, energy, potentials, adjoint, &
+                                           background, map%poisson_weights, energy, background_adjoint=adjoint, &
                                            comm=map%grid%para%group%mp_comm_type, response=kernel_response, &
                                            center_response=centers_response, cell_response=cell_response, &
                                            gvecs_response=gvecs_response, volume_response=trace_strain*map%grid%vol, &
