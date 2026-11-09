@@ -1285,11 +1285,14 @@ CONTAINS
       TYPE(harmonic_work_type), INTENT(INOUT)            :: work_a, work_b
       REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :)
 
-      INTEGER                                            :: axis, channel, iphi, iq, nphi, nq
-      LOGICAL                                            :: derive, regular
-      REAL(dp) :: azimuth, bound, dbound, dex(3), dey(3), dez(3), dfactor, distance, dleft, &
-         dlength, dmu, dright, dt, du(3), dweight, dx(3), ex(3), ey(3), ez(3), factor, left, &
-         length, mu, norm_x, reference(3), right, scale, sine, t, tmax, u(3), weight, x(3)
+      INTEGER                                            :: axis, channel, iphi, iq, max_order, &
+                                                            min_order, nphi, nq, order
+      LOGICAL                                            :: active_order(0:20), derive, regular
+      REAL(dp) :: azimuth, azimuth_directions(3, MAXVAL(la) + MAXVAL(lb) + 1), &
+         azimuth_response(3, MAXVAL(la) + MAXVAL(lb) + 1), bound, dbound, dex(3), dey(3), dez(3), &
+         dfactor, distance, dleft, dlength, dmu, dright, dt, du(3), dweight, dx(3), ex(3), ey(3), &
+         ez(3), factor, left, length, mu, norm_x, radius_dot, reference(3), right, scale, sine, &
+         source_factor(0:20), source_response(0:20), t, tmax, u(3), weight, x(3)
 
       derive = PRESENT(response)
       distance = SQRT(SUM(d**2))
@@ -1311,6 +1314,17 @@ CONTAINS
       IF (derive) dey = cross(dez, ex) + cross(ez, dex)
       nq = SIZE(nodes)
       nphi = MAXVAL(la) + MAXVAL(lb) + 1
+      DO iphi = 1, nphi
+         azimuth = twopi*REAL(iphi - 1, dp)/REAL(nphi, dp)
+         azimuth_directions(:, iphi) = COS(azimuth)*ex + SIN(azimuth)*ey
+         IF (derive) azimuth_response(:, iphi) = COS(azimuth)*dex + SIN(azimuth)*dey
+      END DO
+      min_order = MINVAL(lb)
+      max_order = MAXVAL(lb)
+      active_order = .FALSE.
+      DO channel = 1, SIZE(lb)
+         active_order(lb(channel)) = .TRUE.
+      END DO
       value = 0.0_dp
       IF (derive) response = 0.0_dp
       tmax = distance + a
@@ -1357,16 +1371,16 @@ CONTAINS
             sine = SQRT(MAX(0.0_dp, 1.0_dp - mu**2))
             CPASSERT(sine > 0.0_dp)
             DO iphi = 1, nphi
-               azimuth = twopi*REAL(iphi - 1, dp)/REAL(nphi, dp)
-               u = mu*ez + sine*(COS(azimuth)*ex + SIN(azimuth)*ey)
+               u = mu*ez + sine*azimuth_directions(:, iphi)
                x = d + a*u
                norm_x = SQRT(SUM(x**2))
                CALL solid_fields(u, work_a, derive)
                CALL solid_fields(x, work_b, derive)
                IF (derive) THEN
-                  du = dmu*ez + mu*dez - mu*dmu/sine*(COS(azimuth)*ex + SIN(azimuth)*ey) + &
-                       sine*(COS(azimuth)*dex + SIN(azimuth)*dey)
+                  du = dmu*ez + mu*dez - mu*dmu/sine*azimuth_directions(:, iphi) + &
+                       sine*azimuth_response(:, iphi)
                   dx = dd + da*u + a*du
+                  radius_dot = DOT_PRODUCT(x, dx)
                   DO channel = 1, SIZE(la)
                      work_a%response(channel) = DOT_PRODUCT(du, work_a%gradient(:, channel))
                   END DO
@@ -1374,16 +1388,22 @@ CONTAINS
                      work_b%response(channel) = DOT_PRODUCT(dx, work_b%gradient(:, channel))
                   END DO
                END IF
-               DO channel = 1, SIZE(lb)
+               ! Every harmonic of a given source order uses the same radial factor.
+               DO order = min_order, max_order
+                  IF (.NOT. active_order(order)) CYCLE
                   IF (norm_x < b) THEN
-                     factor = fourpi/REAL(2*lb(channel) + 1, dp)/b**(lb(channel) + 1)
-                     IF (derive) dfactor = -factor*(lb(channel) + 1)*db/b
+                     factor = fourpi/REAL(2*order + 1, dp)/b**(order + 1)
+                     IF (derive) dfactor = -factor*(order + 1)*db/b
                   ELSE
-                     factor = fourpi/REAL(2*lb(channel) + 1, dp)* &
-                              (b/norm_x)**lb(channel)/norm_x**(lb(channel) + 1)
-                     IF (derive) dfactor = factor*(lb(channel)*db/b - &
-                                                   (2*lb(channel) + 1)*DOT_PRODUCT(x, dx)/norm_x**2)
+                     factor = fourpi/REAL(2*order + 1, dp)*(b/norm_x)**order/norm_x**(order + 1)
+                     IF (derive) dfactor = factor*(order*db/b - (2*order + 1)*radius_dot/norm_x**2)
                   END IF
+                  source_factor(order) = factor
+                  IF (derive) source_response(order) = dfactor
+               END DO
+               DO channel = 1, SIZE(lb)
+                  factor = source_factor(lb(channel))
+                  IF (derive) dfactor = source_response(lb(channel))
                   scale = factor*work_b%values(channel)
                   value(:, channel) = value(:, channel) + weight*work_a%values*scale
                   IF (derive) response(:, channel) = response(:, channel) + dweight*work_a%values*scale + &
