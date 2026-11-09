@@ -1202,7 +1202,8 @@ CONTAINS
             energy%ex = auxiliary_energies(1) + auxiliary_energies(2)
             energy%exc_aux_fit = auxiliary_energies(3)
             energy%exc1_aux_fit = auxiliary_energies(4)
-         ELSE IF (dokp) THEN
+         ! A Bloch UPF state can use a single AO image and still require k-point exchange.
+         ELSE IF (dokp .OR. (do_kpoints .AND. qs_upf_inverse_scf_active(ks_env))) THEN
             IF (ace_active) THEN
                CPABORT("ACE-HFX for k-points is not implemented yet")
             ELSE
