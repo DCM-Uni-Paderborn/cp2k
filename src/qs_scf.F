@@ -95,9 +95,9 @@ MODULE qs_scf
    USE ec_env_types,                    ONLY: energy_correction_type
    USE hfx_ace_methods,                 ONLY: hfx_ace_requires_refresh
    USE input_constants,                 ONLY: &
-        broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
+        atomic_guess, broyden_type_1, broyden_type_1_explicit, broyden_type_1_explicit_ls, broyden_type_1_ls, &
         broyden_type_2, broyden_type_2_explicit, broyden_type_2_explicit_ls, broyden_type_2_ls, &
-        cdft2ot, cholesky_dbcsr, diag_update_method_adiis, history_guess, ot2cdft, &
+        cdft2ot, cholesky_dbcsr, cholesky_off, diag_update_method_adiis, history_guess, ot2cdft, &
         ot_precond_fermi_low_rank, ot_precond_full_all, ot_precond_full_all_covariant, &
         ot_precond_full_kinetic, ot_precond_full_single, ot_precond_full_single_inverse, &
         ot_precond_none, ot_precond_s_inverse, outer_scf_becke_constraint, &
@@ -175,6 +175,7 @@ MODULE qs_scf
                                               qs_kpoint_state_canonicalize_fixed,&
                                               qs_kpoint_state_commit,&
                                               qs_kpoint_state_prepare_fixed_density,&
+                                              qs_kpoint_state_prepare_symmetric_guess,&
                                               qs_kpoint_state_prepare_thermal_restart
    USE qs_ks_atom,                      ONLY: update_ks_atom
    USE qs_ks_methods,                   ONLY: evaluate_core_matrix_traces,&
@@ -279,7 +280,8 @@ MODULE qs_scf
    INTEGER, PARAMETER, PRIVATE          :: kp_ot_entry_initial = 1, &
                                            kp_ot_entry_reuse = 2, &
                                            kp_ot_entry_resized = 3, &
-                                           kp_ot_entry_refresh = 4
+                                           kp_ot_entry_refresh = 4, &
+                                           kp_ot_entry_symmetry = 5
    LOGICAL, PRIVATE                     :: reuse_precond = .FALSE.
    LOGICAL, PRIVATE                     :: used_history = .FALSE.
 
@@ -1180,7 +1182,7 @@ CONTAINS
                                                             points(:, :), reached(:), &
                                                             release_side(:), spins(:)
       LOGICAL :: accepted, balanced, converged, do_kpoints, final_stage, rebase_fixed, rechart, &
-         reference_refreshed, released, retained_symmetry, space_grown, valid
+         reference_refreshed, released, retained_symmetry, space_grown, symmetry_seeded, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy, omitted_charge, previous_residual, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
@@ -1198,6 +1200,7 @@ CONTAINS
       handled = .FALSE.
       stopped = .FALSE.
       iterations = 0
+      symmetry_seeded = .FALSE.
       final_stage = .FALSE.
       IF (PRESENT(refine_final)) final_stage = refine_final
       IF (scf_env%method /= ot_method_nr) RETURN
@@ -1247,9 +1250,32 @@ CONTAINS
          END IF
       END IF
       CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
+      IF (.NOT. valid .AND. do_kpoints .AND. .NOT. final_stage .AND. remaining > 0 .AND. &
+          scf_control%density_guess == atomic_guess .AND. .NOT. scf_control%smear%do_smear .AND. &
+          .NOT. dft_control%use_gauxc) THEN
+         IF (kpoints%symmetry .AND. ASSOCIATED(kpoints%kp_sym) .AND. &
+             .NOT. (kpoints%full_grid .OR. kpoints%use_real_wfn)) THEN
+            IF (output_unit > 0) WRITE (output_unit, '(T2,A)') &
+               "K-point OT: rebuilding the atomic guess with the little-group Hamiltonian."
+            DO i = 1, SIZE(scf_env%qs_ot_env)
+               CALL ot_scf_destroy(scf_env%qs_ot_env(i))
+            END DO
+            DEALLOCATE (scf_env%qs_ot_env)
+            NULLIFY (scf_env%qs_ot_env)
+            reuse_precond = .FALSE.
+            scf_section => section_vals_get_subs_vals(qs_env%input, "DFT%SCF")
+            CALL init_scf_loop(scf_env, qs_env, scf_section, kp_ot_entry_symmetry)
+            iterations = iterations + 1
+            remaining = remaining - 1
+            symmetry_seeded = .TRUE.
+            handled = .TRUE.
+            scf_env%iter_delta = HUGE(0.0_dp)
+            CALL create_search_state(state, qs_env, valid)
+         END IF
+      END IF
       IF (.NOT. valid) THEN
          ! An incompatible physical reference cannot certify an ordinary OT candidate.
-         IF (final_stage) THEN
+         IF (final_stage .OR. symmetry_seeded) THEN
             handled = .TRUE.
             scf_env%iter_delta = HUGE(0.0_dp)
          END IF
@@ -1269,7 +1295,7 @@ CONTAINS
                                  require_feasible=.FALSE.)
       IF (.NOT. valid) THEN
          CALL qs_skala_scf_release(state)
-         handled = .FALSE.
+         handled = symmetry_seeded
          RETURN
       END IF
       IF (final_stage .AND. scf_control%smear%do_smear .AND. remaining > 0 .AND. &
@@ -2082,7 +2108,7 @@ CONTAINS
                         separate_spin_occupations=dft_control%restricted, &
                         fixed_occupations=.NOT. (dft_control%smear .OR. scf_control%smear%do_smear))
                   END IF
-               CASE (kp_ot_entry_reuse, kp_ot_entry_resized, kp_ot_entry_refresh)
+               CASE (kp_ot_entry_reuse, kp_ot_entry_resized, kp_ot_entry_refresh, kp_ot_entry_symmetry)
                   CPASSERT(kpoint_mos_initialized)
                CASE DEFAULT
                   CPABORT("Invalid k-point OT workspace entry reason.")
@@ -2121,13 +2147,19 @@ CONTAINS
                   CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks_kp)
                   CPASSERT(ASSOCIATED(matrix_ks_kp))
 
-                  ! Mermin initialization and deliberate REF refreshes require a full orbital
-                  ! space, so use the physical Hamiltonian replacement for those cases only.
+                  ! Mermin initialization and deliberate refreshes reconstruct the orbitals
+                  ! from the current Hamiltonian. A symmetry refresh averages only the seed.
                   IF ((entry_reason == kp_ot_entry_initial .AND. .NOT. kpoint_mos_initialized) .OR. &
-                      entry_reason == kp_ot_entry_refresh) THEN
-                     kp_diis_step = .FALSE.
-                     CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, &
-                                             scf_control, .FALSE., kp_diis_step)
+                      entry_reason == kp_ot_entry_refresh .OR. entry_reason == kp_ot_entry_symmetry) THEN
+                     IF (entry_reason == kp_ot_entry_symmetry) THEN
+                        CALL kpoint_operator_store(scf_env%ot_operator_ctx, matrix_ks_kp, matrix_s_kp)
+                        CALL qs_kpoint_state_prepare_symmetric_guess(kpoints, scf_env%cholesky_method == cholesky_off, &
+                                                                     scf_control%eps_eigval)
+                     ELSE
+                        kp_diis_step = .FALSE.
+                        CALL do_general_diag_kp(matrix_ks_kp, matrix_s_kp, kpoints, scf_env, &
+                                                scf_control, .FALSE., kp_diis_step)
+                     END IF
                      IF (SIZE(matrix_ks_kp, 1) < nspin_ot) THEN
                         CPASSERT(SIZE(matrix_ks_kp, 1) == 1)
                         CALL qs_kpoint_copy_spin_mos(kpoints, nspin_ot)

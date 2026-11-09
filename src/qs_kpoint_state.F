@@ -13,10 +13,13 @@ MODULE qs_kpoint_state
                                               cp_cfm_trace,&
                                               cp_cfm_vectorsnorm
    USE cp_cfm_diag,                     ONLY: cp_cfm_geeig,&
+                                              cp_cfm_geeig_canon,&
                                               cp_cfm_heevd
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_get_submatrix,&
                                               cp_cfm_release,&
                                               cp_cfm_set_all,&
+                                              cp_cfm_set_submatrix,&
                                               cp_cfm_to_cfm,&
                                               cp_cfm_to_fm,&
                                               cp_cfm_type,&
@@ -36,8 +39,11 @@ MODULE qs_kpoint_state
    USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
                                               kpoint_density_transform,&
                                               kpoint_set_mo_occupation
+   USE kpoint_mo_symmetry_methods,      ONLY: kpoint_cell_gauge_action,&
+                                              kpoint_same_periodic
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_env_type,&
+                                              kpoint_sym_type,&
                                               kpoint_type
    USE mathconstants,                   ONLY: z_one,&
                                               z_zero
@@ -73,7 +79,8 @@ MODULE qs_kpoint_state
 
    PUBLIC :: qs_kpoint_copy_spin_mos, qs_kpoint_mos_initialized, qs_kpoint_set_fixed_occupations, &
              qs_kpoint_state_canonicalize_fixed, qs_kpoint_state_commit, &
-             qs_kpoint_state_prepare_fixed_density, qs_kpoint_state_prepare_thermal_restart
+             qs_kpoint_state_prepare_fixed_density, qs_kpoint_state_prepare_symmetric_guess, &
+             qs_kpoint_state_prepare_thermal_restart
 
 CONTAINS
 
@@ -155,6 +162,78 @@ CONTAINS
       END DO
 
    END SUBROUTINE qs_kpoint_state_prepare_fixed_density
+
+! **************************************************************************************************
+!> \brief Seed fixed-rank orbitals from the little-group average of the initial Hamiltonian.
+!>        The averaged operator is used only to select the initial occupied subspace.
+!> \param kpoints Transferred complex Hamiltonian and physical overlap in the OT matrices.
+!> \param canonical Use canonical orthogonalization instead of Cholesky.
+!> \param eps_eigval Overlap eigenvalue threshold for canonical orthogonalization.
+! **************************************************************************************************
+   SUBROUTINE qs_kpoint_state_prepare_symmetric_guess(kpoints, canonical, eps_eigval)
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      LOGICAL, INTENT(IN)                                :: canonical
+      REAL(dp), INTENT(IN)                               :: eps_eigval
+
+      COMPLEX(dp), ALLOCATABLE                           :: action(:, :), averaged(:, :), &
+                                                            original(:, :), transformed(:, :)
+      INTEGER                                            :: ik, local, n, nops, op, spin, status
+      LOGICAL                                            :: antiunitary
+      REAL(dp)                                           :: rotation(3, 3)
+      REAL(dp), POINTER                                  :: eigenvalues(:)
+      TYPE(cp_cfm_type)                                  :: hamiltonian, metric, work
+      TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
+      TYPE(kpoint_env_type), POINTER                     :: kp
+      TYPE(kpoint_sym_type), POINTER                     :: sym
+
+      DO local = 1, SIZE(kpoints%kp_env)
+         kp => kpoints%kp_env(local)%kpoint_env
+         ik = kp%nkpoint
+         sym => kpoints%kp_sym(ik)%kpoint_sym
+         CALL cp_fm_get_info(kp%ot_hmat(1, 1), matrix_struct=matrix_struct, nrow_global=n)
+         CALL cp_cfm_create(hamiltonian, matrix_struct)
+         CALL cp_cfm_create(metric, matrix_struct)
+         CALL cp_cfm_create(work, matrix_struct)
+         ALLOCATE (action(n, n), averaged(n, n), original(n, n), transformed(n, n))
+         DO spin = 1, SIZE(kp%ot_hmat, 2)
+            IF (kp%mos(spin)%nmo == 0) CYCLE
+            CALL cp_fm_to_cfm(kp%ot_hmat(1, spin), kp%ot_hmat(2, spin), hamiltonian)
+            CALL cp_fm_to_cfm(kp%ot_smat(1), kp%ot_smat(2), metric)
+            IF (ALLOCATED(kpoints%lowdin_v)) CALL lowdin_kp_apply(kp, kpoints%lowdin_v(:, spin), cmat=hamiltonian)
+            CALL cp_cfm_get_submatrix(hamiltonian, original)
+            averaged = z_zero
+            nops = 0
+            IF (ASSOCIATED(sym)) THEN
+               IF (ASSOCIATED(sym%rotp)) THEN
+                  DO op = 1, sym%nwred
+                     IF (.NOT. kpoint_same_periodic(sym%xkp(:, op), kpoints%xkp(:, ik))) CYCLE
+                     CALL kpoint_cell_gauge_action(kpoints, ik, op, kpoints%xkp(:, ik), &
+                                                   action, rotation, antiunitary, status)
+                     CPASSERT(status == 0)
+                     transformed = MATMUL(CONJG(TRANSPOSE(action)), MATMUL(original, action))
+                     IF (antiunitary) transformed = CONJG(transformed)
+                     averaged = averaged + transformed
+                     nops = nops + 1
+                  END DO
+               END IF
+            END IF
+            IF (nops > 0) THEN
+               averaged = (averaged + CONJG(TRANSPOSE(averaged)))/(2.0_dp*nops)
+               CALL cp_cfm_set_submatrix(hamiltonian, averaged)
+            END IF
+            CALL get_mo_set(kp%mos(spin), eigenvalues=eigenvalues)
+            IF (canonical) THEN
+               CALL cp_cfm_geeig_canon(hamiltonian, metric, kp%mos(spin)%cmo_coeff, eigenvalues, work, eps_eigval)
+            ELSE
+               CALL cp_cfm_geeig(hamiltonian, metric, kp%mos(spin)%cmo_coeff, eigenvalues, work)
+            END IF
+         END DO
+         DEALLOCATE (action, averaged, original, transformed)
+         CALL cp_cfm_release(work)
+         CALL cp_cfm_release(metric)
+         CALL cp_cfm_release(hamiltonian)
+      END DO
+   END SUBROUTINE qs_kpoint_state_prepare_symmetric_guess
 
 ! **************************************************************************************************
 !> \brief Reconstruct natural orbitals from the saved physical metric and density.
