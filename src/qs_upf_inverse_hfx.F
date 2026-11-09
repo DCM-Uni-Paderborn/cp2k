@@ -2823,8 +2823,9 @@ CONTAINS
                                                             image, ir, kind, last, left_image, &
                                                             nang, nl, np, nr, right_image, &
                                                             zero(3, 1)
-      LOGICAL                                            :: cached_potentials, geometry, left_zero, &
-                                                            q_geometry, right_zero, same_ao_block
+      LOGICAL                                            :: cached_potentials, geometry, left_term, &
+                                                            left_zero, q_geometry, right_term, &
+                                                            right_zero, same_ao_block
       REAL(dp)                                           :: local_cell(3, 3), position(3), &
                                                             potential_geometry(3), radius, &
                                                             sphere_geometry(3)
@@ -2902,6 +2903,8 @@ CONTAINS
       position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(center_image, dp))
       radius = frame%delta_cache(kind)%radius
       CPASSERT(r(SIZE(r)) >= radius)
+      left_term = .TRUE.
+      right_term = .TRUE.
       IF (.NOT. frame%atom_local) THEN
          left_image = 0
          right_image = 0
@@ -2909,9 +2912,11 @@ CONTAINS
             IF (ALL(coefficient_images(:, image) == -center_image)) left_image = image
             IF (ALL(coefficient_images(:, image) == ao_image - center_image)) right_image = image
          END DO
-         ! Missing translations are fixed zeros of this finite representation. A stored
-         ! zero coefficient is still a variable and must retain its coefficient derivative.
-         IF (left_image == 0 .AND. right_image == 0) RETURN
+         ! Each complete field multiplies the opposite center-local difference.
+         ! Missing translations are fixed zeros. A stored zero still has a derivative.
+         left_term = right_image > 0
+         right_term = left_image > 0
+         IF (.NOT. (left_term .OR. right_term)) RETURN
       END IF
       left_zero = ALL(wl == CMPLX(0.0_dp, 0.0_dp, dp))
       right_zero = ALL(wr == CMPLX(0.0_dp, 0.0_dp, dp))
@@ -2933,8 +2938,8 @@ CONTAINS
                       lattice_gr(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))
             IF (geometry) THEN
                ! The reverse pass uses the Gaussian gradient from the same angular points.
-               ALLOCATE (bare_left_gradient(nang, nl, 3))
-               IF (.NOT. same_ao_block) ALLOCATE (bare_right_gradient(nang, nr, 3))
+               IF (left_term) ALLOCATE (bare_left_gradient(nang, nl, 3))
+               IF (right_term .AND. .NOT. same_ao_block) ALLOCATE (bare_right_gradient(nang, nr, 3))
             END IF
          END IF
          IF (geometry) ALLOCATE (potential_gradient(3, fields%nfunction, nang), potential_covector(nang))
@@ -2967,18 +2972,24 @@ CONTAINS
             CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
                                             [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
                                             [0.0_dp, 0.0_dp, 0.0_dp], delta)
-            CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, left_fields, &
-                                         unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
-                                         coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
-                                         bare_gradient=bare_left_gradient)
+            IF (left_term) THEN
+               CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, left_fields, &
+                                            unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
+                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                            bare_gradient=bare_left_gradient)
+            ELSE
+               dl(:, :) = -MATMUL(delta, wl)
+            END IF
             IF (same_ao_block) THEN
                cr(:, :) = cl
                dr(:, :) = dl
-            ELSE
+            ELSE IF (right_term) THEN
                CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, right_fields, &
                                             unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
                                             coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
                                             bare_gradient=bare_right_gradient)
+            ELSE
+               dr(:, :) = -MATMUL(delta, wr)
             END IF
             weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
             gcl = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -2988,57 +2999,69 @@ CONTAINS
             potential_geometry = 0.0_dp
             DO aux = 1, fields%nfunction
                weighted_potential(:) = weights*potentials(:, aux)
-               DO ia = 1, nang
-                  work(ia, :) = weighted_potential(ia)*cr(ia, :)
-               END DO
-               CALL field_product(work, covector(:, :, aux), gdl, .TRUE., .FALSE., .TRUE.)
-               DO ia = 1, nang
-                  work(ia, :) = weighted_potential(ia)*dr(ia, :)
-               END DO
-               CALL field_product(work, covector(:, :, aux), gcl, .TRUE., .FALSE., .TRUE.)
-               CALL field_product(cl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
-               IF (geometry) potential_covector(:) = weights*REAL(SUM(CONJG(work)*dr, DIM=2), dp)
-               DO ia = 1, nang
-                  gdr(ia, :) = gdr(ia, :) + weighted_potential(ia)*work(ia, :)
-               END DO
-               CALL field_product(dl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
+               IF (geometry) potential_covector = 0.0_dp
+               IF (left_term) THEN
+                  DO ia = 1, nang
+                     work(ia, :) = weighted_potential(ia)*dr(ia, :)
+                  END DO
+                  CALL field_product(work, covector(:, :, aux), gcl, .TRUE., .FALSE., .TRUE.)
+                  CALL field_product(cl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
+                  IF (geometry) potential_covector(:) = weights*REAL(SUM(CONJG(work)*dr, DIM=2), dp)
+                  DO ia = 1, nang
+                     gdr(ia, :) = gdr(ia, :) + weighted_potential(ia)*work(ia, :)
+                  END DO
+               END IF
+               IF (right_term) THEN
+                  DO ia = 1, nang
+                     work(ia, :) = weighted_potential(ia)*cr(ia, :)
+                  END DO
+                  CALL field_product(work, covector(:, :, aux), gdl, .TRUE., .FALSE., .TRUE.)
+                  CALL field_product(dl, covector(:, :, aux), work, .FALSE., .FALSE., .FALSE.)
+                  IF (geometry) potential_covector(:) = potential_covector + weights*REAL(SUM(CONJG(work)*cr, DIM=2), dp)
+                  DO ia = 1, nang
+                     gcr(ia, :) = gcr(ia, :) + weighted_potential(ia)*work(ia, :)
+                  END DO
+               END IF
                IF (geometry) THEN
-                  potential_covector(:) = potential_covector + weights*REAL(SUM(CONJG(work)*cr, DIM=2), dp)
                   DO ia = 1, nang
                      potential_geometry = potential_geometry + potential_covector(ia)*potential_gradient(:, aux, ia)
                   END DO
                END IF
-               DO ia = 1, nang
-                  gcr(ia, :) = gcr(ia, :) + weighted_potential(ia)*work(ia, :)
-               END DO
             END DO
-            CALL field_product(delta, gdl, gl, .TRUE., .TRUE., .FALSE., -1.0_dp)
-            CALL field_product(delta, gdr, gr, .TRUE., .TRUE., .FALSE., -1.0_dp)
+            IF (right_term) CALL field_product(delta, gdl, gl, .TRUE., .TRUE., .FALSE., -1.0_dp)
+            IF (left_term) CALL field_product(delta, gdr, gr, .TRUE., .TRUE., .FALSE., -1.0_dp)
             IF (frame%atom_local) THEN
                CALL field_product(delta, gcl, gl, .TRUE., .TRUE., .FALSE., -1.0_dp)
                CALL field_product(delta, gcr, gr, .TRUE., .TRUE., .FALSE., -1.0_dp)
             ELSE
-               CALL qs_upf_inverse_lattice_field_adjoint(frame, points, [0, 0, 0], coefficient_images, gcl, lattice_gl)
-               CALL qs_upf_inverse_lattice_field_adjoint(frame, points, ao_image, coefficient_images, gcr, lattice_gr)
-               left_coefficients_covector(:, :, :) = left_coefficients_covector + lattice_gl
-               right_coefficients_covector(:, :, :) = right_coefficients_covector + lattice_gr
+               IF (left_term) THEN
+                  CALL qs_upf_inverse_lattice_field_adjoint(frame, points, [0, 0, 0], coefficient_images, gcl, lattice_gl)
+                  left_coefficients_covector(:, :, :) = left_coefficients_covector + lattice_gl
+               END IF
+               IF (right_term) THEN
+                  CALL qs_upf_inverse_lattice_field_adjoint(frame, points, ao_image, coefficient_images, gcr, lattice_gr)
+                  right_coefficients_covector(:, :, :) = right_coefficients_covector + lattice_gr
+               END IF
             END IF
             IF (geometry) THEN
                ! At the same AO block and image, both covectors act on the same geometry map.
                IF (same_ao_block) gcl(:, :) = gcl + gcr
-               IF (frame%atom_local) THEN
-                  CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, [0, 0, 0], left_range, gcl, &
+               sphere_geometry = 0.0_dp
+               IF (left_term) THEN
+                  IF (frame%atom_local) THEN
+                     CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, [0, 0, 0], left_range, gcl, &
                                                     point_geometry, local_atoms, local_cell, 2.0_dp, workspace=left_fields%gaussian)
-               ELSE
-                  CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, [0, 0, 0], coefficient_images, &
+                  ELSE
+                     CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, [0, 0, 0], coefficient_images, &
                                                                coupled_coefficients(:, left_range(1):left_range(2), :), &
                                                                left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp, &
                                                                workspace=left_fields%gaussian, bare_gradient=bare_left_gradient)
+                  END IF
+                  atom_geometry(:, :) = atom_geometry + local_atoms
+                  cell_geometry(:, :) = cell_geometry + local_cell
+                  sphere_geometry = SUM(point_geometry, DIM=2)
                END IF
-               atom_geometry(:, :) = atom_geometry + local_atoms
-               cell_geometry(:, :) = cell_geometry + local_cell
-               sphere_geometry = SUM(point_geometry, DIM=2)
-               IF (.NOT. same_ao_block) THEN
+               IF (right_term .AND. .NOT. same_ao_block) THEN
                   IF (frame%atom_local) THEN
                      CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, right_range, gcr, &
                                                                   point_geometry, local_atoms, local_cell, 2.0_dp, &
