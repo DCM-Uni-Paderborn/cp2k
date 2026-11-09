@@ -2823,7 +2823,7 @@ CONTAINS
                                                             image, ir, kind, last, left_image, &
                                                             nang, nl, np, nr, right_image, &
                                                             zero(3, 1)
-      LOGICAL                                            :: cached_potentials, geometry
+      LOGICAL                                            :: cached_potentials, geometry, same_ao_block
       REAL(dp)                                           :: local_cell(3, 3), position(3), &
                                                             potential_geometry(3), radius, &
                                                             sphere_geometry(3)
@@ -2873,6 +2873,7 @@ CONTAINS
       CPASSERT(ALL(SHAPE(directions) == [3, nang]))
       CPASSERT(ABS(SUM(angular_weights) - fourpi) <= 1.0e-10_dp)
       CPASSERT(MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)
+      same_ao_block = ALL(left_range == right_range) .AND. ALL(ao_image == 0)
       geometry = PRESENT(atom_geometry) .OR. PRESENT(cell_geometry) .OR. PRESENT(auxiliary_geometry)
       IF (geometry) THEN
          IF (.NOT. (PRESENT(atom_geometry) .AND. PRESENT(cell_geometry) .AND. PRESENT(auxiliary_geometry))) THEN
@@ -2959,9 +2960,14 @@ CONTAINS
             CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, left_fields, &
                                          unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
                                          coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
-            CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, right_fields, &
-                                         unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
-                                         coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
+            IF (same_ao_block) THEN
+               cr(:, :) = cl
+               dr(:, :) = dl
+            ELSE
+               CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, right_fields, &
+                                            unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
+                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients)
+            END IF
             weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
             gcl = CMPLX(0.0_dp, 0.0_dp, dp)
             gdl = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -3006,6 +3012,8 @@ CONTAINS
                right_coefficients_covector(:, :, :) = right_coefficients_covector + lattice_gr
             END IF
             IF (geometry) THEN
+               ! At the same AO block and image, both covectors act on the same geometry map.
+               IF (same_ao_block) gcl(:, :) = gcl + gcr
                IF (frame%atom_local) THEN
                   CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, [0, 0, 0], left_range, gcl, &
                                                     point_geometry, local_atoms, local_cell, 2.0_dp, workspace=left_fields%gaussian)
@@ -3017,19 +3025,24 @@ CONTAINS
                atom_geometry(:, :) = atom_geometry + local_atoms
                cell_geometry(:, :) = cell_geometry + local_cell
                sphere_geometry = SUM(point_geometry, DIM=2)
-               IF (frame%atom_local) THEN
-                  CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, right_range, gcr, &
-                                                   point_geometry, local_atoms, local_cell, 2.0_dp, workspace=right_fields%gaussian)
-               ELSE
-                  CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, &
-                                                               coupled_coefficients(:, right_range(1):right_range(2), :), &
-                                 right_range, gcr, point_geometry, local_atoms, local_cell, 2.0_dp, workspace=right_fields%gaussian)
+               IF (.NOT. same_ao_block) THEN
+                  IF (frame%atom_local) THEN
+                     CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, right_range, gcr, &
+                                                                  point_geometry, local_atoms, local_cell, 2.0_dp, &
+                                                                  workspace=right_fields%gaussian)
+                  ELSE
+                     CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, &
+                                                                  coupled_coefficients(:, right_range(1):right_range(2), :), &
+                                                                  right_range, gcr, point_geometry, local_atoms, local_cell, &
+                                                                  2.0_dp, workspace=right_fields%gaussian)
+                  END IF
+                  atom_geometry(:, :) = atom_geometry + local_atoms
+                  cell_geometry(:, :) = cell_geometry + local_cell
+                  sphere_geometry = sphere_geometry + SUM(point_geometry, DIM=2)
                END IF
-               atom_geometry(:, :) = atom_geometry + local_atoms
-               cell_geometry(:, :) = cell_geometry + local_cell
                ! The own-center difference field and radial/angular measure are rigid on this
                ! moving sphere. All other field centers retain their actual physical images.
-               sphere_geometry = sphere_geometry + SUM(point_geometry, DIM=2) + potential_geometry
+               sphere_geometry = sphere_geometry + potential_geometry
                atom_geometry(:, atom) = atom_geometry(:, atom) + sphere_geometry
                DO axis = 1, 3
                   cell_geometry(:, axis) = cell_geometry(:, axis) + sphere_geometry*REAL(center_image(axis), dp)
