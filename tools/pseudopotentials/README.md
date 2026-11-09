@@ -27,8 +27,9 @@ Original NC/PAW files and unchanged SSSP cutoff metadata reside under
 `DIRECTORY/{pbe,pbesol}/{efficiency,precision}/`. Prepared USPPs are stored once under
 `DIRECTORY/prepared-uspp/v0.3.0/`, together with their catalog, source information and license. Each
 selection directory contains `selection.json`, which maps the original filenames to actual file
-locations relative to that directory. Use these explicit locations in CP2K input. The index does not
-automatically select a potential or basis in a calculation.
+locations relative to that directory. In CP2K input, set `POTENTIAL UPF` and give the resolved path
+in `POTENTIAL_FILE_NAME` in the same `&KIND` section. This keyword accepts paths longer than the
+80-character limit of `POTENTIAL UPF <filename>`. Choose the matching basis separately.
 
 The prepared collection stores the SSSP selection under `data/{pbe,pbesol}/sssp/`. Add
 `--additional-uspp` to install non-SSSP PSLibrary and GBRV USPPs for the selected functionals. They
@@ -200,7 +201,8 @@ an explicit path to the source tree:
 
 ```text
 &KIND H
-  POTENTIAL UPF /path/to/cp2k/tests/QS/regtest-upf/H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf
+  POTENTIAL UPF
+  POTENTIAL_FILE_NAME /path/to/cp2k/tests/QS/regtest-upf/H.us.pbe.z_1.ld1.psl.v1.0.0-high-full-waves.upf
 &END KIND
 ```
 
