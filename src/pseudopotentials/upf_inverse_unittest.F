@@ -747,6 +747,16 @@ CONTAINS
          ERROR STOP 'Anisotropic curvature did not reach the original gradient tolerance'
       END IF
       END DO
+      ! Below the energy resolution, modest gradient progress can waste the final step.
+      energy_zero = 1.e8_dp
+      DO i = 1, SIZE(anisotropic)
+         anisotropic(i) = 1.e-6_dp*COS(3.0_dp*pi*(REAL(i, dp) - 0.5_dp)/REAL(SIZE(anisotropic), dp))
+      END DO
+      CALL skala_constrained_stationarity(empty_constraints, anisotropic_energy_gradient, energy_zero, &
+                                          anisotropic, empty, tolerance, converged, max_iterations=1, iterations=iterations, &
+                                          curvature_steps=.TRUE., apply_hessian=anisotropic_hessian, &
+                                          check_stalled_segment=crossing_segment)
+      IF (.NOT. converged .OR. iterations /= 1) ERROR STOP 'Curvature missed the final step below energy resolution'
       ! A stiff stable direction must not hide descent along negative curvature.
       negative = [0.001_dp, 0.05_dp]
       CALL skala_constrained_stationarity(empty_constraints, negative_curvature_energy_gradient, energy_zero, &

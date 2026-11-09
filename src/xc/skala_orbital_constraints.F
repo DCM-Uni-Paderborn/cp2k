@@ -1469,6 +1469,11 @@ CONTAINS
                                       ABS(trial_slope) <= 0.9_dp*ABS(slope)
                   IF (gradient_progress) THEN
                      direction(:) = fraction*direction
+                     ! Try the coupled curvature when roundoff hides the energy change
+                     ! and the unconstrained trial still exceeds the stopping bound.
+                     IF (coupled_curvature .AND. m == 0 .AND. ASSOCIATED(hessian_local)) THEN
+                        gradient_progress = free_gradient_norm(trial_reduced) <= gradient_tolerance
+                     END IF
                      EXIT
                   END IF
                   ! A reversed slope brackets a smaller step. Limit this probe to two halvings
@@ -1587,7 +1592,10 @@ CONTAINS
             ! A shortened step resolves a smaller neighborhood than the original CG sphere.
             ! Use that neighborhood in the next solve while retaining the user maximum.
             IF (fraction < 0.25_dp) THEN
-               radius = MIN(radius, 2.0_dp*NORM2(motion))
+               ! Preserve the radius when an unconstrained curvature step was shortened at roundoff.
+               IF (m > 0 .OR. .NOT. ASSOCIATED(hessian_local) .OR. ABS(trial_energy - energy) > roundoff) THEN
+                  radius = MIN(radius, 2.0_dp*NORM2(motion))
+               END IF
             ELSE IF (fraction == 1.0_dp .AND. NORM2(motion) >= 0.9_dp*radius) THEN
                radius = MIN(maximum_radius, 2.0_dp*radius)
             END IF
