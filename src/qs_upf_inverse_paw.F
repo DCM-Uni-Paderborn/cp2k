@@ -14,6 +14,7 @@ MODULE qs_upf_inverse_paw
                                               twofold_multiply,&
                                               twofold_real_type,&
                                               twofold_value
+   USE external_potential_types,        ONLY: sgp_potential_type
    USE hfx_types,                       ONLY: hfx_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: do_potential_coulomb,&
@@ -27,12 +28,12 @@ MODULE qs_upf_inverse_paw
    USE mathconstants,                   ONLY: fourpi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_type
-   USE paw_onecenter,                   ONLY: paw_onecenter_core_exchange,&
-                                              paw_onecenter_core_exchange_init,&
+   USE paw_onecenter,                   ONLY: paw_core_exchange_prepare,&
                                               paw_onecenter_core_exchange_prepare,&
                                               paw_onecenter_hartree,&
                                               paw_onecenter_init
-   USE paw_types,                       ONLY: paw_kind_type,&
+   USE paw_types,                       ONLY: paw_core_exchange_type,&
+                                              paw_kind_type,&
                                               paw_potential_type
    USE paw_xc,                          ONLY: paw_xc_evaluate,&
                                               paw_xc_init,&
@@ -370,36 +371,32 @@ CONTAINS
 !> \brief Closed-core exchange with the same physical interactions as the native valence exchange.
 !>        Sum each HF contribution once, independently of its thread replicas. The valence-valence
 !>        exchange is already evaluated through the reconstructed RI transitions.
-!> \param pot Original scalar PAW data, including the complete signed core orbitals.
-!> \param projectors Original magnetic-projector ordering.
-!> \param kind Original-data caches, reused without changing their interactions.
+!> \param source Original scalar PAW dataset and its fixed-range core-exchange integrals.
+!> \param kind Geometry state retaining interactions with a potentially cell-dependent cutoff.
 !> \param exchange Native HF contributions and thread replicas, with parameters in atomic units.
 !> \param nspins Number of physical valence spins, used for the native RI activity threshold.
 !> \param energy Frozen core-core exchange constant, summed over the selected HF contributions.
 !> \param potential Spin-independent core-valence projector operator, without an extra factor 1/2.
 !> \param comm Communicator sharing the PAW kinds and their original-data caches.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_paw_core_prepare(pot, projectors, kind, exchange, nspins, energy, potential, comm)
-      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
-      TYPE(upf_projector_type), INTENT(IN)               :: projectors
-      TYPE(paw_kind_type), INTENT(INOUT)                 :: kind
+   SUBROUTINE qs_upf_inverse_paw_core_prepare(source, kind, exchange, nspins, energy, potential, comm)
+      TYPE(sgp_potential_type), INTENT(INOUT), TARGET     :: source
+      TYPE(paw_kind_type), INTENT(INOUT), TARGET         :: kind
       TYPE(hfx_type), INTENT(IN)                         :: exchange(:, :)
       INTEGER, INTENT(IN)                                :: nspins
       REAL(dp), INTENT(OUT)                              :: energy, potential(:, :)
       CLASS(mp_comm_type), INTENT(IN)                    :: comm
 
       INTEGER                                            :: cache, contribution, interaction(2), term
-      REAL(dp)                                           :: coefficient(2), fraction, value
-      REAL(dp), ALLOCATABLE                              :: matrix(:, :, :), zero_density(:, :, :)
+      REAL(dp)                                           :: coefficient(2), fraction
+      TYPE(paw_core_exchange_type), POINTER              :: core
 
-      CPASSERT(pot%is_paw .AND. kind%active)
+      CPASSERT(source%upf_data%is_paw .AND. kind%active)
       CPASSERT(nspins == 1 .OR. nspins == 2)
       CPASSERT(SIZE(exchange, 2) > 0)
-      CPASSERT(ALL(SHAPE(potential) == [projectors%nproj, projectors%nproj]))
+      CPASSERT(ALL(SHAPE(potential) == source%upf_projectors%nproj))
       energy = 0.0_dp
       potential = 0.0_dp
-      ALLOCATE (zero_density(projectors%nproj, projectors%nproj, 1), SOURCE=0.0_dp)
-      ALLOCATE (matrix(projectors%nproj, projectors%nproj, 1))
       DO contribution = 1, SIZE(exchange, 1)
          ASSOCIATE (hf => exchange(contribution, 1))
             fraction = hf%general_parameter%fraction
@@ -438,28 +435,23 @@ CONTAINS
                IF (coefficient(term) == 0.0_dp) CYCLE
                SELECT CASE (interaction(term))
                CASE (0)
-                  IF (.NOT. kind%onecenter%core_exchange_initialized) THEN
-                     CALL paw_onecenter_core_exchange_init(pot, projectors, kind%onecenter)
-                  END IF
-                  IF (.NOT. kind%onecenter%core_exchange_available) THEN
-                     CPABORT(TRIM(kind%onecenter%core_exchange_reason))
-                  END IF
-                  cache = 0
+                  CALL paw_core_exchange_prepare(source%upf_data, source%upf_projectors, &
+                                                 source%upf_paw_core_exchange, cache)
+                  core => source%upf_paw_core_exchange(cache)
                CASE (1)
-                  CALL paw_onecenter_core_exchange_prepare(pot, projectors, kind%onecenter, cache_index=cache, &
-                                                           omega=hf%potential_parameter%omega, comm=comm)
+                  CALL paw_core_exchange_prepare(source%upf_data, source%upf_projectors, &
+                                                 source%upf_paw_core_exchange, cache, &
+                                                 omega=hf%potential_parameter%omega, comm=comm)
+                  core => source%upf_paw_core_exchange(cache)
                CASE (2)
-                  CALL paw_onecenter_core_exchange_prepare(pot, projectors, kind%onecenter, cache_index=cache, &
+                  CALL paw_onecenter_core_exchange_prepare(source%upf_data, source%upf_projectors, &
+                                                           kind%onecenter, cache_index=cache, &
                                                            cutoff_radius=hf%potential_parameter%cutoff_radius)
+                  core => kind%onecenter%interaction_core_exchange(cache)
                END SELECT
-               IF (cache > 0) THEN
-                  IF (.NOT. kind%onecenter%interaction_core_exchange(cache)%available) THEN
-                     CPABORT(TRIM(kind%onecenter%interaction_core_exchange(cache)%reason))
-                  END IF
-               END IF
-               CALL paw_onecenter_core_exchange(kind%onecenter, zero_density, coefficient(term), cache, value, matrix)
-               energy = energy + value
-               potential = potential + matrix(:, :, 1)
+               IF (.NOT. core%available) CPABORT(TRIM(core%reason))
+               energy = energy + coefficient(term)*core%energy
+               potential = potential + coefficient(term)*core%matrix
             END DO
          END ASSOCIATE
       END DO

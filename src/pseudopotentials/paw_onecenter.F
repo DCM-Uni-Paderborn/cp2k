@@ -36,7 +36,7 @@ MODULE paw_onecenter
    PUBLIC :: paw_onecenter_type, paw_onecenter_init, paw_onecenter_hartree, &
              paw_onecenter_exchange, paw_onecenter_core_exchange_init, paw_onecenter_core_exchange_prepare, &
              paw_onecenter_core_exchange, paw_radial_coulomb, paw_radial_truncated, paw_radial_short, &
-             paw_valence_augmentation_init
+             paw_core_exchange_prepare, paw_valence_augmentation_init
 
 CONTAINS
 
@@ -186,37 +186,61 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: omega
       CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm
 
+      CPASSERT(onecenter%nproj == projectors%nproj)
+      CPASSERT(PRESENT(cutoff_radius) .NEQV. PRESENT(omega))
+      CALL paw_core_exchange_prepare(pot, projectors, onecenter%interaction_core_exchange, cache_index, &
+                                     cutoff_radius, omega, comm)
+   END SUBROUTINE paw_onecenter_core_exchange_prepare
+
+! **************************************************************************************************
+!> \brief Prepare unit-fraction core exchange using an original UPF dataset and interaction.
+!> \param pot Original scalar PAW data with complete core orbitals.
+!> \param projectors Original valence magnetic ordering.
+!> \param interactions Cached core exchange for this dataset, independent of geometry and basis.
+!> \param cache_index Entry for the requested interaction, including unavailable-data diagnostics.
+!> \param cutoff_radius Optional real-space truncation radius in bohr.
+!> \param omega Optional inverse erfc screening length. With neither argument use Coulomb.
+!> \param comm Optional communicator sharing the screened radial quadrature.
+! **************************************************************************************************
+   SUBROUTINE paw_core_exchange_prepare(pot, projectors, interactions, cache_index, cutoff_radius, omega, comm)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(upf_projector_type), INTENT(IN)               :: projectors
+      TYPE(paw_core_exchange_type), ALLOCATABLE, &
+         INTENT(INOUT)                                  :: interactions(:)
+      INTEGER, INTENT(OUT)                               :: cache_index
+      REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_radius, omega
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm
+
       INTEGER                                            :: i, n
+      REAL(dp)                                           :: cutoff, screening
       TYPE(paw_core_exchange_type), ALLOCATABLE          :: extended(:)
 
-      CPASSERT(PRESENT(cutoff_radius) .NEQV. PRESENT(omega))
+      CPASSERT(.NOT. (PRESENT(cutoff_radius) .AND. PRESENT(omega)))
+      cutoff = -1.0_dp
+      screening = -1.0_dp
       IF (PRESENT(cutoff_radius)) THEN
          CPASSERT(ieee_is_finite(cutoff_radius) .AND. cutoff_radius >= 0.0_dp)
+         cutoff = cutoff_radius
       END IF
       IF (PRESENT(omega)) THEN
          CPASSERT(ieee_is_finite(omega) .AND. omega >= 0.0_dp)
+         screening = omega
       END IF
       n = 0
-      IF (ALLOCATED(onecenter%interaction_core_exchange)) THEN
-         n = SIZE(onecenter%interaction_core_exchange)
+      IF (ALLOCATED(interactions)) THEN
+         n = SIZE(interactions)
          DO i = 1, n
-            IF (PRESENT(cutoff_radius)) THEN
-               IF (onecenter%interaction_core_exchange(i)%cutoff_radius /= cutoff_radius) CYCLE
-               IF (onecenter%interaction_core_exchange(i)%omega /= -1.0_dp) CYCLE
-            ELSE
-               IF (onecenter%interaction_core_exchange(i)%omega /= omega) CYCLE
-               IF (onecenter%interaction_core_exchange(i)%cutoff_radius /= -1.0_dp) CYCLE
-            END IF
+            IF (interactions(i)%cutoff_radius /= cutoff .OR. interactions(i)%omega /= screening) CYCLE
             cache_index = i
             RETURN
          END DO
       END IF
       ALLOCATE (extended(n + 1))
-      IF (n > 0) extended(:n) = onecenter%interaction_core_exchange
-      CALL paw_core_exchange_build(pot, projectors, onecenter%nproj, extended(n + 1), cutoff_radius, omega, comm)
-      CALL MOVE_ALLOC(extended, onecenter%interaction_core_exchange)
+      IF (n > 0) extended(:n) = interactions
+      CALL paw_core_exchange_build(pot, projectors, projectors%nproj, extended(n + 1), cutoff_radius, omega, comm)
+      CALL MOVE_ALLOC(extended, interactions)
       cache_index = n + 1
-   END SUBROUTINE paw_onecenter_core_exchange_prepare
+   END SUBROUTINE paw_core_exchange_prepare
 
 ! **************************************************************************************************
 !> \brief Build a unit-fraction AE core-valence matrix and core-core energy from original orbitals.

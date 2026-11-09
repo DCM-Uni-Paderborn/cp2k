@@ -52,6 +52,7 @@ MODULE external_potential_types
                                               ncoset,&
                                               nso
    USE orbital_transformation_matrices, ONLY: orbtramat
+   USE paw_types,                       ONLY: paw_core_exchange_type
    USE periodic_table,                  ONLY: ptable
    USE string_utilities,                ONLY: remove_word,&
                                               uppercase
@@ -224,6 +225,8 @@ MODULE external_potential_types
       TYPE(atom_upfpot_type), ALLOCATABLE         :: upf_data
       TYPE(upf_projector_type)                    :: upf_projectors
       TYPE(upf_local_type)                        :: upf_local
+      ! Coulomb and fixed-screening PAW core integrals belong to the original dataset.
+      TYPE(paw_core_exchange_type), ALLOCATABLE  :: upf_paw_core_exchange(:)
       ! NLCC
       LOGICAL                                    :: has_nlcc = .FALSE.
       INTEGER                                    :: n_nlcc = 0

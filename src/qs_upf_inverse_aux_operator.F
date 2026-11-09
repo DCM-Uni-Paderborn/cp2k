@@ -1722,9 +1722,9 @@ CONTAINS
       ALLOCATE (core_potential(SIZE(kinds)))
       DO kind = 1, SIZE(kinds)
          IF (.NOT. state%paw(kind)%active) CYCLE
-         ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data, projectors => kinds(kind)%sgp_potential%upf_projectors)
-            ALLOCATE (core_potential(kind)%matrix(projectors%nproj, projectors%nproj, 1))
-            CALL qs_upf_inverse_paw_core_prepare(pot, projectors, state%paw(kind), exchange, ns, &
+         ASSOCIATE (source => kinds(kind)%sgp_potential)
+            ALLOCATE (core_potential(kind)%matrix(source%upf_projectors%nproj, source%upf_projectors%nproj, 1))
+            CALL qs_upf_inverse_paw_core_prepare(source, state%paw(kind), exchange, ns, &
                                                  core_energy(kind), core_potential(kind)%matrix(:, :, 1), para_env)
          END ASSOCIATE
       END DO
