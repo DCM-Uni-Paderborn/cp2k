@@ -247,7 +247,7 @@ CONTAINS
       INTEGER                                            :: auxiliary, axis, i, ia, ir, j, l, lm, m, &
                                                             n, naux, p, pair, q
       LOGICAL                                            :: derivatives
-      REAL(dp)                                           :: point(3), radial
+      REAL(dp)                                           :: coupling, point(3), radial
       REAL(dp), ALLOCATABLE :: angular_points(:, :), batch_gradient(:, :, :), &
          batch_potential(:, :), cell_gradient(:, :, :), cell_projected(:, :, :, :), &
          d_integrals(:, :, :, :), d_projected(:, :, :), gradient(:, :), harmonics(:, :), &
@@ -368,14 +368,15 @@ CONTAINS
                   radial = augmentation%weighted_q(ir, pair, l)
                   IF (radial == 0.0_dp) CYCLE
                   DO lm = l*l + 1, (l + 1)**2
-                     integrals(p, q, :) = integrals(p, q, :) + radial*augmentation%gaunt(p, q, lm)*projected(lm, :)
+                     coupling = augmentation%gaunt(p, q, lm)
+                     IF (coupling == 0.0_dp) CYCLE
+                     coupling = radial*coupling
+                     integrals(p, q, :) = integrals(p, q, :) + coupling*projected(lm, :)
                      IF (derivatives) THEN
-                        d_integrals(p, q, :, :) = d_integrals(p, q, :, :) + &
-                                                  radial*augmentation%gaunt(p, q, lm)*d_projected(lm, :, :)
+                        d_integrals(p, q, :, :) = d_integrals(p, q, :, :) + coupling*d_projected(lm, :, :)
                      END IF
                      IF (PRESENT(cell_derivative)) THEN
-                        cell_derivative(p, q, :, :, :) = cell_derivative(p, q, :, :, :) + &
-                                                         radial*augmentation%gaunt(p, q, lm)*cell_projected(lm, :, :, :)
+                        cell_derivative(p, q, :, :, :) = cell_derivative(p, q, :, :, :) + coupling*cell_projected(lm, :, :, :)
                      END IF
                   END DO
                END DO
