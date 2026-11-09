@@ -543,12 +543,17 @@ CONTAINS
       COMPLEX(dp), INTENT(INOUT)                         :: integral(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
+      INTEGER                                            :: nleft, npoint, nright
 
-      IF (SIZE(weights) == 0 .OR. SIZE(left, 2) == 0 .OR. SIZE(right, 2) == 0) RETURN
+      npoint = SIZE(weights)
+      nleft = SIZE(left, 2)
+      nright = SIZE(right, 2)
+      IF (npoint == 0 .OR. nleft == 0 .OR. nright == 0) RETURN
       IF (.NOT. ANY(weights /= 0.0_dp)) RETURN
-      ALLOCATE (work(SIZE(right, 1), SIZE(right, 2)))
-      work(:, :) = SPREAD(weights, 2, SIZE(right, 2))*right
-      integral = integral + MATMUL(CONJG(TRANSPOSE(left)), work)
+      ALLOCATE (work(npoint, nright))
+      work(:, :) = SPREAD(weights, 2, nright)*right
+      CALL zgemm('C', 'N', nleft, nright, npoint, CMPLX(1.0_dp, 0.0_dp, dp), left, npoint, &
+                 work, npoint, CMPLX(1.0_dp, 0.0_dp, dp), integral, nleft)
    END SUBROUTINE add_pair
 
 ! **************************************************************************************************
