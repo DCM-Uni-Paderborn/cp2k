@@ -2149,8 +2149,12 @@ CONTAINS
 
       total_number_of_cells = 0
 
+      ! Explicit k-point lists have no uniform supercell dimensions.
+      ! Use the primitive cell for the cutoff check in that case.
       nkp = 1
-      IF (PRESENT(nkp_grid)) nkp = nkp_grid
+      IF (PRESENT(nkp_grid)) THEN
+         IF (ALL(nkp_grid > 0)) nkp = nkp_grid
+      END IF
       do_kpoints = ANY(nkp > 1)
 
       ! ** Check some settings
