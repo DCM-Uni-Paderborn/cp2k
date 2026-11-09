@@ -32,7 +32,8 @@ MODULE qs_upf_inverse_types
                                               pw_r3d_rs_type
    USE qs_kind_types,                   ONLY: qs_kind_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
-   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_type
+   USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_inverse_atom_grid_ref_type,&
+                                              qs_upf_inverse_atom_grid_type
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_type
    USE task_list_types,                 ONLY: deallocate_task_list,&
                                               task_list_type
@@ -56,6 +57,7 @@ MODULE qs_upf_inverse_types
       TYPE(upf_inverse_type) :: inverse
       LOGICAL :: atom_local = .FALSE., direct = .FALSE., fields_stored = .TRUE.
       TYPE(upf_inverse_atomic_type), ALLOCATABLE :: atomic_cache(:)
+      TYPE(qs_upf_inverse_atom_grid_ref_type), ALLOCATABLE :: defining_atom_grids(:)
       LOGICAL, ALLOCATABLE :: nc_kinds(:)
       TYPE(nc_coupling_grid_type), ALLOCATABLE :: nc_coupling_grid(:)
       TYPE(mp_comm_type) :: point_comm

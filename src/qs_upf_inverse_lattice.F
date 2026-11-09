@@ -16,6 +16,7 @@ MODULE qs_upf_inverse_lattice
                                               gaussian_basis_workspace_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE kinds,                           ONLY: dp
+   USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_lattice_type,&
                                               qs_upf_inverse_type
    USE upf_inverse_lattice,             ONLY: upf_inverse_lattice_adjoint,&
@@ -24,14 +25,15 @@ MODULE qs_upf_inverse_lattice
                                               upf_inverse_lattice_project
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
-   USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
+   USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
+                                              upf_radial_fields_periodic
    USE util,                            ONLY: sort
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
    PRIVATE
 
-   PUBLIC :: qs_upf_inverse_lattice_kernel
+   PUBLIC :: qs_upf_inverse_centered_pairs, qs_upf_inverse_lattice_kernel
    PUBLIC :: qs_upf_inverse_lattice_kernel_adjoint
    PUBLIC :: qs_upf_inverse_lattice_fields, qs_upf_inverse_lattice_field_adjoint
    PUBLIC :: qs_upf_inverse_lattice_geometry_adjoint, qs_upf_inverse_lattice_gaussian_adjoint
@@ -828,6 +830,23 @@ CONTAINS
       nao = SIZE(frame%gaussian, 2)
       n = SIZE(frame%weights)
       image_count = SIZE(frame%images, 2)
+      IF (ALLOCATED(frame%defining_atom_grids)) THEN
+         ALLOCATE (kernel_images, SOURCE=frame%images)
+         ALLOCATE (coupling(np, np, image_count), overlaps(np, nao, image_count))
+         IF (derivative) THEN
+            ALLOCATE (coupling_response(np, np, image_count), overlaps_response(np, nao, image_count))
+         END IF
+         DO q = 1, image_count
+            IF (derivative) THEN
+               CALL qs_upf_inverse_centered_pairs(frame, coupling(:, :, q), overlaps(:, :, q), &
+                                                  coupling_response(:, :, q), overlaps_response(:, :, q), &
+                                                  atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], kernel_images(:, q))
+            ELSE
+               CALL qs_upf_inverse_centered_pairs(frame, coupling(:, :, q), overlaps(:, :, q), image=kernel_images(:, q))
+            END IF
+         END DO
+         RETURN
+      END IF
       ALLOCATE (differences(3, image_count**2), pair_index(image_count, image_count))
       nq = 0
       DO i = 1, image_count
@@ -989,6 +1008,10 @@ CONTAINS
       atom_geometry = 0.0_dp
       cell_geometry = 0.0_dp
       weights_covector = 0.0_dp
+      IF (ALLOCATED(frame%defining_atom_grids)) THEN
+         CALL centered_kernel_adjoint(frame, kernel_images, coupling_covector, overlaps_covector, atom_geometry, cell_geometry)
+         RETURN
+      END IF
       ALLOCATE (beta(n, np), beta_gradient(n, np, 3), delta(n, np), delta_gradient(n, np, 3), &
                 gaussian(n, nao), gaussian_gradient(n, nao, 3), &
                 g_beta(n, np), g_delta(n, np), g_gaussian(n, nao))
@@ -1078,4 +1101,255 @@ CONTAINS
          END DO
       END SUBROUTINE field_geometry
    END SUBROUTINE qs_upf_inverse_lattice_kernel_adjoint
+! **************************************************************************************************
+!> \brief Unfold each Bloch projector bra to its home atom's GAPW quadrature.
+!>        The Gaussian and difference-wave kets retain all periodic images and interatomic
+!>        couplings. The home offsets and weights are Cartesian and fixed under strain.
+!>        Using the same atom quadrature as the charge residual avoids cancellation between
+!>        coarse uniform-grid projections and finely resolved one-center norm corrections.
+!> \param frame Original projector, Gaussian and difference-wave fields.
+!> \param coupling Original beta-Delta integrals without the identity.
+!> \param overlaps Original beta-Gaussian integrals.
+!> \param coupling_response Joint geometry response of the beta-Delta integrals.
+!> \param overlaps_response Joint geometry response of the beta-Gaussian integrals.
+!> \param atom_response Physical atom motion, including motion of the projector quadrature.
+!> \param cell_response Physical lattice response at fixed home offsets.
+!> \param reduced_k_response Motion of the reduced Bloch vector.
+!> \param image A single unphased ket image for the equivalent real-space convolution.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_centered_pairs(frame, coupling, overlaps, coupling_response, overlaps_response, &
+                                           atom_response, cell_response, reduced_k_response, image)
+      TYPE(qs_upf_inverse_type), INTENT(IN), TARGET      :: frame
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: coupling(:, :), overlaps(:, :), &
+                                                            coupling_response(:, :), overlaps_response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3), reduced_k_response(3)
+      INTEGER, INTENT(IN), OPTIONAL                      :: image(3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), chi(:, :), delta(:, :), dchi(:, :), ddelta(:, :), &
+                                                            pair_b(:, :), pair_k(:, :)
+      INTEGER                                            :: atom, basis_atom, center, first, ir, kind, last, &
+                                                            na, nao, nproj, other, p, q
+      INTEGER, TARGET                                    :: single_image(3, 1)
+      INTEGER, POINTER                                   :: images(:, :)
+      LOGICAL                                            :: derivative, values
+      REAL(dp), ALLOCATABLE                              :: directions(:, :), motion(:, :), points(:, :), radial_beta(:)
+      REAL(dp)                                           :: wavevector(3)
+      TYPE(grid_atom_type), POINTER                      :: grid
+
+      values = PRESENT(coupling)
+      derivative = PRESENT(coupling_response)
+      wavevector = frame%reduced_k
+      images => frame%images
+      IF (PRESENT(image)) THEN
+         single_image(:, 1) = image
+         images => single_image
+         wavevector = 0.0_dp
+      END IF
+      IF (values) THEN
+         coupling = CMPLX(0.0_dp, 0.0_dp, dp)
+         overlaps = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (derivative) THEN
+         CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
+         CPASSERT(PRESENT(reduced_k_response))
+         coupling_response = CMPLX(0.0_dp, 0.0_dp, dp)
+         overlaps_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      nao = SIZE(frame%coefficients, 2)
+      nproj = SIZE(frame%coefficients, 1)
+      DO center = frame%point_comm%mepos + 1, SIZE(frame%center_atoms), frame%point_comm%num_pe
+         atom = frame%center_atoms(center)
+         kind = frame%center_kinds(center)
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         grid => frame%defining_atom_grids(kind)%grid
+         CPASSERT(ASSOCIATED(grid))
+         na = grid%ng_sphere
+         ALLOCATE (directions(3, na), points(3, na), radial_beta(last - first + 1), &
+                   beta(na, last - first + 1), chi(na, nao), delta(na, nproj), &
+                   pair_b(last - first + 1, nao), pair_k(last - first + 1, nproj))
+         directions(1, :) = grid%sin_pol*grid%cos_azi
+         directions(2, :) = grid%sin_pol*grid%sin_azi
+         directions(3, :) = grid%cos_pol
+         IF (derivative) THEN
+            ALLOCATE (motion(3, na), dchi(na, nao), ddelta(na, nproj))
+            motion(:, :) = SPREAD(atom_response(:, atom), 2, na)
+         END IF
+         DO ir = 1, grid%nr
+            IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
+            CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
+            DO basis_atom = 1, SIZE(frame%bases)
+               p = frame%ao_first(basis_atom)
+               q = frame%ao_last(basis_atom)
+               IF (derivative) THEN
+                  CALL gaussian_basis_fields_periodic(frame%bases(basis_atom)%gto_basis_set, points, &
+                            frame%positions(:, basis_atom), frame%cell, images, wavevector, chi(:, p:q), &
+                            response=dchi(:, p:q), point_response=motion, center_response=atom_response(:, basis_atom), &
+                            cell_response=cell_response, reduced_k_response=reduced_k_response)
+               ELSE
+                  CALL gaussian_basis_fields_periodic(frame%bases(basis_atom)%gto_basis_set, points, &
+                            frame%positions(:, basis_atom), frame%cell, images, wavevector, chi(:, p:q))
+               END IF
+            END DO
+            DO other = 1, SIZE(frame%center_atoms)
+               p = frame%projector_first(other)
+               q = frame%projector_last(other)
+               ASSOCIATE (field => frame%delta_cache(frame%center_kinds(other)), other_atom => frame%center_atoms(other))
+                  IF (derivative) THEN
+                     CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
+                               images, wavevector, delta(:, p:q), response=ddelta(:, p:q), &
+                               points_response=motion, center_response=atom_response(:, other_atom), &
+                               cell_response=cell_response, reduced_k_response=reduced_k_response)
+                  ELSE
+                     CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
+                               images, wavevector, delta(:, p:q))
+                  END IF
+               END ASSOCIATE
+            END DO
+            IF (values) THEN
+               CALL upf_inverse_pair(beta, chi, grid%weight(:, ir), pair_b)
+               CALL upf_inverse_pair(beta, delta, grid%weight(:, ir), pair_k)
+               overlaps(first:last, :) = overlaps(first:last, :) + pair_b
+               coupling(first:last, :) = coupling(first:last, :) + pair_k
+            END IF
+            IF (derivative) THEN
+               CALL upf_inverse_pair(beta, dchi, grid%weight(:, ir), pair_b)
+               CALL upf_inverse_pair(beta, ddelta, grid%weight(:, ir), pair_k)
+               overlaps_response(first:last, :) = overlaps_response(first:last, :) + pair_b
+               coupling_response(first:last, :) = coupling_response(first:last, :) + pair_k
+            END IF
+         END DO
+         DEALLOCATE (directions, points, radial_beta, beta, chi, delta, pair_b, pair_k)
+         IF (derivative) DEALLOCATE (motion, dchi, ddelta)
+      END DO
+      IF (values) THEN
+         CALL frame%point_comm%sum(overlaps)
+         CALL frame%point_comm%sum(coupling)
+      END IF
+      IF (derivative) THEN
+         CALL frame%point_comm%sum(overlaps_response)
+         CALL frame%point_comm%sum(coupling_response)
+      END IF
+   END SUBROUTINE qs_upf_inverse_centered_pairs
+
+! **************************************************************************************************
+!> \brief Transpose the home-centered defining integrals for the coupled RI representation.
+!> \param frame Original Gaussian and projector fields.
+!> \param images Physical ket images in the same order as the defining convolution.
+!> \param coupling_covector Energy derivative of each beta-Delta image integral.
+!> \param overlaps_covector Energy derivative of each beta-Gaussian image integral.
+!> \param atom_geometry Owner-local atom derivative, including movement of the home quadrature.
+!> \param cell_geometry Owner-local lattice derivative at fixed home offsets and atom positions.
+! **************************************************************************************************
+   SUBROUTINE centered_kernel_adjoint(frame, images, coupling_covector, overlaps_covector, atom_geometry, cell_geometry)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: images(:, :)
+      COMPLEX(dp), INTENT(IN)                            :: coupling_covector(:, :, :), overlaps_covector(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: atom_geometry(:, :), cell_geometry(3, 3)
+
+      COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), delta(:, :), delta_gradient(:, :, :), &
+                                                            gaussian(:, :), gaussian_gradient(:, :, :), &
+                                                            g_delta(:, :), g_gaussian(:, :)
+      INTEGER                                            :: atom, center, first, home, image, ir, kind, last, &
+                                                            na, nao, nproj, p, q, single_image(3, 1)
+      REAL(dp), ALLOCATABLE                              :: directions(:, :), points(:, :), radial_beta(:)
+      TYPE(grid_atom_type), POINTER                      :: grid
+
+      atom_geometry = 0.0_dp
+      cell_geometry = 0.0_dp
+      nao = SIZE(frame%coefficients, 2)
+      nproj = SIZE(frame%coefficients, 1)
+      DO center = frame%point_comm%mepos + 1, SIZE(frame%center_atoms), frame%point_comm%num_pe
+         home = frame%center_atoms(center)
+         kind = frame%center_kinds(center)
+         first = frame%projector_first(center)
+         last = frame%projector_last(center)
+         grid => frame%defining_atom_grids(kind)%grid
+         CPASSERT(ASSOCIATED(grid))
+         na = grid%ng_sphere
+         ALLOCATE (directions(3, na), points(3, na), radial_beta(last - first + 1), beta(na, last - first + 1), &
+                   delta(na, nproj), delta_gradient(na, nproj, 3), g_delta(na, nproj), &
+                   gaussian(na, nao), gaussian_gradient(na, nao, 3), g_gaussian(na, nao))
+         directions(1, :) = grid%sin_pol*grid%cos_azi
+         directions(2, :) = grid%sin_pol*grid%sin_azi
+         directions(3, :) = grid%cos_pol
+         DO ir = 1, grid%nr
+            IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
+            CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
+            DO image = 1, SIZE(images, 2)
+               IF (ALL(coupling_covector(first:last, :, image) == 0.0_dp) .AND. &
+                   ALL(overlaps_covector(first:last, :, image) == 0.0_dp)) CYCLE
+               single_image(:, 1) = images(:, image)
+               g_delta(:, :) = SPREAD(grid%weight(:, ir), 2, nproj)*MATMUL(beta, coupling_covector(first:last, :, image))
+               g_gaussian(:, :) = SPREAD(grid%weight(:, ir), 2, nao)*MATMUL(beta, overlaps_covector(first:last, :, image))
+               CALL qs_upf_inverse_lattice_delta_fields(frame, points, images(:, image), delta, delta_gradient)
+               DO atom = 1, SIZE(frame%center_atoms)
+                  p = frame%projector_first(atom)
+                  q = frame%projector_last(atom)
+                  CALL field_geometry(g_delta(:, p:q), delta_gradient(:, p:q, :), frame%center_atoms(atom))
+               END DO
+               DO atom = 1, SIZE(frame%bases)
+                  p = frame%ao_first(atom)
+                  q = frame%ao_last(atom)
+                  CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian(:, p:q), gaussian_gradient(:, p:q, :))
+                  CALL field_geometry(g_gaussian(:, p:q), gaussian_gradient(:, p:q, :), atom)
+               END DO
+            END DO
+         END DO
+         DEALLOCATE (directions, points, radial_beta, beta, delta, delta_gradient, g_delta, &
+                     gaussian, gaussian_gradient, g_gaussian)
+      END DO
+
+   CONTAINS
+
+! **************************************************************************************************
+!> \brief Move the ket relative to the home projector, including its physical image translation.
+!> \param covector ...
+!> \param gradient ...
+!> \param ket_atom ...
+! **************************************************************************************************
+      SUBROUTINE field_geometry(covector, gradient, ket_atom)
+         COMPLEX(dp), INTENT(IN)                            :: covector(:, :), gradient(:, :, :)
+         INTEGER, INTENT(IN)                                :: ket_atom
+
+         INTEGER                                            :: axis
+         REAL(dp)                                           :: contraction
+
+         DO axis = 1, 3
+            contraction = REAL(SUM(CONJG(covector)*gradient(:, :, axis)), dp)
+            atom_geometry(axis, home) = atom_geometry(axis, home) + contraction
+            atom_geometry(axis, ket_atom) = atom_geometry(axis, ket_atom) - contraction
+            cell_geometry(axis, :) = cell_geometry(axis, :) - contraction*REAL(images(:, image), dp)
+         END DO
+      END SUBROUTINE field_geometry
+   END SUBROUTINE centered_kernel_adjoint
+
+! **************************************************************************************************
+!> \brief Evaluate one home-projector shell with fixed Cartesian offsets.
+!> \param frame ...
+!> \param center ...
+!> \param radius ...
+!> \param directions ...
+!> \param points ...
+!> \param beta ...
+!> \param values Scratch for one point.
+! **************************************************************************************************
+   SUBROUTINE centered_shell(frame, center, radius, directions, points, beta, values)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      INTEGER, INTENT(IN)                                :: center
+      REAL(dp), INTENT(IN)                               :: radius, directions(:, :)
+      REAL(dp), INTENT(OUT)                              :: points(:, :), values(:)
+      COMPLEX(dp), INTENT(OUT)                           :: beta(:, :)
+
+      INTEGER                                            :: ia, kind
+
+      kind = frame%center_kinds(center)
+      points(:, :) = SPREAD(frame%positions(:, frame%center_atoms(center)), 2, SIZE(directions, 2)) + radius*directions
+      DO ia = 1, SIZE(directions, 2)
+         CALL upf_radial_fields_evaluate(frame%beta_cache(kind), radius*directions(:, ia), values)
+         beta(ia, :) = values
+      END DO
+   END SUBROUTINE centered_shell
+
 END MODULE qs_upf_inverse_lattice

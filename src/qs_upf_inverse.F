@@ -12,6 +12,7 @@
 MODULE qs_upf_inverse
    USE basis_set_types,                 ONLY: gto_basis_set_type
    USE cell_types,                      ONLY: cell_type
+   USE cp_control_types,                ONLY: dft_control_type
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -31,6 +32,7 @@ MODULE qs_upf_inverse
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
+   USE qs_upf_inverse_lattice,          ONLY: qs_upf_inverse_centered_pairs
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_type
    USE qs_uspp_types,                   ONLY: qs_uspp_type
    USE upf_inverse,                     ONLY: &
@@ -71,8 +73,8 @@ CONTAINS
 !> \brief Original beta bras against the soft Gaussian columns, using the defining integration rule.
 !>        Evaluate B-C*W. Around the independently re-solved W0=K^-1*B, the equivalent form
 !>        W0-C*(W-W0) avoids cancellation. No projection residual or response is discarded.
-!>        The general inverse retains its defining K=I+C point rule. The atom-local form uses original
-!>        radial beta-Delta products and analytic Gaussian overlaps, with NC cross terms retained.
+!>        The general inverse retains its defining K=I+C quadrature. The atom-local form uses
+!>        original radial beta-Delta products and analytic Gaussian overlaps, with NC cross terms.
 !>        A modified W leaves its actual projection residual and its response explicit.
 !> \param frame Original inverse map, defining points, held images, and projector ordering.
 !> \param kinds Original scalar UPF datasets and native Gaussian bases.
@@ -128,7 +130,7 @@ CONTAINS
          ELSE
             CALL defining_pairs(frame, coupling, overlaps)
          END IF
-         IF (frame%fields_stored) THEN
+         IF (frame%fields_stored .AND. .NOT. ALLOCATED(frame%defining_atom_grids)) THEN
             CALL upf_inverse_pair(frame%beta, frame%delta, frame%weights, coupling, frame%point_comm)
             CALL upf_inverse_pair(frame%beta, frame%gaussian, frame%weights, overlaps, frame%point_comm)
          END IF
@@ -383,20 +385,23 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
 
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(particle_type), POINTER                       :: particles(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_uspp_type), POINTER                        :: uspp
       TYPE(qs_uspp_type), TARGET                         :: nc_context
 
-      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=particles, cell=cell, uspp=uspp)
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=particles, cell=cell, uspp=uspp, dft_control=control)
       CPASSERT(ASSOCIATED(kinds) .AND. ASSOCIATED(particles) .AND. ASSOCIATED(cell))
+      CPASSERT(ASSOCIATED(control))
       IF (.NOT. ASSOCIATED(uspp)) THEN
          ! Pure NC-UPF has no native ultrasoft environment and has identity reconstruction.
          ALLOCATE (nc_context%center_atoms(0), nc_context%center_kinds(0))
          uspp => nc_context
       END IF
       CALL qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
-                                  comm, frame, info, atom_local, direct, store_fields, basis_type)
+                                  comm, frame, info, atom_local, direct, store_fields, basis_type, &
+                                  centered_projection=control%qs_control%gapw)
    END SUBROUTINE qs_upf_inverse_from_ks
 
 ! **************************************************************************************************
@@ -419,9 +424,10 @@ CONTAINS
 !> \param direct Use original projectors and soft orbitals without reconstruction.
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 !> \param basis_type Native basis role, ORB by default. Potential and projector data are unchanged.
+!> \param centered_projection Define the full inverse on the native GAPW atom grids.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_prepare(kinds, particles, cell, uspp, points, weights, images, reduced_k, &
-                                     comm, frame, info, atom_local, direct, store_fields, basis_type)
+                                     comm, frame, info, atom_local, direct, store_fields, basis_type, centered_projection)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       TYPE(particle_type), INTENT(IN)                    :: particles(:)
       TYPE(cell_type), INTENT(IN)                        :: cell
@@ -432,7 +438,7 @@ CONTAINS
       TYPE(mp_comm_type), INTENT(IN)                     :: comm
       TYPE(qs_upf_inverse_type), INTENT(OUT)             :: frame
       INTEGER, INTENT(OUT)                               :: info
-      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
+      LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields, centered_projection
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
 
       CHARACTER(LEN=16)                                  :: role
@@ -453,6 +459,9 @@ CONTAINS
       IF (PRESENT(direct)) frame%direct = direct
       IF (PRESENT(store_fields)) frame%fields_stored = store_fields
       IF (frame%direct) use_atomic = .TRUE.
+      IF (PRESENT(centered_projection) .AND. .NOT. use_atomic) THEN
+         IF (centered_projection) ALLOCATE (frame%defining_atom_grids(SIZE(kinds)))
+      END IF
       info = 0
       frame%periodicity = cell%perd
       DO axis = 1, 3
@@ -522,6 +531,9 @@ CONTAINS
          CPASSERT(.NOT. kinds(ikind)%ghost)
          CPASSERT(particles(atom)%atomic_kind%kind_number == ikind)
          IF (frame%beta_cache(ikind)%nproj == 0) THEN
+            IF (ALLOCATED(frame%defining_atom_grids)) THEN
+               CALL get_qs_kind(kinds(ikind), grid_atom=frame%defining_atom_grids(ikind)%grid)
+            END IF
             CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, &
                                          frame%beta_cache(ikind), frame%delta_cache(ikind), frame%direct)
             IF (use_atomic) THEN
@@ -595,7 +607,7 @@ CONTAINS
          frame%atom_local = .TRUE.
       ELSE
          ALLOCATE (coupling(nproj, nproj), overlaps(nproj, nao))
-         IF (frame%fields_stored) THEN
+         IF (frame%fields_stored .AND. .NOT. ALLOCATED(frame%defining_atom_grids)) THEN
             CALL upf_inverse_pair(frame%beta, frame%delta, weights, coupling, comm)
             CALL upf_inverse_pair(frame%beta, frame%gaussian, weights, overlaps, comm)
          ELSE
@@ -666,6 +678,11 @@ CONTAINS
       derivative = PRESENT(coupling_response)
       CPASSERT(derivative .EQV. PRESENT(overlaps_response))
       CPASSERT(values .OR. derivative)
+      IF (ALLOCATED(frame%defining_atom_grids)) THEN
+         CALL qs_upf_inverse_centered_pairs(frame, coupling, overlaps, coupling_response, overlaps_response, &
+                                      atom_response, cell_response, reduced_k_response)
+         RETURN
+      END IF
       IF (derivative) THEN
          CPASSERT(PRESENT(point_response) .AND. PRESENT(atom_response))
          CPASSERT(PRESENT(cell_response))
@@ -1616,7 +1633,7 @@ CONTAINS
       IF (PRESENT(gradient_response)) THEN
          CPASSERT(ALL(SHAPE(gradient_response) == [npoint, nao, 3]))
       END IF
-      IF (.NOT. frame%fields_stored .OR. &
+      IF (.NOT. frame%fields_stored .OR. ALLOCATED(frame%defining_atom_grids) .OR. &
           (frame%atom_local .AND. .NOT. PRESENT(soft_response) .AND. .NOT. PRESENT(gradient_response))) THEN
          ALLOCATE (db(nproj, nao))
          IF (frame%atom_local) THEN
@@ -1844,7 +1861,7 @@ CONTAINS
          ALLOCATE (overlaps(nproj, nao))
          CALL atomic_coefficients(frame, overlaps, db, atom_response, cell_response, reduced_k_response)
          response = REAL(SUM(CONJG(beta_gaussian_covector)*db), dp)
-      ELSE IF (.NOT. frame%fields_stored) THEN
+      ELSE IF (.NOT. frame%fields_stored .OR. ALLOCATED(frame%defining_atom_grids)) THEN
          ALLOCATE (dk(nproj, nproj))
          CALL defining_pairs(frame, coupling_response=dk, overlaps_response=db, point_response=point_response, &
                              atom_response=atom_response, cell_response=cell_response, &

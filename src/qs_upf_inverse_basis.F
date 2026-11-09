@@ -12,6 +12,7 @@ MODULE qs_upf_inverse_basis
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE cp_dbcsr_operations,             ONLY: dbcsr_deallocate_matrix_set
+   USE input_constants,                 ONLY: uspp_method_inverse
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp
@@ -110,10 +111,11 @@ CONTAINS
       INTEGER                                            :: atom, axis, ikind, image, ix, iy, iz, &
                                                             lower(3), upper(3)
       LOGICAL                                            :: use_direct
-      REAL(dp)                                           :: fractional(3), lower_real(3), radius, &
-                                                            reach, upper_real(3)
+      REAL(dp)                                           :: domain_lower(3), domain_upper(3), fractional(3), &
+                                                            lower_real(3), radius, reach, reciprocal_norm(3), upper_real(3)
       REAL(dp), ALLOCATABLE                              :: radial_radius(:)
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(dft_control_type), POINTER                    :: control
       TYPE(gto_basis_set_type), POINTER                  :: basis
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
@@ -124,7 +126,7 @@ CONTAINS
       CPASSERT(role == 'ORB' .OR. role == 'AUX_FIT')
       use_direct = .FALSE.
       IF (PRESENT(direct)) use_direct = direct
-      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, cell=cell)
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, cell=cell, dft_control=control)
       ALLOCATE (radial_radius(SIZE(kinds)))
       radial_radius = 0.0_dp
       DO ikind = 1, SIZE(kinds)
@@ -143,6 +145,19 @@ CONTAINS
          CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, beta, delta, use_direct)
          radial_radius(ikind) = MAX(beta%radius, delta%radius)
       END DO
+      reciprocal_norm = SQRT(SUM(cell%h_inv**2, DIM=2))
+      domain_lower = 0.0_dp
+      domain_upper = 1.0_dp
+      IF (control%qs_control%gapw .AND. control%qs_control%uspp_method == uspp_method_inverse) THEN
+         ! The defining projector quadratures extend beyond the primary cell.
+         DO atom = 1, SIZE(atoms)
+            radius = radial_radius(atoms(atom)%atomic_kind%kind_number)
+            IF (radius == 0.0_dp) CYCLE
+            fractional = MATMUL(cell%h_inv, atoms(atom)%r)
+            domain_lower = MIN(domain_lower, fractional - radius*reciprocal_norm)
+            domain_upper = MAX(domain_upper, fractional + radius*reciprocal_norm)
+         END DO
+      END IF
       lower_real = 0.0_dp
       upper_real = 0.0_dp
       DO atom = 1, SIZE(atoms)
@@ -156,10 +171,10 @@ CONTAINS
          fractional = MATMUL(cell%h_inv, atoms(atom)%r)
          DO axis = 1, 3
             IF (cell%perd(axis) == 0) CYCLE
-            reach = radius*SQRT(SUM(cell%h_inv(axis, :)**2))
+            reach = radius*reciprocal_norm(axis)
             ! One additional cell keeps exponentially small Gaussian tails away from image boundaries.
-            lower_real(axis) = MIN(lower_real(axis), -fractional(axis) - reach - 1.0_dp)
-            upper_real(axis) = MAX(upper_real(axis), 1.0_dp - fractional(axis) + reach + 1.0_dp)
+            lower_real(axis) = MIN(lower_real(axis), domain_lower(axis) - fractional(axis) - reach - 1.0_dp)
+            upper_real(axis) = MAX(upper_real(axis), domain_upper(axis) - fractional(axis) + reach + 1.0_dp)
          END DO
       END DO
       lower = FLOOR(lower_real)
