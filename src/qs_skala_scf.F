@@ -3881,7 +3881,12 @@ CONTAINS
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
          IF (context%admit_crossings) THEN
-            CALL check_native_segment(first, last, curve, context, interrupted)
+            ! Equal endpoints only ask whether an existing normal remains admissible.
+            ! The solver evaluates the next required operator after a descriptor scan.
+            IF (ANY(first /= last)) THEN
+               CALL check_native_segment(first, last, curve, context, interrupted, restore_operator=.FALSE., &
+                                         leave_trial=SIZE(context%spins) == 0)
+            END IF
             IF (.NOT. interrupted .AND. SIZE(context%spins) > 0) THEN
                ! A selected normal can cease to bracket a minimum before the tangent converges.
                ! Return the accepted state so the caller can test a finite downhill release.
