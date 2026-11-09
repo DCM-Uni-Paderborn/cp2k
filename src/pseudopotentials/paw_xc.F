@@ -24,6 +24,7 @@ MODULE paw_xc
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               lebedev_rotational_average
    USE mathconstants,                   ONLY: fourpi
+   USE message_passing,                 ONLY: mp_comm_type
    USE orbital_pointers,                ONLY: indco,&
                                               init_orbital_pointers,&
                                               nco,&
@@ -802,9 +803,10 @@ CONTAINS
 !> \param density_components Optional retained occupation of the installed density.
 !> \param direction_components Optional matching retained occupation response.
 !> \param potential_components Optional retained covector before Gaussian congruence.
+!> \param comm Optional communicator sharing radial batches and receiving the complete response.
 ! **************************************************************************************************
    SUBROUTINE paw_xc_response(grid, onecenter, xc_section, density, direction, potential_response, core_kinetic, &
-                              density_components, direction_components, potential_components)
+                              density_components, direction_components, potential_components, comm)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
       TYPE(section_vals_type), POINTER                   :: xc_section
@@ -814,19 +816,20 @@ CONTAINS
       TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :), &
                                                             direction_components(:, :, :)
       TYPE(twofold_real_type), INTENT(OUT), OPTIONAL     :: potential_components(:, :, :)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
 
-      INTEGER                                            :: bounds(2, 3), first, ir, jr, na, nr, ns, &
-                                                            p, pair, q, side, spin
+      INTEGER :: bounds(2, 3), first, first_shell, ir, jr, last_shell, na, nblocks, ncoeff, nr, ns, &
+         p, pair, partition, partitions, q, side, spin
       LOGICAL                                            :: assertion_valid, lsd, use_tau
       REAL(dp)                                           :: density_cutoff, gradient_cutoff
       REAL(dp), ALLOCATABLE :: delta_drho(:, :, :, :), delta_rho(:, :, :), delta_tau(:, :, :), &
-         drho(:, :, :, :), rho(:, :, :), tau(:, :, :), weights(:, :)
+         drho(:, :, :, :), partials(:, :), rho(:, :, :), tau(:, :, :), weights(:, :)
       REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
       REAL(dp), POINTER                                  :: vg(:, :, :, :)
       TYPE(section_vals_type), POINTER                   :: functional
       TYPE(twofold_real_type)                            :: potential_sum
       TYPE(twofold_real_type), ALLOCATABLE :: coefficient_response(:, :, :), &
-         coefficients(:, :, :), direction_coefficients(:, :, :)
+         coefficients(:, :, :), direction_coefficients(:, :, :), partial_response(:, :, :)
       TYPE(xc_derivative_set_type)                       :: derivatives
       TYPE(xc_rho_cflags_type)                           :: needs
       TYPE(xc_rho_set_type)                              :: base, delta
@@ -865,6 +868,15 @@ CONTAINS
       density_cutoff = section_get_rval(xc_section, 'DENSITY_CUTOFF')
       gradient_cutoff = section_get_rval(xc_section, 'GRADIENT_CUTOFF')
       nr = MIN(grid%nr, MAX(1, 2048/na)); bounds = 1; bounds(2, 1) = na; bounds(2, 2) = nr
+      nblocks = 1 + (grid%nval - 1)/nr
+      partition = 0
+      partitions = 1
+      IF (PRESENT(comm)) THEN
+         partitions = MIN(comm%num_pe, nblocks)
+         partition = MIN(comm%mepos, partitions)
+      END IF
+      first_shell = 1 + (partition*nblocks/partitions)*nr
+      last_shell = MIN(grid%nval, ((partition + 1)*nblocks/partitions)*nr)
       ALLOCATE (rho(na, nr, ns), drho(4, na, nr, ns), tau(na, nr, ns), delta_rho(na, nr, ns), &
                 delta_drho(4, na, nr, ns), delta_tau(na, nr, ns), weights(na, nr), vn(na, nr, ns), &
                 vg(3, na, nr, ns), vt(na, nr, ns))
@@ -877,7 +889,7 @@ CONTAINS
       DO side = 1, 2
          ! The orbital density direction and its transpose have valence support.
          ! Whole batches outside that support contribute no projector response.
-         DO first = 1, grid%nval, nr
+         DO first = first_shell, last_shell, nr
             rho = 0.0_dp; drho = 0.0_dp; tau = 0.0_dp; weights = 0.0_dp
             delta_rho = 0.0_dp; delta_drho = 0.0_dp; delta_tau = 0.0_dp
             DO jr = 1, nr
@@ -911,6 +923,25 @@ CONTAINS
             CALL accumulate_xc_shells(grid, first, side, vn, vg, vt, use_tau, coefficient_response)
          END DO
       END DO
+      IF (PRESENT(comm)) THEN
+         IF (comm%num_pe > 1) THEN
+            ncoeff = SIZE(coefficient_response)
+            ALLOCATE (partials(2*ncoeff, partitions), SOURCE=0.0_dp)
+            IF (partition < partitions) THEN
+               partials(:ncoeff, partition + 1) = RESHAPE(coefficient_response%hi, [ncoeff])
+               partials(ncoeff + 1:, partition + 1) = RESHAPE(coefficient_response%lo, [ncoeff])
+            END IF
+            ! Exchange disjoint partials, then combine both components in rank order.
+            CALL comm%sum(partials)
+            ALLOCATE (partial_response(SIZE(coefficient_response, 1), SIZE(coefficient_response, 2), ns))
+            coefficient_response = twofold_real_type()
+            DO partition = 1, partitions
+               partial_response%hi = RESHAPE(partials(:ncoeff, partition), SHAPE(partial_response))
+               partial_response%lo = RESHAPE(partials(ncoeff + 1:, partition), SHAPE(partial_response))
+               coefficient_response = twofold_add(coefficient_response, partial_response)
+            END DO
+         END IF
+      END IF
       potential_response = 0.0_dp
       DO spin = 1, ns
          DO q = 1, onecenter%nproj

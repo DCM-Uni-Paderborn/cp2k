@@ -995,8 +995,8 @@ CONTAINS
 !> \brief Apply the PAW one-center semilocal XC kernel to a complete AO density direction.
 !>        Sum the original k weights before the nonlinear atomic XC evaluation. The AO
 !>        Hamiltonian responses carry no k weight. Frozen-core fields remain in the base
-!>        functional and have zero density direction. Each atom has the same MPI owner as
-!>        the original first-potential evaluation. Hartree is supplied separately.
+!>        functional and have zero density direction. Ranks share the radial batches
+!>        of each center. Hartree is supplied separately.
 !> \param kinds Original prepared PAW kinds, including fixed core fields.
 !> \param frames Original projector frames in complete global k order.
 !> \param density Unperturbed unweighted Hermitian AO occupation matrices, by k point and spin.
@@ -1042,26 +1042,21 @@ CONTAINS
          last = frames(1)%ao%projector_last(center)
          n = last - first + 1
          CPASSERT(n == kinds(kind)%onecenter%nproj)
-         ALLOCATE (potential(n, n, ns), SOURCE=0.0_dp)
-         ALLOCATE (potential_components(n, n, ns), SOURCE=twofold_real_type())
-         IF (MODULO(center - 1, frames(1)%ao%point_comm%num_pe) == frames(1)%ao%point_comm%mepos) THEN
-            ALLOCATE (dm(n, n, ns), delta(n, n, ns))
-            CALL project_paw_density(frames, density, kweights, first, last, dm)
-            CALL project_paw_density(frames, direction, kweights, first, last, delta)
-            ALLOCATE (density_components(n, n, ns), direction_components(n, n, ns))
-            CALL retained_projector_density(frames, kweights, first, last, dm, density_components, orbital_factors)
-            direction_components(:, :, :)%hi = delta
-            direction_components%lo = 0.0_dp
-            IF (PRESENT(orbital_direction)) THEN
-     CALL retained_projector_density(frames, kweights, first, last, delta, direction_components, orbital_factors, orbital_direction)
-            END IF
-            CALL paw_xc_response(kinds(kind)%xcgrid, kinds(kind)%onecenter, xc_section, dm, delta, potential, &
-        density_components=density_components, direction_components=direction_components, potential_components=potential_components)
-            DEALLOCATE (density_components, direction_components)
-            DEALLOCATE (dm, delta)
+         ALLOCATE (potential(n, n, ns), potential_components(n, n, ns), dm(n, n, ns), delta(n, n, ns), &
+                   density_components(n, n, ns), direction_components(n, n, ns))
+         CALL project_paw_density(frames, density, kweights, first, last, dm)
+         CALL project_paw_density(frames, direction, kweights, first, last, delta)
+         CALL retained_projector_density(frames, kweights, first, last, dm, density_components, orbital_factors)
+         direction_components%hi = delta
+         direction_components%lo = 0.0_dp
+         IF (PRESENT(orbital_direction)) THEN
+            CALL retained_projector_density(frames, kweights, first, last, delta, direction_components, &
+                                            orbital_factors, orbital_direction)
          END IF
-         CALL frames(1)%ao%point_comm%sum(potential_components%hi)
-         CALL frames(1)%ao%point_comm%sum(potential_components%lo)
+         CALL paw_xc_response(kinds(kind)%xcgrid, kinds(kind)%onecenter, xc_section, dm, delta, potential, &
+                              density_components=density_components, direction_components=direction_components, &
+                              potential_components=potential_components, comm=frames(1)%ao%point_comm)
+         DEALLOCATE (density_components, direction_components, dm, delta)
          ALLOCATE (atomic_operator(SIZE(density, 1), SIZE(density, 2)))
          DO spin = 1, ns
             DO ik = 1, SIZE(frames)
