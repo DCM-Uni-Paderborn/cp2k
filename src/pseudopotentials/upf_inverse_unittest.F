@@ -3304,7 +3304,7 @@ CONTAINS
                                                             radial_values(3, 1), response(3), &
                                                             rho(3), samples(3, 2)
       INTEGER                                            :: side
-      REAL(dp)                                           :: delta_g(3, 3), delta_r(3), g(3, 3), &
+      REAL(dp)                                           :: delta_g(3, 3), delta_r(3), g(3, 3), lattice(3, 3), &
                                                             points(3, 3), position(3), shift
       TYPE(atom_upfpot_type)                             :: pot
       TYPE(upf_radial_fields_type)                       :: field
@@ -3362,6 +3362,14 @@ CONTAINS
       CALL check(MAXVAL(ABS(radial_values(:, 1) - [0.2_dp, 0.1_dp, 0.0_dp])), &
                  "Original finite spherical core samples", 1.e-13_dp)
       CALL check(MAXVAL(ABS(radial_gradient(3, 1, :))), "Exterior finite core gradient", 0.0_dp)
+      ! The first translated image touches the evaluation box at its finite endpoint.
+      lattice = 0.0_dp
+      lattice(3, 3) = 4.5_dp
+      CALL upf_radial_fields_periodic(field, points, [0.0_dp, 0.0_dp, 0.0_dp], lattice, &
+                                      RESHAPE([0, 0, 0, 0, 0, 1, 0, 0, 2], [3, 3]), [0.0_dp, 0.0_dp, 0.5_dp], &
+                                      radial_values)
+      CALL check(MAXVAL(ABS(radial_values(:, 1) - [0.2_dp, 0.1_dp, -0.1_dp])), &
+                 "Periodic finite core endpoint on the evaluation box", 1.e-13_dp)
 
       pot%core_correction = .FALSE.
       CALL upf_core_fourier(pot, g, position, 3.0_dp, rho, dr, dg)

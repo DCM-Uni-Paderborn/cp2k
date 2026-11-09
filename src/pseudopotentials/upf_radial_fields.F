@@ -261,8 +261,9 @@ CONTAINS
 
       COMPLEX(dp)                                        :: dphase, phase
       INTEGER                                            :: axis, column, image, point
-      REAL(dp)                                           :: displacement(3), dr(3), dshift(3), &
-                                                            shift(3), v(fields%nproj), &
+      LOGICAL                                            :: screen_images
+      REAL(dp)                                           :: bounds(3, 2), displacement(3), dr(3), dshift(3), &
+                                                            radius_squared, shift(3), v(fields%nproj), &
                                                             hh(3, 3, fields%nproj), &
                                                             g(3, fields%nproj)
 
@@ -292,8 +293,20 @@ CONTAINS
       IF (PRESENT(points_response)) THEN
          CPASSERT(ALL(SHAPE(points_response) == SHAPE(points)))
       END IF
+      IF (SIZE(points, 2) == 0) RETURN
+      radius_squared = fields%radius**2
+      screen_images = SIZE(images, 2) > 1
+      IF (screen_images) THEN
+         bounds(:, 1) = MINVAL(points, DIM=2)
+         bounds(:, 2) = MAXVAL(points, DIM=2)
+      END IF
       DO image = 1, SIZE(images, 2)
          shift = center + MATMUL(cell, REAL(images(:, image), dp))
+         IF (screen_images) THEN
+            ! The box distance bounds every pointwise distance from below.
+            displacement = MAX(bounds(:, 1) - shift, shift - bounds(:, 2), 0.0_dp)
+            IF (SUM(displacement**2) > radius_squared) CYCLE
+         END IF
          dshift = 0.0_dp
          IF (PRESENT(center_response)) dshift = center_response
          IF (PRESENT(cell_response)) dshift = dshift + MATMUL(cell_response, REAL(images(:, image), dp))
@@ -304,9 +317,9 @@ CONTAINS
          END IF
          DO point = 1, SIZE(points, 2)
             displacement = points(:, point) - shift
+            IF (SUM(displacement**2) > radius_squared) CYCLE
             dr = -dshift
             IF (PRESENT(points_response)) dr = dr + points_response(:, point)
-            IF (SUM(displacement**2) > fields%radius**2) CYCLE
             IF (PRESENT(gradient_response)) THEN
                CALL upf_radial_fields_evaluate(fields, displacement, v, g, hh)
             ELSE IF (PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(cell_gradient)) THEN
