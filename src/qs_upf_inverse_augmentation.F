@@ -504,20 +504,25 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: projector_operator(:, :)
 
       INTEGER                                            :: atom, center, first, ikind, last
+      LOGICAL                                            :: active
       REAL(dp), ALLOCATABLE                              :: matrix(:, :), multiplicity(:)
       TYPE(pw_c1d_gs_type)                               :: potential_g
 
       CALL check_fourier_grid(frame, vdensity%pw_grid)
       CPASSERT(ALL(SHAPE(projector_operator) == SIZE(frame%coefficients, 1)))
       CALL potential_g%create(vdensity%pw_grid)
-      CALL fourier_potential(vdensity, vgradient, potential_g)
+      CALL fourier_potential(vdensity, vgradient, potential_g, active)
+      projector_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (.NOT. active) THEN
+         CALL potential_g%release()
+         RETURN
+      END IF
       ALLOCATE (multiplicity(SIZE(potential_g%array)))
       multiplicity = 1.0_dp
       IF (vdensity%pw_grid%grid_span == HALFSPACE) THEN
          multiplicity = 2.0_dp
          IF (vdensity%pw_grid%have_g0) multiplicity(1) = 1.0_dp
       END IF
-      projector_operator = CMPLX(0.0_dp, 0.0_dp, dp)
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
@@ -565,6 +570,7 @@ CONTAINS
 
       INTEGER                                            :: atom, axis, center, first, ikind, info, &
                                                             last, second
+      LOGICAL                                            :: active, active_gradient(3), active_response
       REAL(dp)                                           :: cell_inverse(3, 3), displacement(3), &
                                                             strain(3, 3), volume_response
       REAL(dp), ALLOCATABLE :: derivative(:, :, :), g_response(:, :), matrix(:, :), &
@@ -581,22 +587,27 @@ CONTAINS
       CPASSERT(info == 0)
       strain = MATMUL(cell_response, cell_inverse)
       volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
-      ALLOCATE (g_response(3, SIZE(vdensity%pw_grid%g, 2)))
-      g_response(:, :) = -MATMUL(TRANSPOSE(strain), vdensity%pw_grid%g)
       CALL potential_g%create(vdensity%pw_grid)
       CALL response_g%create(vdensity%pw_grid)
-      CALL derivative_g%create(vdensity%pw_grid)
-      CALL work_r%create(vdensity%pw_grid)
-      CALL fourier_potential(vdensity, vgradient, potential_g)
-      CALL fourier_potential(vdensity_response, vgradient_response, response_g)
-      ! Differentiate -div(vgradient) itself. Its real-grid projection is the same as in the adjoint.
-      DO axis = 1, 3
-         CALL pw_transfer(vgradient(axis), derivative_g)
-         derivative_g%array = derivative_g%array*CMPLX(0.0_dp, -g_response(axis, :), dp)
-         CALL pw_transfer(derivative_g, work_r)
-         CALL pw_transfer(work_r, derivative_g)
-         response_g%array = response_g%array + derivative_g%array
-      END DO
+      CALL fourier_potential(vdensity, vgradient, potential_g, active, active_gradient)
+      CALL fourier_potential(vdensity_response, vgradient_response, response_g, active_response)
+      IF (ANY(active_gradient) .AND. ANY(strain /= 0.0_dp)) THEN
+         g_response = -MATMUL(TRANSPOSE(strain), vdensity%pw_grid%g)
+         CALL derivative_g%create(vdensity%pw_grid)
+         CALL work_r%create(vdensity%pw_grid)
+         ! Differentiate -div(vgradient) using the same real-grid projection as the adjoint.
+         DO axis = 1, 3
+            IF (.NOT. active_gradient(axis)) CYCLE
+            CALL pw_transfer(vgradient(axis), derivative_g)
+            derivative_g%array = derivative_g%array*CMPLX(0.0_dp, -g_response(axis, :), dp)
+            CALL pw_transfer(derivative_g, work_r)
+            CALL pw_transfer(work_r, derivative_g)
+            response_g%array = response_g%array + derivative_g%array
+         END DO
+         CALL derivative_g%release()
+         CALL work_r%release()
+         active_response = .TRUE.
+      END IF
       ALLOCATE (multiplicity(SIZE(potential_g%array)))
       multiplicity = 1.0_dp
       IF (vdensity%pw_grid%grid_span == HALFSPACE) THEN
@@ -619,11 +630,21 @@ CONTAINS
                    derivative(last - first + 1, last - first + 1, 3), &
                    strain_matrix(last - first + 1, last - first + 1, 3, 3))
          CALL uspp_augmentation_prepare_fourier(augmentation%kinds(ikind), vdensity%pw_grid%g)
-         CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
-                                       frame%positions(:, atom), potential_g%array, multiplicity, matrix, derivative, strain_matrix)
+         IF (active) THEN
+            CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
+                                             frame%positions(:, atom), potential_g%array, multiplicity, &
+                                             matrix, derivative, strain_matrix)
+         ELSE
+            matrix = 0.0_dp
+            derivative = 0.0_dp
+            strain_matrix = 0.0_dp
+         END IF
          IF (PRESENT(projector_operator)) projector_operator(first:last, first:last) = matrix
-         CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
-                                          frame%positions(:, atom), response_g%array, multiplicity, potential_matrix)
+         potential_matrix = 0.0_dp
+         IF (active_response) THEN
+            CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
+                                             frame%positions(:, atom), response_g%array, multiplicity, potential_matrix)
+         END IF
          displacement = atom_response(:, atom) - MATMUL(strain, frame%positions(:, atom))
          matrix(:, :) = volume_response*matrix + potential_matrix
          DO axis = 1, 3
@@ -641,8 +662,6 @@ CONTAINS
       END IF
       CALL potential_g%release()
       CALL response_g%release()
-      CALL derivative_g%release()
-      CALL work_r%release()
    END SUBROUTINE qs_upf_inverse_augmentation_fourier_response
 
 ! **************************************************************************************************
@@ -650,21 +669,39 @@ CONTAINS
 !> \param vdensity ...
 !> \param vgradient ...
 !> \param potential_g Allocated matching Fourier field, overwritten.
+!> \param active Whether any input field is nonzero anywhere on the grid.
+!> \param active_gradient Optional per-component activity for the cell derivative.
 ! **************************************************************************************************
-   SUBROUTINE fourier_potential(vdensity, vgradient, potential_g)
+   SUBROUTINE fourier_potential(vdensity, vgradient, potential_g, active, active_gradient)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3)
       TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: potential_g
+      LOGICAL, INTENT(OUT)                               :: active
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: active_gradient(3)
 
-      INTEGER                                            :: axis, orders(3)
+      INTEGER                                            :: axis, nonzero(0:3), orders(3)
       TYPE(pw_c1d_gs_type)                               :: derivative_g
       TYPE(pw_r3d_rs_type)                               :: work_r
 
       CPASSERT(ASSOCIATED(potential_g%pw_grid, vdensity%pw_grid))
-      CALL derivative_g%create(vdensity%pw_grid)
-      CALL work_r%create(vdensity%pw_grid)
-      CALL pw_transfer(vdensity, potential_g)
+      nonzero(0) = MERGE(1, 0, ANY(vdensity%array /= 0.0_dp))
       DO axis = 1, 3
          CPASSERT(ASSOCIATED(vgradient(axis)%pw_grid, vdensity%pw_grid))
+         nonzero(axis) = MERGE(1, 0, ANY(vgradient(axis)%array /= 0.0_dp))
+      END DO
+      ! Ranks with empty slabs must make the same collective FFT calls as their peers.
+      IF (vdensity%pw_grid%para%mode /= PW_MODE_LOCAL) CALL vdensity%pw_grid%para%group%max(nonzero)
+      active = ANY(nonzero /= 0)
+      IF (PRESENT(active_gradient)) active_gradient = nonzero(1:3) /= 0
+      IF (nonzero(0) /= 0) THEN
+         CALL pw_transfer(vdensity, potential_g)
+      ELSE
+         potential_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (ALL(nonzero(1:3) == 0)) RETURN
+      CALL derivative_g%create(vdensity%pw_grid)
+      CALL work_r%create(vdensity%pw_grid)
+      DO axis = 1, 3
+         IF (nonzero(axis) == 0) CYCLE
          orders = 0
          orders(axis) = 1
          CALL pw_transfer(vgradient(axis), derivative_g)
