@@ -242,11 +242,16 @@ CONTAINS
                                              grid%sin_pol(ia)*grid%sin_azi(ia), grid%cos_pol(ia)]
                   state%base_weights(nlocal) = grid%weight(ia, ir)*taper
                END IF
-               CALL periodic_atom_image_partition_from_layout(state%points(:, nlocal), state%partition, atom, weight)
-               state%weights(nlocal) = state%base_weights(nlocal)*weight
             END DO
          END DO
       END DO
+      !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(STATIC) IF(nlocal > 0) &
+      !$OMP SHARED(state, nlocal) PRIVATE(row, weight)
+      DO row = 1, nlocal
+         CALL periodic_atom_image_partition_from_layout(state%points(:, row), state%partition, state%atoms(row), weight)
+         state%weights(row) = state%base_weights(row)*weight
+      END DO
+      !$OMP END PARALLEL DO
       IF (ANY(cell%perd == 0)) THEN
          state%background_axes = 1 - cell%perd
          ALLOCATE (state%background_weights(nlocal))
@@ -298,6 +303,9 @@ CONTAINS
       END IF
       ALLOCATE (datom(3, state%natom))
       strain = MATMUL(cell_response, state%inverse_cell)
+      !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(STATIC) IF(nrow > 0) &
+      !$OMP SHARED(state, nrow, cached, store_derivatives, atom_response, strain, points_response, weights_response) &
+      !$OMP PRIVATE(row, atom, datom, dstrain, weight, value)
       DO row = 1, nrow
          atom = state%atoms(row)
          points_response(:, row) = atom_response(:, atom)
@@ -315,6 +323,7 @@ CONTAINS
          value = SUM(datom*(atom_response - SPREAD(points_response(:, row), 2, state%natom))) + SUM(dstrain*strain)
          weights_response(row) = state%base_weights(row)*value
       END DO
+      !$OMP END PARALLEL DO
       IF (PRESENT(background_weights_response)) THEN
          CPASSERT(SIZE(background_weights_response) == SIZE(state%weights))
          background_weights_response(:) = weights_response
