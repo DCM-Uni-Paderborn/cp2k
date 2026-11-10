@@ -37,7 +37,8 @@ MODULE qs_upf_inverse_forces
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_geometry
-   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_metric_response,&
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_center_metric_response,&
+                                              qs_upf_inverse_coulomb_metric_geometry,&
                                               qs_upf_inverse_coulomb_pair_geometry,&
                                               qs_upf_inverse_coulomb_response
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
@@ -76,11 +77,11 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       LOGICAL                                            :: complete_coulomb
       REAL(dp) :: cell_response(3, 3), coulomb_cell_gradient(3, 3), coulomb_source_virial(3, 3), &
-         external_energy, external_response, field_measure, &
+         external_energy, external_response, field_measure, metric_cell_gradient(3, 3), &
          metric_response, response, source_virial(3, 3), strain(3, 3), work_virial(3, 3), &
          xc_response
       REAL(dp), ALLOCATABLE :: atom_response(:, :), coulomb_atom_gradient(:, :), coulomb_source_forces(:, :), positions(:, :), &
-         reduced_k_response(:, :), source_forces(:, :), work_forces(:, :)
+         metric_atom_gradient(:, :), reduced_k_response(:, :), source_forces(:, :), work_forces(:, :)
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -130,6 +131,9 @@ CONTAINS
       END DO
       IF (complete_coulomb) THEN
          CALL stationary_matrices(ks_env, state, total_density, total_weighted, spin_density)
+         ALLOCATE (metric_atom_gradient(3, SIZE(atoms)))
+         CALL qs_upf_inverse_coulomb_metric_geometry(qs_env, state%coulomb, total_weighted, &
+                                                     metric_atom_gradient, metric_cell_gradient)
          ALLOCATE (coulomb_atom_gradient(3, SIZE(atoms)), coulomb_source_forces(3, SIZE(atoms)))
          CALL qs_upf_inverse_coulomb_pair_geometry(qs_env, state, state%coulomb, total_density, &
                                                    coulomb_atom_gradient, coulomb_cell_gradient, &
@@ -162,6 +166,7 @@ CONTAINS
                CALL complete_response(qs_env, ks_env, state, total_density, total_weighted, vgradient, vgradient(1, :), &
                                       atom_response, 0.0_dp*cell%hmat, reduced_k_response, response, metric_response, &
                                       coefficients_response, pair_geometry_response=coulomb_atom_gradient(axis, atom), &
+                                      metric_background_response=metric_atom_gradient(axis, atom), &
                                       source_forces=coulomb_source_forces, source_virial=coulomb_source_virial)
                response = response - SUM(source_forces*atom_response)
             ELSE
@@ -220,6 +225,8 @@ CONTAINS
                                          atom_response, cell_response, reduced_k_response, response, metric_response, &
                                          coefficients_response, pair_geometry_response= &
                                          SUM(coulomb_atom_gradient*atom_response) + SUM(coulomb_cell_gradient*cell_response), &
+                                         metric_background_response= &
+                                         SUM(metric_atom_gradient*atom_response) + SUM(metric_cell_gradient*cell_response), &
                                          source_forces=coulomb_source_forces, source_virial=coulomb_source_virial)
                   ! The folded XC source has fixed fractional rows. Native XC owns its explicit measure.
                   response = response - SUM(source_virial*strain)
@@ -327,12 +334,13 @@ CONTAINS
 !> \param metric_response Signed complete Pulay contribution, already included in response.
 !> \param coefficients_response ...
 !> \param pair_geometry_response Explicit residual-kernel geometry contraction at this accepted density.
+!> \param metric_background_response Smooth charge-metric derivative at the energy-weighted density.
 !> \param source_forces Smooth-source forces prepared at the same accepted density.
 !> \param source_virial Corresponding smooth-source virial.
 ! **************************************************************************************************
    SUBROUTINE complete_response(qs_env, ks_env, state, density, weighted, zeros, zero, atom_response, cell_response, &
                                 reduced_k_response, response, metric_response, coefficients_response, pair_geometry_response, &
-                                source_forces, source_virial)
+                                metric_background_response, source_forces, source_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_ks_env_type), INTENT(INOUT)                :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
@@ -343,16 +351,17 @@ CONTAINS
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response, metric_response
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: coefficients_response(:, :, :)
-      REAL(dp), INTENT(IN)                               :: pair_geometry_response, source_forces(:, :), source_virial(3, 3)
+      REAL(dp), INTENT(IN)                               :: metric_background_response, pair_geometry_response, &
+                                                            source_forces(:, :), source_virial(3, 3)
 
       REAL(dp)                                           :: coulomb_response, radial_metric
 
       CPASSERT(ALL(reduced_k_response == 0.0_dp))
       CALL qs_upf_inverse_scf_response(ks_env, zero, zeros, zero, atom_response, cell_response, reduced_k_response, &
                                        response, radial_metric, coefficients_response)
-      CALL qs_upf_inverse_coulomb_metric_response(qs_env, state, state%coulomb, weighted, atom_response, cell_response, &
-                                                  metric_response, coefficients_response)
-      metric_response = -metric_response
+      CALL qs_upf_inverse_coulomb_center_metric_response(qs_env, state, state%coulomb, weighted, atom_response, cell_response, &
+                                                         metric_response, coefficients_response)
+      metric_response = -metric_response - metric_background_response
       response = response - radial_metric + metric_response
       CALL qs_upf_inverse_coulomb_response(qs_env, state, state%coulomb, density, atom_response, cell_response, &
                                            coulomb_response, coefficients_response=coefficients_response, &

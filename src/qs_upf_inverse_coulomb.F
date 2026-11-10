@@ -104,6 +104,7 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_ionic_geometry
    PUBLIC :: qs_upf_inverse_coulomb_pair_geometry
    PUBLIC :: qs_upf_inverse_coulomb_response, qs_upf_inverse_coulomb_metric_response
+   PUBLIC :: qs_upf_inverse_coulomb_metric_geometry, qs_upf_inverse_coulomb_center_metric_response
    PUBLIC :: qs_upf_inverse_coulomb_operator_response
    PUBLIC :: qs_upf_inverse_coulomb_density
    PUBLIC :: qs_upf_inverse_coulomb_charges
@@ -1696,43 +1697,97 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: response
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
 
-      INTEGER                                            :: a, info
-      REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
-                                                            trace_strain, virial(3, 3)
-      REAL(dp), ALLOCATABLE                              :: forces(:, :)
+      REAL(dp)                                           :: atom_gradient(3, SIZE(atom_response, 2)), &
+                                                            cell_gradient(3, 3)
+
+      CPASSERT(ALL(SHAPE(atom_response) == SHAPE(map%positions)))
+      CALL qs_upf_inverse_coulomb_metric_geometry(qs_env, map, matrix, atom_gradient, cell_gradient)
+      CALL qs_upf_inverse_coulomb_center_metric_response(qs_env, state, map, matrix, atom_response, cell_response, &
+                                                         response, coefficients_response)
+      response = response + SUM(atom_gradient*atom_response) + SUM(cell_gradient*cell_response)
+   END SUBROUTINE qs_upf_inverse_coulomb_metric_response
+
+! **************************************************************************************************
+!> \brief Smooth charge-metric gradients shared by all variations at a fixed AO matrix.
+!> \param qs_env Current native Gaussian source owners.
+!> \param map Complete source layout at the same geometry.
+!> \param matrix Hermitian per-k matrices, without mesh weights.
+!> \param atom_gradient Derivative with respect to Cartesian atom positions, without the Pulay sign.
+!> \param cell_gradient Derivative with respect to lattice vectors at fixed atom positions.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_coulomb_metric_geometry(qs_env, map, matrix, atom_gradient, cell_gradient)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :), cell_gradient(3, 3)
+
+      INTEGER                                            :: axis, info
+      REAL(dp)                                           :: charge, inverse_cell(3, 3), virial(3, 3)
       TYPE(pw_c1d_gs_type)                               :: background_g
       TYPE(pw_r3d_rs_type)                               :: background, unit
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
-      TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers_response(:)
 
       CPASSERT(map%ready)
       CPASSERT(ALL(SHAPE(matrix) == SHAPE(map%metric)))
-      CPASSERT(ALL(SHAPE(atom_response) == SHAPE(map%positions)))
+      CPASSERT(ALL(SHAPE(atom_gradient) == SHAPE(map%positions)))
       CALL get_qs_env(qs_env, ks_env=ks_env)
-      CALL prepare_pair_responses(qs_env, state, map)
       inverse_cell = map%cell
       CALL invmat(inverse_cell, info)
       CPASSERT(info == 0)
-      strain = MATMUL(cell_response, inverse_cell)
-      trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
       CALL background%create(map%grid)
       CALL background_g%create(map%grid)
       CALL unit%create(map%grid)
       unit%array = 1.0_dp
       CALL qs_upf_inverse_background_collocate(map%background, ks_env, matrix, background, background_g)
-      ALLOCATE (forces, MOLD=atom_response)
-      CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, unit, forces, virial)
-      response = -SUM(forces*(atom_response - MATMUL(strain, map%positions))) - SUM(virial*strain) + &
-                 trace_strain*pw_integral_ab(background, unit)
-      CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response, &
-                                   coefficients_response)
-      DO a = 1, SIZE(centers_response)
-         response = response + SQRT(fourpi)*SUM(map%centers(a)%weights*centers_response(a)%density(:, 1))
+      charge = pw_integral_ab(background, unit)
+      CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, unit, atom_gradient, virial)
+      ! The native virial uses affine motion. Convert to lattice derivatives at fixed positions.
+      virial = MATMUL(atom_gradient, TRANSPOSE(map%positions)) - virial
+      DO axis = 1, 3
+         virial(axis, axis) = virial(axis, axis) + charge
       END DO
+      cell_gradient = MATMUL(virial, TRANSPOSE(inverse_cell))
+      atom_gradient = -atom_gradient
       CALL unit%release()
       CALL background%release()
       CALL background_g%release()
-   END SUBROUTINE qs_upf_inverse_coulomb_metric_response
+   END SUBROUTINE qs_upf_inverse_coulomb_metric_geometry
+
+! **************************************************************************************************
+!> \brief Response of the one-center part of the charge metric, without the Pulay sign.
+!> \param qs_env Native owners of the original radial fields.
+!> \param state Defining inverse frames.
+!> \param map Complete source layout at the same geometry.
+!> \param matrix Hermitian per-k matrices, without mesh weights.
+!> \param atom_response Physical atomic motion.
+!> \param cell_response Physical lattice derivative at fixed reduced Bloch coordinates.
+!> \param response Derivative of the integrated one-center electronic density.
+!> \param coefficients_response Optional defining-frame responses for this variation.
+! **************************************************************************************************
+   SUBROUTINE qs_upf_inverse_coulomb_center_metric_response(qs_env, state, map, matrix, atom_response, cell_response, &
+                                                            response, coefficients_response)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
+      TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
+      COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
+      REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
+      REAL(dp), INTENT(OUT)                              :: response
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
+
+      INTEGER                                            :: a
+      TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers_response(:)
+
+      CPASSERT(map%ready)
+      CPASSERT(ALL(SHAPE(matrix) == SHAPE(map%metric)))
+      CPASSERT(ALL(SHAPE(atom_response) == SHAPE(map%positions)))
+      CALL prepare_pair_responses(qs_env, state, map)
+      CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response, &
+                                   coefficients_response)
+      response = 0.0_dp
+      DO a = 1, SIZE(centers_response)
+         response = response + SQRT(fourpi)*SUM(map%centers(a)%weights*centers_response(a)%density(:, 1))
+      END DO
+   END SUBROUTINE qs_upf_inverse_coulomb_center_metric_response
 
 ! **************************************************************************************************
 !> \brief Complete center density derivative at fixed native radial nodes and measures.
