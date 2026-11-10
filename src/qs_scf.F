@@ -63,6 +63,7 @@ MODULE qs_scf
                                               copy_fm_to_dbcsr_bc,&
                                               cp_dbcsr_m_by_n_from_row_template,&
                                               dbcsr_deallocate_matrix_set
+   USE cp_external_control,             ONLY: external_control
    USE cp_files,                        ONLY: close_file
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
@@ -104,7 +105,8 @@ MODULE qs_scf
         outer_scf_hirshfeld_constraint, outer_scf_optimizer_broyden, &
         outer_scf_optimizer_newton_ls, plus_u_lowdin, restart_guess, sic_eo, smear_fermi_dirac, smear_gaussian, &
         smear_mp, smear_mv, tblite_scc_mixer_tblite
-   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+   USE input_section_types,             ONLY: section_vals_get,&
+                                              section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: default_path_length,&
                                               default_string_length,&
@@ -1181,8 +1183,9 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), reached(:), &
                                                             release_side(:), spins(:)
-      LOGICAL :: accepted, balanced, converged, do_kpoints, final_stage, rebase_fixed, rechart, &
-         reference_refreshed, released, retained_symmetry, space_grown, symmetry_seeded, valid
+      LOGICAL :: accepted, balanced, converged, do_hfx, do_kpoints, final_stage, rebase_fixed, &
+         rechart, reference_refreshed, refresh_attempted, refresh_pending, released, &
+         retained_symmetry, space_grown, symmetry_seeded, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy, omitted_charge, previous_residual, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
@@ -1193,7 +1196,7 @@ CONTAINS
       TYPE(qs_skala_scf_crossing_type)                   :: event
       TYPE(qs_skala_scf_type)                            :: state
       TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
-      TYPE(section_vals_type), POINTER                   :: scf_section
+      TYPE(section_vals_type), POINTER                   :: hfx_section, scf_section
 
       PROCEDURE(qs_skala_scf_create), POINTER            :: create_search_state
 
@@ -1298,6 +1301,15 @@ CONTAINS
          handled = symmetry_seeded
          RETURN
       END IF
+      refresh_pending = .FALSE.
+      IF (.NOT. final_stage .AND. scf_control%smear%do_smear .AND. do_kpoints .AND. &
+          SIZE(tolerances) == 0 .AND. .NOT. dft_control%use_gauxc) THEN
+         IF (kpoints%full_grid .AND. .NOT. kpoints%use_real_wfn) THEN
+            hfx_section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF")
+            CALL section_vals_get(hfx_section, explicit=do_hfx)
+            refresh_pending = .NOT. do_hfx
+         END IF
+      END IF
       IF (final_stage .AND. scf_control%smear%do_smear .AND. remaining > 0 .AND. &
           do_kpoints .AND. SIZE(tolerances) == 0) THEN
          ! Reuse the physical metallic-OT subspace refresh before the final coupled check.
@@ -1348,6 +1360,23 @@ CONTAINS
       DO WHILE (remaining > 0 .AND. .NOT. accepted)
          space_grown = .FALSE.
          reference_refreshed = .FALSE.
+         previous_residual = NORM2(physical)
+         ! Try the frozen-Hamiltonian map once near stationarity before optimizing
+         ! the remaining coupled occupation and orbital directions.
+         IF (refresh_pending .AND. remaining > 1 .AND. &
+             previous_residual > scf_control%eps_scf .AND. &
+             previous_residual <= 10.0_dp*SQRT(scf_control%eps_scf)) THEN
+            refresh_pending = .FALSE.
+            CALL external_control(stopped, "SCF", target_time=qs_env%target_time, start_time=qs_env%start_time)
+            IF (stopped) EXIT
+            CALL qs_scf_try_thermal_refresh(qs_env, scf_env, scf_control, kpoints, state, coordinate, &
+                                            energy, gradient, physical, output_unit, refresh_attempted)
+            IF (refresh_attempted) THEN
+               iterations = iterations + 1
+               remaining = remaining - 1
+               previous_residual = NORM2(physical)
+            END IF
+         END IF
          inner_limit = remaining
          ! Rebuild the occupation-weighted chart while its reference is still changing.
          ! Near unconstrained Bloch stationarity, retain the coupled curvature history.
@@ -1356,7 +1385,6 @@ CONTAINS
                 NORM2(physical) > SQRT(scf_control%eps_scf)) inner_limit = 1
          END IF
          rebase_fixed = final_stage .AND. .NOT. scf_control%smear%do_smear .AND. SIZE(tolerances) == 0
-         previous_residual = NORM2(physical)
          IF (rebase_fixed) inner_limit = 1
          CALL qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, tolerances, &
                                         scf_control%eps_scf, energy, converged, max_iterations=inner_limit, &
@@ -1519,6 +1547,90 @@ CONTAINS
       END IF
       scf_env%iter_method = "OT/INVERSE"
    END SUBROUTINE qs_scf_inverse_ot
+
+! **************************************************************************************************
+!> \brief Try one full-space Fermi update with a fixed Hamiltonian.
+!>        Commit it only if the rebuilt free energy and physical residual both improve.
+!> \param qs_env ...
+!> \param scf_env ...
+!> \param scf_control ...
+!> \param kpoints ...
+!> \param state Thermal orbital chart rebased at the chosen endpoint.
+!> \param coordinate Zero coordinates at the current reference.
+!> \param energy ...
+!> \param gradient ...
+!> \param physical ...
+!> \param output_unit ...
+!> \param attempted Whether the full-space trial used an SCF step.
+! **************************************************************************************************
+   SUBROUTINE qs_scf_try_thermal_refresh(qs_env, scf_env, scf_control, kpoints, state, coordinate, &
+                                         energy, gradient, physical, output_unit, attempted)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(scf_control_type), POINTER                    :: scf_control
+      TYPE(kpoint_type), POINTER                         :: kpoints
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(INOUT)                            :: energy, gradient(:), physical(:)
+      INTEGER, INTENT(IN)                                :: output_unit
+      LOGICAL, INTENT(OUT)                               :: attempted
+
+      INTEGER                                            :: incomplete, local, nspin, spin
+      LOGICAL                                            :: accepted, diis_step, valid
+      REAL(dp)                                           :: old_energy, old_residual
+      TYPE(dbcsr_p_type), POINTER                        :: matrix_ks(:, :), matrix_metric(:, :)
+      TYPE(mo_set_type), ALLOCATABLE                     :: saved(:, :)
+      TYPE(mo_set_type), POINTER                         :: mos(:)
+
+      attempted = .FALSE.
+      incomplete = 0
+      nspin = SIZE(kpoints%kp_env(1)%kpoint_env%mos)
+      DO local = 1, SIZE(kpoints%kp_env)
+         mos => kpoints%kp_env(local)%kpoint_env%mos
+         IF (ANY(mos%nmo /= mos%nao)) incomplete = 1
+      END DO
+      CALL kpoints%para_env%max(incomplete)
+      IF (incomplete /= 0) RETURN
+      attempted = .TRUE.
+
+      CPASSERT(ALL(coordinate == 0.0_dp))
+      old_energy = energy
+      old_residual = NORM2(physical)
+      ALLOCATE (saved(SIZE(kpoints%kp_env), nspin))
+      DO local = 1, SIZE(kpoints%kp_env)
+         mos => kpoints%kp_env(local)%kpoint_env%mos
+         DO spin = 1, nspin
+            CALL duplicate_mo_set(saved(local, spin), mos(spin))
+         END DO
+      END DO
+      CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, matrix_metric_kp=matrix_metric)
+      diis_step = .FALSE.
+      CALL do_general_diag_kp(matrix_ks, matrix_metric, kpoints, scf_env, scf_control, .FALSE., diis_step)
+      CALL qs_kpoint_state_commit(qs_env, update_occupations=.TRUE.)
+      CALL qs_skala_scf_create(state, qs_env, valid, thermal=.TRUE.)
+      accepted = .FALSE.
+      IF (valid) valid = qs_skala_scf_size(state) == SIZE(coordinate)
+      IF (valid) THEN
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+         accepted = energy <= old_energy .AND. NORM2(physical) < old_residual
+      END IF
+
+      DO local = 1, SIZE(kpoints%kp_env)
+         mos => kpoints%kp_env(local)%kpoint_env%mos
+         DO spin = 1, nspin
+            IF (.NOT. accepted) CALL reassign_allocated_mos(mos(spin), saved(local, spin))
+            CALL deallocate_mo_set(saved(local, spin))
+         END DO
+      END DO
+      IF (.NOT. accepted) THEN
+         CALL qs_kpoint_state_commit(qs_env, update_occupations=.FALSE.)
+         CALL qs_skala_scf_create(state, qs_env, valid, thermal=.TRUE.)
+         CPASSERT(valid)
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
+      END IF
+      IF (output_unit > 0) WRITE (output_unit, '(T2,A,L2,2ES24.14)') &
+         "K-point OT | Fermi update accepted ", accepted, old_residual, NORM2(physical)
+   END SUBROUTINE qs_scf_try_thermal_refresh
 
 ! **************************************************************************************************
 !> \brief grow an automatic k-point smearing virtual space and rebuild dimensioned state
