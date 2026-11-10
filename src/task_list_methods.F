@@ -81,7 +81,7 @@ MODULE task_list_methods
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'task_list_methods'
 
-   PUBLIC :: generate_qs_task_list, &
+   PUBLIC :: generate_qs_task_list, select_task_radius_resolution, &
              task_list_inner_loop
    PUBLIC :: distribute_tasks, &
              rs_distribute_matrix, &
@@ -91,6 +91,27 @@ MODULE task_list_methods
              rs_copy_to_matrices
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Select a radius-search tolerance for native UPF geometry derivatives.
+!> \param kinds Atomic kinds participating in the common grid map.
+!> \param resolution Unallocated when the ordinary radius search should use its default.
+! **************************************************************************************************
+   SUBROUTINE select_task_radius_resolution(kinds, resolution)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: resolution
+
+      INTEGER                                            :: kind
+
+      DO kind = 1, SIZE(kinds)
+         IF (kinds(kind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
+         ! Avoid coarse radius-search jumps under small atomic and cell displacements.
+         ALLOCATE (resolution, SOURCE=1.e-12_dp)
+         RETURN
+      END DO
+   END SUBROUTINE select_task_radius_resolution
 
 ! **************************************************************************************************
 !> \brief ...
@@ -145,6 +166,7 @@ CONTAINS
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
       LOGICAL                                            :: dokp
       REAL(KIND=dp)                                      :: kind_radius_a, kind_radius_b
+      REAL(dp), ALLOCATABLE                              :: radius_resolution
       REAL(KIND=dp), DIMENSION(3)                        :: ra, rab
       REAL(KIND=dp), DIMENSION(:), POINTER               :: set_radius_a, set_radius_b
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rpgfa, rpgfb, zeta, zetb
@@ -174,6 +196,7 @@ CONTAINS
                       cell=cell, &
                       particle_set=particle_set, &
                       dft_control=dft_control)
+      CALL select_task_radius_resolution(qs_kind_set, radius_resolution)
 
       CALL get_ks_env(ks_env, sab_orb=sab_orb)
       ! A symmetric half list does not enumerate a rectangular product space.
@@ -310,7 +333,8 @@ CONTAINS
                                    rs_descs, dft_control, cube_info, gridlevel_info, cindex, &
                                    iatom, jatom, rpgfa, rpgfb, zeta, zetb, kind_radius_b, &
                                    set_radius_a, set_radius_b, ra, rab, &
-                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb, eps_rho_rspace)
+                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb, &
+                                   eps_rho_rspace, radius_resolution)
 
       END DO
 !!$OMP END PARALLEL
@@ -718,13 +742,15 @@ CONTAINS
 !> \param nseta ...
 !> \param nsetb ...
 !> \param eps_rho_rspace Optional primitive-product tail tolerance, otherwise the QS value.
+!> \param radius_resolution Optional absolute tolerance for solving the product radius.
 !> \par History
 !>      Joost VandeVondele: 10.2008 refactored
 ! **************************************************************************************************
    SUBROUTINE task_list_inner_loop(tasks, ntasks, curr_tasks, rs_descs, dft_control, &
                                    cube_info, gridlevel_info, cindex, &
                                    iatom, jatom, rpgfa, rpgfb, zeta, zetb, kind_radius_b, set_radius_a, set_radius_b, ra, rab, &
-                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb, eps_rho_rspace)
+                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb, &
+                                   eps_rho_rspace, radius_resolution)
 
       TYPE(task_type), DIMENSION(:), POINTER             :: tasks
       INTEGER                                            :: ntasks, curr_tasks
@@ -742,6 +768,7 @@ CONTAINS
                                                             npgfb
       INTEGER                                            :: nseta, nsetb
       REAL(dp), INTENT(IN), OPTIONAL                     :: eps_rho_rspace
+      REAL(dp), INTENT(IN), OPTIONAL                     :: radius_resolution
 
       INTEGER                                            :: cube_center(3), igrid_level, ipgf, iset, &
                                                             jpgf, jset, lb_cube(3), ub_cube(3)
@@ -776,7 +803,7 @@ CONTAINS
                                               rs_descs(igrid_level)%rs_desc, cube_info(igrid_level), &
                                               la_max(iset), zeta(ipgf, iset), la_min(iset), &
                                               lb_max(jset), zetb(jpgf, jset), lb_min(jset), &
-                                              ra, rab, rab2, tail_tolerance)
+                                              ra, rab, rab2, tail_tolerance, radius_resolution)
 
                   CALL pgf_to_tasks(tasks, ntasks, curr_tasks, &
                                     rab, cindex, iatom, jatom, iset, jset, ipgf, jpgf, &
@@ -815,6 +842,7 @@ CONTAINS
 !> \param rab ...
 !> \param rab2 ...
 !> \param eps ...
+!> \param radius_resolution Optional absolute tolerance for solving the product radius.
 !> \par History
 !>      10.2008 refactored [Joost VandeVondele]
 !> \note
@@ -829,7 +857,8 @@ CONTAINS
 !>         a*(l+b)(r+c)**3+d which is based on the innerloop of the collocating routines
 ! **************************************************************************************************
    SUBROUTINE compute_pgf_properties(cube_center, lb_cube, ub_cube, radius, &
-                                     rs_desc, cube_info, la_max, zeta, la_min, lb_max, zetb, lb_min, ra, rab, rab2, eps)
+                                     rs_desc, cube_info, la_max, zeta, la_min, lb_max, zetb, lb_min, &
+                                     ra, rab, rab2, eps, radius_resolution)
 
       INTEGER, DIMENSION(3), INTENT(OUT)                 :: cube_center, lb_cube, ub_cube
       REAL(KIND=dp), INTENT(OUT)                         :: radius
@@ -841,6 +870,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: zetb
       INTEGER, INTENT(IN)                                :: lb_min
       REAL(KIND=dp), INTENT(IN)                          :: ra(3), rab(3), rab2, eps
+      REAL(dp), INTENT(IN), OPTIONAL                     :: radius_resolution
 
       INTEGER                                            :: extent(3)
       INTEGER, DIMENSION(:), POINTER                     :: sphere_bounds
@@ -855,10 +885,8 @@ CONTAINS
       cutoff = 1.0_dp
       f = zetb/zetp
       prefactor = EXP(-zeta*f*rab2)
-      ! Resolve the same density-tail threshold without coarse radius-search jumps
-      ! under small atomic or cell displacements.
       radius = exp_radius_very_extended(la_min, la_max, lb_min, lb_max, ra=ra, rb=rb, rp=rp, &
-                                        zetp=zetp, eps=eps, prefactor=prefactor, cutoff=cutoff, epsabs=1.e-12_dp)
+                                        zetp=zetp, eps=eps, prefactor=prefactor, cutoff=cutoff, epsabs=radius_resolution)
 
       CALL compute_cube_center(cube_center, rs_desc, zeta, zetb, ra, rab)
       ! compute cube_center, the center of the gaussian product to map (folded to within the unit cell)

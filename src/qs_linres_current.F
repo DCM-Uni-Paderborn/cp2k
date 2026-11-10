@@ -126,6 +126,7 @@ MODULE qs_linres_current
    USE rs_pw_interface,                 ONLY: density_rs2pw
    USE task_list_methods,               ONLY: distribute_tasks,&
                                               rs_distribute_matrix,&
+                                              select_task_radius_resolution,&
                                               task_list_inner_loop
    USE task_list_types,                 ONLY: atom_pair_type,&
                                               reallocate_tasks,&
@@ -604,6 +605,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: eps_rho_rspace, f, kind_radius_a, &
                                                             kind_radius_b, Lxo2, Lyo2, Lzo2, &
                                                             prefactor, radius, scale, scale2, zetp
+      REAL(dp), ALLOCATABLE                              :: radius_resolution
       REAL(KIND=dp), DIMENSION(3)                        :: ra, rab, rb, rp
       REAL(KIND=dp), DIMENSION(:), POINTER               :: set_radius_a, set_radius_b
       REAL(KIND=dp), DIMENSION(:, :), POINTER :: jp_block_a, jp_block_b, jp_block_c, jp_block_d, &
@@ -741,6 +743,7 @@ CONTAINS
       nimages = dft_control%nimages
       CPASSERT(nimages == 1)
       cindex = 1
+      CALL select_task_radius_resolution(qs_kind_set, radius_resolution)
 
       DO ikind = 1, nkind
          qs_kind => qs_kind_set(ikind)
@@ -850,7 +853,8 @@ CONTAINS
                                    dft_control, cube_info, gridlevel_info, cindex, &
                                    iatom, jatom, rpgfa, rpgfb, zeta, zetb, kind_radius_b, &
                                    set_radius_a, set_radius_b, ra, rab, &
-                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb)
+                                   la_max, la_min, lb_max, lb_min, npgfa, npgfb, nseta, nsetb, &
+                                   radius_resolution=radius_resolution)
 
       END DO
       CALL neighbor_list_iterator_release(nl_iterator)
