@@ -95,6 +95,7 @@ MODULE qs_upf_inverse_hfx
       COMPLEX(dp), ALLOCATABLE :: cl(:, :, :), cr(:, :, :), delta(:, :, :), fcl(:, :, :), fcr(:, :, :)
       ! Pure Gaussian fields have a different meaning from the complete soft fields above.
       COMPLEX(dp), ALLOCATABLE :: gaussian_left(:, :, :), gaussian_right(:, :, :)
+      COMPLEX(dp), ALLOCATABLE :: gradient_left(:, :, :, :), gradient_right(:, :, :, :)
       INTEGER, ALLOCATABLE :: support_left(:), support_right(:)
       INTEGER, POINTER :: field_budget => NULL()
    END TYPE lattice_overlap_type
@@ -1533,21 +1534,20 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT), OPTIONAL :: coupled_coefficients_covector(:, :, :)
       TYPE(lattice_potential_cache_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: shared_potentials
-      LOGICAL, INTENT(IN), OPTIONAL                      :: ao_mask(:, :)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: owner_local
+      LOGICAL, INTENT(IN), OPTIONAL                      :: ao_mask(:, :), owner_local
 
       COMPLEX(dp), ALLOCATABLE :: correction(:, :, :), dc(:, :, :), factor_covector(:, :, :), &
          g(:, :, :), gl(:, :), gl_lattice(:, :, :), gr(:, :), gr_lattice(:, :, :), local(:, :, :), &
          zero_coupled(:, :, :), zero_left(:, :), zero_right(:, :)
-      INTEGER                                            :: block_i, block_j, block_k, center, &
-                                                            finish, first, image, iset, kind, &
-                                                            last, maxl, nblks(3), nl, nr, owner, &
-                                                            rule, site, slot, start
+      INTEGER :: batch_first, batch_last, batch_size, block_i, block_j, block_k, center, &
+         center_first, center_last, finish, first, image, image_first, image_last, inner, iset, &
+         kind, last, maxl, nblks(3), nentries, nimages, ninner, nl, nouter, nr, outer, owner, &
+         rule, site, slot, start
       INTEGER, ALLOCATABLE                               :: auxiliary_start(:), sizes_i(:), &
                                                             sizes_j(:), sizes_k(:), start_i(:), &
                                                             start_j(:), start_k(:)
-      INTEGER, TARGET                                    :: potential_budget
-      LOGICAL                                            :: coefficients, derivatives, &
+      INTEGER, TARGET                                    :: field_budget, potential_budget
+      LOGICAL                                            :: coefficients, derivatives, field_cache, &
                                                             found_imaginary, found_real, &
                                                             full_geometry, physical
       REAL(dp)                                           :: local_auxiliary(3), local_cell(3, 3)
@@ -1555,6 +1555,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE, TARGET                      :: imaginary_block(:, :, :), &
                                                             real_block(:, :, :)
       TYPE(gaussian_coulomb_fields_type)                 :: fields
+      TYPE(lattice_overlap_type), ALLOCATABLE, TARGET    :: overlaps(:, :)
+      TYPE(lattice_overlap_type), POINTER                :: field_entry
       TYPE(lattice_potential_cache_type), POINTER        :: lattice_potentials
       TYPE(lattice_potential_cache_type), TARGET         :: local_potentials
       TYPE(transition_augmentation_type), ALLOCATABLE, &
@@ -1672,197 +1674,240 @@ CONTAINS
       END IF
       CALL init_lebedev_grids()
       CALL gaussian_coulomb_fields_init(maxl)
-      DO block_i = 1, nblks(1)
-         IF (.NOT. physical) THEN
-            ALLOCATE (qcache(SIZE(left_frame%center_atoms), SIZE(center_images, 2), sizes_i(block_i)))
-            potential_budget = max_cached_potential_words
+      ! Geometry fields depend on the AO pair and reconstruction image, not the RI shell.
+      ! Bound their lifetime and payload while retaining the original uncached evaluation.
+      field_cache = physical .AND. full_geometry .AND. .NOT. left_frame%direct
+      nimages = SIZE(center_images, 2)
+      nentries = SIZE(left_frame%center_atoms)*nimages
+      nouter = nblks(1)
+      ninner = nblks(2)*nblks(3)
+      IF (field_cache) THEN
+         nouter = nblks(2)*nblks(3)
+         ninner = nblks(1)
+      END IF
+      DO outer = 1, nouter
+         IF (field_cache) THEN
+            block_j = (outer - 1)/nblks(3) + 1
+            block_k = MOD(outer - 1, nblks(3)) + 1
+            batch_size = lattice_field_batch_size(left_frame, kinds, augmentation, paw_augmentation, &
+                                                  sizes_j(block_j), sizes_k(block_k), maxl, nimages, .TRUE.)
+         ELSE
+            block_i = outer
+            batch_size = MAX(1, nentries)
+            IF (.NOT. physical) THEN
+               ALLOCATE (qcache(SIZE(left_frame%center_atoms), nimages, sizes_i(block_i)))
+               potential_budget = max_cached_potential_words
+            END IF
          END IF
-         DO block_j = 1, nblks(2)
-         DO block_k = 1, nblks(3)
-            CALL dbt_get_stored_coordinates(covector_real, [block_i, block_j, block_k], owner)
-            IF (owner /= covector_real%pgrid%mp_comm_2d%mepos) CYCLE
-            CALL dbt_get_block(covector_real, [block_i, block_j, block_k], real_block, found_real)
-            found_imaginary = .FALSE.
-            IF (PRESENT(covector_imaginary)) THEN
-               CALL dbt_get_block(covector_imaginary, [block_i, block_j, block_k], imaginary_block, found_imaginary)
+         DO batch_first = 1, nentries, batch_size
+            batch_last = batch_first + MIN(batch_size, nentries - batch_first + 1) - 1
+            center_first = (batch_first - 1)/nimages + 1
+            center_last = (batch_last - 1)/nimages + 1
+            IF (field_cache) THEN
+               ALLOCATE (overlaps(SIZE(left_frame%center_atoms), nimages))
+               field_budget = max_cached_lattice_field_words
             END IF
-            IF (.NOT. (found_real .OR. found_imaginary)) CYCLE
-            nl = sizes_j(block_j)
-            nr = sizes_k(block_k)
-            ALLOCATE (g(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-            IF (found_real) g(:, :, :) = CMPLX(real_block, 0.0_dp, dp)
-            IF (found_imaginary) g(:, :, :) = g + CMPLX(0.0_dp, imaginary_block, dp)
-            IF (PRESENT(ao_mask)) THEN
-               WHERE (.NOT. SPREAD(SPREAD(ao_mask(start_j(block_j):start_j(block_j + 1) - 1, 1), 2, nr) .AND. &
-                                   SPREAD(ao_mask(start_k(block_k):start_k(block_k + 1) - 1, 2), 1, nl), 1, sizes_i(block_i)))
-                  g = CMPLX(0.0_dp, 0.0_dp, dp)
-               END WHERE
-               IF (ALL(g == CMPLX(0.0_dp, 0.0_dp, dp))) THEN
-                  DEALLOCATE (g)
-                  CYCLE
+            DO inner = 1, ninner
+               IF (field_cache) THEN
+                  block_i = inner
+               ELSE
+                  block_j = (inner - 1)/nblks(3) + 1
+                  block_k = MOD(inner - 1, nblks(3)) + 1
                END IF
-            END IF
-            IF (physical .AND. .NOT. left_frame%atom_local .AND. (coefficients .OR. full_geometry)) THEN
-               ALLOCATE (gl_lattice(SIZE(coupled_coefficients, 1), nl, SIZE(coefficient_images, 2)), &
-                         gr_lattice(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))
-            ELSE IF (.NOT. physical .AND. (coefficients .OR. full_geometry)) THEN
-               ALLOCATE (gl(SIZE(left_frame%coefficients, 1), nl), gr(SIZE(right_frame%coefficients, 1), nr))
-            END IF
-            DO site = 1, SIZE(auxiliary_bases)
-               IF (auxiliary_start(site + 1) <= start_i(block_i) .OR. &
-                   auxiliary_start(site) >= start_i(block_i + 1)) CYCLE
-               first = auxiliary_start(site)
-               DO iset = 1, auxiliary_bases(site)%gto_basis_set%nset
-                  last = first + auxiliary_bases(site)%gto_basis_set%nsgf_set(iset) - 1
-                  start = MAX(first, start_i(block_i))
-                  finish = MIN(last, start_i(block_i + 1) - 1)
-                  IF (start <= finish) THEN
-                     ! An absent RI covector slice contributes no value or geometry derivative.
-                     IF (ALL(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :) == &
-                             CMPLX(0.0_dp, 0.0_dp, dp))) THEN
-                        first = last + 1
-                        CYCLE
-                     END IF
-                     CALL prepare_auxiliary_fields(auxiliary_bases(site)%gto_basis_set, iset, fields, metric)
-                     ALLOCATE (local(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-                     local(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors(site))* &
+               CALL dbt_get_stored_coordinates(covector_real, [block_i, block_j, block_k], owner)
+               IF (owner /= covector_real%pgrid%mp_comm_2d%mepos) CYCLE
+               CALL dbt_get_block(covector_real, [block_i, block_j, block_k], real_block, found_real)
+               found_imaginary = .FALSE.
+               IF (PRESENT(covector_imaginary)) THEN
+                  CALL dbt_get_block(covector_imaginary, [block_i, block_j, block_k], imaginary_block, found_imaginary)
+               END IF
+               IF (.NOT. (found_real .OR. found_imaginary)) CYCLE
+               nl = sizes_j(block_j)
+               nr = sizes_k(block_k)
+               ALLOCATE (g(sizes_i(block_i), nl, nr), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+               IF (found_real) g(:, :, :) = CMPLX(real_block, 0.0_dp, dp)
+               IF (found_imaginary) g(:, :, :) = g + CMPLX(0.0_dp, imaginary_block, dp)
+               IF (PRESENT(ao_mask)) THEN
+                  WHERE (.NOT. SPREAD(SPREAD(ao_mask(start_j(block_j):start_j(block_j + 1) - 1, 1), 2, nr) .AND. &
+                                      SPREAD(ao_mask(start_k(block_k):start_k(block_k + 1) - 1, 2), 1, nl), 1, sizes_i(block_i)))
+                     g = CMPLX(0.0_dp, 0.0_dp, dp)
+                  END WHERE
+                  IF (ALL(g == CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+                     DEALLOCATE (g)
+                     CYCLE
+                  END IF
+               END IF
+               IF (physical .AND. .NOT. left_frame%atom_local .AND. (coefficients .OR. full_geometry)) THEN
+                  ALLOCATE (gl_lattice(SIZE(coupled_coefficients, 1), nl, SIZE(coefficient_images, 2)), &
+                            gr_lattice(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))
+               ELSE IF (.NOT. physical .AND. (coefficients .OR. full_geometry)) THEN
+                  ALLOCATE (gl(SIZE(left_frame%coefficients, 1), nl), gr(SIZE(right_frame%coefficients, 1), nr))
+               END IF
+               DO site = 1, SIZE(auxiliary_bases)
+                  IF (auxiliary_start(site + 1) <= start_i(block_i) .OR. &
+                      auxiliary_start(site) >= start_i(block_i + 1)) CYCLE
+                  first = auxiliary_start(site)
+                  DO iset = 1, auxiliary_bases(site)%gto_basis_set%nset
+                     last = first + auxiliary_bases(site)%gto_basis_set%nsgf_set(iset) - 1
+                     start = MAX(first, start_i(block_i))
+                     finish = MIN(last, start_i(block_i + 1) - 1)
+                     IF (start <= finish) THEN
+                        ! An absent RI covector slice contributes no value or geometry derivative.
+                        IF (ALL(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :) == &
+                                CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+                           first = last + 1
+                           CYCLE
+                        END IF
+                        CALL prepare_auxiliary_fields(auxiliary_bases(site)%gto_basis_set, iset, fields, metric)
+                        ALLOCATE (local(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+                        local(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors(site))* &
                                                       RESHAPE(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :), &
-                                                                                 [nl, nr, finish - start + 1], ORDER=[3, 1, 2])
-                     IF (derivatives) THEN
-                        ALLOCATE (factor_covector(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
-                        ALLOCATE (correction(nl, nr, fields%nfunction), dc(nl, nr, fields%nfunction))
-                        factor_covector(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors_response(site))* &
+                                                                                    [nl, nr, finish - start + 1], ORDER=[3, 1, 2])
+                        IF (derivatives) THEN
+                           ALLOCATE (factor_covector(nl, nr, fields%nfunction), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+                           ALLOCATE (correction(nl, nr, fields%nfunction), dc(nl, nr, fields%nfunction))
+                           factor_covector(:, :, start - first + 1:finish - first + 1) = CONJG(auxiliary_factors_response(site))* &
                                                       RESHAPE(g(start - start_i(block_i) + 1:finish - start_i(block_i) + 1, :, :), &
                                                                                       [nl, nr, finish - start + 1], ORDER=[3, 1, 2])
-                     END IF
-                     DO center = 1, SIZE(left_frame%center_atoms)
-                        kind = left_frame%center_kinds(center)
-                        CPASSERT(ASSOCIATED(kinds(kind)%sgp_potential))
-                        CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
-                        transition_augmentation => augmentation(kind)
-                        IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
-                        IF (transition_augmentation%nproj == 0 .AND. &
-                            left_frame%delta_cache(kind)%radius == 0.0_dp .AND. &
-                            right_frame%delta_cache(kind)%radius == 0.0_dp) CYCLE
-                        ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
-                           ALLOCATE (radial_weights(SIZE(pot%r)))
-                           radial_weights(:) = upf_radial_weights(pot)*pot%r**2
-                           rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
-                                      get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
-                           DO image = 1, SIZE(center_images, 2)
-                              NULLIFY (qentry)
-                              IF (physical) THEN
-                                 CALL lattice_potential_entry(lattice_potentials, [center, center_images(:, image), site, iset], &
-                                                              transition_augmentation%nproj, fields%nfunction, &
-                                                              full_geometry, qentry)
-                              ELSE
-                                 slot = start - start_i(block_i) + 1
-                                 qcache(center, image, slot)%potential_budget => potential_budget
-                              END IF
-                              IF (physical .AND. (coefficients .OR. full_geometry)) THEN
-                                 IF (full_geometry) THEN
-                                    CALL lattice_center_adjoint_validated(left_frame, center, &
-                                                                          [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                          [start_k(block_k), start_k(block_k + 1) - 1], &
-                                                                          ao_image, center_images(:, image), fields, &
-                                                                          auxiliary_positions(:, site), &
-                                                                          transition_augmentation, pot%r, radial_weights, &
-                                                                          lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
-                                                                          coefficient_images, coupled_coefficients, &
-                                                                          local, gl_lattice, gr_lattice, local_atoms, &
-                                                                          local_cell, local_auxiliary, qentry, &
-                                                                          lattice_potentials)
+                        END IF
+                        DO center = center_first, center_last
+                           kind = left_frame%center_kinds(center)
+                           CPASSERT(ASSOCIATED(kinds(kind)%sgp_potential))
+                           CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
+                           transition_augmentation => augmentation(kind)
+                           IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
+                           IF (transition_augmentation%nproj == 0 .AND. &
+                               left_frame%delta_cache(kind)%radius == 0.0_dp .AND. &
+                               right_frame%delta_cache(kind)%radius == 0.0_dp) CYCLE
+                           ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
+                              ALLOCATE (radial_weights(SIZE(pot%r)))
+                              radial_weights(:) = upf_radial_weights(pot)*pot%r**2
+                              rule = MAX(get_number_of_lebedev_grid(n=kinds(kind)%ngrid_ang), &
+                                         get_number_of_lebedev_grid(l=MAX(0, transition_augmentation%lmax) + maxl + 1))
+                              image_first = 1
+                              image_last = nimages
+                              IF (center == center_first) image_first = MOD(batch_first - 1, nimages) + 1
+                              IF (center == center_last) image_last = MOD(batch_last - 1, nimages) + 1
+                              DO image = image_first, image_last
+                                 NULLIFY (field_entry)
+                                 IF (ALLOCATED(overlaps)) THEN
+                                    field_entry => overlaps(center, image)
+                                    field_entry%field_budget => field_budget
+                                 END IF
+                                 NULLIFY (qentry)
+                                 IF (physical) THEN
+                                   CALL lattice_potential_entry(lattice_potentials, [center, center_images(:, image), site, iset], &
+                                                                 transition_augmentation%nproj, fields%nfunction, &
+                                                                 full_geometry, qentry)
+                                 ELSE
+                                    slot = start - start_i(block_i) + 1
+                                    qcache(center, image, slot)%potential_budget => potential_budget
+                                 END IF
+                                 IF (physical .AND. (coefficients .OR. full_geometry)) THEN
+                                    IF (full_geometry) THEN
+                                       CALL lattice_center_adjoint_validated(left_frame, center, &
+                                                                             [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                             [start_k(block_k), start_k(block_k + 1) - 1], &
+                                                                             ao_image, center_images(:, image), fields, &
+                                                                             auxiliary_positions(:, site), &
+                                                                             transition_augmentation, pot%r, radial_weights, &
+                                                                             lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
+                                                                             coefficient_images, coupled_coefficients, &
+                                                                             local, gl_lattice, gr_lattice, local_atoms, &
+                                                                             local_cell, local_auxiliary, qentry, &
+                                                                             lattice_potentials, cached_fields=field_entry)
+                                       atom_geometry(:, :) = atom_geometry + local_atoms
+                                       cell_geometry(:, :) = cell_geometry + local_cell
+                                       auxiliary_geometry(:, site) = auxiliary_geometry(:, site) + local_auxiliary
+                                    ELSE
+                                       CALL lattice_center_adjoint_validated(left_frame, center, &
+                                                                             [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                             [start_k(block_k), start_k(block_k + 1) - 1], &
+                                                                             ao_image, center_images(:, image), fields, &
+                                                                             auxiliary_positions(:, site), &
+                                                                             transition_augmentation, pot%r, radial_weights, &
+                                                                             lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
+                                                                             coefficient_images, coupled_coefficients, &
+                                                                             local, gl_lattice, gr_lattice, &
+                                                                             augmentation_integrals=qentry)
+                                    END IF
+                                 ELSE IF (full_geometry) THEN
+                                    CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
+                                                                           [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                           [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                                                                     auxiliary_positions(:, site), transition_augmentation, pot%r, &
+                                                                           radial_weights, lebedev_grid(rule)%r, &
+                                                                           fourpi*lebedev_grid(rule)%w, local, gl, gr, &
+                                                                           center_images(:, image), auxiliary_images, &
+                                                              qcache(center, image, slot), local_atoms, local_cell, local_auxiliary)
                                     atom_geometry(:, :) = atom_geometry + local_atoms
                                     cell_geometry(:, :) = cell_geometry + local_cell
                                     auxiliary_geometry(:, site) = auxiliary_geometry(:, site) + local_auxiliary
-                                 ELSE
-                                    CALL lattice_center_adjoint_validated(left_frame, center, &
-                                                                          [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                          [start_k(block_k), start_k(block_k + 1) - 1], &
-                                                                          ao_image, center_images(:, image), fields, &
-                                                                          auxiliary_positions(:, site), &
-                                                                          transition_augmentation, pot%r, radial_weights, &
-                                                                          lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
-                                                                          coefficient_images, coupled_coefficients, &
-                                                                          local, gl_lattice, gr_lattice, &
-                                                                          augmentation_integrals=qentry)
-                                 END IF
-                              ELSE IF (full_geometry) THEN
-                                 CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
-                                                                        [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                        [start_k(block_k), start_k(block_k + 1) - 1], fields, &
-                                                                     auxiliary_positions(:, site), transition_augmentation, pot%r, &
-                                                                        radial_weights, lebedev_grid(rule)%r, &
-                                                                        fourpi*lebedev_grid(rule)%w, local, gl, gr, &
-                                                                        center_images(:, image), auxiliary_images, &
-                                                              qcache(center, image, slot), local_atoms, local_cell, local_auxiliary)
-                                 atom_geometry(:, :) = atom_geometry + local_atoms
-                                 cell_geometry(:, :) = cell_geometry + local_cell
-                                 auxiliary_geometry(:, site) = auxiliary_geometry(:, site) + local_auxiliary
-                              ELSE IF (coefficients) THEN
-                                 CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
-                                                                        [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                        [start_k(block_k), start_k(block_k + 1) - 1], fields, &
-                                                                     auxiliary_positions(:, site), transition_augmentation, pot%r, &
-                                                                        radial_weights, lebedev_grid(rule)%r, &
-                                                                        fourpi*lebedev_grid(rule)%w, local, gl, gr, &
-                                                                        center_images(:, image), auxiliary_images, &
-                                                                        qcache(center, image, slot))
-                              END IF
-                              IF (derivatives) THEN
-                                 IF (physical) THEN
-                                    CALL qs_upf_inverse_hfx_lattice_center(left_frame, center, &
+                                 ELSE IF (coefficients) THEN
+                                    CALL qs_upf_inverse_hfx_center_adjoint(left_frame, right_frame, center, &
                                                                            [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                           [start_k(block_k), start_k(block_k + 1) - 1], &
-                                                                           ao_image, center_images(:, image), fields, &
-                                                                           auxiliary_positions(:, site), transition_augmentation, &
-                                                                           pot%r, radial_weights, lebedev_grid(rule)%r, &
-                                                                           fourpi*lebedev_grid(rule)%w, correction, dc, &
-                                                                           atom_response, cell_response, &
-                                                                           auxiliary_positions_response(:, site), &
-                                                                           coefficient_images, coupled_coefficients, zero_coupled)
-                                 ELSE
-                                    CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
-                                                                   [start_j(block_j), start_j(block_j + 1) - 1], &
-                                                                   [start_k(block_k), start_k(block_k + 1) - 1], fields, &
-                                                                   auxiliary_positions(:, site), transition_augmentation, pot%r, &
-                                                                radial_weights, lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
-                                                                   correction, dc, atom_response, cell_response, left_k_response, &
-                                                                   right_k_response, zero_left, zero_right, &
-                                                                   auxiliary_positions_response(:, site), center_images(:, image), &
-                                                                   auxiliary_images, qcache(center, image, slot))
+                                                                           [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                                                                     auxiliary_positions(:, site), transition_augmentation, pot%r, &
+                                                                           radial_weights, lebedev_grid(rule)%r, &
+                                                                           fourpi*lebedev_grid(rule)%w, local, gl, gr, &
+                                                                           center_images(:, image), auxiliary_images, &
+                                                                           qcache(center, image, slot))
                                  END IF
-                                 geometry_response = geometry_response + REAL(SUM(CONJG(local)*dc) + &
-                                                                              SUM(CONJG(factor_covector)*correction), dp)
-                              END IF
-                              IF (PRESENT(left_coefficients_covector)) THEN
-                                 left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) = &
-                                    left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) + gl
-                              END IF
-                              IF (PRESENT(right_coefficients_covector)) THEN
-                                 right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) = &
-                                    right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) + gr
-                              END IF
-                              IF (PRESENT(coupled_coefficients_covector)) THEN
-                                 coupled_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1, :) = &
-                                    coupled_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1, :) + gl_lattice
-                                 coupled_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1, :) = &
-                                    coupled_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1, :) + gr_lattice
-                              END IF
-                           END DO
-                           DEALLOCATE (radial_weights)
-                        END ASSOCIATE
-                     END DO
-                     DEALLOCATE (local)
-                     IF (derivatives) DEALLOCATE (factor_covector, correction, dc)
-                  END IF
-                  first = last + 1
+                                 IF (derivatives) THEN
+                                    IF (physical) THEN
+                                       CALL qs_upf_inverse_hfx_lattice_center(left_frame, center, &
+                                                                              [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                              [start_k(block_k), start_k(block_k + 1) - 1], &
+                                                                              ao_image, center_images(:, image), fields, &
+                                                                            auxiliary_positions(:, site), transition_augmentation, &
+                                                                              pot%r, radial_weights, lebedev_grid(rule)%r, &
+                                                                              fourpi*lebedev_grid(rule)%w, correction, dc, &
+                                                                              atom_response, cell_response, &
+                                                                              auxiliary_positions_response(:, site), &
+                                                                             coefficient_images, coupled_coefficients, zero_coupled)
+                                    ELSE
+                                       CALL qs_upf_inverse_hfx_center(left_frame, right_frame, center, &
+                                                                      [start_j(block_j), start_j(block_j + 1) - 1], &
+                                                                      [start_k(block_k), start_k(block_k + 1) - 1], fields, &
+                                                                     auxiliary_positions(:, site), transition_augmentation, pot%r, &
+                                                                radial_weights, lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
+                                                                    correction, dc, atom_response, cell_response, left_k_response, &
+                                                                      right_k_response, zero_left, zero_right, &
+                                                                   auxiliary_positions_response(:, site), center_images(:, image), &
+                                                                      auxiliary_images, qcache(center, image, slot))
+                                    END IF
+                                    geometry_response = geometry_response + REAL(SUM(CONJG(local)*dc) + &
+                                                                                 SUM(CONJG(factor_covector)*correction), dp)
+                                 END IF
+                                 IF (PRESENT(left_coefficients_covector)) THEN
+                                    left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) = &
+                                       left_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1) + gl
+                                 END IF
+                                 IF (PRESENT(right_coefficients_covector)) THEN
+                                    right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) = &
+                                       right_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1) + gr
+                                 END IF
+                                 IF (PRESENT(coupled_coefficients_covector)) THEN
+                                    coupled_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1, :) = &
+                                       coupled_coefficients_covector(:, start_j(block_j):start_j(block_j + 1) - 1, :) + gl_lattice
+                                    coupled_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1, :) = &
+                                       coupled_coefficients_covector(:, start_k(block_k):start_k(block_k + 1) - 1, :) + gr_lattice
+                                 END IF
+                              END DO
+                              DEALLOCATE (radial_weights)
+                           END ASSOCIATE
+                        END DO
+                        DEALLOCATE (local)
+                        IF (derivatives) DEALLOCATE (factor_covector, correction, dc)
+                     END IF
+                     first = last + 1
+                  END DO
                END DO
+               DEALLOCATE (g)
+               IF (ALLOCATED(gl)) DEALLOCATE (gl, gr)
+               IF (ALLOCATED(gl_lattice)) DEALLOCATE (gl_lattice, gr_lattice)
             END DO
-            DEALLOCATE (g)
-            IF (ALLOCATED(gl)) DEALLOCATE (gl, gr)
-            IF (ALLOCATED(gl_lattice)) DEALLOCATE (gl_lattice, gr_lattice)
-         END DO
+            IF (ALLOCATED(overlaps)) DEALLOCATE (overlaps)
          END DO
          IF (ALLOCATED(qcache)) DEALLOCATE (qcache)
       END DO
@@ -2818,13 +2863,14 @@ CONTAINS
 !> \param auxiliary_geometry ...
 !> \param augmentation_integrals Optional fields and Q integrals at this fixed center, image and auxiliary shell.
 !> \param projection_cache Fixed-geometry hard-projector overlaps for the local geometry transpose.
+!> \param cached_fields Optional orbital fields for this AO block pair and reconstruction image, shared across RI shells.
 ! **************************************************************************************************
    SUBROUTINE lattice_center_adjoint_validated(frame, center, left_range, right_range, ao_image, center_image, &
                                                fields, auxiliary_center, augmentation, r, radial_weights, &
                                                directions, angular_weights, coefficient_images, &
                                                coupled_coefficients, covector, left_coefficients_covector, &
                                                right_coefficients_covector, atom_geometry, cell_geometry, &
-                                               auxiliary_geometry, augmentation_integrals, projection_cache)
+                                               auxiliary_geometry, augmentation_integrals, projection_cache, cached_fields)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
                                                             ao_image(3), center_image(3)
@@ -2845,20 +2891,22 @@ CONTAINS
          INTENT(INOUT), OPTIONAL, TARGET                 :: augmentation_integrals
       TYPE(lattice_potential_cache_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: projection_cache
+      TYPE(lattice_overlap_type), INTENT(INOUT), &
+         OPTIONAL, TARGET                                :: cached_fields
 
       COMPLEX(dp), ALLOCATABLE :: bare_left_gradient(:, :, :), bare_right_gradient(:, :, :), &
          cl(:, :), cr(:, :), delta(:, :), dl(:, :), dr(:, :), gcl(:, :), gcr(:, :), gdl(:, :), &
-         gdr(:, :), gl(:, :), gr(:, :), lattice_gr(:, :, :), q(:, :), &
-         unused_c(:, :), unused_d(:, :), unused_w(:, :), wl(:, :), work(:, :), wr(:, :)
+         gdr(:, :), gl(:, :), gr(:, :), lattice_gr(:, :, :), q(:, :), unused_c(:, :), &
+         unused_d(:, :), unused_w(:, :), wl(:, :), work(:, :), wr(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: lattice_gl(:, :, :)
-      COMPLEX(dp), POINTER                               :: left_geometry_coefficients(:, :, :)
-      INTEGER                                            :: atom, aux, axis, cache_row, first, ia, &
-                                                            image, ir, kind, last, left_image, &
-                                                            nang, nl, np, nr, right_image, &
-                                                            zero(3, 1)
-      LOGICAL                                            :: cached_potentials, geometry, left_term, &
-                                                            left_zero, q_geometry, right_term, &
-                                                            right_zero, same_ao_block
+      COMPLEX(dp), POINTER :: left_geometry_coefficients(:, :, :)
+      INTEGER                                            :: atom, aux, axis, cache_row, cache_rows, &
+                                                            first, ia, image, ir, kind, last, &
+                                                            left_image, nang, nl, np, nr, &
+                                                            right_image, zero(3, 1)
+      INTEGER(int_8)                                     :: field_words
+      LOGICAL :: cache_ready, cached_potentials, geometry, left_term, left_zero, q_geometry, &
+         right_term, right_zero, same_ao_block, store_fields, zero_potential
       REAL(dp)                                           :: local_cell(3, 3), position(3), &
                                                             potential_geometry(3), radius, &
                                                             sphere_geometry(3)
@@ -2980,6 +3028,25 @@ CONTAINS
             END IF
          END IF
          IF (geometry) ALLOCATE (potential_gradient(3, fields%nfunction, nang), potential_covector(nang))
+         cache_ready = .FALSE.
+         store_fields = .FALSE.
+         IF (PRESENT(cached_fields)) THEN
+            CPASSERT(geometry)
+            cache_ready = ALLOCATED(cached_fields%cl)
+            IF (.NOT. cache_ready .AND. ASSOCIATED(cached_fields%field_budget)) THEN
+               cache_rows = COUNT(r < radius .AND. radial_weights /= 0.0_dp)
+               field_words = 2_int_8*INT(nang, int_8)*INT(cache_rows, int_8)* &
+                             (INT(np, int_8) + 4_int_8*(INT(nl, int_8) + INT(nr, int_8)))
+               IF (field_words <= INT(cached_fields%field_budget, int_8)) THEN
+                  ALLOCATE (cached_fields%delta(nang, np, cache_rows), &
+                            cached_fields%cl(nang, nl, cache_rows), cached_fields%cr(nang, nr, cache_rows), &
+                            cached_fields%gradient_left(nang, nl, 3, cache_rows), &
+                            cached_fields%gradient_right(nang, nr, 3, cache_rows), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+                  cached_fields%field_budget = cached_fields%field_budget - INT(field_words)
+                  store_fields = .TRUE.
+               END IF
+            END IF
+         END IF
          zero = 0
          cache_row = 0
          DO ir = 1, SIZE(r)
@@ -3000,34 +3067,57 @@ CONTAINS
             ELSE
                CALL gaussian_coulomb_fields_evaluate_batch(fields, points - SPREAD(auxiliary_center, 2, nang), potentials)
             END IF
-            ! Exact-zero potential rows have no field or geometry contribution. The
-            ! independent original Q transition below still retains its full response.
-            IF (ALL(potentials == 0.0_dp)) THEN
-               IF (.NOT. geometry) CYCLE
-               IF (ALL(potential_gradient == 0.0_dp)) CYCLE
-            END IF
-            CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
-                                            [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
-                                            [0.0_dp, 0.0_dp, 0.0_dp], delta)
-            IF (left_term) THEN
-               CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, left_fields, &
-                                            unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
-                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
-                                            bare_gradient=bare_left_gradient)
-            ELSE
+            ! Fill every cache row even when this auxiliary shell has an exact zero.
+            ! A later RI shell can be nonzero at the same orbital quadrature points.
+            zero_potential = ALL(potentials == 0.0_dp)
+            IF (geometry .AND. zero_potential) zero_potential = ALL(potential_gradient == 0.0_dp)
+            IF (zero_potential .AND. .NOT. store_fields) CYCLE
+            IF (cache_ready) THEN
+               delta(:, :) = cached_fields%delta(:, :, cache_row)
+               cl(:, :) = cached_fields%cl(:, :, cache_row)
+               cr(:, :) = cached_fields%cr(:, :, cache_row)
                dl(:, :) = -MATMUL(delta, wl)
-            END IF
-            IF (same_ao_block) THEN
-               cr(:, :) = cl
-               dr(:, :) = dl
-            ELSE IF (right_term) THEN
-               CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, right_fields, &
-                                            unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
-                                            coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
-                                            bare_gradient=bare_right_gradient)
-            ELSE
                dr(:, :) = -MATMUL(delta, wr)
+               IF (ALLOCATED(bare_left_gradient)) bare_left_gradient(:, :, :) = cached_fields%gradient_left(:, :, :, cache_row)
+               IF (ALLOCATED(bare_right_gradient)) THEN
+                  bare_right_gradient(:, :, :) = cached_fields%gradient_right(:, :, :, cache_row)
+               END IF
+            ELSE
+               CALL upf_radial_fields_periodic(frame%delta_cache(kind), local_points, &
+                                               [0.0_dp, 0.0_dp, 0.0_dp], frame%cell, zero, &
+                                               [0.0_dp, 0.0_dp, 0.0_dp], delta)
+               IF (left_term) THEN
+                  CALL lattice_residual_fields(frame, left_range, [0, 0, 0], points, delta, wl, cl, dl, left_fields, &
+                                               unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
+                                               coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                               bare_gradient=bare_left_gradient)
+               ELSE
+                  dl(:, :) = -MATMUL(delta, wl)
+               END IF
+               IF (same_ao_block) THEN
+                  cr(:, :) = cl
+                  dr(:, :) = dl
+               ELSE IF (right_term) THEN
+                  CALL lattice_residual_fields(frame, right_range, ao_image, points, delta, wr, cr, dr, right_fields, &
+                                               unused_c, unused_d, unused_w, point_response=unused_points, derivatives=.FALSE., &
+                                               coefficient_images=coefficient_images, coupled_coefficients=coupled_coefficients, &
+                                               bare_gradient=bare_right_gradient)
+               ELSE
+                  dr(:, :) = -MATMUL(delta, wr)
+               END IF
+               IF (store_fields) THEN
+                  cached_fields%delta(:, :, cache_row) = delta
+                  IF (left_term) cached_fields%cl(:, :, cache_row) = cl
+                  IF (right_term) cached_fields%cr(:, :, cache_row) = cr
+                  IF (ALLOCATED(bare_left_gradient)) THEN
+                     cached_fields%gradient_left(:, :, :, cache_row) = bare_left_gradient
+                  END IF
+                  IF (ALLOCATED(bare_right_gradient)) THEN
+                     cached_fields%gradient_right(:, :, :, cache_row) = bare_right_gradient
+                  END IF
+               END IF
             END IF
+            IF (zero_potential) CYCLE
             weights(:) = 0.5_dp*radial_weights(ir)*angular_weights
             gcl = CMPLX(0.0_dp, 0.0_dp, dp)
             gdl = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -3093,10 +3183,10 @@ CONTAINS
                                                                   bare_gradient=bare_left_gradient)
                   ELSE
                      CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, [0, 0, 0], coefficient_images, &
-                                                               coupled_coefficients(:, left_range(1):left_range(2), :), &
-                                                               left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp, &
-                                                               workspace=left_fields%gaussian, bare_gradient=bare_left_gradient, &
-                                                               coefficients_covector=left_geometry_coefficients)
+                                                                  coupled_coefficients(:, left_range(1):left_range(2), :), &
+                                                                 left_range, gcl, point_geometry, local_atoms, local_cell, 2.0_dp, &
+                                                                 workspace=left_fields%gaussian, bare_gradient=bare_left_gradient, &
+                                                                  coefficients_covector=left_geometry_coefficients)
                      IF (ASSOCIATED(left_geometry_coefficients)) THEN
                         left_coefficients_covector(:, :, :) = left_coefficients_covector + lattice_gl
                      END IF
