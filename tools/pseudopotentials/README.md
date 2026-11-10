@@ -71,6 +71,14 @@ catalog checksum in `selection.json`. The prepared NC files reside under
 charge and operator tables. The installer retains the exact catalog as
 `DIRECTORY/prepared-nc-core/catalog.json.gz` with the added fields and their provenance.
 
+Omit `--library` and combine both core options to install all four SSSP v2 selections with
+prepared USPPs and the PAW and NC core supplements.
+
+```bash
+python3 tools/pseudopotentials/fetch_sssp.py \
+  "$HOME/.cache/cp2k/upf-complete" --install --paw-core --nc-core
+```
+
 ## Download original collections
 
 From the CP2K repository root, choose a writable directory outside the source or installed data
