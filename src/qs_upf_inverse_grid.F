@@ -676,12 +676,13 @@ CONTAINS
 !> \param orbital_fields ...
 !> \param known_coefficients_response Optional response for this defining frame and the same geometry variation.
 !> \param saved_coefficients_response Optional owned coefficient response for reuse within this variation.
+!> \param compute_metric Evaluate the metric response. If false, leave it unallocated.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_response(frame, augmentation, projector_metric, vdensity, vgradient, vtau, &
                                            atom_response, cell_response, reduced_k_response, vdensity_response, &
                                            vgradient_response, vtau_response, operator_response, metric_response, &
                                            projector_operator, kinetic, orbital_fields, &
-                                           known_coefficients_response, saved_coefficients_response)
+                                           known_coefficients_response, saved_coefficients_response, compute_metric)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
@@ -700,6 +701,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET :: known_coefficients_response(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL :: saved_coefficients_response(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: compute_metric
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_grid_response'
 
@@ -710,7 +712,7 @@ CONTAINS
       COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
                                                             nproj, timing_handle
-      LOGICAL                                            :: use_gradients, use_orbitals
+      LOGICAL                                            :: use_gradients, use_metric, use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
                                                             volume_response
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:), dvg(:, :), &
@@ -720,6 +722,8 @@ CONTAINS
       CALL timeset(routineN, timing_handle)
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
+      use_metric = .TRUE.
+      IF (PRESENT(compute_metric)) use_metric = compute_metric
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%soft, 2)
@@ -728,7 +732,8 @@ CONTAINS
       block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
                 projected(nproj, nproj), projected_response(nproj, nproj), &
-                operator_response(nao, nao), metric_response(nao, nao))
+                operator_response(nao, nao))
+      IF (use_metric) ALLOCATE (metric_response(nao, nao), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
       cell_inverse = frame%ao%cell
       CALL invmat(cell_inverse, info)
       CPASSERT(info == 0)
@@ -754,7 +759,6 @@ CONTAINS
          CALL pack_grid(frame, vgradient_response(axis), dvg(:, axis))
       END DO
       operator_response = CMPLX(0.0_dp, 0.0_dp, dp)
-      metric_response = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (use_orbitals) THEN
          use_gradients = ANY(dg /= 0.0_dp) .OR. ANY(dt /= 0.0_dp) .OR. &
                          ANY(dvg /= 0.0_dp) .OR. ANY(dvt /= 0.0_dp)
@@ -792,13 +796,15 @@ CONTAINS
                                                    weights_response(lo:hi), dvn(lo:hi), dvg(lo:hi, :), dvt(lo:hi), partial)
             END IF
             operator_response(:, :) = operator_response + partial
-            CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), &
-                                           soft_response(:m, :), soft_response(:m, :), weights_response(lo:hi), partial)
-            metric_response(:, :) = metric_response + partial
+            IF (use_metric) THEN
+               CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), &
+                                              soft_response(:m, :), soft_response(:m, :), weights_response(lo:hi), partial)
+               metric_response(:, :) = metric_response + partial
+            END IF
          END DO
       END IF
       CALL frame%ao%point_comm%sum(operator_response)
-      CALL frame%ao%point_comm%sum(metric_response)
+      IF (use_metric) CALL frame%ao%point_comm%sum(metric_response)
       IF (PRESENT(kinetic)) THEN
          ALLOCATE (kinetic_operator(nao, nao), kinetic_response(nao, nao))
          CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
@@ -820,9 +826,11 @@ CONTAINS
       operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(dw)), &
                                                            MATMUL(projected, frame%ao%coefficients)) + &
                                 MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, dw))
-      metric_response(:, :) = metric_response + MATMUL(CONJG(TRANSPOSE(dw)), &
-                                                       MATMUL(projector_metric, frame%ao%coefficients)) + &
-                              MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_metric, dw))
+      IF (use_metric) THEN
+         metric_response(:, :) = metric_response + MATMUL(CONJG(TRANSPOSE(dw)), &
+                                                          MATMUL(projector_metric, frame%ao%coefficients)) + &
+                                 MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_metric, dw))
+      END IF
       IF (PRESENT(saved_coefficients_response)) THEN
          IF (ALLOCATED(owned_dw)) THEN
             CALL MOVE_ALLOC(owned_dw, saved_coefficients_response)

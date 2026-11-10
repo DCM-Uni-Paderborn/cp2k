@@ -332,7 +332,7 @@ CONTAINS
          CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, potential, zeros, zero, &
                                            atom_response, cell_response, reduced_k_response, potential_response, zeros, zero, &
                                            response, metric, orbital_fields=orbital_fields, &
-                                           known_coefficients_response=coefficients_response)
+                                           known_coefficients_response=coefficients_response, compute_metric=.FALSE.)
          IF (orbital_fields) THEN
             CALL qs_upf_inverse_grid_gaussian_operator(frame, potential, response=gaussian, &
                                                        potential_response=potential_response, atom_response=atom_response, &

@@ -1029,7 +1029,7 @@ CONTAINS
 !> \param cell_response Lattice-vector response, including its reciprocal and volume effects.
 !> \param reduced_k_response Reduced Bloch-vector response, zero for cell stress.
 !> \param core_response New replicated core-Hamiltonian response without occupation/k weights.
-!> \param metric_response New response of the same radial-Q metric used by inverse SCF.
+!> \param metric_response Response of the radial-Q metric, unallocated when full GAPW supplies the metric.
 !> \param orbital_fields Include soft-orbital grid responses. False retains only augmentation and kinetic corrections.
 !> \param coefficients_response Optional owned coefficient response for this frame and geometry variation.
 !> \param include_atomic_kinetic Include the reconstruction kinetic response, unless contracted separately.
@@ -1096,7 +1096,8 @@ CONTAINS
          CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, local_r, vgradient, vtau, &
                                            atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
                                            core_response, metric_response, frame%ao%dion, kinetic=state%kinetic_cache, &
-                                           orbital_fields=orbital_fields, saved_coefficients_response=dw)
+                                           orbital_fields=orbital_fields, saved_coefficients_response=dw, &
+                                           compute_metric=.NOT. ASSOCIATED(state%coulomb))
       ELSE
          CALL unit_tau%create(grid)
          unit_tau%array = 1.0_dp
@@ -1104,7 +1105,7 @@ CONTAINS
          CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, local_r, zeros, unit_tau, &
                                            atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
                                            core_response, metric_response, frame%ao%dion, orbital_fields=orbital_fields, &
-                                           saved_coefficients_response=dw)
+                                           saved_coefficients_response=dw, compute_metric=.NOT. ASSOCIATED(state%coulomb))
          CALL unit_tau%release()
       END IF
       IF (ALLOCATED(frame%ao%atomic_cache) .AND. use_atomic_kinetic) THEN
@@ -1146,7 +1147,7 @@ CONTAINS
 !> \param cell_response Lattice-vector response, with fixed fractional grid rows.
 !> \param reduced_k_response Response of all actual reduced k vectors, or one column at Gamma.
 !> \param response Stationary electronic response, including the metric constraint.
-!> \param metric_response Signed metric contribution, already included in response.
+!> \param metric_response Signed metric contribution, zero when the caller supplies the full-GAPW metric.
 !> \param coefficients_response Optional owned per-k coefficient responses for this geometry variation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, cell_response, &
@@ -1166,7 +1167,7 @@ CONTAINS
          energy_weighted(:, :, :), matrix(:, :), metric(:, :, :), metric_part(:, :)
       INTEGER                                            :: active_potential, axis, component, ik, &
                                                             info, nk, nspin, timing_handle
-      LOGICAL                                            :: joint_grid
+      LOGICAL                                            :: grid_metric, joint_grid
       REAL(dp) :: cell_inverse(3, 3), foreign_energy, foreign_response, gaussian_virial(3, 3), &
          native_metric, native_response, paw_response, strain(3, 3), weight
       REAL(dp), ALLOCATABLE                              :: gaussian_gradients(:, :), &
@@ -1189,6 +1190,8 @@ CONTAINS
       CPASSERT(ALL(SHAPE(vgradient) == [3, nspin]) .AND. SIZE(vtau) == nspin)
       grid => vdensity(1)%pw_grid
       CPASSERT(ASSOCIATED(grid))
+      grid_metric = .NOT. ASSOCIATED(state%coulomb)
+      CPASSERT(grid_metric .OR. .NOT. state%native_gaussian)
       ! Both potentials use the same soft fields and inverse coefficient response for one spin.
       joint_grid = nspin == 1 .AND. ALLOCATED(state%gaussian_kinetic) .AND. &
                    .NOT. (state%native_gaussian .OR. ASSOCIATED(state%coulomb))
@@ -1238,11 +1241,13 @@ CONTAINS
                                                   orbital_fields=.NOT. state%native_gaussian, coefficients_response=dw, &
                                                   vdensity=joint_density, vgradient=joint_gradient, vtau=joint_tau)
          END IF
-         IF (ik == 1) ALLOCATE (core(SIZE(matrix, 1), SIZE(matrix, 2), nk), metric(SIZE(matrix, 1), SIZE(matrix, 2), nk))
-         IF (ik == 1) ALLOCATE (dw_all(SIZE(dw, 1), SIZE(dw, 2), nk))
+         IF (ik == 1) THEN
+            ALLOCATE (core(SIZE(matrix, 1), SIZE(matrix, 2), nk), dw_all(SIZE(dw, 1), SIZE(dw, 2), nk))
+            IF (grid_metric) ALLOCATE (metric, MOLD=core)
+         END IF
          dw_all(:, :, ik) = dw
          core(:, :, ik) = matrix
-         metric(:, :, ik) = metric_part
+         IF (grid_metric) metric(:, :, ik) = metric_part
       END DO
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
          IF (ALLOCATED(state%gaussian_kinetic)) THEN
@@ -1267,10 +1272,15 @@ CONTAINS
       metric_response = 0.0_dp
       IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN
          CALL qs_rho_get(rho, rho_ao_kp=density_gamma)
-         CALL get_ks_env(ks_env, matrix_w=energy_gamma)
-         CPASSERT(ASSOCIATED(density_gamma) .AND. ASSOCIATED(energy_gamma))
-         CPASSERT(SIZE(density_gamma, 1) == nspin .AND. SIZE(energy_gamma) == nspin)
-         ALLOCATE (density(SIZE(core, 1), SIZE(core, 2), 1), energy_weighted(SIZE(core, 1), SIZE(core, 2), 1))
+         CPASSERT(ASSOCIATED(density_gamma))
+         CPASSERT(SIZE(density_gamma, 1) == nspin)
+         ALLOCATE (density(SIZE(core, 1), SIZE(core, 2), 1))
+         IF (grid_metric) THEN
+            CALL get_ks_env(ks_env, matrix_w=energy_gamma)
+            CPASSERT(ASSOCIATED(energy_gamma))
+            CPASSERT(SIZE(energy_gamma) == nspin)
+            ALLOCATE (energy_weighted, MOLD=density)
+         END IF
       END IF
       DO axis = 1, nspin
          active_potential = 0
@@ -1288,12 +1298,14 @@ CONTAINS
          END IF
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_kpoints_density(state%bloch, axis, density)
-            CALL qs_upf_inverse_kpoints_density(state%bloch, axis, energy_weighted, energy_weighted=.TRUE.)
+            IF (grid_metric) CALL qs_upf_inverse_kpoints_density(state%bloch, axis, energy_weighted, energy_weighted=.TRUE.)
          ELSE
             CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_gamma(axis, 1)%matrix, matrix)
             density(:, :, 1) = matrix
-            CALL qs_upf_inverse_matrix_gather(state%frame%ao, energy_gamma(axis)%matrix, matrix)
-            energy_weighted(:, :, 1) = matrix
+            IF (grid_metric) THEN
+               CALL qs_upf_inverse_matrix_gather(state%frame%ao, energy_gamma(axis)%matrix, matrix)
+               energy_weighted(:, :, 1) = matrix
+            END IF
          END IF
          IF (ALLOCATED(state%gaussian_kinetic)) THEN
             CALL qs_upf_inverse_background_gaussian_geometry(state%gaussian, native_ks, density, .TRUE., &
@@ -1323,16 +1335,18 @@ CONTAINS
                                                  vdensity(axis), vgradient(:, axis), vtau(axis), atom_response, cell_response, &
                                                  reduced_k_response(:, ik), zero, zeros, zero, matrix, metric_part, &
                                                  kinetic=state%kinetic_cache, orbital_fields=.NOT. state%native_gaussian, &
-                                                 known_coefficients_response=dw_all(:, :, ik))
+                                                 known_coefficients_response=dw_all(:, :, ik), compute_metric=.FALSE.)
             ELSE
                CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, state%frame%ao%radial_q, &
                                                  vdensity(axis), vgradient(:, axis), vtau(axis), atom_response, cell_response, &
                                                  reduced_k_response(:, ik), zero, zeros, zero, matrix, metric_part, &
                                                  kinetic=state%kinetic_cache, orbital_fields=.NOT. state%native_gaussian, &
-                                                 known_coefficients_response=dw_all(:, :, ik))
+                                                 known_coefficients_response=dw_all(:, :, ik), compute_metric=.FALSE.)
             END IF
             response = response + weight*REAL(SUM(density(:, :, ik)*TRANSPOSE(core(:, :, ik) + matrix)), dp)
-            metric_response = metric_response - weight*REAL(SUM(energy_weighted(:, :, ik)*TRANSPOSE(metric(:, :, ik))), dp)
+            IF (grid_metric) THEN
+               metric_response = metric_response - weight*REAL(SUM(energy_weighted(:, :, ik)*TRANSPOSE(metric(:, :, ik))), dp)
+            END IF
          END DO
       END DO
       IF (ALLOCATED(state%paw_potential)) THEN

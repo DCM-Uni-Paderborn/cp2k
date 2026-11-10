@@ -657,8 +657,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
          OPTIONAL, TARGET                                :: context
 
-      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), metric(:, :), &
-                                                            qzero(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: derivative(:, :), metric(:, :)
       INTEGER                                            :: axis, ik, info, n, nk, ns, spin
       LOGICAL                                            :: valid
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
@@ -711,10 +710,6 @@ CONTAINS
          CALL gradient(axis)%create(grid)
          gradient(axis)%array = 0.0_dp
       END DO
-      IF (.NOT. state%gaussian_background) THEN
-         ALLOCATE (qzero(SIZE(frame%ao%coefficients, 1), SIZE(frame%ao%coefficients, 1)))
-         qzero = CMPLX(0.0_dp, 0.0_dp, dp)
-      END IF
       IF (state%gaussian_background .OR. state%native_gaussian) THEN
          ALLOCATE (forces, MOLD=atom_response)
          ALLOCATE (relative_motion, SOURCE=atom_response - MATMUL(strain, frame%ao%positions))
@@ -736,10 +731,10 @@ CONTAINS
             kinetic_response%array = -trace_strain*kinetic%array
             DO ik = 1, nk
                frame => source_frame(state, ik)
-               CALL qs_upf_inverse_grid_response(frame, augmentation, qzero, density, gradient, kinetic, &
+               CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, density, gradient, kinetic, &
                                                  atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], density_response, &
                                                  gradient, kinetic_response, derivative, metric, kinetic=state%kinetic_cache, &
-                                                 orbital_fields=.NOT. state%native_gaussian)
+                                                 orbital_fields=.NOT. state%native_gaussian, compute_metric=.FALSE.)
                response = response + weights(ik)*REAL(SUM(CONJG(matrices(:, :, ik, spin))*derivative), dp)
             END DO
          END IF

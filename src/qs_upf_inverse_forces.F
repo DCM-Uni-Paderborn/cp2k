@@ -354,15 +354,15 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: metric_background_response, pair_geometry_response, &
                                                             source_forces(:, :), source_virial(3, 3)
 
-      REAL(dp)                                           :: coulomb_response, radial_metric
+      REAL(dp)                                           :: coulomb_response
 
       CPASSERT(ALL(reduced_k_response == 0.0_dp))
       CALL qs_upf_inverse_scf_response(ks_env, zero, zeros, zero, atom_response, cell_response, reduced_k_response, &
-                                       response, radial_metric, coefficients_response)
+                                       response, metric_response, coefficients_response)
       CALL qs_upf_inverse_coulomb_center_metric_response(qs_env, state, state%coulomb, weighted, atom_response, cell_response, &
                                                          metric_response, coefficients_response)
       metric_response = -metric_response - metric_background_response
-      response = response - radial_metric + metric_response
+      response = response + metric_response
       CALL qs_upf_inverse_coulomb_response(qs_env, state, state%coulomb, density, atom_response, cell_response, &
                                            coulomb_response, coefficients_response=coefficients_response, &
                                            pair_geometry_response=pair_geometry_response, &

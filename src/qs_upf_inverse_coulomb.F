@@ -482,13 +482,15 @@ CONTAINS
                                                     atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
                                                     field_response, zeros, zero, matrix, metric_response, &
                                                     orbital_fields=.NOT. state%native_gaussian, &
-                                                    known_coefficients_response=coefficients_response(:, :, k))
+                                                    known_coefficients_response=coefficients_response(:, :, k), &
+                                                    compute_metric=.FALSE.)
                ELSE
                   CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, frame%radial_q, potential, zeros, zero, &
                                                     atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &
                                                     field_response, zeros, zero, matrix, metric_response, &
                                                     orbital_fields=.NOT. state%native_gaussian, &
-                                                    known_coefficients_response=coefficients_response(:, :, k))
+                                                    known_coefficients_response=coefficients_response(:, :, k), &
+                                                    compute_metric=.FALSE.)
                END IF
                response = response + weights(k)*REAL(SUM(CONJG(matrix)*density(:, :, k)), dp)
             END DO
