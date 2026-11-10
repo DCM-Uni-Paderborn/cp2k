@@ -71,6 +71,7 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_type,&
                                               qs_upf_inverse_xc_type
    USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_frame_ref_type,&
+                                              qs_upf_inverse_xc_derivative_available,&
                                               qs_upf_inverse_xc_grid_evaluate,&
                                               qs_upf_inverse_xc_grid_model_response,&
                                               qs_upf_inverse_xc_grid_response,&
@@ -87,7 +88,6 @@ MODULE qs_upf_inverse_scf_xc
    USE upf_types,                       ONLY: upf_nlcc_kinetic,&
                                               upf_uses_model_core_tau
    USE xc_derivatives,                  ONLY: xc_functionals_get_needs
-   USE xc_input_constants,              ONLY: xc_deriv_pw
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
 #include "./base/base_uses.f90"
 
@@ -200,12 +200,14 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
       COMPLEX(dp), POINTER                               :: block_laplacian(:, :)
-      INTEGER                                            :: block, core_components, hi, ik, lo, nao, &
-                                                            nk, np, ns, smooth_id, spin
+      INTEGER                                            :: block, core_components, deriv_id, hi, &
+                                                            ik, lo, nao, nk, np, ns, smooth_id, &
+                                                            spin
       INTEGER(KIND=int_8)                                :: core_bytes, field_bytes, retained_bytes
       LOGICAL                                            :: valid, with_laplacian
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), core(:, :), &
-                                                            core_gradient(:, :, :), core_laplacian(:, :), core_tau(:, :)
+                                                            core_gradient(:, :, :), &
+                                                            core_laplacian(:, :), core_tau(:, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: density_ao(:, :)
       TYPE(mp_comm_type)                                 :: comm
@@ -240,17 +242,18 @@ CONTAINS
       IF (PRESENT(potential)) THEN
          CPASSERT(PRESENT(kinetic) .EQV. PRESENT(kinetic_potential))
       END IF
-      IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw) THEN
-         CPABORT("Inverse mixed XC requires XC_DERIV PW")
-      END IF
       smooth_id = section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO")
       CALL frame_refs(state, frames, augmentation)
       nk = SIZE(frames)
       nao = SIZE(frames(1)%frame%coefficients, 2)
       ns = SIZE(density)
       needs = xc_functionals_get_needs(section_vals_get_subs_vals(xc_section, "XC_FUNCTIONAL"), &
-                                      lsd=ns == 2, calc_potential=.TRUE.)
+                                       lsd=ns == 2, calc_potential=.TRUE.)
       with_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
+      deriv_id = section_get_ival(xc_section, "XC_GRID%XC_DERIV")
+      IF (.NOT. qs_upf_inverse_xc_derivative_available(deriv_id, with_laplacian)) THEN
+         CPABORT("Mixed UPF XC requires a grid density derivative and uses PW for the Laplacian")
+      END IF
       IF (PRESENT(kinetic)) THEN
          CPASSERT(SIZE(kinetic) == ns)
       END IF
@@ -303,7 +306,7 @@ CONTAINS
          END DO
       END IF
       state%xc_grid => density(1)%pw_grid
-      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic, smooth_id, with_laplacian)
+      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic, smooth_id, with_laplacian, deriv_id)
       ALLOCATE (core(np, ns), core_gradient(np, 3, ns))
       IF (PRESENT(kinetic)) ALLOCATE (core_tau(np, ns))
       core_components = 4
@@ -360,7 +363,8 @@ CONTAINS
             CALL background_potential(spin)%create(state%xc_grid)
             IF (PRESENT(kinetic_potential)) CALL background_kinetic(spin)%create(state%xc_grid)
          END DO
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, background_potential, background_kinetic, smooth_id, with_laplacian)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, background_potential, background_kinetic, smooth_id, &
+                                           with_laplacian, deriv_id)
          DO spin = 1, ns
             CPASSERT(ASSOCIATED(potential(spin)%pw_grid, state%xc_grid))
             potential(spin)%array = potential(spin)%array + background_potential(spin)%array
@@ -886,7 +890,8 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT), &
          OPTIONAL, TARGET                                :: context
 
-      INTEGER                                            :: nao, nk, ns, selected, smooth_id, spin
+      INTEGER                                            :: deriv_id, nao, nk, ns, selected, &
+                                                            smooth_id, spin
       LOGICAL                                            :: tangent, valid, with_laplacian
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), &
                                                             fields_direction(:, :, :, :)
@@ -924,9 +929,7 @@ CONTAINS
          selected = skala_density_constraints_count(constraints)
          CPASSERT(selected == 0 .OR. tangent)
       END IF
-      IF (section_get_ival(xc_section, "XC_GRID%XC_DERIV") /= xc_deriv_pw) THEN
-         CPABORT("Inverse mixed XC response requires XC_DERIV PW")
-      END IF
+      deriv_id = section_get_ival(xc_section, "XC_GRID%XC_DERIV")
       smooth_id = section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO")
       nao = SIZE(state%xc_matrices, 1)
       nk = SIZE(state%xc_matrices, 3)
@@ -955,10 +958,11 @@ CONTAINS
       END IF
       with_laplacian = ALLOCATED(state%xc%laplacian)
       IF (state%xc%kinetic) THEN
-         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction, smooth_id, with_laplacian)
+         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction, smooth_id, &
+                                          with_laplacian, deriv_id)
       ELSE
          CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, xc_smooth_id=smooth_id, &
-                                          laplacian=with_laplacian)
+                                          laplacian=with_laplacian, xc_deriv_id=deriv_id)
       END IF
       CALL qs_upf_inverse_xc_grid_model_response(frames, augmentation, matrices_direction, state%xc_kweights, &
                                                  state%atom_grid%points, state%atom_grid%weights, state%xc, &
@@ -967,9 +971,10 @@ CONTAINS
                                                  state%paw_reconstruction, orbital_factors, orbital_direction)
       IF (state%xc%kinetic) THEN
          CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction, smooth_id, &
-                                           with_laplacian)
+                                           with_laplacian, deriv_id)
       ELSE
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, xc_smooth_id=smooth_id, laplacian=with_laplacian)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, xc_smooth_id=smooth_id, &
+                                           laplacian=with_laplacian, xc_deriv_id=deriv_id)
          DO spin = 1, ns
             kinetic_potential_direction(spin)%array = 0.0_dp
          END DO

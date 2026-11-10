@@ -54,7 +54,8 @@ MODULE qs_upf_inverse_scf_response
                                               qs_upf_inverse_xc_transfer_real
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_orbitals_type,&
                                               qs_upf_inverse_scf_type
-   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_grid_kernel,&
+   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_derivative_available,&
+                                              qs_upf_inverse_xc_grid_kernel,&
                                               qs_upf_inverse_xc_semilocal_kernel_available
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
@@ -68,7 +69,6 @@ MODULE qs_upf_inverse_scf_response
                                               xc_section_uses_native_skala_evaluator
    USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
                                               xc_functionals_spin_floors
-   USE xc_input_constants,              ONLY: xc_deriv_pw
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
 #include "./base/base_uses.f90"
 
@@ -232,10 +232,11 @@ CONTAINS
       model = xc_section_uses_native_skala_evaluator(xc)
       IF (.NOT. model) THEN
          IF (.NOT. qs_upf_inverse_xc_semilocal_kernel_available(xc, control%nspins == 2)) RETURN
-         IF (section_get_ival(xc, 'XC_GRID%XC_DERIV') /= xc_deriv_pw) RETURN
       END IF
       functional => section_vals_get_subs_vals(xc, 'XC_FUNCTIONAL')
       needs = xc_functionals_get_needs(functional, lsd=control%nspins == 2, calc_potential=.TRUE.)
+      IF (.NOT. qs_upf_inverse_xc_derivative_available(section_get_ival(xc, 'XC_GRID%XC_DERIV'), &
+                                                       needs%laplace_rho .OR. needs%laplace_rho_spin)) RETURN
       use_tau = model .OR. needs%tau .OR. needs%tau_spin
       IF (use_tau) THEN
          IF (.NOT. ALLOCATED(state%kinetic_cache)) RETURN

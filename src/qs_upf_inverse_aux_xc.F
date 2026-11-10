@@ -47,11 +47,13 @@ MODULE qs_upf_inverse_aux_xc
                                               qs_upf_inverse_scf_xc_source_direction,&
                                               qs_upf_inverse_scf_xc_source_geometry
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
-   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_grid_kernel,&
+   USE qs_upf_inverse_xc,               ONLY: qs_upf_inverse_xc_derivative_available,&
+                                              qs_upf_inverse_xc_grid_kernel,&
                                               qs_upf_inverse_xc_semilocal_kernel_available
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE rs_pw_interface,                 ONLY: pw_real_transfer
-   USE xc_input_constants,              ONLY: xc_deriv_pw
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -585,8 +587,12 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: ns
       LOGICAL                                            :: available
 
-      available = qs_upf_inverse_xc_semilocal_kernel_available(xc, ns == 2)
-      available = available .AND. section_get_ival(xc, 'XC_GRID%XC_DERIV') == xc_deriv_pw .AND. &
+      TYPE(xc_rho_cflags_type)                           :: needs
+
+      needs = xc_functionals_get_needs(section_vals_get_subs_vals(xc, 'XC_FUNCTIONAL'), ns == 2, calc_potential=.TRUE.)
+      available = qs_upf_inverse_xc_semilocal_kernel_available(xc, ns == 2) .AND. &
+                  qs_upf_inverse_xc_derivative_available(section_get_ival(xc, 'XC_GRID%XC_DERIV'), &
+                                                         needs%laplace_rho .OR. needs%laplace_rho_spin) .AND. &
                   section_get_ival(xc, 'VDW_POTENTIAL%POTENTIAL_TYPE') /= xc_vdw_fun_nonloc
    END FUNCTION qs_upf_inverse_aux_xc_kernel_available
 

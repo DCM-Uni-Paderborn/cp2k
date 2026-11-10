@@ -25,10 +25,10 @@ MODULE qs_upf_inverse_xc
    USE pw_grid_types,                   ONLY: PW_MODE_LOCAL,&
                                               pw_grid_type
    USE pw_grids,                        ONLY: pw_grid_compare
-   USE pw_methods,                      ONLY: pw_derive,&
-                                              pw_laplace,&
+   USE pw_methods,                      ONLY: pw_laplace,&
                                               pw_transfer
    USE pw_pool_types,                   ONLY: pw_pool_type
+   USE pw_spline_utils,                 ONLY: pw_spline_scale_deriv
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
    USE qs_native_grid_interpolation,    ONLY: interpolate_native_grid_batch,&
@@ -76,12 +76,16 @@ MODULE qs_upf_inverse_xc
                                               xc_functionals_collect_floor_jumps,&
                                               xc_functionals_get_needs,&
                                               xc_functionals_select_floor_limits
-   USE xc_input_constants,              ONLY: xc_rho_no_smooth
+   USE xc_input_constants,              ONLY: xc_deriv_collocate,&
+                                              xc_deriv_pw,&
+                                              xc_rho_no_smooth
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
                                               xc_rho_set_release,&
                                               xc_rho_set_type
-   USE xc_util,                         ONLY: xc_pw_smooth
+   USE xc_util,                         ONLY: xc_pw_derive,&
+                                              xc_pw_smooth,&
+                                              xc_requires_tmp_g
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -99,6 +103,7 @@ MODULE qs_upf_inverse_xc
    PUBLIC :: qs_upf_inverse_xc_grid_model_response
    PUBLIC :: qs_upf_inverse_xc_field_kernel, qs_upf_inverse_xc_semilocal_kernel_available
    PUBLIC :: qs_upf_inverse_xc_grid_kernel
+   PUBLIC :: qs_upf_inverse_xc_derivative_available
    PUBLIC :: qs_upf_inverse_xc_pw_fields, qs_upf_inverse_xc_pw_adjoint, qs_upf_inverse_xc_pw_response
    PUBLIC :: qs_upf_inverse_xc_pw_geometry
 
@@ -108,7 +113,7 @@ CONTAINS
 !> \brief Evaluate sum(w * (e_XC[n_exact] - e_XC[n_background])) and both density adjoints.
 !>        Sum k-resolved densities before the nonlinear XC evaluation. Operators carry no k weight.
 !>        The background covectors are negative and unweighted. The caller applies interpolation's
-!>        transpose, the same partition weights and the native spectral-gradient transpose.
+!>        transpose, the same partition weights and the native grid-gradient transpose.
 !> \param frames Borrowed defining-quadrature inverse frames, in global k order.
 !> \param augmentation Original real-space charge augmentation.
 !> \param matrices Unweighted occupation density matrices, indexed (AO,AO,k,spin).
@@ -2045,29 +2050,96 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_xc_grid_response
 
 ! **************************************************************************************************
-!> \brief Replicate the native density and its plane-wave Cartesian gradient for mixed XC.
+!> \brief Whether the XC gradient is defined by the grid density alone.
+!> \param xc_deriv_id Selected native XC derivative.
+!> \param laplacian Whether the XC functional needs the density Laplacian.
+!> \return True for a grid derivative with a matching adjoint.
+! **************************************************************************************************
+   ELEMENTAL FUNCTION qs_upf_inverse_xc_derivative_available(xc_deriv_id, laplacian) RESULT(available)
+      INTEGER, INTENT(IN)                                :: xc_deriv_id
+      LOGICAL, INTENT(IN)                                :: laplacian
+      LOGICAL                                            :: available
+
+      available = xc_deriv_id /= xc_deriv_collocate .AND. (.NOT. laplacian .OR. xc_deriv_id == xc_deriv_pw)
+   END FUNCTION qs_upf_inverse_xc_derivative_available
+
+! **************************************************************************************************
+!> \brief Evaluate the native Cartesian gradient of a grid density.
+!> \param density Density after any XC smoothing.
+!> \param density_g Matching Fourier coefficients for a reciprocal derivative.
+!> \param work_g Scratch reciprocal grid for the derivative.
+!> \param gradient Cartesian gradient.
+!> \param deriv_id Native XC derivative selection.
+! **************************************************************************************************
+   SUBROUTINE grid_gradient(density, density_g, work_g, gradient, deriv_id)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density
+      TYPE(pw_c1d_gs_type), INTENT(IN)                   :: density_g
+      TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: work_g
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: gradient(3)
+      INTEGER, INTENT(IN)                                :: deriv_id
+
+      INTEGER                                            :: axis
+
+      DO axis = 1, 3
+         IF (.NOT. xc_requires_tmp_g(deriv_id)) gradient(axis)%array = 0.0_dp
+         CALL xc_pw_derive(density, work_g, gradient(axis), axis, deriv_id, pw_g=density_g)
+      END DO
+      IF (deriv_id /= xc_deriv_pw) CALL pw_spline_scale_deriv(gradient)
+   END SUBROUTINE grid_gradient
+
+! **************************************************************************************************
+!> \brief Add the transpose of the same Cartesian gradient to a scalar covector.
+!> \param gradient Cartesian covector, overwritten by the transpose coordinate map.
+!> \param work_g Scratch reciprocal grid.
+!> \param work_r Scratch real grid.
+!> \param potential Accumulated scalar covector before transpose density smoothing.
+!> \param deriv_id Native XC derivative selection.
+! **************************************************************************************************
+   SUBROUTINE add_grid_gradient_adjoint(gradient, work_g, work_r, potential, deriv_id)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: gradient(3)
+      TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: work_g
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: work_r, potential
+      INTEGER, INTENT(IN)                                :: deriv_id
+
+      INTEGER                                            :: axis
+
+      IF (deriv_id /= xc_deriv_pw) CALL pw_spline_scale_deriv(gradient, transpose=.TRUE.)
+      ! Each periodic derivative in grid coordinates is skew-adjoint.
+      DO axis = 1, 3
+         IF (.NOT. xc_requires_tmp_g(deriv_id)) work_r%array = 0.0_dp
+         CALL xc_pw_derive(gradient(axis), work_g, work_r, axis, deriv_id)
+         potential%array = potential%array - work_r%array
+      END DO
+   END SUBROUTINE add_grid_gradient_adjoint
+
+! **************************************************************************************************
+!> \brief Replicate the native density and its Cartesian grid gradient for mixed XC.
 !> \param density Native spin densities, including any prescribed frozen core.
 !> \param fields Replicated descriptors, ordered as density,gx,gy,gz and optional tau per spin.
-!>               The gradient is the native Fourier derivative of the supplied grid density.
 !> \param kinetic Optional matching native kinetic densities, including prescribed core.
 !> \param xc_smooth_id Optional native smoothing of the density before taking its gradient.
 !> \param laplacian Append the spectral density Laplacian to each spin block.
+!> \param xc_deriv_id Native gradient selection, with PW as the default.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_xc_pw_fields(density, fields, kinetic, xc_smooth_id, laplacian)
+   SUBROUTINE qs_upf_inverse_xc_pw_fields(density, fields, kinetic, xc_smooth_id, laplacian, xc_deriv_id)
       TYPE(pw_r3d_rs_type), INTENT(IN), TARGET           :: density(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: fields(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic(:)
       INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
       LOGICAL, INTENT(IN), OPTIONAL                      :: laplacian
+      INTEGER, INTENT(IN), OPTIONAL                      :: xc_deriv_id
 
-      INTEGER                                            :: axis, bounds(2, 3), orders(3), &
-                                                            smooth_id, spin, stride
+      INTEGER                                            :: axis, bounds(2, 3), deriv_id, smooth_id, &
+                                                            spin, stride
       LOGICAL                                            :: with_laplacian
       TYPE(pw_c1d_gs_type)                               :: density_g, derivative_g
       TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(pw_r3d_rs_type)                               :: gradient(3)
       TYPE(pw_r3d_rs_type), POINTER                      :: source
       TYPE(pw_r3d_rs_type), TARGET                       :: work_r
 
+      deriv_id = xc_deriv_pw
+      IF (PRESENT(xc_deriv_id)) deriv_id = xc_deriv_id
       smooth_id = xc_rho_no_smooth
       IF (PRESENT(xc_smooth_id)) smooth_id = xc_smooth_id
       CPASSERT(SIZE(density) > 0)
@@ -2081,12 +2153,16 @@ CONTAINS
       with_laplacian = .FALSE.
       IF (PRESENT(laplacian)) with_laplacian = laplacian
       IF (with_laplacian) stride = stride + 1
+      CPASSERT(qs_upf_inverse_xc_derivative_available(deriv_id, with_laplacian))
       bounds = grid%bounds_local - SPREAD(grid%bounds(1, :) - 1, 1, 2)
       ALLOCATE (fields(grid%npts(1), grid%npts(2), grid%npts(3), stride*SIZE(density)))
       fields = 0.0_dp
       CALL density_g%create(grid)
       CALL derivative_g%create(grid)
       CALL work_r%create(grid)
+      DO axis = 1, 3
+         CALL gradient(axis)%create(grid)
+      END DO
       DO spin = 1, SIZE(density)
          CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
          source => density(spin)
@@ -2101,15 +2177,11 @@ CONTAINS
             fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
                    bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 5) = kinetic(spin)%array
          END IF
-         CALL pw_transfer(source, density_g)
+         IF (xc_requires_tmp_g(deriv_id)) CALL pw_transfer(source, density_g)
+         CALL grid_gradient(source, density_g, derivative_g, gradient, deriv_id)
          DO axis = 1, 3
-            derivative_g%array(:) = density_g%array
-            orders = 0
-            orders(axis) = 1
-            CALL pw_derive(derivative_g, orders)
-            CALL pw_transfer(derivative_g, work_r)
             fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
-                   bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1 + axis) = work_r%array
+                   bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1 + axis) = gradient(axis)%array
          END DO
          IF (with_laplacian) THEN
             derivative_g%array(:) = density_g%array
@@ -2123,6 +2195,9 @@ CONTAINS
       CALL density_g%release()
       CALL derivative_g%release()
       CALL work_r%release()
+      DO axis = 1, 3
+         CALL gradient(axis)%release()
+      END DO
    END SUBROUTINE qs_upf_inverse_xc_pw_fields
 
 ! **************************************************************************************************
@@ -2133,21 +2208,25 @@ CONTAINS
 !> \param kinetic_potential Optional created native kinetic potentials, receiving lambda_tau/dvol.
 !> \param xc_smooth_id Optional transpose of the same native density smoothing.
 !> \param laplacian Whether to fold in the Laplacian covector in each spin block.
+!> \param xc_deriv_id The same native gradient selection as in the forward map.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_xc_pw_adjoint(fields, potential, kinetic_potential, xc_smooth_id, laplacian)
+   SUBROUTINE qs_upf_inverse_xc_pw_adjoint(fields, potential, kinetic_potential, xc_smooth_id, laplacian, xc_deriv_id)
       REAL(dp), INTENT(IN)                               :: fields(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: potential(:)
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: kinetic_potential(:)
       INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
       LOGICAL, INTENT(IN), OPTIONAL                      :: laplacian
+      INTEGER, INTENT(IN), OPTIONAL                      :: xc_deriv_id
 
-      INTEGER                                            :: axis, bounds(2, 3), orders(3), &
-                                                            smooth_id, spin, stride
+      INTEGER                                            :: axis, bounds(2, 3), deriv_id, smooth_id, &
+                                                            spin, stride
       LOGICAL                                            :: with_laplacian
       TYPE(pw_c1d_gs_type)                               :: derivative_g
       TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_r3d_rs_type)                               :: derivative_r, work_r
+      TYPE(pw_r3d_rs_type)                               :: derivative_r, gradient(3), work_r
 
+      deriv_id = xc_deriv_pw
+      IF (PRESENT(xc_deriv_id)) deriv_id = xc_deriv_id
       smooth_id = xc_rho_no_smooth
       IF (PRESENT(xc_smooth_id)) smooth_id = xc_smooth_id
       CPASSERT(SIZE(potential) > 0)
@@ -2161,12 +2240,16 @@ CONTAINS
       with_laplacian = .FALSE.
       IF (PRESENT(laplacian)) with_laplacian = laplacian
       IF (with_laplacian) stride = stride + 1
+      CPASSERT(qs_upf_inverse_xc_derivative_available(deriv_id, with_laplacian))
       CPASSERT(ALL(SHAPE(fields) == [grid%npts, stride*SIZE(potential)]))
       CPASSERT(grid%dvol > 0.0_dp)
       bounds = grid%bounds_local - SPREAD(grid%bounds(1, :) - 1, 1, 2)
       CALL derivative_g%create(grid)
       CALL work_r%create(grid)
       CALL derivative_r%create(grid)
+      DO axis = 1, 3
+         CALL gradient(axis)%create(grid)
+      END DO
       DO spin = 1, SIZE(potential)
          CPASSERT(ASSOCIATED(potential(spin)%pw_grid, grid))
          potential(spin)%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
@@ -2177,15 +2260,10 @@ CONTAINS
                                                             bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 5)/grid%dvol
          END IF
          DO axis = 1, 3
-            work_r%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
-                                           bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1 + axis)
-            CALL pw_transfer(work_r, derivative_g)
-            orders = 0
-            orders(axis) = 1
-            CALL pw_derive(derivative_g, orders)
-            CALL pw_transfer(derivative_g, derivative_r)
-            potential(spin)%array(:, :, :) = potential(spin)%array - derivative_r%array
+            gradient(axis)%array = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                                          bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1 + axis)
          END DO
+         CALL add_grid_gradient_adjoint(gradient, derivative_g, derivative_r, potential(spin), deriv_id)
          IF (with_laplacian) THEN
             work_r%array(:, :, :) = fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
                                            bounds(1, 3):bounds(2, 3), stride*spin)
@@ -2204,6 +2282,9 @@ CONTAINS
       CALL derivative_g%release()
       CALL work_r%release()
       CALL derivative_r%release()
+      DO axis = 1, 3
+         CALL gradient(axis)%release()
+      END DO
    END SUBROUTINE qs_upf_inverse_xc_pw_adjoint
 
 ! **************************************************************************************************
@@ -2211,13 +2292,14 @@ CONTAINS
 !> \param density_response Spin-density response at fixed native real-grid indices, including core.
 !> \param fields Current descriptors from qs_upf_inverse_xc_pw_fields.
 !> \param lattice_response Response of the PW lattice, dh(:,axis)*npts(axis).
-!> \param fields_response Replicated density and gradient response, including delta(G)=-strain^T*G.
+!> \param fields_response Replicated density and gradient response, including the Cartesian frame change.
 !> \param kinetic_response Optional complete kinetic-density response at fixed native grid indices.
 !> \param xc_smooth_id Optional native smoothing with fixed stencil weights on the grid indices.
 !> \param laplacian Append the density Laplacian response to each spin block.
+!> \param xc_deriv_id Native gradient selection on the fixed grid topology.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_pw_response(density_response, fields, lattice_response, fields_response, &
-                                            kinetic_response, xc_smooth_id, laplacian)
+                                            kinetic_response, xc_smooth_id, laplacian, xc_deriv_id)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density_response(:)
       REAL(dp), INTENT(IN)                               :: fields(:, :, :, :), &
                                                             lattice_response(3, 3)
@@ -2225,11 +2307,13 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic_response(:)
       INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
       LOGICAL, INTENT(IN), OPTIONAL                      :: laplacian
+      INTEGER, INTENT(IN), OPTIONAL                      :: xc_deriv_id
 
       REAL(dp)                                           :: lattice_inverse(3, 3), strain(3, 3)
       TYPE(pw_grid_type), POINTER                        :: grid
 
-      CALL qs_upf_inverse_xc_pw_fields(density_response, fields_response, kinetic_response, xc_smooth_id, laplacian)
+      CALL qs_upf_inverse_xc_pw_fields(density_response, fields_response, kinetic_response, xc_smooth_id, &
+                                       laplacian, xc_deriv_id)
       CPASSERT(ALL(SHAPE(fields) == SHAPE(fields_response)))
       grid => density_response(1)%pw_grid
       lattice_inverse = grid%dh_inv/SPREAD(REAL(grid%npts, dp), 2, 3)
@@ -2316,35 +2400,39 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_xc_grid_kernel(xc, density, density_g, kinetic, direction, direction_g, kinetic_direction, &
                                             weights, pool, potential, kinetic_potential)
       TYPE(section_vals_type), POINTER                   :: xc
-      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: density(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN), TARGET           :: density(:)
       TYPE(pw_c1d_gs_type), INTENT(IN), TARGET           :: density_g(:)
-      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic(:), direction(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN), TARGET           :: direction(:)
       TYPE(pw_c1d_gs_type), INTENT(IN), TARGET           :: direction_g(:)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: kinetic_direction(:)
       TYPE(pw_r3d_rs_type), POINTER                      :: weights
       TYPE(pw_pool_type), POINTER                        :: pool
       TYPE(pw_r3d_rs_type), POINTER                      :: potential(:), kinetic_potential(:)
 
-      INTEGER                                            :: axis, dims(3), np, ns, orders(3), &
+      INTEGER                                            :: axis, deriv_id, dims(3), np, ns, &
                                                             smooth_id, spin
       LOGICAL                                            :: use_laplacian
-      REAL(dp), ALLOCATABLE                              :: dlaplace(:, :), laplace(:, :), vlaplace(:, :)
-      REAL(dp), ALLOCATABLE                              :: dgrad(:, :, :), drho(:, :), dtau(:, :), &
-                                                            grad(:, :, :), rho(:, :), tau(:, :), &
-                                                            vg(:, :, :), vn(:, :), vt(:, :), w(:)
+      REAL(dp), ALLOCATABLE :: dgrad(:, :, :), dlaplace(:, :), drho(:, :), dtau(:, :), &
+         grad(:, :, :), laplace(:, :), rho(:, :), tau(:, :), vg(:, :, :), vlaplace(:, :), &
+         vn(:, :), vt(:, :), w(:)
       TYPE(pw_c1d_gs_type)                               :: derivative_g
       TYPE(pw_c1d_gs_type), POINTER                      :: drho_g, rho_g
       TYPE(pw_c1d_gs_type), TARGET                       :: smoothed_direction_g, smoothed_g
       TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_r3d_rs_type)                               :: derivative_r, gradient_r, work_r
+      TYPE(pw_r3d_rs_type)                               :: derivative_r, gradient(3)
+      TYPE(pw_r3d_rs_type), POINTER                      :: source, source_direction
+      TYPE(pw_r3d_rs_type), TARGET                       :: smooth_direction_r, smooth_r
       TYPE(xc_rho_cflags_type)                           :: needs
 
+      deriv_id = section_get_ival(xc, "XC_GRID%XC_DERIV")
       smooth_id = section_get_ival(xc, "XC_GRID%XC_SMOOTH_RHO")
       grid => density(1)%pw_grid
       np = SIZE(density(1)%array)
       ns = SIZE(density)
       needs = xc_functionals_get_needs(section_vals_get_subs_vals(xc, 'XC_FUNCTIONAL'), ns == 2, calc_potential=.TRUE.)
       use_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
+      CPASSERT(qs_upf_inverse_xc_derivative_available(deriv_id, use_laplacian))
       dims = SHAPE(density(1)%array)
       ALLOCATE (rho(np, ns), grad(np, 3, ns), tau(np, ns), drho(np, ns), dgrad(np, 3, ns), dtau(np, ns), &
                 vn(np, ns), vg(np, 3, ns), vt(np, ns), w(np))
@@ -2355,54 +2443,56 @@ CONTAINS
          w(:) = RESHAPE(weights%array, [np])
       END IF
       CALL derivative_g%create(grid)
-      CALL gradient_r%create(grid)
-      CALL work_r%create(grid)
+      DO axis = 1, 3
+         CALL gradient(axis)%create(grid)
+      END DO
       CALL derivative_r%create(grid)
       IF (smooth_id /= xc_rho_no_smooth) THEN
+         CALL smooth_r%create(grid)
+         CALL smooth_direction_r%create(grid)
          CALL smoothed_g%create(grid)
          CALL smoothed_direction_g%create(grid)
       END IF
       DO spin = 1, ns
          CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
          CPASSERT(ASSOCIATED(direction(spin)%pw_grid, grid))
-         IF (smooth_id == xc_rho_no_smooth) THEN
-            rho(:, spin) = RESHAPE(density(spin)%array, [np])
-            drho(:, spin) = RESHAPE(direction(spin)%array, [np])
-            rho_g => density_g(spin)
-            drho_g => direction_g(spin)
-         ELSE
-            CALL xc_pw_smooth(density(spin), work_r, smooth_id)
-            rho(:, spin) = RESHAPE(work_r%array, [np])
-            CALL pw_transfer(work_r, smoothed_g)
-            CALL xc_pw_smooth(direction(spin), work_r, smooth_id)
-            drho(:, spin) = RESHAPE(work_r%array, [np])
-            CALL pw_transfer(work_r, smoothed_direction_g)
-            rho_g => smoothed_g
-            drho_g => smoothed_direction_g
+         source => density(spin)
+         source_direction => direction(spin)
+         rho_g => density_g(spin)
+         drho_g => direction_g(spin)
+         IF (smooth_id /= xc_rho_no_smooth) THEN
+            CALL xc_pw_smooth(source, smooth_r, smooth_id)
+            CALL xc_pw_smooth(source_direction, smooth_direction_r, smooth_id)
+            source => smooth_r
+            source_direction => smooth_direction_r
+            IF (xc_requires_tmp_g(deriv_id)) THEN
+               CALL pw_transfer(source, smoothed_g)
+               CALL pw_transfer(source_direction, smoothed_direction_g)
+               rho_g => smoothed_g
+               drho_g => smoothed_direction_g
+            END IF
          END IF
+         rho(:, spin) = RESHAPE(source%array, [np])
+         drho(:, spin) = RESHAPE(source_direction%array, [np])
          tau(:, spin) = RESHAPE(kinetic(spin)%array, [np])
          dtau(:, spin) = RESHAPE(kinetic_direction(spin)%array, [np])
+         CALL grid_gradient(source, rho_g, derivative_g, gradient, deriv_id)
          DO axis = 1, 3
-            orders = 0
-            orders(axis) = 1
-            derivative_g%array = rho_g%array
-            CALL pw_derive(derivative_g, orders)
-            CALL pw_transfer(derivative_g, gradient_r)
-            grad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
-            derivative_g%array = drho_g%array
-            CALL pw_derive(derivative_g, orders)
-            CALL pw_transfer(derivative_g, gradient_r)
-            dgrad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
+            grad(:, axis, spin) = RESHAPE(gradient(axis)%array, [np])
+         END DO
+         CALL grid_gradient(source_direction, drho_g, derivative_g, gradient, deriv_id)
+         DO axis = 1, 3
+            dgrad(:, axis, spin) = RESHAPE(gradient(axis)%array, [np])
          END DO
          IF (use_laplacian) THEN
             derivative_g%array = rho_g%array
             CALL pw_laplace(derivative_g)
-            CALL pw_transfer(derivative_g, gradient_r)
-            laplace(:, spin) = RESHAPE(gradient_r%array, [np])
+            CALL pw_transfer(derivative_g, derivative_r)
+            laplace(:, spin) = RESHAPE(derivative_r%array, [np])
             derivative_g%array = drho_g%array
             CALL pw_laplace(derivative_g)
-            CALL pw_transfer(derivative_g, gradient_r)
-            dlaplace(:, spin) = RESHAPE(gradient_r%array, [np])
+            CALL pw_transfer(derivative_g, derivative_r)
+            dlaplace(:, spin) = RESHAPE(derivative_r%array, [np])
          END IF
       END DO
       CALL qs_upf_inverse_xc_field_kernel(xc, rho, grad, tau, drho, dgrad, dtau, vn, vg, vt, laplace, dlaplace, vlaplace)
@@ -2413,34 +2503,32 @@ CONTAINS
          potential(spin)%array = RESHAPE(w*vn(:, spin), dims)
          kinetic_potential(spin)%array = RESHAPE(w*vt(:, spin), dims)
          DO axis = 1, 3
-            work_r%array = RESHAPE(w*vg(:, axis, spin), dims)
-            CALL pw_transfer(work_r, derivative_g)
-            orders = 0
-            orders(axis) = 1
-            CALL pw_derive(derivative_g, orders)
-            CALL pw_transfer(derivative_g, derivative_r)
-            potential(spin)%array = potential(spin)%array - derivative_r%array
+            gradient(axis)%array = RESHAPE(w*vg(:, axis, spin), dims)
          END DO
+         CALL add_grid_gradient_adjoint(gradient, derivative_g, derivative_r, potential(spin), deriv_id)
          IF (use_laplacian) THEN
-            work_r%array = RESHAPE(w*vlaplace(:, spin), dims)
-            CALL pw_transfer(work_r, derivative_g)
+            derivative_r%array = RESHAPE(w*vlaplace(:, spin), dims)
+            CALL pw_transfer(derivative_r, derivative_g)
             CALL pw_laplace(derivative_g)
             CALL pw_transfer(derivative_g, derivative_r)
             potential(spin)%array = potential(spin)%array + derivative_r%array
          END IF
          IF (smooth_id /= xc_rho_no_smooth) THEN
             ! The native density stencils are self-adjoint on the XC grid.
-            CALL xc_pw_smooth(potential(spin), work_r, smooth_id)
-            potential(spin)%array = work_r%array
+            CALL xc_pw_smooth(potential(spin), derivative_r, smooth_id)
+            potential(spin)%array = derivative_r%array
          END IF
       END DO
       IF (smooth_id /= xc_rho_no_smooth) THEN
+         CALL smooth_r%release()
+         CALL smooth_direction_r%release()
          CALL smoothed_g%release()
          CALL smoothed_direction_g%release()
       END IF
       CALL derivative_g%release()
-      CALL gradient_r%release()
-      CALL work_r%release()
+      DO axis = 1, 3
+         CALL gradient(axis)%release()
+      END DO
       CALL derivative_r%release()
    END SUBROUTINE qs_upf_inverse_xc_grid_kernel
 
