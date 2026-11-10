@@ -39,6 +39,7 @@ MODULE paw_xc
    USE paw_types,                       ONLY: paw_xc_type
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_type,&
+                                              skala_density_jumps_active,&
                                               skala_density_samples_active,&
                                               skala_density_samples_only,&
                                               skala_density_samples_put,&
@@ -55,7 +56,8 @@ MODULE paw_xc
                                               xc_dset_create,&
                                               xc_dset_release,&
                                               xc_dset_zero_all
-   USE xc_derivatives,                  ONLY: xc_functionals_get_needs,&
+   USE xc_derivatives,                  ONLY: xc_functionals_collect_floor_jumps,&
+                                              xc_functionals_get_needs,&
                                               xc_functionals_select_floor_limits
    USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
@@ -577,8 +579,8 @@ CONTAINS
       INTEGER                                            :: angular, bounds(2, 3), domain, first, &
                                                             ir, jr, na, nr, nspin, p, pair, q, &
                                                             side, spin
-      INTEGER, ALLOCATABLE                               :: selected_keys(:, :)
-      LOGICAL                                            :: assertion_valid, fields_only, lsd, record_samples, &
+      INTEGER, ALLOCATABLE                               :: floor_rows(:), selected_keys(:, :)
+      LOGICAL                                            :: assertion_valid, collect_jumps, fields_only, lsd, record_samples, &
                                                             use_tau
       REAL(dp)                                           :: batch_energy, sign
       REAL(dp), ALLOCATABLE                              :: rho(:, :, :), weights(:, :)
@@ -609,10 +611,12 @@ CONTAINS
          CPABORT("PAW one-center XC Laplacian dependence is not implemented")
       END IF
       use_tau = needs%tau .OR. needs%tau_spin
+      collect_jumps = .FALSE.
       record_samples = .FALSE.
       fields_only = .FALSE.
       IF (PRESENT(samples)) THEN
          IF (ASSOCIATED(samples)) THEN
+            collect_jumps = skala_density_jumps_active(samples)
             record_samples = skala_density_samples_active(samples)
             fields_only = skala_density_samples_only(samples)
          END IF
@@ -649,6 +653,8 @@ CONTAINS
       energy_sum = twofold_real_type()
       DO side = 1, 2
          sign = REAL(3 - 2*side, dp)
+         domain = skala_paw_ae_domain
+         IF (side == 2) domain = skala_paw_ps_domain
          DO first = 1, grid%nr, nr
             rho = 0.0_dp
             tau = 0.0_dp
@@ -683,8 +689,6 @@ CONTAINS
             IF (fields_only) CYCLE
             IF (PRESENT(samples)) THEN
                IF (ASSOCIATED(samples)) THEN
-                  domain = skala_paw_ae_domain
-                  IF (side == 2) domain = skala_paw_ps_domain
                   IF (skala_density_constraints_count(samples, domain) > 0) THEN
                      CPASSERT(PRESENT(atom))
                      CPASSERT(atom > 0)
@@ -699,7 +703,12 @@ CONTAINS
                         END DO
                      END DO
                   END IF
-                  CALL xc_functionals_select_floor_limits(functional, samples, rho_set, nspin, domain, selected_keys)
+                  IF (collect_jumps) THEN
+                     CALL xc_functionals_select_floor_limits(functional, samples, rho_set, nspin, domain, &
+                                                             selected_keys, selected_rows=floor_rows)
+                  ELSE
+                     CALL xc_functionals_select_floor_limits(functional, samples, rho_set, nspin, domain, selected_keys)
+                  END IF
                END IF
             END IF
             CALL xc_dset_zero_all(derivatives)
@@ -708,7 +717,12 @@ CONTAINS
             vtau = 0.0_dp
             CALL vxc_of_r_new(functional, rho_set, derivatives, 1, needs, weights, lsd, na, nr, &
                               batch_energy, vxc, vxg, vtau)
-    energy_sum = twofold_add(energy_sum, twofold_multiply(twofold_real_type(sign, 0.0_dp), twofold_real_type(batch_energy, 0.0_dp)))
+            IF (collect_jumps) THEN
+               CALL xc_functionals_collect_floor_jumps(functional, samples, rho_set, derivatives, floor_rows, &
+                                                       domain, sign, RESHAPE(weights, [na, nr, 1]))
+            END IF
+            energy_sum = twofold_add(energy_sum, &
+                                     twofold_multiply(twofold_real_type(sign, 0.0_dp), twofold_real_type(batch_energy, 0.0_dp)))
             CALL accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative)
          END DO
       END DO
