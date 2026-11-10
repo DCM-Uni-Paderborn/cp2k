@@ -22,7 +22,7 @@ MODULE skala_periodic_partition
       REAL(dp) :: cell(3, 3) = 0.0_dp, inverse(3, 3) = 0.0_dp, cutoff_radius = 0.0_dp
       REAL(dp), ALLOCATABLE :: atoms(:, :), offset(:, :, :), inverse_distance(:, :)
       REAL(dp), ALLOCATABLE :: cutoff(:, :), cutoff_gradient(:, :, :)
-      INTEGER, ALLOCATABLE :: owner(:, :), self(:)
+      INTEGER, ALLOCATABLE :: owner(:, :), active_neighbors(:)
    END TYPE skala_periodic_partition_type
    PUBLIC :: build_periodic_atom_image_layout, periodic_atom_image_partition
    PUBLIC :: periodic_atom_image_partition_from_layout
@@ -50,7 +50,7 @@ CONTAINS
 
       INTEGER                                            :: a, b, base(3), extent(3), i, j, k, n, &
                                                             shift(3)
-      REAL(dp)                                           :: distance
+      REAL(dp)                                           :: cutoff, distance, gradient(3), offset(3)
 
       CPASSERT(ASSOCIATED(cell))
       layout%natom = SIZE(atom_coords, 2)
@@ -76,7 +76,7 @@ CONTAINS
                 layout%inverse_distance(layout%nneighbor, layout%natom), &
                 layout%cutoff(layout%nneighbor, layout%natom), &
                 layout%cutoff_gradient(3, layout%nneighbor, layout%natom), &
-                layout%owner(layout%nneighbor, layout%natom), layout%self(layout%natom))
+                layout%owner(layout%nneighbor, layout%natom), layout%active_neighbors(layout%natom))
       DO a = 1, layout%natom
          n = 0
          DO b = 1, layout%natom
@@ -84,25 +84,25 @@ CONTAINS
             DO k = -extent(3), extent(3)
                DO j = -extent(2), extent(2)
                   DO i = -extent(1), extent(1)
-                     n = n + 1
                      shift = base + [i, j, k]
+                     IF (a == b .AND. ALL(shift == 0)) CYCLE
+                     offset = atom_coords(:, b) - atom_coords(:, a) + MATMUL(layout%cell, REAL(shift, dp))
+                     distance = NORM2(offset)
+                     CPASSERT(distance > 1.e-10_dp)
+                     CALL compact_window(layout, offset, cutoff, gradient)
+                     ! Outside the compact support the pair factor is one with zero derivative.
+                     IF (cutoff == 0.0_dp) CYCLE
+                     n = n + 1
                      layout%owner(n, a) = b
-                     layout%offset(:, n, a) = atom_coords(:, b) - atom_coords(:, a) + &
-                                              MATMUL(layout%cell, REAL(shift, dp))
-                     CALL compact_window(layout, layout%offset(:, n, a), &
-                                         layout%cutoff(n, a), layout%cutoff_gradient(:, n, a))
-                     IF (a == b .AND. ALL(shift == 0)) THEN
-                        layout%self(a) = n
-                        layout%inverse_distance(n, a) = 0.0_dp
-                     ELSE
-                        distance = NORM2(layout%offset(:, n, a))
-                        CPASSERT(distance > 1.e-10_dp)
-                        layout%inverse_distance(n, a) = 1.0_dp/distance
-                     END IF
+                     layout%offset(:, n, a) = offset
+                     layout%cutoff(n, a) = cutoff
+                     layout%cutoff_gradient(:, n, a) = gradient
+                     layout%inverse_distance(n, a) = 1.0_dp/distance
                   END DO
                END DO
             END DO
          END DO
+         layout%active_neighbors(a) = n
       END DO
       target_image = target_atom
    END SUBROUTINE build_periodic_atom_image_layout
@@ -325,8 +325,7 @@ CONTAINS
       q = c
       IF (logarithmic) q = LOG(c)
       ri = NORM2(x)
-      DO k = 1, layout%nneighbor
-         IF (k == layout%self(atom) .OR. layout%cutoff(k, atom) == 0.0_dp) CYCLE
+      DO k = 1, layout%active_neighbors(atom)
          rj = NORM2(x - layout%offset(:, k, atom))
          mu = (ri - rj)*layout%inverse_distance(k, atom)
          CALL pair_switch(mu, s, ds)
@@ -382,8 +381,7 @@ CONTAINS
       END IF
       ri = NORM2(x)
       u = x/MAX(ri, 1.e-30_dp)
-      DO k = 1, layout%nneighbor
-         IF (k == layout%self(atom) .OR. layout%cutoff(k, atom) == 0.0_dp) CYCLE
+      DO k = 1, layout%active_neighbors(atom)
          b = layout%owner(k, atom)
          y = x - layout%offset(:, k, atom)
          rj = NORM2(y)
