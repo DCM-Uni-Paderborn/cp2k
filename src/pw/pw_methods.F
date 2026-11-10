@@ -663,6 +663,8 @@ CONTAINS
                         END IF
                      ELSE
                         #:if kind=='c1d' and kind2=='c1d' and space=="gs"
+                           ! The matching copy leaves coefficients absent from the source untouched.
+                           CALL pw_zero(pw2)
                            CALL pw_copy_match(pw1, pw2)
                         #:else
                            CPABORT("Copy not implemented!")

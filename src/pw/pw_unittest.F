@@ -38,6 +38,7 @@ PROGRAM pw_unittest
                                               pw_grid_release
    USE pw_methods,                      ONLY: do_accurate_sum,&
                                               do_standard_sum,&
+                                              pw_copy,&
                                               pw_integral_ab,&
                                               pw_real_fourier_aliases,&
                                               pw_transfer
@@ -576,6 +577,11 @@ CONTAINS
          IF (mode == 5 .AND. j > nsource) expected = untouched
          IF (ABS(destination%array(i) - expected) > 1.e-14_dp) ERROR STOP 'Incorrect PW copy'
       END DO
+      IF (mode == 5) THEN
+         CALL pw_copy(source, destination)
+         IF (ANY(destination%array(:nsource) /= source%array) .OR. &
+             destination%array(ntarget) /= 0.0_dp) ERROR STOP 'Incorrect PW overwrite'
+      END IF
       DEALLOCATE (source%array, destination%array)
       CALL source_grid%para%group%free()
    END SUBROUTINE check_copy
