@@ -251,7 +251,7 @@ MODULE qs_kind_types
              deallocate_qs_kind_set, &
              get_qs_kind, &
              get_qs_kind_set, &
-             has_nlcc, has_uspp, &
+             has_gaussian_upf, has_nlcc, has_uspp, &
              init_qs_kind_set, &
              init_gapw_basis_set, &
              init_gapw_nlcc, &
@@ -4282,6 +4282,26 @@ CONTAINS
       END IF
 
    END SUBROUTINE set_pseudo_state
+
+! **************************************************************************************************
+!> \brief Whether a non-ghost kind uses an UPF potential with Gaussian orbitals.
+!> \param qs_kind_set Current Gaussian kinds.
+!> \return True when the calculation uses at least one native UPF dataset.
+! **************************************************************************************************
+   LOGICAL FUNCTION has_gaussian_upf(qs_kind_set) RESULT(found)
+      TYPE(qs_kind_type), INTENT(IN)                     :: qs_kind_set(:)
+
+      INTEGER                                            :: ikind
+
+      found = .FALSE.
+      DO ikind = 1, SIZE(qs_kind_set)
+         IF (qs_kind_set(ikind)%ghost) CYCLE
+         IF (.NOT. ASSOCIATED(qs_kind_set(ikind)%sgp_potential)) CYCLE
+         IF (.NOT. ALLOCATED(qs_kind_set(ikind)%sgp_potential%upf_data)) CYCLE
+         found = .TRUE.
+         RETURN
+      END DO
+   END FUNCTION has_gaussian_upf
 
 ! **************************************************************************************************
 !> \brief Whether a non-ghost kind carries USPP or PAW augmentation.

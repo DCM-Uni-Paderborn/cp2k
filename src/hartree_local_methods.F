@@ -38,6 +38,7 @@ MODULE hartree_local_methods
                                               harmonics_atom_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
+                                              has_gaussian_upf,&
                                               qs_kind_type
    USE qs_local_rho_types,              ONLY: get_local_rho,&
                                               local_rho_type,&
@@ -232,7 +233,8 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: atom_list, lmax, lmax_nuc, lmin, &
                                                             lmin_nuc, npgf, npgf_nuc
       LOGICAL                                            :: cneo, core_charge, l_2nd_local_rho, &
-                                                            my_core_2nd, my_periodic, paw_atom
+                                                            my_core_2nd, my_periodic, native_upf, &
+                                                            paw_atom, symmetric_radial
       REAL(dp)                                           :: back_ch, background_energy, &
                                                             background_nuc, ecoul_1_z_cneo
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: background_potential, gexp, sqrtwr
@@ -280,6 +282,7 @@ CONTAINS
                       atomic_kind_set=atomic_kind_set, &
                       qs_kind_set=qs_kind_set, &
                       pw_env=pw_env, qs_charges=qs_charges, virial=virial)
+      native_upf = has_gaussian_upf(qs_kind_set)
 
       CALL pw_env_get(pw_env, poisson_env=poisson_env)
       my_periodic = (poisson_env%method == pw_poisson_periodic)
@@ -342,6 +345,7 @@ CONTAINS
                           basis_set=basis_1c, basis_type="GAPW_1C")
 
          cneo = ASSOCIATED(cneo_potential)
+         symmetric_radial = native_upf .AND. .NOT. cneo
          IF (cneo .AND. tddft) THEN
             CPABORT("Electronic TDDFT with CNEO quantum nuclei is not implemented.")
          END IF
@@ -578,9 +582,9 @@ CONTAINS
 
                IF (l_2nd_local_rho) rho_atom => rho_atom_set_2nd(iatom) ! rho_atom for potential (2nd)
 
-               source_h = 0.0_dp
-               source_s = 0.0_dp
-               IF (.NOT. cneo) THEN
+               IF (symmetric_radial) THEN
+                  source_h = 0.0_dp
+                  source_s = 0.0_dp
                   CALL get_rho_atom(rho_atom, rho_rad_h=radial_h, rho_rad_s=radial_s)
                   DO iso = 1, nspins
                      source_h(:, :) = source_h(:, :) + radial_h(iso)%r_coef(:, :)
@@ -622,7 +626,7 @@ CONTAINS
                                          max_s_harm, llmax, cg_list, cg_n_list, &
                                          nset, npgf, lmin, lmax, nsotot, maxso, nspins, nchan_0, gsph, &
                                          g0_h_w, my_CG, Qlm_gg, grid_atom, zet, vg0_h, source_h, source_s, &
-                                         background_potential, symmetric_radial=.NOT. cneo)
+                                         background_potential, symmetric_radial=symmetric_radial)
 
             END DO ! iat
 

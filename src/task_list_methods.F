@@ -48,6 +48,7 @@ MODULE task_list_methods
    USE pw_env_types, ONLY: pw_env_get, &
                            pw_env_type
    USE qs_kind_types, ONLY: get_qs_kind, &
+                            has_gaussian_upf, &
                             qs_kind_type
    USE qs_ks_types, ONLY: get_ks_env, &
                           qs_ks_env_type
@@ -101,16 +102,8 @@ CONTAINS
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                  :: resolution
 
-      INTEGER                                            :: kind
-
-      DO kind = 1, SIZE(kinds)
-         IF (kinds(kind)%ghost) CYCLE
-         IF (.NOT. ASSOCIATED(kinds(kind)%sgp_potential)) CYCLE
-         IF (.NOT. ALLOCATED(kinds(kind)%sgp_potential%upf_data)) CYCLE
-         ! Avoid coarse radius-search jumps under small atomic and cell displacements.
-         ALLOCATE (resolution, SOURCE=1.e-12_dp)
-         RETURN
-      END DO
+      ! Avoid coarse radius-search jumps under small atomic and cell displacements.
+      IF (has_gaussian_upf(kinds)) ALLOCATE (resolution, SOURCE=1.e-12_dp)
    END SUBROUTINE select_task_radius_resolution
 
 ! **************************************************************************************************
