@@ -11,7 +11,8 @@ MODULE qs_upf_inverse_coulomb
                                               dbcsr_type
    USE kinds,                           ONLY: dp,&
                                               int_8
-   USE mathconstants,                   ONLY: fourpi
+   USE mathconstants,                   ONLY: fourpi,&
+                                              pi
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_para_env_type
    USE mt_util,                         ONLY: MT0D,&
@@ -26,6 +27,7 @@ MODULE qs_upf_inverse_coulomb
                                               pw_grid_type
    USE pw_methods,                      ONLY: pw_integral_ab,&
                                               pw_integrate_function,&
+                                              pw_real_fourier_aliases,&
                                               pw_scale,&
                                               pw_transfer
    USE pw_poisson_methods,              ONLY: pw_green_strain_response,&
@@ -866,6 +868,115 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_coulomb_ionic_geometry
 
 ! **************************************************************************************************
+!> \brief Analytic Fourier coefficients of the periodic Gaussian ionic charges and their adjoint.
+!>        Each term represents a physical wave vector folded into the real FFT coefficient.
+!> \param grid Auxiliary reciprocal grid.
+!> \param index Local reciprocal coefficient index.
+!> \param position Cartesian atomic center.
+!> \param alpha Gaussian exponent.
+!> \param charge Integrated Gaussian charge divided by the cell volume.
+!> \param vectors Physical wave vectors.
+!> \param terms Fourier coefficients including the averaging weights.
+!> \param count Number of physical wave vectors for this coefficient.
+! **************************************************************************************************
+   SUBROUTINE ionic_fourier_terms(grid, index, position, alpha, charge, vectors, terms, count)
+      TYPE(pw_grid_type), INTENT(IN)                     :: grid
+      INTEGER, INTENT(IN)                                :: index
+      REAL(dp), INTENT(IN)                               :: position(3), alpha, charge
+      REAL(dp), INTENT(OUT)                              :: vectors(3, 8)
+      COMPLEX(dp), INTENT(OUT)                           :: terms(8)
+      INTEGER, INTENT(OUT)                               :: count
+
+      INTEGER                                            :: j
+      REAL(dp)                                           :: g(3)
+
+      CALL pw_real_fourier_aliases(grid, index, vectors, count)
+      DO j = 1, count
+         g = vectors(:, j)
+         terms(j) = charge/REAL(count, dp)*EXP(CMPLX(-DOT_PRODUCT(g, g)/(4.0_dp*alpha), -DOT_PRODUCT(g, position), dp))
+      END DO
+   END SUBROUTINE ionic_fourier_terms
+
+! **************************************************************************************************
+!> \brief Construct the periodic ionic source without sampling narrow Gaussians in real space.
+!> \param atoms Native atoms at the prepared geometry.
+!> \param kinds Native Gaussian charge definitions.
+!> \param density Fourier source including the negative ionic charge.
+! **************************************************************************************************
+   SUBROUTINE ionic_fourier_source(atoms, kinds, density)
+      TYPE(particle_type), INTENT(IN)                    :: atoms(:)
+      TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
+      TYPE(pw_c1d_gs_type), INTENT(INOUT)                :: density
+
+      COMPLEX(dp)                                        :: terms(8)
+      INTEGER                                            :: atom, count, i, kind
+      REAL(dp)                                           :: alpha, charge, coefficient, vectors(3, 8)
+      TYPE(pw_grid_type), POINTER                        :: grid
+
+      grid => density%pw_grid
+      density%array = 0.0_dp
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         CALL get_qs_kind(kinds(kind), alpha_core_charge=alpha, ccore_charge=coefficient)
+         IF (alpha == 0.0_dp .OR. coefficient == 0.0_dp) CYCLE
+         charge = -coefficient*(pi/alpha)**1.5_dp/grid%vol
+         DO i = 1, SIZE(density%array)
+            CALL ionic_fourier_terms(grid, i, atoms(atom)%r, alpha, charge, vectors, terms, count)
+            density%array(i) = density%array(i) + SUM(terms(:count))
+         END DO
+      END DO
+   END SUBROUTINE ionic_fourier_source
+
+! **************************************************************************************************
+!> \brief Differentiate the same ionic Fourier coefficients at fixed fractional centers for strain.
+!> \param qs_env Owner of the atomic positions and charge definitions.
+!> \param map Prepared reciprocal potential and FFT weights.
+!> \param forces Negative derivative with respect to Cartesian displacements.
+!> \param virial Negative derivative with respect to affine strain, excluding the integral measure.
+! **************************************************************************************************
+   SUBROUTINE ionic_fourier_geometry(qs_env, map, forces, virial)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(qs_upf_inverse_coulomb_type), INTENT(IN)      :: map
+      REAL(dp), INTENT(OUT)                              :: forces(:, :), virial(3, 3)
+
+      COMPLEX(dp)                                        :: covector, term, terms(8)
+      INTEGER                                            :: atom, axis, count, i, j, kind
+      REAL(dp)                                           :: alpha, charge, coefficient, g(3), &
+                                                            vectors(3, 8)
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_grid_type), POINTER                        :: grid
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_qs_env(qs_env, qs_kind_set=kinds, particle_set=atoms)
+      grid => map%grid
+      forces = 0.0_dp
+      virial = 0.0_dp
+      DO atom = 1, SIZE(atoms)
+         kind = atoms(atom)%atomic_kind%kind_number
+         CALL get_qs_kind(kinds(kind), alpha_core_charge=alpha, ccore_charge=coefficient)
+         IF (alpha == 0.0_dp .OR. coefficient == 0.0_dp) CYCLE
+         charge = -coefficient*(pi/alpha)**1.5_dp/grid%vol
+         DO i = 1, SIZE(map%potential_g%array)
+            covector = grid%vol*map%multiplicity(i)*CONJG(map%potential_g%array(i))
+            CALL ionic_fourier_terms(grid, i, atoms(atom)%r, alpha, charge, vectors, terms, count)
+            DO j = 1, count
+               g = vectors(:, j)
+               term = covector*terms(j)
+               forces(:, atom) = forces(:, atom) - AIMAG(term)*g
+               DO axis = 1, 3
+                  virial(:, axis) = virial(:, axis) - REAL(term, dp)*g*g(axis)/(2.0_dp*alpha)
+                  virial(axis, axis) = virial(axis, axis) + REAL(term, dp)
+               END DO
+            END DO
+         END DO
+      END DO
+      IF (grid%para%mode /= PW_MODE_LOCAL) THEN
+         CALL grid%para%group%mp_comm_type%sum(forces)
+         CALL grid%para%group%mp_comm_type%sum(virial)
+      END IF
+   END SUBROUTINE ionic_fourier_geometry
+
+! **************************************************************************************************
 !> \brief Own the complete Coulomb functional and install its metric before the first SCF density.
 !>        The caller must connect the same source and AO operator to native energy accounting.
 !>        Native GAPW energy initialization attaches this source before allocating new KS matrices.
@@ -1051,7 +1162,11 @@ CONTAINS
       CASE DEFAULT
          CPABORT("Inverse GAPW Coulomb for this Poisson solver is not implemented")
       END SELECT
-      CALL calculate_rho_core(map%ionic, total, qs_env, only_nopaw=.FALSE.)
+      IF (poisson%green_fft%method == PERIODIC3D) THEN
+         CALL ionic_fourier_source(atoms, kinds, map%ionic)
+      ELSE
+         CALL calculate_rho_core(map%ionic, total, qs_env, only_nopaw=.FALSE.)
+      END IF
       ALLOCATE (map%multiplicity(SIZE(map%ionic%array)), map%poisson_weights(SIZE(map%ionic%array)))
       map%multiplicity = 1.0_dp
       IF (map%grid%grid_span == HALFSPACE) THEN
@@ -1381,10 +1496,18 @@ CONTAINS
 
       REAL(dp)                                           :: ionic_virial(3, 3)
       REAL(dp), ALLOCATABLE                              :: ionic_forces(:, :)
+      TYPE(pw_env_type), POINTER                         :: pw_env
+      TYPE(pw_poisson_type), POINTER                     :: poisson
 
       ALLOCATE (ionic_forces, MOLD=forces)
       CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, map%potential, forces, virial)
-      CALL qs_upf_inverse_coulomb_ionic_geometry(qs_env, map%potential, ionic_forces, ionic_virial)
+      CALL get_qs_env(qs_env, pw_env=pw_env)
+      CALL pw_env_get(pw_env, poisson_env=poisson)
+      IF (poisson%green_fft%method == PERIODIC3D) THEN
+         CALL ionic_fourier_geometry(qs_env, map, ionic_forces, ionic_virial)
+      ELSE
+         CALL qs_upf_inverse_coulomb_ionic_geometry(qs_env, map%potential, ionic_forces, ionic_virial)
+      END IF
       forces(:, :) = forces + ionic_forces
       virial(:, :) = virial + ionic_virial
    END SUBROUTINE coulomb_source_geometry

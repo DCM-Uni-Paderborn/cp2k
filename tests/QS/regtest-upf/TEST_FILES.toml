@@ -17,7 +17,7 @@
   {matcher = "Atomic_force_2_y", tol = 1e-6, ref = 0.00415934302},
 ]
 # One evaluation of the mixed PAW and USPP GAPW energy reuses existing UPFs.
-"FeH2_PAW_GAPW.inp"                = [{matcher = "M011", tol = 1e-10, ref = -1257.377044047356094}]
+"FeH2_PAW_GAPW.inp"                = [{matcher = "M011", tol = 1e-10, ref = -1257.552328454654116}]
 # Original full-wave USPP with the native inverse GPW density, metric and derivatives.
 # General-inverse kinetic energy uses Gaussian integrals and radial corrections.
 "H2_inverse_GPW.inp"               = [
