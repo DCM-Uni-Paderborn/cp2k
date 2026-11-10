@@ -128,11 +128,18 @@ CONTAINS
       TYPE(qs_ot_type)                                   :: qs_ot_env
       TYPE(dbcsr_type)                                   :: matrix_in, matrix_out
 
-      INTEGER                                            :: pass
+      INTEGER                                            :: nconstraint, nreference, pass
       TYPE(dbcsr_type)                                   :: overlap
 
       CALL apply_preconditioner(qs_ot_env%preconditioner, matrix_in, matrix_out)
       IF (qs_ot_env%settings%ot_algorithm /= 'TOD') RETURN
+
+      ! A complementary eigensolve includes additional constraints in SC0.
+      ! Its gradient projection already covers the full space, while C0
+      ! contains only the orbitals being optimized.
+      CALL dbcsr_get_info(qs_ot_env%matrix_c0, nfullcols_total=nreference)
+      CALL dbcsr_get_info(qs_ot_env%matrix_sc0, nfullcols_total=nconstraint)
+      IF (nreference /= nconstraint) RETURN
 
       CALL dbcsr_copy(overlap, qs_ot_env%matrix_buf1_ortho, name='ot_tangent_overlap')
       DO pass = 1, 2
