@@ -152,6 +152,7 @@ PROGRAM upf_inverse_unittest
    REAL(dp) :: max_error = 0.0_dp
    INTEGER :: stop_polls = 0
    INTEGER :: analytical_hessian_calls = 0
+   INTEGER :: curved_constraint_calls = 0
    INTEGER :: segment_queries = 0
    TYPE(mp_comm_type) :: comm
 
@@ -676,7 +677,7 @@ CONTAINS
       INTEGER                                            :: i, iterations, method
       LOGICAL                                            :: converged, valid
       REAL(dp) :: anisotropic(9), coordinate(4), derivative(9), empty(0), energy, energy_zero, &
-         implicit_derivative, jacobian(1, 4), midpoint(4), negative(2), values(1)
+         implicit_derivative, jacobian(1, 4), midpoint(4), negative(2), seed(4), values(1)
       TYPE(skala_constraint_chart_type)                  :: curve
 
       coordinate(:3) = [0.01_dp, 0.02_dp, 0.03_dp]
@@ -694,6 +695,15 @@ CONTAINS
       IF (.NOT. valid .OR. ABS(values(1)) > 1.e-16_dp) ERROR STOP 'Constraint curve lost physical feasibility'
       IF (ANY(midpoint(:3) /= 1.5_dp*coordinate(:3))) ERROR STOP 'Constraint restoration changed free coordinates'
       IF (ABS(midpoint(4) - SUM(midpoint(:3)**2)) > 1.e-16_dp) ERROR STOP 'Wrong restored physical curve'
+      midpoint(:3) = [0.0625_dp, 0.03125_dp, 0.015625_dp]
+      seed(4) = SUM(midpoint(:3)**2)
+      seed(:3) = coordinate(:3)
+      midpoint(4) = 0.0_dp
+      curved_constraint_calls = 0
+      CALL skala_constraint_chart_restore(curve, curved_constraints, energy_zero, midpoint, values, jacobian, valid, &
+                                          dependent_seed=seed)
+      IF (.NOT. valid .OR. curved_constraint_calls /= 1) ERROR STOP 'Exact dependent seed required extra restoration'
+      IF (ANY(midpoint(:3) /= [0.0625_dp, 0.03125_dp, 0.015625_dp])) ERROR STOP 'Dependent seed changed free coordinates'
       CALL skala_constrained_stationarity(curved_constraints, curved_energy_gradient, energy_zero, coordinate, &
                                           [1.e-16_dp], tolerance, converged, max_iterations=4, iterations=iterations)
       IF (.NOT. converged .OR. iterations > 4 .OR. NORM2(weights*coordinate(:3)) > tolerance) THEN
@@ -877,6 +887,7 @@ CONTAINS
 
       SELECT TYPE (context)
       TYPE IS (REAL(dp))
+         curved_constraint_calls = curved_constraint_calls + 1
          values(1) = coordinate(4) - SUM(coordinate(:3)**2)
          jacobian(1, :3) = -2.0_dp*coordinate(:3)
          jacobian(1, 4) = 1.0_dp

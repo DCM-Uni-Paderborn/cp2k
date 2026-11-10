@@ -2418,10 +2418,11 @@ CONTAINS
       LOGICAL                                            :: bracketed, EXTERNAL, need_operator, &
                                                             requested, valid
       REAL(dp)                                           :: energy, fraction, left, previous_width, &
-                                                            right, scale, trial_fraction
+                                                            right, scale, seed_fraction, trial_fraction
       REAL(dp), ALLOCATABLE                              :: direction(:), edge_values(:, :), &
                                                             gradient(:), initial(:), &
-                                                            jacobian(:, :), residuals(:), sides(:)
+                                                            jacobian(:, :), left_coordinate(:), residuals(:), &
+                                                            right_coordinate(:), sides(:)
       TYPE(physical_constraints_context)                 :: context
 
       n = qs_skala_scf_size(state)
@@ -2500,6 +2501,10 @@ CONTAINS
             previous_width = 2.0_dp*(right - left)
             edge_values(1, :) = sides*(initial - targets)
             edge_values(2, :) = sides*(values - targets)
+            IF (PRESENT(curve)) THEN
+               ALLOCATE (left_coordinate, SOURCE=first)
+               ALLOCATE (right_coordinate, SOURCE=last)
+            END IF
             DO iteration = 1, limit
                IF (EXTERNAL) THEN
                   CALL external_control(requested, "SCF", target_time=state%qs_env%target_time, &
@@ -2526,8 +2531,20 @@ CONTAINS
                IF (fraction <= left .OR. fraction >= right) EXIT
                root(:) = first + fraction*direction
                IF (PRESENT(curve)) THEN
-                  CALL skala_constraint_chart_restore(curve, evaluate_native_constraints, context, root, &
-                                                      residuals, jacobian, valid)
+                  valid = .FALSE.
+                  IF (left > 0.0_dp .OR. right < 1.0_dp) THEN
+                     ! Follow the restored local chord for dependent coordinates only.
+                     seed_fraction = (fraction - left)/(right - left)
+                     CALL skala_constraint_chart_restore(curve, evaluate_native_constraints, context, root, &
+                                                         residuals, jacobian, valid, &
+                                                         dependent_seed=left_coordinate + &
+                                                         seed_fraction*(right_coordinate - left_coordinate))
+                  END IF
+                  IF (.NOT. valid) THEN
+                     root(:) = first + fraction*direction
+                     CALL skala_constraint_chart_restore(curve, evaluate_native_constraints, context, root, &
+                                                         residuals, jacobian, valid)
+                  END IF
                   IF (.NOT. valid) EXIT
                END IF
                CALL sample_native_constraints(state, root)
@@ -2545,9 +2562,11 @@ CONTAINS
                IF (ANY(sides*(values - targets) < -tolerances)) THEN
                   right = fraction
                   edge_values(2, :) = sides*(values - targets)
+                  IF (PRESENT(curve)) right_coordinate(:) = root
                ELSE
                   left = fraction
                   edge_values(1, :) = sides*(values - targets)
+                  IF (PRESENT(curve)) left_coordinate(:) = root
                END IF
             END DO
          END IF

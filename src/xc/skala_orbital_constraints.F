@@ -2052,8 +2052,10 @@ CONTAINS
 !> \param values Original physical residuals at the returned trial.
 !> \param jacobian Original physical Jacobian at the returned trial.
 !> \param valid Whether every original sample meets its own absolute feasibility window.
+!> \param dependent_seed Optional starting values for dependent coordinates only.
 ! **************************************************************************************************
-   SUBROUTINE skala_constraint_chart_restore(chart, evaluate_constraints, context, coordinate, values, jacobian, valid)
+   SUBROUTINE skala_constraint_chart_restore(chart, evaluate_constraints, context, coordinate, values, jacobian, valid, &
+                                             dependent_seed)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: chart
 
       PROCEDURE(physical_constraints) :: evaluate_constraints
@@ -2061,6 +2063,7 @@ CONTAINS
       REAL(dp), INTENT(INOUT) :: coordinate(:)
       REAL(dp), INTENT(OUT) :: values(:), jacobian(:, :)
       LOGICAL, INTENT(OUT) :: valid
+      REAL(dp), INTENT(IN), OPTIONAL :: dependent_seed(:)
 
       INTEGER :: correction, d, k, m, r
       LOGICAL :: solved
@@ -2073,6 +2076,10 @@ CONTAINS
       CPASSERT(SIZE(chart%free) + r == d)
       CPASSERT(SIZE(values) == m .AND. ALL(SHAPE(jacobian) == [m, d]))
       valid = .FALSE.
+      IF (PRESENT(dependent_seed)) THEN
+         CPASSERT(SIZE(dependent_seed) == d)
+         coordinate(chart%dependent) = dependent_seed(chart%dependent)
+      END IF
       CALL evaluate_constraints(coordinate, values, jacobian, context)
       CPASSERT(ALL(ieee_is_finite(values)))
       CPASSERT(ALL(ieee_is_finite(jacobian)))
