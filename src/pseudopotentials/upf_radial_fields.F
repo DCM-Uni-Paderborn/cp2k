@@ -136,17 +136,20 @@ CONTAINS
 !> \param value Values in the native magnetic-projector order.
 !> \param gradient Optional Cartesian point gradients; center gradients have opposite sign.
 !> \param hessian Optional Cartesian Hessians, including origin and coordinate axes.
+!> \param laplacian Optional trace of the Cartesian Hessian.
+!> \param laplacian_gradient Optional Cartesian gradient of the Laplacian within each radial interval.
 ! **************************************************************************************************
-   SUBROUTINE upf_radial_fields_evaluate(fields, displacement, value, gradient, hessian)
+   SUBROUTINE upf_radial_fields_evaluate(fields, displacement, value, gradient, hessian, laplacian, laplacian_gradient)
       TYPE(upf_radial_fields_type), INTENT(IN)           :: fields
       REAL(dp), INTENT(IN)                               :: displacement(3)
       REAL(dp), INTENT(OUT)                              :: value(:)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :), hessian(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: laplacian(:), laplacian_gradient(:, :)
 
       INTEGER                                            :: a, axis, axis2, hi, i, l, lo, m, mid, p, &
                                                             powers(3), reduced(3)
       REAL(dp)                                           :: angular, da(3), dda(3, 3), factor, h, &
-                                                            radial, rd, rdd, s, t, term
+                                                            radial, radial_laplacian, rd, rdd, rddd, s, t, term
 
       CPASSERT(ALLOCATED(fields%x) .AND. SIZE(value) == fields%nproj)
       value = 0.0_dp
@@ -157,6 +160,14 @@ CONTAINS
       IF (PRESENT(hessian)) THEN
          CPASSERT(ALL(SHAPE(hessian) == [3, 3, fields%nproj]))
          hessian = 0.0_dp
+      END IF
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(SIZE(laplacian) == fields%nproj)
+         laplacian = 0.0_dp
+      END IF
+      IF (PRESENT(laplacian_gradient)) THEN
+         CPASSERT(ALL(SHAPE(laplacian_gradient) == [3, fields%nproj]))
+         laplacian_gradient = 0.0_dp
       END IF
       s = SUM(displacement**2)
       IF (fields%finite_table) THEN
@@ -185,6 +196,7 @@ CONTAINS
             radial = c(1) + t*(c(2) + t*(c(3) + t*(c(4) + t*(c(5) + t*c(6)))))
             rd = (c(2) + t*(2.0_dp*c(3) + t*(3.0_dp*c(4) + t*(4.0_dp*c(5) + t*5.0_dp*c(6)))))/h
             rdd = (2.0_dp*c(3) + t*(6.0_dp*c(4) + t*(12.0_dp*c(5) + t*20.0_dp*c(6))))/h**2
+            IF (PRESENT(laplacian_gradient)) rddd = (6.0_dp*c(4) + t*(24.0_dp*c(5) + t*60.0_dp*c(6)))/h**3
          END ASSOCIATE
          angular = 0.0_dp
          da = 0.0_dp
@@ -220,6 +232,16 @@ CONTAINS
                hessian(axis2, axis2, p) = hessian(axis2, axis2, p) + 2.0_dp*rd*angular
             END DO
          END IF
+         IF (PRESENT(laplacian) .OR. PRESENT(laplacian_gradient)) THEN
+            ! For a homogeneous harmonic H_l and s=r**2, Laplacian(f(s) H_l)
+            ! is [4*s*f'' + (4*l+6)*f'] H_l, including at the origin.
+            radial_laplacian = 4.0_dp*s*rdd + REAL(4*l + 6, dp)*rd
+            IF (PRESENT(laplacian)) laplacian(p) = radial_laplacian*angular
+            IF (PRESENT(laplacian_gradient)) THEN
+               laplacian_gradient(:, p) = radial_laplacian*da + &
+                  2.0_dp*displacement*(4.0_dp*s*rddd + REAL(4*l + 10, dp)*rdd)*angular
+            END IF
+         END IF
       END DO
    END SUBROUTINE upf_radial_fields_evaluate
 
@@ -242,10 +264,13 @@ CONTAINS
 !> \param cell_response Optional cell-vector response.
 !> \param reduced_k_response Optional reduced Bloch-wavevector response.
 !> \param cell_gradient Optional lattice derivative at fixed points, centers and reduced k, axes last.
+!> \param laplacian Optional spatial Laplacian of the Bloch field.
+!> \param laplacian_response Optional joint geometry and Bloch response of the spatial Laplacian.
 ! **************************************************************************************************
    SUBROUTINE upf_radial_fields_periodic(fields, points, center, cell, images, reduced_k, value, &
                                          gradient, response, gradient_response, points_response, &
-                                         center_response, cell_response, reduced_k_response, cell_gradient)
+                                         center_response, cell_response, reduced_k_response, cell_gradient, &
+                                         laplacian, laplacian_response)
       TYPE(upf_radial_fields_type), INTENT(IN)           :: fields
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -258,6 +283,7 @@ CONTAINS
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cell_gradient(:, :, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: laplacian(:, :), laplacian_response(:, :)
 
       COMPLEX(dp)                                        :: dphase, phase
       INTEGER                                            :: axis, column, image, point
@@ -266,6 +292,8 @@ CONTAINS
                                                             radius_squared, shift(3), v(fields%nproj), &
                                                             hh(3, 3, fields%nproj), &
                                                             g(3, fields%nproj)
+      REAL(dp), TARGET                                   :: lap(fields%nproj), lap_gradient(3, fields%nproj)
+      REAL(dp), POINTER                                  :: lap_field(:), lap_derivative(:, :)
 
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(images, 1) == 3)
       CPASSERT(ALL(SHAPE(value) == [SIZE(points, 2), fields%nproj]))
@@ -293,6 +321,17 @@ CONTAINS
       IF (PRESENT(points_response)) THEN
          CPASSERT(ALL(SHAPE(points_response) == SHAPE(points)))
       END IF
+      NULLIFY (lap_field, lap_derivative)
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(value)))
+         laplacian = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (PRESENT(laplacian_response)) THEN
+         CPASSERT(ALL(SHAPE(laplacian_response) == SHAPE(value)))
+         laplacian_response = CMPLX(0.0_dp, 0.0_dp, dp)
+         lap_derivative => lap_gradient
+      END IF
+      IF (PRESENT(laplacian) .OR. PRESENT(laplacian_response)) lap_field => lap
       IF (SIZE(points, 2) == 0) RETURN
       radius_squared = fields%radius**2
       screen_images = SIZE(images, 2) > 1
@@ -321,15 +360,19 @@ CONTAINS
             dr = -dshift
             IF (PRESENT(points_response)) dr = dr + points_response(:, point)
             IF (PRESENT(gradient_response)) THEN
-               CALL upf_radial_fields_evaluate(fields, displacement, v, g, hh)
+               CALL upf_radial_fields_evaluate(fields, displacement, v, g, hh, lap_field, lap_derivative)
             ELSE IF (PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(cell_gradient)) THEN
-               CALL upf_radial_fields_evaluate(fields, displacement, v, g)
+               CALL upf_radial_fields_evaluate(fields, displacement, v, g, laplacian=lap_field, laplacian_gradient=lap_derivative)
             ELSE
-               CALL upf_radial_fields_evaluate(fields, displacement, v)
+               CALL upf_radial_fields_evaluate(fields, displacement, v, laplacian=lap_field, laplacian_gradient=lap_derivative)
             END IF
             value(point, :) = value(point, :) + phase*v
             IF (PRESENT(response)) response(point, :) = response(point, :) + &
                                                         phase*MATMUL(dr, g) + dphase*v
+            IF (PRESENT(laplacian)) laplacian(point, :) = laplacian(point, :) + phase*lap
+            IF (PRESENT(laplacian_response)) THEN
+               laplacian_response(point, :) = laplacian_response(point, :) + phase*MATMUL(dr, lap_gradient) + dphase*lap
+            END IF
             DO axis = 1, 3
                IF (PRESENT(gradient)) gradient(point, :, axis) = gradient(point, :, axis) + phase*g(axis, :)
                IF (PRESENT(cell_gradient)) THEN

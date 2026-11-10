@@ -196,12 +196,15 @@ CONTAINS
 !> \param qr Symmetric Q_ij(r), without radial Jacobian or quadrature weights.
 !> \param gradient Optional Cartesian gradient of qr with respect to the evaluation point.
 !> \param hessian Optional Cartesian Hessian of qr, also needed for GGA geometry derivatives.
+!> \param laplacian Optional Cartesian Laplacian of qr.
+!> \param laplacian_gradient Optional Cartesian gradient of the Laplacian of qr.
 ! **************************************************************************************************
-   SUBROUTINE uspp_augmentation_realspace(augmentation, displacement, qr, gradient, hessian)
+   SUBROUTINE uspp_augmentation_realspace(augmentation, displacement, qr, gradient, hessian, laplacian, laplacian_gradient)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: displacement(3)
       REAL(KIND=dp), INTENT(OUT)                         :: qr(:, :)
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: gradient(:, :, :), hessian(:, :, :, :)
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: laplacian(:, :), laplacian_gradient(:, :, :)
 
       REAL(dp), ALLOCATABLE                              :: ddharmonics(:, :, :), dharmonics(:, :), &
                                                             harmonics(:)
@@ -210,7 +213,7 @@ CONTAINS
                 dharmonics(3, (augmentation%lmax + 1)**2), &
                 ddharmonics(3, 3, (augmentation%lmax + 1)**2))
       CALL realspace_with_workspace(augmentation, displacement, qr, gradient, hessian, &
-                                    harmonics, dharmonics, ddharmonics)
+                                    harmonics, dharmonics, ddharmonics, laplacian, laplacian_gradient)
    END SUBROUTINE uspp_augmentation_realspace
 
 ! **************************************************************************************************
@@ -223,20 +226,24 @@ CONTAINS
 !> \param harmonics Scratch values of solid harmonics
 !> \param dharmonics Scratch gradients of solid harmonics
 !> \param ddharmonics Scratch Hessians of solid harmonics
+!> \param laplacian Optional Cartesian Laplacian of qr.
+!> \param laplacian_gradient Optional Cartesian gradient of the Laplacian of qr.
 ! **************************************************************************************************
    SUBROUTINE realspace_with_workspace(augmentation, displacement, qr, gradient, hessian, &
-                                       harmonics, dharmonics, ddharmonics)
+                                       harmonics, dharmonics, ddharmonics, laplacian, laplacian_gradient)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: displacement(3)
       REAL(KIND=dp), INTENT(OUT)                         :: qr(:, :)
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: gradient(:, :, :), hessian(:, :, :, :)
       REAL(KIND=dp), INTENT(OUT)                         :: harmonics(:), dharmonics(:, :), &
                                                             ddharmonics(:, :, :)
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: laplacian(:, :), laplacian_gradient(:, :, :)
 
       INTEGER                                            :: a, axis, axis2, hi, i, j, l, lm, lo, m, &
                                                             mid, p, pair, powers(3), q, reduced(3)
+      LOGICAL                                            :: use_laplacian, valid
       REAL(KIND=dp) :: angular, angular_gradient(3), angular_hessian(3, 3), c0, c1, c2, c3, c4, &
-         c5, factor, h, radial, radial_d, radial_dd, s, t, term, value, value_gradient(3), &
+         c5, factor, h, radial, radial_d, radial_dd, radial_ddd, radial_laplacian, s, t, term, value, value_gradient(3), &
          value_hessian(3, 3)
 
       CPASSERT(ALLOCATED(augmentation%radial_x))
@@ -254,6 +261,16 @@ CONTAINS
          END IF
          hessian = 0.0_dp
       END IF
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(qr)))
+         laplacian = 0.0_dp
+      END IF
+      IF (PRESENT(laplacian_gradient)) THEN
+         valid = ALL(SHAPE(laplacian_gradient) == [augmentation%nproj, augmentation%nproj, 3])
+         CPASSERT(valid)
+         laplacian_gradient = 0.0_dp
+      END IF
+      use_laplacian = PRESENT(laplacian) .OR. PRESENT(laplacian_gradient)
       s = SUM(displacement**2)
       hi = SIZE(augmentation%radial_x)
       IF (s > augmentation%realspace_radius**2) RETURN
@@ -322,7 +339,9 @@ CONTAINS
                END IF
                radial = c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*c5))))
                radial_d = (c1 + t*(2.0_dp*c2 + t*(3.0_dp*c3 + t*(4.0_dp*c4 + t*5.0_dp*c5))))/h
-               IF (PRESENT(hessian)) radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
+               IF (PRESENT(hessian) .OR. use_laplacian) THEN
+                  radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
+               END IF
                angular = 0.0_dp
                angular_gradient = 0.0_dp
                angular_hessian = 0.0_dp
@@ -351,10 +370,21 @@ CONTAINS
                   END DO
                   hessian(p, q, :, :) = hessian(p, q, :, :) + value_hessian
                END IF
+               IF (use_laplacian) THEN
+                  radial_laplacian = 4.0_dp*s*radial_dd + REAL(4*l + 6, dp)*radial_d
+                  IF (PRESENT(laplacian)) laplacian(p, q) = laplacian(p, q) + radial_laplacian*angular
+                  IF (PRESENT(laplacian_gradient)) THEN
+                     radial_ddd = (6.0_dp*c3 + t*(24.0_dp*c4 + t*60.0_dp*c5))/h**3
+                     laplacian_gradient(p, q, :) = laplacian_gradient(p, q, :) + radial_laplacian*angular_gradient + &
+                        2.0_dp*displacement*(4.0_dp*s*radial_ddd + REAL(4*l + 10, dp)*radial_dd)*angular
+                  END IF
+               END IF
             END DO
             qr(q, p) = qr(p, q)
             IF (PRESENT(gradient)) gradient(q, p, :) = gradient(p, q, :)
             IF (PRESENT(hessian)) hessian(q, p, :, :) = hessian(p, q, :, :)
+            IF (PRESENT(laplacian)) laplacian(q, p) = laplacian(p, q)
+            IF (PRESENT(laplacian_gradient)) laplacian_gradient(q, p, :) = laplacian_gradient(p, q, :)
          END DO
       END DO
    END SUBROUTINE realspace_with_workspace
@@ -366,16 +396,18 @@ CONTAINS
 !> \param density Real symmetric on-site density matrix, including off-diagonal entries.
 !> \param rho Accumulated density values; no quadrature weights included.
 !> \param gradient Accumulated Cartesian density gradients.
+!> \param laplacian Optional accumulated Cartesian density Laplacian.
 ! **************************************************************************************************
-   SUBROUTINE uspp_augmentation_collocate_atom(augmentation, displacements, density, rho, gradient)
+   SUBROUTINE uspp_augmentation_collocate_atom(augmentation, displacements, density, rho, gradient, laplacian)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: displacements(:, :), density(:, :)
       REAL(KIND=dp), INTENT(INOUT)                       :: rho(:), gradient(:, :)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: laplacian(:)
 
       INTEGER                                            :: axis, n, point
       REAL(dp), ALLOCATABLE                              :: ddharmonics(:, :, :), dharmonics(:, :), &
                                                             harmonics(:)
-      REAL(KIND=dp), ALLOCATABLE                         :: dqr(:, :, :), qr(:, :)
+      REAL(KIND=dp), ALLOCATABLE                         :: dqr(:, :, :), laplace_q(:, :), qr(:, :)
 
       n = augmentation%nproj
       CPASSERT(ALL(SHAPE(density) == n))
@@ -385,6 +417,10 @@ CONTAINS
          CPASSERT(ALLOCATED(augmentation%radial_x))
       END IF
       ALLOCATE (qr(n, n), dqr(n, n, 3))
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(SIZE(laplacian) == SIZE(rho))
+         ALLOCATE (laplace_q(n, n))
+      END IF
       ALLOCATE (harmonics((augmentation%lmax + 1)**2), &
                 dharmonics(3, (augmentation%lmax + 1)**2), &
                 ddharmonics(3, 3, (augmentation%lmax + 1)**2))
@@ -392,8 +428,9 @@ CONTAINS
          ! The point kernel is exactly zero outside the original radial support.
          IF (SUM(displacements(:, point)**2) > augmentation%realspace_radius**2) CYCLE
          CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, &
-                                       harmonics=harmonics, dharmonics=dharmonics, ddharmonics=ddharmonics)
+                                       harmonics=harmonics, dharmonics=dharmonics, ddharmonics=ddharmonics, laplacian=laplace_q)
          rho(point) = rho(point) + SUM(density*qr)
+         IF (PRESENT(laplacian)) laplacian(point) = laplacian(point) + SUM(density*laplace_q)
          DO axis = 1, 3
             gradient(axis, point) = gradient(axis, point) + SUM(density*dqr(:, :, axis))
          END DO
@@ -412,21 +449,24 @@ CONTAINS
 !> \param center_gradient Optional energy gradient from translating this center at fixed grid points.
 !>        Projector, moving-grid and partition-weight derivatives are separate contributions.
 !> \param point_gradient Optional energy gradient of each quadrature point at fixed center and weights.
+!> \param v_laplacian Optional derivative with respect to the density Laplacian, without weights.
 ! **************************************************************************************************
    SUBROUTINE uspp_augmentation_integrate_atom(augmentation, displacements, weights, v_rho, v_gradient, &
-                                               matrix, density, center_gradient, point_gradient)
+                                               matrix, density, center_gradient, point_gradient, v_laplacian)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: displacements(:, :), weights(:), &
                                                             v_rho(:), v_gradient(:, :)
       REAL(KIND=dp), INTENT(OUT)                         :: matrix(:, :)
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: density(:, :)
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: center_gradient(3), point_gradient(:, :)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: v_laplacian(:)
 
       INTEGER                                            :: axis, axis2, n, point
       REAL(dp), ALLOCATABLE                              :: ddharmonics(:, :, :), dharmonics(:, :), &
                                                             harmonics(:)
       REAL(KIND=dp)                                      :: derivative
-      REAL(KIND=dp), ALLOCATABLE                         :: ddqr(:, :, :, :), dqr(:, :, :), qr(:, :)
+      REAL(KIND=dp), ALLOCATABLE                         :: ddqr(:, :, :, :), dqr(:, :, :), &
+                                                            laplace_q(:, :), laplace_q_gradient(:, :, :), qr(:, :)
 
       n = augmentation%nproj
       CPASSERT(ALL(SHAPE(matrix) == n))
@@ -443,6 +483,11 @@ CONTAINS
          CPASSERT(ALL(SHAPE(density) == n))
          ALLOCATE (ddqr(n, n, 3, 3))
       END IF
+      IF (PRESENT(v_laplacian)) THEN
+         CPASSERT(SIZE(v_laplacian) == SIZE(weights))
+         ALLOCATE (laplace_q(n, n))
+         IF (ALLOCATED(ddqr)) ALLOCATE (laplace_q_gradient(n, n, 3))
+      END IF
       IF (PRESENT(center_gradient)) center_gradient = 0.0_dp
       IF (PRESENT(point_gradient)) THEN
          CPASSERT(ALL(SHAPE(point_gradient) == SHAPE(displacements)))
@@ -450,26 +495,28 @@ CONTAINS
       END IF
       DO point = 1, SIZE(weights)
          IF (weights(point) == 0.0_dp) CYCLE
-         IF (v_rho(point) == 0.0_dp .AND. ALL(v_gradient(:, point) == 0.0_dp)) CYCLE
+         IF (v_rho(point) == 0.0_dp .AND. ALL(v_gradient(:, point) == 0.0_dp)) THEN
+            IF (.NOT. PRESENT(v_laplacian)) CYCLE
+            IF (v_laplacian(point) == 0.0_dp) CYCLE
+         END IF
          CPASSERT(ALLOCATED(augmentation%radial_x))
          IF (SUM(displacements(:, point)**2) > augmentation%realspace_radius**2) CYCLE
-         IF (ALLOCATED(ddqr)) THEN
-            CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, ddqr, &
-                                          harmonics, dharmonics, ddharmonics)
-         ELSE
-            CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, &
-                                          harmonics=harmonics, dharmonics=dharmonics, ddharmonics=ddharmonics)
-         END IF
+         CALL realspace_with_workspace(augmentation, displacements(:, point), qr, dqr, ddqr, &
+                                       harmonics, dharmonics, ddharmonics, laplace_q, laplace_q_gradient)
          matrix(:, :) = matrix + weights(point)*v_rho(point)*qr
          DO axis = 1, 3
             matrix(:, :) = matrix + weights(point)*v_gradient(axis, point)*dqr(:, :, axis)
          END DO
+         IF (PRESENT(v_laplacian)) matrix = matrix + weights(point)*v_laplacian(point)*laplace_q
          IF (ALLOCATED(ddqr)) THEN
             DO axis = 1, 3
                derivative = v_rho(point)*SUM(density*dqr(:, :, axis))
                DO axis2 = 1, 3
                   derivative = derivative + v_gradient(axis2, point)*SUM(density*ddqr(:, :, axis2, axis))
                END DO
+               IF (PRESENT(v_laplacian)) THEN
+                  derivative = derivative + v_laplacian(point)*SUM(density*laplace_q_gradient(:, :, axis))
+               END IF
                IF (PRESENT(center_gradient)) center_gradient(axis) = center_gradient(axis) - weights(point)*derivative
                IF (PRESENT(point_gradient)) point_gradient(axis, point) = weights(point)*derivative
             END DO

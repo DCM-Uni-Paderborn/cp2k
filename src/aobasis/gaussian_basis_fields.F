@@ -45,8 +45,11 @@ CONTAINS
 !> \param hessian Optional Cartesian Hessians, indexed (point,AO,axis,axis).
 !> \param cutoff_squared Optional squared cutoff radius; fields beyond it are zero.
 !> \param workspace Optional caller-owned scratch arrays, with independent storage per OpenMP thread.
+!> \param laplacian Optional Cartesian Laplacian, indexed (point,AO).
+!> \param laplacian_gradient Optional Cartesian gradient of the Laplacian, axis last.
 ! **************************************************************************************************
-   SUBROUTINE gaussian_basis_fields_evaluate(basis, displacements, value, gradient, hessian, cutoff_squared, workspace)
+   SUBROUTINE gaussian_basis_fields_evaluate(basis, displacements, value, gradient, hessian, cutoff_squared, workspace, &
+                                            laplacian, laplacian_gradient)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: displacements(:, :)
       REAL(dp), INTENT(OUT)                              :: value(:, :)
@@ -54,14 +57,17 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: cutoff_squared
       TYPE(gaussian_basis_workspace_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: workspace
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: laplacian(:, :), laplacian_gradient(:, :, :)
 
       INTEGER                                            :: axis, axis2, first, ico, ipgf, ipoint, &
                                                             irow, iset, isgf, ishell, l, last, &
                                                             maxl, ncart, powers(3), reduced(3), &
                                                             thread, threads
-      REAL(dp) :: alpha, exponential, polynomial, polynomial_gradient(3), &
-         polynomial_hessian(3, 3), primitive_gradient(3), primitive_hessian(3, 3), r(3), &
-         r_squared, weight
+      LOGICAL                                            :: need_gradient, need_laplacian, valid
+      REAL(dp) :: alpha, exponential, laplace_factor, polynomial, polynomial_gradient(3), &
+         polynomial_hessian(3, 3), polynomial_laplacian, polynomial_laplace_gradient(3), &
+         primitive_gradient(3), primitive_hessian(3, 3), primitive_laplacian, primitive_laplace_gradient(3), &
+         r(3), r_squared, term, weight
       REAL(dp), POINTER                                  :: cartesian_gradient(:, :), &
                                                             cartesian_hessian(:, :, :), &
                                                             cartesian_value(:), &
@@ -82,25 +88,39 @@ CONTAINS
          CPASSERT(ALL(SHAPE(hessian) == [SIZE(value, 1), SIZE(value, 2), 3, 3]))
          hessian = 0.0_dp
       END IF
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(value)))
+         laplacian = 0.0_dp
+      END IF
+      IF (PRESENT(laplacian_gradient)) THEN
+         valid = ALL(SHAPE(laplacian_gradient) == [SIZE(value, 1), SIZE(value, 2), 3])
+         CPASSERT(valid)
+         laplacian_gradient = 0.0_dp
+      END IF
+      need_gradient = PRESENT(gradient) .OR. PRESENT(hessian) .OR. PRESENT(laplacian_gradient)
+      need_laplacian = PRESENT(laplacian) .OR. PRESENT(laplacian_gradient)
       value = 0.0_dp
       maxl = MAXVAL(basis%lmax)
       threads = 1
 !$    threads = omp_get_max_threads()
       scratch => local_workspace
       IF (PRESENT(workspace)) scratch => workspace
-      CALL prepare_polynomial_workspace(scratch, maxl, threads, PRESENT(gradient) .OR. PRESENT(hessian), PRESENT(hessian))
+      CALL prepare_polynomial_workspace(scratch, maxl, threads, need_gradient, PRESENT(hessian))
       !$OMP PARALLEL DEFAULT(NONE) &
       !$OMP SHARED(basis, displacements, value, gradient, hessian, cutoff_squared, ncoset, indco, scratch) &
+      !$OMP SHARED(laplacian, laplacian_gradient, need_gradient, need_laplacian) &
       !$OMP PRIVATE(ipoint, r, iset, ncart, ishell, l, first, last, ipgf, alpha, exponential, &
       !$OMP         isgf, ico, irow, weight, powers, reduced, polynomial, polynomial_gradient, &
       !$OMP         polynomial_hessian, primitive_gradient, primitive_hessian, cartesian_value, &
-      !$OMP         cartesian_gradient, cartesian_hessian, coordinate_power, r_squared, axis, axis2, thread)
+      !$OMP         cartesian_gradient, cartesian_hessian, coordinate_power, r_squared, axis, axis2, thread, &
+      !$OMP         laplace_factor, polynomial_laplacian, polynomial_laplace_gradient, primitive_laplacian, &
+      !$OMP         primitive_laplace_gradient, term)
       thread = 1
 !$    thread = omp_get_thread_num() + 1
       coordinate_power(1:, 0:) => scratch%coordinate_power(:, :, thread)
       cartesian_value => scratch%cartesian_value(:, thread)
       NULLIFY (cartesian_gradient, cartesian_hessian)
-      IF (PRESENT(gradient) .OR. PRESENT(hessian)) cartesian_gradient => scratch%cartesian_gradient(:, :, thread)
+      IF (need_gradient) cartesian_gradient => scratch%cartesian_gradient(:, :, thread)
       IF (PRESENT(hessian)) cartesian_hessian => scratch%cartesian_hessian(:, :, :, thread)
       !$OMP DO SCHEDULE(STATIC)
       DO ipoint = 1, SIZE(displacements, 2)
@@ -118,7 +138,7 @@ CONTAINS
             powers = indco(:, ico)
             cartesian_value(ico) = coordinate_power(1, powers(1))*coordinate_power(2, powers(2))* &
                                    coordinate_power(3, powers(3))
-            IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
+            IF (.NOT. need_gradient) CYCLE
             cartesian_gradient(:, ico) = 0.0_dp
             IF (PRESENT(hessian)) cartesian_hessian(:, :, ico) = 0.0_dp
             DO axis = 1, 3
@@ -152,7 +172,7 @@ CONTAINS
                   DO ico = ncoset(l - 1) + 1, ncoset(l)
                      irow = (ipgf - 1)*ncart + ico
                      polynomial = cartesian_value(ico)
-                     IF (PRESENT(gradient) .OR. PRESENT(hessian)) THEN
+                     IF (need_gradient) THEN
                         polynomial_gradient = cartesian_gradient(:, ico)
                         IF (PRESENT(hessian)) polynomial_hessian = cartesian_hessian(:, :, ico)
                         DO axis = 1, 3
@@ -168,11 +188,46 @@ CONTAINS
                            END DO
                         END DO
                      END IF
+                     IF (need_laplacian) THEN
+                        ! Euler's identity for the homogeneous Cartesian monomial P gives
+                        ! Laplacian(P exp(-alpha*r**2)) = (Laplacian(P) + laplace_factor*P)*exp(-alpha*r**2).
+                        powers = indco(:, ico)
+                        polynomial_laplacian = 0.0_dp
+                        polynomial_laplace_gradient = 0.0_dp
+                        DO axis = 1, 3
+                           IF (powers(axis) < 2) CYCLE
+                           reduced = powers
+                           reduced(axis) = reduced(axis) - 2
+                           term = REAL(powers(axis)*(powers(axis) - 1), dp)
+                           polynomial_laplacian = polynomial_laplacian + term*coordinate_power(1, reduced(1))* &
+                                                   coordinate_power(2, reduced(2))*coordinate_power(3, reduced(3))
+                           IF (.NOT. PRESENT(laplacian_gradient)) CYCLE
+                           DO axis2 = 1, 3
+                              IF (reduced(axis2) == 0) CYCLE
+                              reduced(axis2) = reduced(axis2) - 1
+                              polynomial_laplace_gradient(axis2) = polynomial_laplace_gradient(axis2) + &
+                                 term*REAL(reduced(axis2) + 1, dp)*coordinate_power(1, reduced(1))* &
+                                 coordinate_power(2, reduced(2))*coordinate_power(3, reduced(3))
+                              reduced(axis2) = reduced(axis2) + 1
+                           END DO
+                        END DO
+                        laplace_factor = 4.0_dp*alpha**2*r_squared - 2.0_dp*alpha*REAL(2*l + 3, dp)
+                        primitive_laplacian = polynomial_laplacian + laplace_factor*polynomial
+                        IF (PRESENT(laplacian_gradient)) THEN
+                           primitive_laplace_gradient = polynomial_laplace_gradient + laplace_factor*polynomial_gradient + &
+                              (8.0_dp*alpha**2*polynomial - 2.0_dp*alpha*primitive_laplacian)*r
+                        END IF
+                     END IF
                      DO isgf = first, last
                         weight = basis%sphi(irow, isgf)
                         IF (weight == 0.0_dp) CYCLE
                         weight = weight*exponential
                         value(ipoint, isgf) = value(ipoint, isgf) + weight*polynomial
+                        IF (PRESENT(laplacian)) laplacian(ipoint, isgf) = laplacian(ipoint, isgf) + weight*primitive_laplacian
+                        IF (PRESENT(laplacian_gradient)) THEN
+                           laplacian_gradient(ipoint, isgf, :) = laplacian_gradient(ipoint, isgf, :) + &
+                                                                weight*primitive_laplace_gradient
+                        END IF
                         IF (.NOT. PRESENT(gradient) .AND. .NOT. PRESENT(hessian)) CYCLE
                         DO axis = 1, 3
                            IF (PRESENT(gradient)) THEN
@@ -213,10 +268,13 @@ CONTAINS
 !> \param reduced_k_response Optional reduced Bloch-vector response, default zero.
 !> \param cell_gradient Optional lattice derivative at fixed points, centers and reduced k, axes last.
 !> \param workspace Optional caller-owned scratch arrays, refilled at every invocation.
+!> \param laplacian Optional Cartesian Laplacian of the periodic basis.
+!> \param laplacian_response Optional joint geometry and Bloch response of the Laplacian.
 ! **************************************************************************************************
    SUBROUTINE gaussian_basis_fields_periodic(basis, points, center, cell, images, reduced_k, value, gradient, &
                                              response, gradient_response, point_response, center_response, &
-                                             cell_response, reduced_k_response, cell_gradient, workspace)
+                                             cell_response, reduced_k_response, cell_gradient, workspace, &
+                                             laplacian, laplacian_response)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -231,6 +289,7 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cell_gradient(:, :, :, :)
       TYPE(gaussian_basis_workspace_type), &
          INTENT(INOUT), OPTIONAL, TARGET                 :: workspace
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: laplacian(:, :), laplacian_response(:, :)
 
       COMPLEX(dp)                                        :: phase, phase_response
       INTEGER                                            :: ao, axis, axis2, image, npoint, point
@@ -240,6 +299,7 @@ CONTAINS
                                                             lattice(3), shift(3)
       REAL(dp), POINTER                                  :: ddisplacement(:, :), displacement(:, :), &
                                                             field(:, :), g(:, :, :), h(:, :, :, :)
+      REAL(dp), ALLOCATABLE                              :: laplace(:, :), laplace_gradient(:, :, :)
       TYPE(gaussian_basis_workspace_type), POINTER       :: scratch
       TYPE(gaussian_basis_workspace_type), TARGET        :: local_workspace
 
@@ -248,7 +308,7 @@ CONTAINS
       CPASSERT(ALL(SHAPE(value) == [npoint, basis%nsgf]))
       need_gradient = PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(gradient_response) .OR. PRESENT(cell_gradient)
       need_hessian = PRESENT(gradient_response)
-      need_geometry = PRESENT(response) .OR. PRESENT(gradient_response)
+      need_geometry = PRESENT(response) .OR. PRESENT(gradient_response) .OR. PRESENT(laplacian_response)
       IF (PRESENT(gradient)) THEN
          CPASSERT(ALL(SHAPE(gradient) == [npoint, basis%nsgf, 3]))
          gradient = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -265,6 +325,14 @@ CONTAINS
          CPASSERT(ALL(SHAPE(cell_gradient) == [npoint, basis%nsgf, 3, 3]))
          cell_gradient = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(value)))
+         laplacian = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
+      IF (PRESENT(laplacian_response)) THEN
+         CPASSERT(ALL(SHAPE(laplacian_response) == SHAPE(value)))
+         laplacian_response = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       dc = 0.0_dp
       dcenter = 0.0_dp
       dk = 0.0_dp
@@ -275,9 +343,11 @@ CONTAINS
          CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
       END IF
       CALL periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
-                                      value, gradient, cell_gradient, factored, &
-                                      response, point_response, dcenter, dc, dk, gradient_response)
+                                      value, gradient, cell_gradient, factored, response, point_response, &
+                                      dcenter, dc, dk, gradient_response, laplacian, laplacian_response)
       IF (factored) RETURN
+      IF (PRESENT(laplacian) .OR. PRESENT(laplacian_response)) ALLOCATE (laplace(npoint, basis%nsgf))
+      IF (PRESENT(laplacian_response)) ALLOCATE (laplace_gradient(npoint, basis%nsgf, 3))
       scratch => local_workspace
       IF (PRESENT(workspace)) scratch => workspace
       CALL prepare_workspace(scratch, npoint, basis%nsgf, need_geometry, need_gradient, need_hessian)
@@ -303,14 +373,19 @@ CONTAINS
          END IF
          phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(reduced_k, lattice), dp))
          phase_response = CMPLX(0.0_dp, twopi*DOT_PRODUCT(dk, lattice), dp)*phase
-         IF (need_hessian) THEN
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, h, workspace=scratch)
-         ELSE IF (need_gradient) THEN
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, workspace=scratch)
-         ELSE
-            CALL gaussian_basis_fields_evaluate(basis, displacement, field, workspace=scratch)
-         END IF
+         CALL gaussian_basis_fields_evaluate(basis, displacement, field, g, h, workspace=scratch, &
+                                             laplacian=laplace, laplacian_gradient=laplace_gradient)
          value = value + phase*field
+         IF (PRESENT(laplacian)) laplacian = laplacian + phase*laplace
+         IF (PRESENT(laplacian_response)) THEN
+            laplacian_response = laplacian_response + phase_response*laplace
+            DO axis = 1, 3
+               DO ao = 1, basis%nsgf
+                  laplacian_response(:, ao) = laplacian_response(:, ao) + phase*ddisplacement(axis, :)* &
+                                              laplace_gradient(:, ao, axis)
+               END DO
+            END DO
+         END IF
          IF (PRESENT(gradient)) gradient = gradient + phase*g
          IF (PRESENT(cell_gradient)) THEN
             DO axis2 = 1, 3
@@ -362,11 +437,13 @@ CONTAINS
 !> \param cell_response Lattice derivative at fixed reduced Bloch coordinates.
 !> \param reduced_k_response Reduced Bloch-vector derivative.
 !> \param gradient_response Optional joint response of the spatial gradients.
+!> \param laplacian Optional Cartesian Laplacian of the periodic basis.
+!> \param laplacian_response Optional joint response of the Laplacian.
 ! **************************************************************************************************
    SUBROUTINE periodic_cartesian_product(basis, points, center, cell, images, reduced_k, &
                                          value, gradient, cell_gradient, factored, &
                                          response, point_response, center_response, cell_response, reduced_k_response, &
-                                         gradient_response)
+                                         gradient_response, laplacian, laplacian_response)
       TYPE(gto_basis_set_type), INTENT(IN)               :: basis
       REAL(dp), INTENT(IN)                               :: points(:, :), center(3), cell(3, 3)
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -380,11 +457,13 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: center_response(3), cell_response(3, 3), &
                                                             reduced_k_response(3)
       COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: gradient_response(:, :, :)
+      COMPLEX(dp), INTENT(INOUT), OPTIONAL               :: laplacian(:, :), laplacian_response(:, :)
 
       COMPLEX(dp)                                        :: phase
       COMPLEX(dp), ALLOCATABLE :: derivative(:, :), hessian_component(:), image_moments(:, :, :), &
          moments(:, :, :), phase_moment(:), primitive_cell(:, :, :), primitive_gradient(:, :), &
-         primitive_gradient_response(:, :), primitive_response(:), primitive_value(:)
+         primitive_gradient_response(:, :), primitive_laplacian(:), primitive_laplace_response(:), &
+         primitive_response(:), primitive_value(:)
       INTEGER :: axis, column, degree, expected(3), first, ico, image, ipgf, irow, iset, isgf, &
          ishell, l, last, lower(3), maxl, moment_degree, ncart, ncoord, ncoordinates(3), npoint, other, point, powers(3), &
          translation, upper(3), width(3)
@@ -441,9 +520,13 @@ CONTAINS
       IF (PRESENT(gradient_response)) cell_derivatives = .TRUE.
       image_derivatives = cell_derivatives
       IF (PRESENT(response)) image_derivatives = image_derivatives .OR. ANY(reduced_k_response /= 0.0_dp)
+      IF (PRESENT(laplacian_response)) THEN
+         image_derivatives = image_derivatives .OR. ANY(cell_response /= 0.0_dp) .OR. ANY(reduced_k_response /= 0.0_dp)
+      END IF
       derivatives = PRESENT(gradient) .OR. cell_derivatives .OR. PRESENT(response)
       moment_degree = maxl + 1
-      IF (PRESENT(gradient_response)) moment_degree = maxl + 2
+      IF (PRESENT(gradient_response) .OR. PRESENT(laplacian)) moment_degree = maxl + 2
+      IF (PRESENT(laplacian_response)) moment_degree = maxl + 3
       ALLOCATE (moments(npoint, 0:moment_degree, 3), image_moments(npoint, 0:moment_degree, 3), &
                 derivative(npoint, 3), primitive_value(npoint), primitive_gradient(npoint, 3), &
                 primitive_cell(npoint, 3, 3), displacement(npoint), exponential(npoint), power(npoint))
@@ -455,9 +538,12 @@ CONTAINS
          response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       IF (PRESENT(gradient_response)) THEN
-         ALLOCATE (primitive_gradient_response(npoint, 3), hessian_component(npoint))
+         ALLOCATE (primitive_gradient_response(npoint, 3))
          gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
+      IF (PRESENT(gradient_response) .OR. PRESENT(laplacian_response)) ALLOCATE (hessian_component(npoint))
+      IF (PRESENT(laplacian)) ALLOCATE (primitive_laplacian(npoint))
+      IF (PRESENT(laplacian_response)) ALLOCATE (primitive_laplace_response(npoint))
       DO iset = 1, basis%nset
          ncart = ncoset(basis%lmax(iset))
          DO ipgf = 1, basis%npgf(iset)
@@ -557,7 +643,7 @@ CONTAINS
                      primitive_gradient_response = CMPLX(0.0_dp, 0.0_dp, dp)
                      DO axis = 1, 3
                         DO other = 1, 3
-                           hessian_component(:) = factored_hessian(moments, image_moments, powers, alpha, axis, other, 0)
+                           hessian_component(:) = factored_derivative(moments, image_moments, powers, alpha, axis, other, 0)
                            primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
                                                                   center_response(other)*hessian_component
                            IF (PRESENT(point_response)) THEN
@@ -566,7 +652,7 @@ CONTAINS
                            END IF
                            DO column = 1, 3
                               IF (cell_response(other, column) == 0.0_dp) CYCLE
-                              hessian_component(:) = factored_hessian(moments, image_moments, powers, alpha, axis, other, column)
+                              hessian_component(:) = factored_derivative(moments, image_moments, powers, alpha, axis, other, column)
                               primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
                                                                      cell_response(other, column)*hessian_component
                            END DO
@@ -575,6 +661,36 @@ CONTAINS
                            IF (reduced_k_response(column) == 0.0_dp) CYCLE
                            primitive_gradient_response(:, axis) = primitive_gradient_response(:, axis) - &
                                                  CMPLX(0.0_dp, twopi*reduced_k_response(column), dp)*primitive_cell(:, axis, column)
+                        END DO
+                     END DO
+                  END IF
+                  IF (PRESENT(laplacian)) THEN
+                     primitive_laplacian = CMPLX(0.0_dp, 0.0_dp, dp)
+                     DO axis = 1, 3
+                        primitive_laplacian = primitive_laplacian + &
+                           factored_derivative(moments, image_moments, powers, alpha, axis, axis, 0)
+                     END DO
+                  END IF
+                  IF (PRESENT(laplacian_response)) THEN
+                     primitive_laplace_response = CMPLX(0.0_dp, 0.0_dp, dp)
+                     DO axis = 1, 3
+                        DO other = 1, 3
+                           hessian_component = factored_derivative(moments, image_moments, powers, alpha, axis, axis, 0, other)
+                           primitive_laplace_response = primitive_laplace_response - center_response(other)*hessian_component
+                           IF (PRESENT(point_response)) THEN
+                              primitive_laplace_response = primitive_laplace_response + point_response(other, :)*hessian_component
+                           END IF
+                           DO column = 1, 3
+                              IF (cell_response(other, column) == 0.0_dp) CYCLE
+                              hessian_component = &
+                                 factored_derivative(moments, image_moments, powers, alpha, axis, axis, column, other)
+                              primitive_laplace_response = primitive_laplace_response - &
+                                                           cell_response(other, column)*hessian_component
+                           END DO
+                           IF (reduced_k_response(other) == 0.0_dp) CYCLE
+                           hessian_component = factored_derivative(moments, image_moments, powers, alpha, axis, axis, other)
+                           primitive_laplace_response = primitive_laplace_response + &
+                              CMPLX(0.0_dp, twopi*reduced_k_response(other), dp)*hessian_component
                         END DO
                      END DO
                   END IF
@@ -588,6 +704,9 @@ CONTAINS
                      IF (PRESENT(response)) response(:, isgf) = response(:, isgf) + weight*primitive_response
                      IF (PRESENT(gradient_response)) gradient_response(:, isgf, :) = gradient_response(:, isgf, :) + &
                                                                                      weight*primitive_gradient_response
+                     IF (PRESENT(laplacian)) laplacian(:, isgf) = laplacian(:, isgf) + weight*primitive_laplacian
+                     IF (PRESENT(laplacian_response)) laplacian_response(:, isgf) = laplacian_response(:, isgf) + &
+                                                                                    weight*primitive_laplace_response
                   END DO
                END DO
             END DO
@@ -597,7 +716,7 @@ CONTAINS
    END SUBROUTINE periodic_cartesian_product
 
 ! **************************************************************************************************
-!> \brief Cartesian second derivative of a separable periodic primitive, optionally weighted by an image index.
+!> \brief Cartesian derivative of a separable periodic primitive, optionally weighted by an image index.
 !> \param moments One-dimensional periodic Gaussian polynomial moments.
 !> \param image_moments The same moments multiplied by their integer image coordinate.
 !> \param powers Cartesian polynomial degrees of the primitive.
@@ -605,14 +724,16 @@ CONTAINS
 !> \param first First Cartesian differentiation axis.
 !> \param second Second Cartesian differentiation axis.
 !> \param image_axis Image coordinate for weighting, or zero for an unweighted Hessian.
+!> \param third Optional third Cartesian differentiation axis.
 !> \return Sum over the original image product, including its Bloch phase.
 ! **************************************************************************************************
-   FUNCTION factored_hessian(moments, image_moments, powers, alpha, first, second, image_axis) RESULT(value)
+   FUNCTION factored_derivative(moments, image_moments, powers, alpha, first, second, image_axis, third) RESULT(value)
       COMPLEX(dp), INTENT(IN), TARGET                    :: moments(:, 0:, :), &
                                                             image_moments(:, 0:, :)
       INTEGER, INTENT(IN)                                :: powers(3)
       REAL(dp), INTENT(IN)                               :: alpha
       INTEGER, INTENT(IN)                                :: first, second, image_axis
+      INTEGER, INTENT(IN), OPTIONAL                      :: third
       COMPLEX(dp)                                        :: value(SIZE(moments, 1))
 
       COMPLEX(dp)                                        :: factor(SIZE(moments, 1))
@@ -625,6 +746,7 @@ CONTAINS
          IF (axis == image_axis) source(1:, 0:) => image_moments(:, :, axis)
          degree = powers(axis)
          order = MERGE(1, 0, axis == first) + MERGE(1, 0, axis == second)
+         IF (PRESENT(third)) order = order + MERGE(1, 0, axis == third)
          SELECT CASE (order)
          CASE (0)
             factor = source(:, degree)
@@ -634,10 +756,14 @@ CONTAINS
          CASE (2)
             factor = 4.0_dp*alpha**2*source(:, degree + 2) - 2.0_dp*alpha*(2*degree + 1)*source(:, degree)
             IF (degree > 1) factor = factor + degree*(degree - 1)*source(:, degree - 2)
+         CASE (3)
+            factor = -8.0_dp*alpha**3*source(:, degree + 3) + 12.0_dp*alpha**2*(degree + 1)*source(:, degree + 1)
+            IF (degree > 0) factor = factor - 6.0_dp*alpha*degree**2*source(:, degree - 1)
+            IF (degree > 2) factor = factor + degree*(degree - 1)*(degree - 2)*source(:, degree - 3)
          END SELECT
          value = value*factor
       END DO
-   END FUNCTION factored_hessian
+   END FUNCTION factored_derivative
 
 ! **************************************************************************************************
 !> \brief Retain only scratch storage. No geometry or field values are reused.

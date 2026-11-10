@@ -166,9 +166,12 @@ CONTAINS
 !> \param vtau Potential conjugate to tau=sum(f*|grad psi|**2)/2.
 !> \param integral New rectangular operator block.
 !> \param comm Optional point-row communicator; reduction occurs once per block.
+!> \param left_laplacian Optional Cartesian Laplacian of the left fields.
+!> \param right_laplacian Optional Cartesian Laplacian of the right fields.
+!> \param vlaplacian Optional potential conjugate to the density Laplacian.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_semilocal_pair(left, right, left_gradient, right_gradient, weights, &
-                                         vdensity, vgradient, vtau, integral, comm)
+                                         vdensity, vgradient, vtau, integral, comm, left_laplacian, right_laplacian, vlaplacian)
       COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :), &
                                                             left_gradient(:, :, :), &
                                                             right_gradient(:, :, :)
@@ -176,16 +179,27 @@ CONTAINS
                                                             vgradient(:, :), vtau(:)
       COMPLEX(dp), INTENT(OUT)                           :: integral(:, :)
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: left_laplacian(:, :), right_laplacian(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: vlaplacian(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
       INTEGER                                            :: axis, nright
-      LOGICAL                                            :: gradient_active(3), tau_active
+      LOGICAL                                            :: gradient_active(3), laplacian_active, tau_active
 
       CALL check_semilocal(left, right, left_gradient, right_gradient, weights, &
                            vdensity, vgradient, vtau, SHAPE(integral))
+      laplacian_active = .FALSE.
+      IF (PRESENT(vlaplacian)) THEN
+         CPASSERT(PRESENT(left_laplacian))
+         CPASSERT(PRESENT(right_laplacian))
+         CPASSERT(ALL(SHAPE(left_laplacian) == SHAPE(left)))
+         CPASSERT(ALL(SHAPE(right_laplacian) == SHAPE(right)))
+         CPASSERT(SIZE(vlaplacian) == SIZE(weights))
+         laplacian_active = ANY(vlaplacian /= 0.0_dp)
+      END IF
       integral = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (.NOT. ANY(weights /= 0.0_dp) .OR. &
-          .NOT. (ANY(vdensity /= 0.0_dp) .OR. ANY(vgradient /= 0.0_dp) .OR. ANY(vtau /= 0.0_dp))) THEN
+          .NOT. (ANY(vdensity /= 0.0_dp) .OR. ANY(vgradient /= 0.0_dp) .OR. ANY(vtau /= 0.0_dp) .OR. laplacian_active)) THEN
          IF (PRESENT(comm)) CALL comm%sum(integral)
          RETURN
       END IF
@@ -200,11 +214,17 @@ CONTAINS
          IF (.NOT. gradient_active(axis)) CYCLE
          work(:, :) = work + SPREAD(vgradient(:, axis), 2, nright)*right_gradient(:, :, axis)
       END DO
+      IF (laplacian_active) work = work + SPREAD(vlaplacian, 2, nright)*right_laplacian
       CALL add_pair(left, work, weights, integral)
+      IF (laplacian_active) THEN
+         work = SPREAD(vlaplacian, 2, nright)*right
+         CALL add_pair(left_laplacian, work, weights, integral)
+      END IF
       DO axis = 1, 3
-         IF (.NOT. gradient_active(axis) .AND. .NOT. tau_active) CYCLE
+         IF (.NOT. gradient_active(axis) .AND. .NOT. tau_active .AND. .NOT. laplacian_active) CYCLE
          work(:, :) = SPREAD(vgradient(:, axis), 2, nright)*right
          IF (tau_active) work(:, :) = work + 0.5_dp*SPREAD(vtau, 2, nright)*right_gradient(:, :, axis)
+         IF (laplacian_active) work = work + 2.0_dp*SPREAD(vlaplacian, 2, nright)*right_gradient(:, :, axis)
          CALL add_pair(left_gradient(:, :, axis), work, weights, integral)
       END DO
       IF (PRESENT(comm)) CALL comm%sum(integral)
@@ -231,12 +251,19 @@ CONTAINS
 !> \param vtau_response ...
 !> \param response New rectangular response block.
 !> \param comm ...
+!> \param left_laplacian Optional Cartesian Laplacian of the left fields.
+!> \param right_laplacian Optional Cartesian Laplacian of the right fields.
+!> \param vlaplacian Optional conjugate potential of the density Laplacian.
+!> \param left_laplacian_response Joint response of left_laplacian.
+!> \param right_laplacian_response Joint response of right_laplacian.
+!> \param vlaplacian_response Optional explicit response of vlaplacian.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_semilocal_response(left, right, left_gradient, right_gradient, weights, &
                                              vdensity, vgradient, vtau, left_response, right_response, &
                                              left_gradient_response, right_gradient_response, &
                                              weights_response, vdensity_response, vgradient_response, &
-                                             vtau_response, response, comm)
+                                             vtau_response, response, comm, left_laplacian, right_laplacian, vlaplacian, &
+                                             left_laplacian_response, right_laplacian_response, vlaplacian_response)
       COMPLEX(dp), INTENT(IN)                            :: left(:, :), right(:, :), &
                                                             left_gradient(:, :, :), &
                                                             right_gradient(:, :, :)
@@ -250,6 +277,9 @@ CONTAINS
                                                             vtau_response(:)
       COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: left_laplacian(:, :), right_laplacian(:, :), &
+                                                            left_laplacian_response(:, :), right_laplacian_response(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: vlaplacian(:), vlaplacian_response(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: work(:, :)
 
@@ -262,15 +292,20 @@ CONTAINS
       ALLOCATE (work(SIZE(response, 1), SIZE(response, 2)))
       ! Linearity in either field leg and in each potential/measure gives the complete response.
       CALL upf_inverse_semilocal_pair(left_response, right, left_gradient_response, right_gradient, &
-                                      weights, vdensity, vgradient, vtau, response)
+                                      weights, vdensity, vgradient, vtau, response, left_laplacian=left_laplacian_response, &
+                                      right_laplacian=right_laplacian, vlaplacian=vlaplacian)
       CALL upf_inverse_semilocal_pair(left, right_response, left_gradient, right_gradient_response, &
-                                      weights, vdensity, vgradient, vtau, work)
+                                      weights, vdensity, vgradient, vtau, work, left_laplacian=left_laplacian, &
+                                      right_laplacian=right_laplacian_response, vlaplacian=vlaplacian)
       response = response + work
       CALL upf_inverse_semilocal_pair(left, right, left_gradient, right_gradient, &
-                                      weights_response, vdensity, vgradient, vtau, work)
+                                      weights_response, vdensity, vgradient, vtau, work, left_laplacian=left_laplacian, &
+                                      right_laplacian=right_laplacian, vlaplacian=vlaplacian)
       response = response + work
       CALL upf_inverse_semilocal_pair(left, right, left_gradient, right_gradient, &
-                                      weights, vdensity_response, vgradient_response, vtau_response, work)
+                                      weights, vdensity_response, vgradient_response, vtau_response, work, &
+                                      left_laplacian=left_laplacian, right_laplacian=right_laplacian, &
+                                      vlaplacian=vlaplacian_response)
       response = response + work
       IF (PRESENT(comm)) CALL comm%sum(response)
    END SUBROUTINE upf_inverse_semilocal_response
@@ -290,9 +325,11 @@ CONTAINS
 !> \param occupations Matching nonnegative orbital occupations, without k weights.
 !> \param coefficients_direction Optional original coefficient response for a signed ao_density direction.
 !> \param occupations_direction Matching signed occupation response.
+!> \param orbital_laplacian Optional Cartesian Laplacian of the smooth orbital basis.
+!> \param density_laplacian Optional Cartesian density Laplacian, paired with orbital_laplacian.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_smooth_density(soft, soft_gradient, ao_density, density, gradient, tau, coefficients, occupations, &
-                                         coefficients_direction, occupations_direction)
+                                         coefficients_direction, occupations_direction, orbital_laplacian, density_laplacian)
       COMPLEX(dp), INTENT(IN)                            :: soft(:, :), soft_gradient(:, :, :), &
                                                             ao_density(:, :)
       REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
@@ -300,6 +337,8 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: occupations(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_direction(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: occupations_direction(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: orbital_laplacian(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: density_laplacian(:)
 
       COMPLEX(dp), ALLOCATABLE :: derivative(:, :), derivative_direction(:, :), weighted(:, :), &
          weighted_direction(:, :), work(:, :), work_direction(:, :)
@@ -314,6 +353,13 @@ CONTAINS
       CPASSERT(ALL(SHAPE(soft_gradient) == [npoint, n, 3]))
       CPASSERT(SIZE(density) == npoint .AND. SIZE(tau) == npoint)
       CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
+      valid = PRESENT(orbital_laplacian) .EQV. PRESENT(density_laplacian)
+      CPASSERT(valid)
+      IF (PRESENT(density_laplacian)) THEN
+         CPASSERT(ALL(SHAPE(orbital_laplacian) == SHAPE(soft)))
+         CPASSERT(SIZE(density_laplacian) == npoint)
+         density_laplacian = 0.0_dp
+      END IF
       CALL check_density(ao_density)
       CPASSERT(PRESENT(coefficients) .EQV. PRESENT(occupations))
       valid = PRESENT(coefficients_direction) .EQV. PRESENT(occupations_direction)
@@ -373,6 +419,12 @@ CONTAINS
                         0.5_dp*occupations_direction(occupied(i))*REAL(CONJG(derivative(:, i))*derivative(:, i), dp)
                END DO
             END DO
+            IF (PRESENT(density_laplacian)) THEN
+               derivative = MATMUL(orbital_laplacian, coefficients(:, occupied))
+               derivative_direction = MATMUL(orbital_laplacian, coefficients_direction(:, occupied))
+               density_laplacian = 4.0_dp*tau + 2.0_dp*REAL(SUM(CONJG(derivative_direction)*weighted + &
+                                                               CONJG(derivative)*weighted_direction, DIM=2), dp)
+            END IF
             RETURN
          END IF
          density = REAL(SUM(CONJG(work)*weighted, DIM=2), dp)
@@ -383,6 +435,10 @@ CONTAINS
                tau = tau + 0.5_dp*occupations(occupied(i))*REAL(CONJG(derivative(:, i))*derivative(:, i), dp)
             END DO
          END DO
+         IF (PRESENT(density_laplacian)) THEN
+            derivative = MATMUL(orbital_laplacian, coefficients(:, occupied))
+            density_laplacian = 4.0_dp*tau + 2.0_dp*REAL(SUM(CONJG(derivative)*weighted, DIM=2), dp)
+         END IF
          RETURN
       END IF
       ALLOCATE (work(npoint, n), derivative(npoint, n))
@@ -394,6 +450,9 @@ CONTAINS
          derivative(:, :) = MATMUL(soft_gradient(:, :, axis), ao_density)
          tau = tau + 0.5_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis))*derivative, DIM=2), dp)
       END DO
+      IF (PRESENT(density_laplacian)) THEN
+         density_laplacian = 4.0_dp*tau + 2.0_dp*REAL(SUM(CONJG(orbital_laplacian)*work, DIM=2), dp)
+      END IF
    END SUBROUTINE upf_inverse_smooth_density
 
 ! **************************************************************************************************

@@ -95,13 +95,16 @@ CONTAINS
 !> \param density Local density, incremented without weights.
 !> \param gradient Local physical Cartesian density gradient, axis last, incremented.
 !> \param points Optional evaluation points, independent of the frame's defining quadrature.
+!> \param laplacian Optional accumulated Cartesian Laplacian of the original Q augmentation.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_augmentation_collocate(frame, augmentation, projector_density, density, gradient, points)
+   SUBROUTINE qs_upf_inverse_augmentation_collocate(frame, augmentation, projector_density, density, gradient, &
+                                                    points, laplacian)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: projector_density(:, :)
       REAL(dp), INTENT(INOUT)                            :: density(:), gradient(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: laplacian(:)
 
       INTEGER                                            :: atom, center, first, ikind, image, last, &
                                                             n
@@ -145,7 +148,7 @@ CONTAINS
                displacements(:, :) = frame%points - SPREAD(position, 2, SIZE(density))
             END IF
             CALL uspp_augmentation_collocate_atom(augmentation%kinds(ikind), displacements, &
-                                                  REAL(projector_density(first:last, first:last), dp), density, g)
+                                                  REAL(projector_density(first:last, first:last), dp), density, g, laplacian)
          END DO
       END DO
       gradient = gradient + TRANSPOSE(g)
@@ -224,15 +227,17 @@ CONTAINS
 !> \param points Optional evaluation points, required with weights and comm.
 !> \param weights Optional measure of the evaluation quadrature, including any partition weights.
 !> \param comm Optional communicator distributing the evaluation points.
+!> \param vlaplacian Optional potential conjugate to the Cartesian density Laplacian.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_augmentation_integrate(frame, augmentation, vdensity, vgradient, projector_operator, &
-                                                    points, weights, comm)
+                                                    points, weights, comm, vlaplacian)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       REAL(dp), INTENT(IN)                               :: vdensity(:), vgradient(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: projector_operator(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :), weights(:)
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      REAL(dp), INTENT(IN), OPTIONAL                     :: vlaplacian(:)
 
       INTEGER                                            :: atom, center, first, ikind, image, last
       REAL(dp)                                           :: lower(3), position(3), upper(3)
@@ -267,11 +272,11 @@ CONTAINS
             IF (PRESENT(points)) THEN
                displacements(:, :) = points - SPREAD(position, 2, SIZE(vdensity))
                CALL uspp_augmentation_integrate_atom(augmentation%kinds(ikind), displacements, weights, &
-                                                     vdensity, TRANSPOSE(vgradient), matrix)
+                                                     vdensity, TRANSPOSE(vgradient), matrix, v_laplacian=vlaplacian)
             ELSE
                displacements(:, :) = frame%points - SPREAD(position, 2, SIZE(vdensity))
                CALL uspp_augmentation_integrate_atom(augmentation%kinds(ikind), displacements, frame%weights, &
-                                                     vdensity, TRANSPOSE(vgradient), matrix)
+                                                     vdensity, TRANSPOSE(vgradient), matrix, v_laplacian=vlaplacian)
             END IF
             projector_operator(first:last, first:last) = projector_operator(first:last, first:last) + matrix
          END DO
@@ -705,10 +710,13 @@ CONTAINS
 !> \param points Optional evaluation points, required with weights and comm.
 !> \param weights Optional measure of the evaluation quadrature.
 !> \param comm Optional communicator distributing the evaluation points.
+!> \param vlaplacian Optional potential conjugate to the Cartesian density Laplacian.
+!> \param vlaplacian_response Optional explicit response of vlaplacian.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_augmentation_response(frame, augmentation, vdensity, vgradient, &
                                                    point_response, atom_response, cell_response, weights_response, &
-                                                   vdensity_response, vgradient_response, response, points, weights, comm)
+                                                   vdensity_response, vgradient_response, response, points, weights, &
+                                                   comm, vlaplacian, vlaplacian_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       REAL(dp), INTENT(IN) :: vdensity(:), vgradient(:, :), point_response(:, :), &
@@ -717,12 +725,14 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :), weights(:)
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      REAL(dp), INTENT(IN), OPTIONAL                     :: vlaplacian(:), vlaplacian_response(:)
 
       INTEGER                                            :: atom, axis, center, first, ikind, image, &
                                                             last, n, point
       REAL(dp)                                           :: dr(3), position(3), r(3), radius2, weight
       REAL(dp), ALLOCATABLE                              :: dq(:, :, :), dterm(:, :), &
-                                                            hq(:, :, :, :), q(:, :), term(:, :)
+                                                            hq(:, :, :, :), laplace_q(:, :), laplace_q_gradient(:, :, :), &
+                                                            q(:, :), term(:, :)
 
       CALL check_operator(frame, vdensity, vgradient, response, points)
       IF (PRESENT(points)) THEN
@@ -736,6 +746,12 @@ CONTAINS
       CPASSERT(SIZE(weights_response) == SIZE(vdensity))
       CPASSERT(SIZE(vdensity_response) == SIZE(vdensity))
       CPASSERT(ALL(SHAPE(vgradient_response) == SHAPE(vgradient)))
+      IF (PRESENT(vlaplacian)) THEN
+         CPASSERT(SIZE(vlaplacian) == SIZE(vdensity))
+      END IF
+      IF (PRESENT(vlaplacian_response)) THEN
+         CPASSERT(SIZE(vlaplacian_response) == SIZE(vdensity))
+      END IF
       response = CMPLX(0.0_dp, 0.0_dp, dp)
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
@@ -746,6 +762,8 @@ CONTAINS
          n = last - first + 1
          radius2 = augmentation%kinds(ikind)%realspace_radius**2
          ALLOCATE (q(n, n), dq(n, n, 3), hq(n, n, 3, 3), term(n, n), dterm(n, n))
+         IF (PRESENT(vlaplacian) .OR. PRESENT(vlaplacian_response)) ALLOCATE (laplace_q(n, n))
+         IF (PRESENT(vlaplacian)) ALLOCATE (laplace_q_gradient(n, n, 3))
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
             DO point = 1, SIZE(vdensity)
@@ -758,7 +776,7 @@ CONTAINS
                END IF
                IF (DOT_PRODUCT(r, r) > radius2) CYCLE
                dr = point_response(:, point) - atom_response(:, atom) - MATMUL(cell_response, REAL(frame%images(:, image), dp))
-               CALL uspp_augmentation_realspace(augmentation%kinds(ikind), r, q, dq, hq)
+               CALL uspp_augmentation_realspace(augmentation%kinds(ikind), r, q, dq, hq, laplace_q, laplace_q_gradient)
                term(:, :) = vdensity(point)*q
                dterm(:, :) = vdensity_response(point)*q
                DO axis = 1, 3
@@ -768,11 +786,20 @@ CONTAINS
                   dterm(:, :) = dterm + vgradient(point, axis)*(hq(:, :, axis, 1)*dr(1) + &
                                                                 hq(:, :, axis, 2)*dr(2) + hq(:, :, axis, 3)*dr(3))
                END DO
+               IF (PRESENT(vlaplacian)) THEN
+                  term = term + vlaplacian(point)*laplace_q
+                  DO axis = 1, 3
+                     dterm = dterm + vlaplacian(point)*laplace_q_gradient(:, :, axis)*dr(axis)
+                  END DO
+               END IF
+               IF (PRESENT(vlaplacian_response)) dterm = dterm + vlaplacian_response(point)*laplace_q
                response(first:last, first:last) = response(first:last, first:last) + &
                                                   weight*dterm + weights_response(point)*term
             END DO
          END DO
          DEALLOCATE (q, dq, hq, term, dterm)
+         IF (ALLOCATED(laplace_q)) DEALLOCATE (laplace_q)
+         IF (ALLOCATED(laplace_q_gradient)) DEALLOCATE (laplace_q_gradient)
       END DO
       IF (PRESENT(comm)) THEN
          CALL comm%sum(response)

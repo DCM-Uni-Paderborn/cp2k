@@ -1047,11 +1047,13 @@ CONTAINS
 !> \param gaussian_gradient Optional physical Gaussian gradients at the same points.
 !> \param gaussian_response Optional Gaussian response from the same joint geometry evaluation.
 !> \param gaussian_gradient_response Optional Gaussian-gradient response, requiring gradient_response.
+!> \param laplacian Optional spatial Laplacian of the inverse-transformed basis.
+!> \param laplacian_response Optional joint geometry and Bloch response of that Laplacian.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_evaluate(frame, points, soft, gradient, soft_response, gradient_response, &
                                       point_response, atom_response, cell_response, reduced_k_response, &
                                       coefficients_response, gaussian, gaussian_gradient, &
-                                      gaussian_response, gaussian_gradient_response)
+                                      gaussian_response, gaussian_gradient_response, laplacian, laplacian_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: soft(:, :)
@@ -1064,12 +1066,15 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL :: gaussian(:, :), gaussian_gradient(:, :, :), &
          gaussian_response(:, :), gaussian_gradient_response(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: laplacian(:, :), laplacian_response(:, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), ddelta(:, :), &
                                                             delta(:, :), dgc(:, :, :), &
                                                             dgd(:, :, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: gc(:, :, :), gd(:, :, :)
-      COMPLEX(dp), POINTER                               :: field_gradient(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, TARGET                   :: dlc(:, :), dld(:, :), lc(:, :), ld(:, :)
+      COMPLEX(dp), POINTER                               :: field_gradient(:, :, :), field_laplacian(:, :), &
+                                                            field_laplacian_response(:, :)
       INTEGER                                            :: atom, axis, center, first, ikind, last, &
                                                             nao, npoint, nproj
       LOGICAL                                            :: calculate_gradient, calculate_response
@@ -1088,7 +1093,13 @@ CONTAINS
                            PRESENT(point_response) .OR. PRESENT(atom_response) .OR. &
                            PRESENT(cell_response) .OR. PRESENT(reduced_k_response) .OR. &
                            PRESENT(coefficients_response) .OR. PRESENT(gaussian_response) .OR. &
-                           PRESENT(gaussian_gradient_response)
+                           PRESENT(gaussian_gradient_response) .OR. PRESENT(laplacian_response)
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(soft)))
+      END IF
+      IF (PRESENT(laplacian_response)) THEN
+         CPASSERT(ALL(SHAPE(laplacian_response) == SHAPE(soft)))
+      END IF
       IF (calculate_response) THEN
          CPASSERT(PRESENT(soft_response))
          CPASSERT(PRESENT(point_response) .AND. PRESENT(atom_response))
@@ -1104,29 +1115,36 @@ CONTAINS
       END IF
       ALLOCATE (chi(npoint, nao), delta(npoint, nproj))
       IF (calculate_gradient) ALLOCATE (gc(npoint, nao, 3), gd(npoint, nproj, 3))
+      IF (PRESENT(laplacian) .OR. PRESENT(laplacian_response)) ALLOCATE (lc(npoint, nao), ld(npoint, nproj))
+      IF (PRESENT(laplacian_response)) ALLOCATE (dlc(npoint, nao), dld(npoint, nproj))
       IF (calculate_response) THEN
          ALLOCATE (dchi(npoint, nao), ddelta(npoint, nproj))
          IF (PRESENT(gradient_response)) ALLOCATE (dgc(npoint, nao, 3), dgd(npoint, nproj, 3))
       END IF
-      NULLIFY (field_gradient)
+      NULLIFY (field_gradient, field_laplacian, field_laplacian_response)
       DO atom = 1, SIZE(frame%bases)
          first = frame%ao_first(atom)
          last = frame%ao_last(atom)
          IF (calculate_gradient) field_gradient => gc(:, first:last, :)
+         IF (ALLOCATED(lc)) field_laplacian => lc(:, first:last)
+         IF (ALLOCATED(dlc)) field_laplacian_response => dlc(:, first:last)
          IF (PRESENT(gradient_response)) THEN
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, frame%images, frame%reduced_k, chi(:, first:last), &
                                                 field_gradient, dchi(:, first:last), dgc(:, first:last, :), &
-                                                point_response, atom_response(:, atom), cell_response, reduced_k_response)
+                                                point_response, atom_response(:, atom), cell_response, reduced_k_response, &
+                                                laplacian=field_laplacian, laplacian_response=field_laplacian_response)
          ELSE IF (calculate_response) THEN
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, frame%images, frame%reduced_k, chi(:, first:last), &
                                                 field_gradient, response=dchi(:, first:last), &
                                                 point_response=point_response, center_response=atom_response(:, atom), &
-                                                cell_response=cell_response, reduced_k_response=reduced_k_response)
+                                                cell_response=cell_response, reduced_k_response=reduced_k_response, &
+                                                laplacian=field_laplacian, laplacian_response=field_laplacian_response)
          ELSE
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                                                frame%cell, frame%images, frame%reduced_k, chi(:, first:last), field_gradient)
+                                                frame%cell, frame%images, frame%reduced_k, chi(:, first:last), field_gradient, &
+                                                laplacian=field_laplacian)
          END IF
       END DO
       IF (PRESENT(gaussian)) THEN
@@ -1146,32 +1164,41 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gaussian_gradient_response) == [npoint, nao, 3]))
          gaussian_gradient_response = dgc
       END IF
-      NULLIFY (field_gradient)
+      NULLIFY (field_gradient, field_laplacian, field_laplacian_response)
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          IF (calculate_gradient) field_gradient => gd(:, first:last, :)
+         IF (ALLOCATED(ld)) field_laplacian => ld(:, first:last)
+         IF (ALLOCATED(dld)) field_laplacian_response => dld(:, first:last)
          IF (PRESENT(gradient_response)) THEN
             CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
                                             frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient, &
                                             ddelta(:, first:last), dgd(:, first:last, :), point_response, atom_response(:, atom), &
-                                            cell_response, reduced_k_response)
+                                            cell_response, reduced_k_response, &
+                                            laplacian=field_laplacian, laplacian_response=field_laplacian_response)
          ELSE IF (calculate_response) THEN
             CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
                                             frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient, &
                                             response=ddelta(:, first:last), points_response=point_response, &
                                             center_response=atom_response(:, atom), cell_response=cell_response, &
-                                            reduced_k_response=reduced_k_response)
+                                            reduced_k_response=reduced_k_response, &
+                                            laplacian=field_laplacian, laplacian_response=field_laplacian_response)
          ELSE
             CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
-                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient)
+                                            frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient, &
+                                            laplacian=field_laplacian)
          END IF
       END DO
       CALL upf_inverse_basis(chi, delta, frame%coefficients, soft)
       IF (calculate_response) THEN
          CALL upf_inverse_basis_response(dchi, delta, ddelta, frame%coefficients, coefficients_response, soft_response)
+      END IF
+      IF (PRESENT(laplacian)) CALL upf_inverse_basis(lc, ld, frame%coefficients, laplacian)
+      IF (PRESENT(laplacian_response)) THEN
+         CALL upf_inverse_basis_response(dlc, ld, dld, frame%coefficients, coefficients_response, laplacian_response)
       END IF
       DO axis = 1, 3
          IF (PRESENT(gradient)) THEN
