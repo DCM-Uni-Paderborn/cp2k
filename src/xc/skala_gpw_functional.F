@@ -770,7 +770,8 @@ CONTAINS
             CALL timestop(phase_handle)
          END IF
          IF (use_density_constraints) THEN
-            CALL apply_descriptor_constraints(density_constraints, features, rho_r, density_grad, kin_grad)
+            CALL apply_descriptor_constraints(density_constraints, features, rho_r, density_grad, kin_grad, &
+                                              distribute_limits=.NOT. native_grid_use_cuda)
          END IF
          IF (needs_atom_force) THEN
             CALL add_explicit_coordinate_force(atom_force, features, atom_coord_grad_t, &
@@ -2678,14 +2679,17 @@ CONTAINS
 !> \param rho_r ...
 !> \param density_grad ...
 !> \param kin_grad ...
+!> \param distribute_limits Split evaluations of replicated CPU model inputs across the Fourier group.
 ! **************************************************************************************************
-   SUBROUTINE apply_descriptor_constraints(state, features, rho_r, density_grad, kin_grad)
+   SUBROUTINE apply_descriptor_constraints(state, features, rho_r, density_grad, kin_grad, distribute_limits)
       TYPE(skala_density_constraints_type), &
          INTENT(INOUT)                                   :: state
       TYPE(skala_gpw_feature_type), INTENT(IN)           :: features
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
+      LOGICAL, INTENT(IN)                                :: distribute_limits
       REAL(dp), INTENT(INOUT), TARGET                    :: density_grad(:, :), kin_grad(:, :)
 
+      CLASS(mp_comm_type), POINTER                      :: model_group
       INTEGER                                            :: bo(2, 3), c, descriptor, e, first_spin, &
                                                             i, last_spin, n, nactive, nlocal, pos, &
                                                             row, spin
@@ -2700,6 +2704,9 @@ CONTAINS
       REAL(dp), POINTER                                  :: covector(:, :)
 
       CPASSERT(.NOT. features%uses_atom_chunks)
+      NULLIFY (model_group)
+      ! The complete feature dictionary was replicated by the Fourier-grid gather.
+      IF (distribute_limits) model_group => rho_r(1)%pw_grid%para%group
       CALL skala_density_constraints_get(state, points, spins, negative_weights, probes(1), tolerances(1), &
                                          descriptors, probes(2), tolerances(2), domain=skala_fft_domain, targets=targets)
       n = SIZE(spins)
@@ -2794,12 +2801,12 @@ CONTAINS
          IF (descriptor == skala_density_descriptor) THEN
             CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "density", features%density, &
                                                      active, probes(descriptor), negative, positive, branches=branches, &
-                                                     targets=active_targets, adjacent=cached_model_fp64)
+                                                     targets=active_targets, adjacent=cached_model_fp64, comm=model_group)
             covector => density_grad
          ELSE
             CALL skala_torch_model_descriptor_limits(cached_model, features%inputs, "kin", features%kin, &
                                                      active, probes(descriptor), negative, positive, branches=branches, &
-                                                     targets=active_targets, adjacent=cached_model_fp64)
+                                                     targets=active_targets, adjacent=cached_model_fp64, comm=model_group)
             covector => kin_grad
          END IF
          DO c = 1, n

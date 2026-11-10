@@ -16,6 +16,7 @@ MODULE skala_torch_api
 #endif
    USE kinds, ONLY: default_string_length, &
                     dp
+   USE message_passing, ONLY: mp_comm_type
    USE string_utilities, ONLY: uppercase
    USE torch_api, ONLY: &
       torch_dict_clone_detached, torch_dict_get, torch_dict_insert, torch_dict_release, torch_dict_type, &
@@ -269,9 +270,11 @@ CONTAINS
 !> \param branches Optional negative/positive branch selection. Unrequested covectors are zero.
 !> \param targets Optional physical target per selected feature entry, zero by default.
 !> \param adjacent Use adjacent branch values instead of literal probes, false by default.
+!> \param comm Optional communicator with identical model inputs and branch requests on every rank.
+!>             Evaluate each branch on one rank and broadcast its covector.
 ! **************************************************************************************************
    SUBROUTINE skala_torch_model_descriptor_limits(model, inputs, feature, values, active, probe, &
-                                                  negative, positive, energies, branches, targets, adjacent)
+                                                  negative, positive, energies, branches, targets, adjacent, comm)
       TYPE(skala_torch_model_type), INTENT(INOUT)        :: model
       TYPE(torch_dict_type), INTENT(IN)                  :: inputs
       CHARACTER(len=*), INTENT(IN)                       :: feature
@@ -284,7 +287,9 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: targets(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: adjacent
 
-      INTEGER                                            :: branch, sample
+      CLASS(mp_comm_type), INTENT(IN), OPTIONAL          :: comm
+
+      INTEGER                                            :: branch, owner(2), rank, sample
       LOGICAL                                            :: local_limit, needed(2)
       REAL(dp)                                           :: energy, TARGET
       REAL(dp), ALLOCATABLE                              :: branch_values(:, :)
@@ -303,7 +308,6 @@ CONTAINS
          CPASSERT(SIZE(targets) == SIZE(active, 2))
          CPASSERT(ALL(ABS(targets) < HUGE(probe)))
       END IF
-      ALLOCATE (branch_values(SIZE(values, 1), 2))
       ALLOCATE (negative(SIZE(values, 1), 2), positive(SIZE(values, 1), 2))
       negative = 0.0_dp
       positive = 0.0_dp
@@ -313,8 +317,15 @@ CONTAINS
       IF (PRESENT(branches)) needed = branches
       IF (PRESENT(energies)) needed = .TRUE.
       CPASSERT(ANY(needed))
+      owner = 0
+      rank = 0
+      IF (PRESENT(comm)) THEN
+         owner(2) = MIN(1, comm%num_pe - 1)
+         rank = comm%mepos
+      END IF
+      IF (ANY(needed .AND. owner == rank)) ALLOCATE (branch_values(SIZE(values, 1), 2))
       DO branch = 1, 2
-         IF (.NOT. needed(branch)) CYCLE
+         IF (.NOT. needed(branch) .OR. owner(branch) /= rank) CYCLE
          branch_values(:, :) = values
          DO sample = 1, SIZE(active, 2)
             TARGET = 0.0_dp
@@ -348,7 +359,17 @@ CONTAINS
          CALL torch_dict_release(branch_inputs)
          CALL torch_tensor_release(descriptor_t)
       END DO
-      DEALLOCATE (branch_values)
+      IF (PRESENT(comm)) THEN
+         IF (comm%num_pe > 1) THEN
+            IF (needed(1)) CALL comm%bcast(negative, owner(1))
+            IF (needed(2)) CALL comm%bcast(positive, owner(2))
+            IF (PRESENT(energies)) THEN
+               DO branch = 1, 2
+                  CALL comm%bcast(energies(branch), owner(branch))
+               END DO
+            END IF
+         END IF
+      END IF
    END SUBROUTINE skala_torch_model_descriptor_limits
 
 ! **************************************************************************************************
