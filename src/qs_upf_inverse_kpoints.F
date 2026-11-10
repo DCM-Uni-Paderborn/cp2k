@@ -47,7 +47,8 @@ MODULE qs_upf_inverse_kpoints
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
-   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_prepare
+   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_collocate,&
+                                              qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate_dense,&
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_metric_dense,&
@@ -568,7 +569,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Sum native k-point densities with their mesh weights exactly once.
-!>        Original Fourier Q is shared and periodic; Bloch dependence remains in W(k).
+!>        Original Fourier Q is shared and periodic. Sum W(k) P(k) W(k)^dagger before applying Q.
 !>        Independent original-wave kernels are required to augment the smooth kinetic density.
 !> \param frame ...
 !> \param spin ...
@@ -587,13 +588,17 @@ CONTAINS
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
-      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), representative(:, :)
-      INTEGER                                            :: axis, ik, rep
+      COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), projected(:, :), &
+                                                            representative(:, :), total_projected(:, :)
+      INTEGER                                            :: axis, ik, nproj, rep
       TYPE(pw_r3d_rs_type)                               :: part, tpart
       TYPE(pw_r3d_rs_type), ALLOCATABLE                  :: dpart(:)
 
       CALL check_live(frame)
       ALLOCATE (matrix(frame%nao, frame%nao))
+      nproj = SIZE(frame%frames(1)%ao%coefficients, 1)
+      ALLOCATE (projected(nproj, nproj), total_projected(nproj, nproj))
+      total_projected = CMPLX(0.0_dp, 0.0_dp, dp)
       CALL part%create(density%pw_grid)
       CALL tpart%create(density%pw_grid)
       density%array = 0.0_dp
@@ -612,8 +617,9 @@ CONTAINS
             CALL kpoint_star_matrix(frame%star, ik, representative, matrix, .FALSE.)
             matrix = frame%weights(ik)*matrix
             CALL qs_upf_inverse_grid_collocate_dense(frame%frames(ik), matrix, part, dpart, tpart, &
-                                                     augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic, &
+                                                     projector_density=projected, kinetic=kinetic, &
                                                      orbital_fields=orbital_fields)
+            total_projected = total_projected + projected
             density%array = density%array + part%array
             tau%array = tau%array + tpart%array
             IF (PRESENT(gradient)) THEN
@@ -623,6 +629,9 @@ CONTAINS
             END IF
          END DO
       END DO
+      ! The original magnetic-projector order and atomic positions are common to every frame.
+      CALL qs_upf_inverse_augmentation_fourier_collocate(frame%frames(1)%ao, frame%augmentation, &
+                                                         total_projected, density, gradient)
       CALL part%release()
       CALL tpart%release()
       IF (PRESENT(gradient)) THEN

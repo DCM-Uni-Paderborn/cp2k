@@ -51,7 +51,8 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_atom_grid_prepare,&
                                               qs_upf_inverse_atom_grid_ref_type,&
                                               qs_upf_inverse_atom_grid_response
-   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_integrate
+   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_collocate,&
+                                              qs_upf_inverse_augmentation_fourier_integrate
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
@@ -400,7 +401,8 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), &
          OPTIONAL, TARGET                                :: context
 
-      INTEGER                                            :: ik, n, nk, ns, spin
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), total_projected(:, :)
+      INTEGER                                            :: ik, n, nk, nproj, ns, spin
       LOGICAL                                            :: valid
       REAL(dp), ALLOCATABLE                              :: weights(:)
       TYPE(pw_c1d_gs_type)                               :: density_g, kinetic_g
@@ -446,6 +448,8 @@ CONTAINS
          CALL kinetic_g%create(grid)
       END IF
       IF (.NOT. state%gaussian_background) THEN
+         nproj = SIZE(frame%ao%coefficients, 1)
+         ALLOCATE (projected(nproj, nproj), total_projected(nproj, nproj))
          CALL partial%create(grid)
          CALL partial_tau%create(grid)
       END IF
@@ -459,15 +463,20 @@ CONTAINS
          ELSE
             density%array = 0.0_dp
             kinetic%array = 0.0_dp
+            total_projected = CMPLX(0.0_dp, 0.0_dp, dp)
             DO ik = 1, nk
                frame => source_frame(state, ik)
                CALL qs_upf_inverse_grid_collocate_dense(frame, weights(ik)*matrices_direction(:, :, ik, spin), &
-                                                        partial, tau=partial_tau, augmentation=augmentation, &
-                                                        fourier_charge=.TRUE., kinetic=state%kinetic_cache, &
+                                                        partial, tau=partial_tau, projector_density=projected, &
+                                                        kinetic=state%kinetic_cache, &
                                                         orbital_fields=.NOT. state%native_gaussian)
+               total_projected = total_projected + projected
                density%array = density%array + partial%array
                kinetic%array = kinetic%array + partial_tau%array
             END DO
+            ! The Fourier charge kernels carry no Bloch phase.
+            frame => source_frame(state, 1)
+            CALL qs_upf_inverse_augmentation_fourier_collocate(frame%ao, augmentation, total_projected, density)
             IF (state%native_gaussian) THEN
                CALL qs_upf_inverse_background_collocate(gaussian, native_ks, matrices_direction(:, :, :, spin), &
                                                         partial, density_g, kinetic=partial_tau, kinetic_gspace=kinetic_g)
