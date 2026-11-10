@@ -40,12 +40,10 @@ MODULE qs_upf_inverse_coulomb
    USE pw_pool_types,                   ONLY: pw_pool_type
    USE pw_types,                        ONLY: pw_c1d_gs_type,&
                                               pw_r3d_rs_type
-   USE qs_collocate_density,            ONLY: calculate_rho_core
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_harmonics_atom,               ONLY: harmonics_atom_type
-   USE qs_integrate_potential_single,   ONLY: integrate_v_core_rspace
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
@@ -102,7 +100,6 @@ MODULE qs_upf_inverse_coulomb
    PUBLIC :: qs_upf_inverse_coulomb_install_metric
    PUBLIC :: qs_upf_inverse_coulomb_attach, qs_upf_inverse_coulomb_update
    PUBLIC :: qs_upf_inverse_coulomb_xc_integrate
-   PUBLIC :: qs_upf_inverse_coulomb_ionic_geometry
    PUBLIC :: qs_upf_inverse_coulomb_pair_geometry
    PUBLIC :: qs_upf_inverse_coulomb_response, qs_upf_inverse_coulomb_metric_response
    PUBLIC :: qs_upf_inverse_coulomb_metric_geometry, qs_upf_inverse_coulomb_center_metric_response
@@ -844,36 +841,7 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_coulomb_charges
 
 ! **************************************************************************************************
-!> \brief Geometry adjoint of every native Gaussian ionic charge on the actual auxiliary grid.
-!>        Differentiates calculate_rho_core with its collocation extent and kind selection.
-!>        Native force, virial and atomic-energy owners are unchanged. Grid measure and Fourier
-!>        kernel geometry remain the caller's responsibility, as for the electronic background.
-!> \param qs_env Native owner of the same ionic charges and auxiliary grid.
-!> \param potential Unweighted real-space covector conjugate to the negative ionic density.
-!> \param forces Replicated physical atomic forces from the ionic grid source.
-!> \param virial Replicated source virial, including the current grid measure.
-! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_coulomb_ionic_geometry(qs_env, potential, forces, virial)
-      TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: potential
-      REAL(dp), INTENT(OUT)                              :: forces(:, :), virial(3, 3)
-
-      TYPE(mp_para_env_type), POINTER                    :: para_env
-      TYPE(pw_r3d_rs_type)                               :: weighted
-
-      CALL get_qs_env(qs_env, para_env=para_env)
-      CALL weighted%create(potential%pw_grid)
-      weighted%array = potential%pw_grid%dvol*potential%array
-      CALL integrate_v_core_rspace(weighted, qs_env, force_response=forces, &
-                                   virial_response=virial, only_nopaw=.FALSE.)
-      CALL para_env%sum(forces)
-      CALL para_env%sum(virial)
-      forces(:, :) = -forces
-      CALL weighted%release()
-   END SUBROUTINE qs_upf_inverse_coulomb_ionic_geometry
-
-! **************************************************************************************************
-!> \brief Analytic Fourier coefficients of the periodic Gaussian ionic charges and their adjoint.
+!> \brief Analytic Fourier coefficients of the Gaussian ionic charges on the auxiliary FFT cell.
 !>        Each term represents a physical wave vector folded into the real FFT coefficient.
 !> \param grid Auxiliary reciprocal grid.
 !> \param index Local reciprocal coefficient index.
@@ -903,7 +871,8 @@ CONTAINS
    END SUBROUTINE ionic_fourier_terms
 
 ! **************************************************************************************************
-!> \brief Construct the periodic ionic source without sampling narrow Gaussians in real space.
+!> \brief Construct the ionic source without sampling narrow Gaussians in real space.
+!>        For isolated axes, the Poisson kernel supplies the physical boundary conditions.
 !> \param atoms Native atoms at the prepared geometry.
 !> \param kinds Native Gaussian charge definitions.
 !> \param density Fourier source including the negative ionic charge.
@@ -1126,7 +1095,7 @@ CONTAINS
                                                             kind, nao, ncenter, nh, nr
       INTEGER(int_8)                                     :: remaining_bytes
       LOGICAL                                            :: paw_atom
-      REAL(dp)                                           :: alpha, tolerance, total
+      REAL(dp)                                           :: alpha, tolerance
       REAL(dp), ALLOCATABLE                              :: unit(:, :)
       TYPE(grid_atom_type), POINTER                      :: grid_atom
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
@@ -1167,11 +1136,7 @@ CONTAINS
       CASE DEFAULT
          CPABORT("Inverse GAPW Coulomb for this Poisson solver is not implemented")
       END SELECT
-      IF (poisson%green_fft%method == PERIODIC3D) THEN
-         CALL ionic_fourier_source(atoms, kinds, map%ionic)
-      ELSE
-         CALL calculate_rho_core(map%ionic, total, qs_env, only_nopaw=.FALSE.)
-      END IF
+      CALL ionic_fourier_source(atoms, kinds, map%ionic)
       ALLOCATE (map%multiplicity(SIZE(map%ionic%array)), map%poisson_weights(SIZE(map%ionic%array)))
       map%multiplicity = 1.0_dp
       IF (map%grid%grid_span == HALFSPACE) THEN
@@ -1501,18 +1466,9 @@ CONTAINS
 
       REAL(dp)                                           :: ionic_virial(3, 3)
       REAL(dp), ALLOCATABLE                              :: ionic_forces(:, :)
-      TYPE(pw_env_type), POINTER                         :: pw_env
-      TYPE(pw_poisson_type), POINTER                     :: poisson
-
       ALLOCATE (ionic_forces, MOLD=forces)
       CALL qs_upf_inverse_background_geometry(map%background, qs_env, matrix, map%potential, forces, virial)
-      CALL get_qs_env(qs_env, pw_env=pw_env)
-      CALL pw_env_get(pw_env, poisson_env=poisson)
-      IF (poisson%green_fft%method == PERIODIC3D) THEN
-         CALL ionic_fourier_geometry(qs_env, map, ionic_forces, ionic_virial)
-      ELSE
-         CALL qs_upf_inverse_coulomb_ionic_geometry(qs_env, map%potential, ionic_forces, ionic_virial)
-      END IF
+      CALL ionic_fourier_geometry(qs_env, map, ionic_forces, ionic_virial)
       forces(:, :) = forces + ionic_forces
       virial(:, :) = virial + ionic_virial
    END SUBROUTINE coulomb_source_geometry
