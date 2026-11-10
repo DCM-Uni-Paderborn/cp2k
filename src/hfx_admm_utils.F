@@ -84,6 +84,7 @@ MODULE hfx_admm_utils
                                               section_vals_type,&
                                               section_vals_val_get,&
                                               section_vals_val_set
+   USE integral_library_types,          ONLY: cutoff_screen_factor
    USE kinds,                           ONLY: dp
    USE kpoint_methods,                  ONLY: kpoint_aux_env_initialize,&
                                               kpoint_initialize_mos
@@ -91,7 +92,6 @@ MODULE hfx_admm_utils
                                               set_2d_pointer
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_type
-   USE libint_2c_3c,                    ONLY: cutoff_screen_factor
    USE mathlib,                         ONLY: erfc_cutoff
    USE message_passing,                 ONLY: mp_para_env_type
    USE molecule_types,                  ONLY: molecule_type

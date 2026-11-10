@@ -36,13 +36,13 @@ MODULE qs_upf_inverse_hfx
                                               do_potential_long,&
                                               do_potential_short,&
                                               do_potential_truncated
-   USE integral_library_types,          ONLY: coulomb_operator_type
+   USE integral_library_types,          ONLY: coulomb_operator_type,&
+                                              cutoff_screen_factor
    USE kinds,                           ONLY: dp,&
                                               int_8
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
                                               lebedev_grid
-   USE libint_2c_3c,                    ONLY: cutoff_screen_factor
    USE mathconstants,                   ONLY: fourpi,&
                                               twopi
    USE mathlib,                         ONLY: inv_3x3
