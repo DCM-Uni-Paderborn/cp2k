@@ -48,6 +48,7 @@ MODULE qs_upf_inverse_kpoints
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_collocate,&
+                                              qs_upf_inverse_augmentation_fourier_integrate,&
                                               qs_upf_inverse_augmentation_prepare
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate_dense,&
                                               qs_upf_inverse_grid_integrate_dense,&
@@ -651,24 +652,36 @@ CONTAINS
 !> \param dense Optional replicated operators indexed by global k, without mesh weights.
 !> \param kinetic Optional independent valence kinetic kernels; omitted for the bare soft kinetic operator.
 !> \param orbital_fields Include soft-orbital fields. False returns only the requested augmentation.
+!> \param charge Include original Fourier Q. False for a purely kinetic-density potential.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_kpoints_integrate(frame, vdensity, vgradient, vtau, operators, dense, kinetic, orbital_fields)
+   SUBROUTINE qs_upf_inverse_kpoints_integrate(frame, vdensity, vgradient, vtau, operators, dense, kinetic, &
+                                              orbital_fields, charge)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(INOUT)   :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       TYPE(cp_cfm_type), ALLOCATABLE, INTENT(OUT)        :: operators(:)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: dense(:, :, :)
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
-      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
+      LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields, charge
 
-      COMPLEX(dp), ALLOCATABLE                           :: all_k(:, :, :), matrix(:, :)
-      INTEGER                                            :: ik
+      COMPLEX(dp), ALLOCATABLE                           :: all_k(:, :, :), matrix(:, :), projected(:, :)
+      INTEGER                                            :: ik, nproj
+      LOGICAL                                            :: use_charge
 
       CALL check_live(frame)
+      use_charge = .TRUE.
+      IF (PRESENT(charge)) use_charge = charge
+      IF (use_charge) THEN
+         ! Q has the same projector order and geometry for the entire Bloch mesh.
+         nproj = SIZE(frame%frames(1)%ao%coefficients, 1)
+         ALLOCATE (projected(nproj, nproj))
+         CALL qs_upf_inverse_augmentation_fourier_integrate(frame%frames(1)%ao, frame%augmentation, &
+                                                            vdensity, vgradient, projected)
+      END IF
       ALLOCATE (all_k(frame%nao, frame%nao, SIZE(frame%weights)))
       DO ik = 1, SIZE(frame%weights)
          CALL qs_upf_inverse_grid_integrate_dense(frame%frames(ik), vdensity, vgradient, vtau, matrix, &
-                                                  augmentation=frame%augmentation, fourier_charge=.TRUE., kinetic=kinetic, &
+                                                  projector_operator=projected, kinetic=kinetic, &
                                                   orbital_fields=orbital_fields)
          all_k(:, :, ik) = matrix
       END DO

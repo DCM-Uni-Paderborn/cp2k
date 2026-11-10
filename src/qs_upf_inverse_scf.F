@@ -922,7 +922,7 @@ CONTAINS
       END IF
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
          CALL qs_upf_inverse_kpoints_integrate(state%bloch, zero, zeros, potential, native, dense, state%kinetic_cache, &
-                                               orbital_fields=.NOT. state%native_gaussian)
+                                               orbital_fields=.NOT. state%native_gaussian, charge=.FALSE.)
          CALL qs_upf_inverse_kpoints_release_operators(native)
          IF (state%native_gaussian) dense(:, :, :) = dense + gaussian
          state%ks_k(:, :, :, spin) = state%ks_k(:, :, :, spin) + dense
