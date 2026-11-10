@@ -573,7 +573,7 @@ CONTAINS
 !> \param frame ...
 !> \param spin ...
 !> \param density Overwritten native total spin density.
-!> \param gradient Overwritten physical Cartesian gradient.
+!> \param gradient Optional overwritten physical Cartesian gradient.
 !> \param tau Overwritten smooth kinetic density.
 !> \param kinetic Optional independent original-wave valence kinetic kernels, indexed by kind.
 !> \param orbital_fields Include soft-orbital fields. False returns only the requested augmentation.
@@ -581,14 +581,16 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_kpoints_collocate(frame, spin, density, gradient, tau, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_kpoints_type), INTENT(INOUT)   :: frame
       INTEGER, INTENT(IN)                                :: spin
-      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, tau
+      TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: gradient(3)
       TYPE(upf_inverse_kinetic_type), INTENT(IN), &
          OPTIONAL                                        :: kinetic(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
 
       COMPLEX(dp), ALLOCATABLE                           :: matrix(:, :), representative(:, :)
       INTEGER                                            :: axis, ik, rep
-      TYPE(pw_r3d_rs_type)                               :: dpart(3), part, tpart
+      TYPE(pw_r3d_rs_type)                               :: part, tpart
+      TYPE(pw_r3d_rs_type), ALLOCATABLE                  :: dpart(:)
 
       CALL check_live(frame)
       ALLOCATE (matrix(frame%nao, frame%nao))
@@ -596,10 +598,13 @@ CONTAINS
       CALL tpart%create(density%pw_grid)
       density%array = 0.0_dp
       tau%array = 0.0_dp
-      DO axis = 1, 3
-         CALL dpart(axis)%create(density%pw_grid)
-         gradient(axis)%array = 0.0_dp
-      END DO
+      IF (PRESENT(gradient)) THEN
+         ALLOCATE (dpart(3))
+         DO axis = 1, 3
+            CALL dpart(axis)%create(density%pw_grid)
+            gradient(axis)%array = 0.0_dp
+         END DO
+      END IF
       DO rep = 1, frame%kpoints%nkp
          CALL qs_upf_inverse_kpoints_density_representative(frame, spin, rep, representative)
          DO ik = 1, SIZE(frame%weights)
@@ -611,16 +616,20 @@ CONTAINS
                                                      orbital_fields=orbital_fields)
             density%array = density%array + part%array
             tau%array = tau%array + tpart%array
-            DO axis = 1, 3
-               gradient(axis)%array = gradient(axis)%array + dpart(axis)%array
-            END DO
+            IF (PRESENT(gradient)) THEN
+               DO axis = 1, 3
+                  gradient(axis)%array = gradient(axis)%array + dpart(axis)%array
+               END DO
+            END IF
          END DO
       END DO
       CALL part%release()
       CALL tpart%release()
-      DO axis = 1, 3
-         CALL dpart(axis)%release()
-      END DO
+      IF (PRESENT(gradient)) THEN
+         DO axis = 1, 3
+            CALL dpart(axis)%release()
+         END DO
+      END IF
    END SUBROUTINE qs_upf_inverse_kpoints_collocate
 
 ! **************************************************************************************************

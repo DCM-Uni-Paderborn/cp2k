@@ -688,13 +688,12 @@ CONTAINS
       TYPE(qs_rho_type), INTENT(INOUT)                   :: rho_struct
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
-      INTEGER                                            :: axis, k, spin
+      INTEGER                                            :: k, spin
       REAL(dp), POINTER                                  :: total(:)
       TYPE(dbcsr_p_type), POINTER                        :: density(:, :)
       TYPE(pw_c1d_gs_type)                               :: gaussian_rho_g, gaussian_tau_g
       TYPE(pw_c1d_gs_type), POINTER                      :: rho_g(:), tau_g(:)
-      TYPE(pw_r3d_rs_type)                               :: gaussian_rho, gaussian_tau, gradient(3), &
-                                                            tau
+      TYPE(pw_r3d_rs_type)                               :: gaussian_rho, gaussian_tau, tau
       TYPE(pw_r3d_rs_type), POINTER                      :: rho_r(:), tau_r(:)
       TYPE(qs_ks_env_type), POINTER                      :: native_ks
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
@@ -717,9 +716,6 @@ CONTAINS
          CALL gaussian_tau%create(rho_r(1)%pw_grid)
          CALL gaussian_tau_g%create(rho_r(1)%pw_grid)
       END IF
-      DO axis = 1, 3
-         CALL gradient(axis)%create(rho_r(1)%pw_grid)
-      END DO
       DO spin = 1, SIZE(density, 1)
          IF (state%gaussian_background) THEN
             CPASSERT(ASSOCIATED(state%coulomb))
@@ -749,10 +745,10 @@ CONTAINS
             DEALLOCATE (matrix)
             CYCLE
          ELSE IF (ASSOCIATED(state%bloch%kpoints)) THEN
-            CALL qs_upf_inverse_kpoints_collocate(state%bloch, spin, rho_r(spin), gradient, tau, state%kinetic_cache, &
+            CALL qs_upf_inverse_kpoints_collocate(state%bloch, spin, rho_r(spin), tau=tau, kinetic=state%kinetic_cache, &
                                                   orbital_fields=.NOT. state%native_gaussian)
          ELSE
-            CALL qs_upf_inverse_grid_collocate(state%frame, density(spin, 1)%matrix, rho_r(spin), gradient, tau, &
+            CALL qs_upf_inverse_grid_collocate(state%frame, density(spin, 1)%matrix, rho_r(spin), tau=tau, &
                                                augmentation=state%augmentation, fourier_charge=.TRUE., &
                                                kinetic=state%kinetic_cache, orbital_fields=.NOT. state%native_gaussian)
          END IF
@@ -794,9 +790,6 @@ CONTAINS
          CALL gaussian_tau%release()
          CALL gaussian_tau_g%release()
       END IF
-      DO axis = 1, 3
-         CALL gradient(axis)%release()
-      END DO
       state%density_evaluations = state%density_evaluations + 1
    END SUBROUTINE qs_upf_inverse_scf_collocate
 

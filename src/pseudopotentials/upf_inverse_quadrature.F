@@ -319,7 +319,7 @@ CONTAINS
 !> \param soft_gradient Physical Cartesian Bloch gradients, axis last.
 !> \param ao_density Hermitian density matrix in reconstructed Gaussian variables.
 !> \param density Smooth local point density.
-!> \param gradient Smooth Cartesian density gradient, axis last.
+!> \param gradient Optional smooth Cartesian density gradient, axis last.
 !> \param tau Smooth kinetic-energy density, with factor one half.
 !> \param coefficients Optional original orbital factors certified for ao_density by the caller.
 !> \param occupations Matching nonnegative orbital occupations, without k weights.
@@ -332,7 +332,8 @@ CONTAINS
                                          coefficients_direction, occupations_direction, orbital_laplacian, density_laplacian)
       COMPLEX(dp), INTENT(IN)                            :: soft(:, :), soft_gradient(:, :, :), &
                                                             ao_density(:, :)
-      REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :), tau(:)
+      REAL(dp), INTENT(OUT)                              :: density(:), tau(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: occupations(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_direction(:, :)
@@ -352,7 +353,9 @@ CONTAINS
       CPASSERT(ALL(SHAPE(ao_density) == [n, n]))
       CPASSERT(ALL(SHAPE(soft_gradient) == [npoint, n, 3]))
       CPASSERT(SIZE(density) == npoint .AND. SIZE(tau) == npoint)
-      CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == [npoint, 3]))
+      END IF
       valid = PRESENT(orbital_laplacian) .EQV. PRESENT(density_laplacian)
       CPASSERT(valid)
       IF (PRESENT(density_laplacian)) THEN
@@ -388,7 +391,7 @@ CONTAINS
          END IF
          noccupied = COUNT(selected)
          density = 0.0_dp
-         gradient = 0.0_dp
+         IF (PRESENT(gradient)) gradient = 0.0_dp
          tau = 0.0_dp
          IF (noccupied == 0) RETURN
          ALLOCATE (occupied(noccupied), work(npoint, noccupied), derivative(npoint, noccupied), &
@@ -412,8 +415,10 @@ CONTAINS
             DO axis = 1, 3
                derivative(:, :) = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
                derivative_direction(:, :) = MATMUL(soft_gradient(:, :, axis), coefficients_direction(:, occupied))
-               gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative_direction)*weighted + &
-                                                   CONJG(derivative)*weighted_direction, DIM=2), dp)
+               IF (PRESENT(gradient)) THEN
+                  gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative_direction)*weighted + &
+                                                      CONJG(derivative)*weighted_direction, DIM=2), dp)
+               END IF
                DO i = 1, noccupied
                   tau = tau + occupations(occupied(i))*REAL(CONJG(derivative(:, i))*derivative_direction(:, i), dp) + &
                         0.5_dp*occupations_direction(occupied(i))*REAL(CONJG(derivative(:, i))*derivative(:, i), dp)
@@ -430,7 +435,7 @@ CONTAINS
          density = REAL(SUM(CONJG(work)*weighted, DIM=2), dp)
          DO axis = 1, 3
             derivative(:, :) = MATMUL(soft_gradient(:, :, axis), coefficients(:, occupied))
-            gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative)*weighted, DIM=2), dp)
+            IF (PRESENT(gradient)) gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(derivative)*weighted, DIM=2), dp)
             DO i = 1, noccupied
                tau = tau + 0.5_dp*occupations(occupied(i))*REAL(CONJG(derivative(:, i))*derivative(:, i), dp)
             END DO
@@ -446,7 +451,7 @@ CONTAINS
       density = REAL(SUM(CONJG(soft)*work, DIM=2), dp)
       tau = 0.0_dp
       DO axis = 1, 3
-         gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis))*work, DIM=2), dp)
+         IF (PRESENT(gradient)) gradient(:, axis) = 2.0_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis))*work, DIM=2), dp)
          derivative(:, :) = MATMUL(soft_gradient(:, :, axis), ao_density)
          tau = tau + 0.5_dp*REAL(SUM(CONJG(soft_gradient(:, :, axis))*derivative, DIM=2), dp)
       END DO

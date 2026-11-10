@@ -400,13 +400,12 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), &
          OPTIONAL, TARGET                                :: context
 
-      INTEGER                                            :: axis, ik, n, nk, ns, spin
+      INTEGER                                            :: ik, n, nk, ns, spin
       LOGICAL                                            :: valid
       REAL(dp), ALLOCATABLE                              :: weights(:)
       TYPE(pw_c1d_gs_type)                               :: density_g, kinetic_g
       TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_r3d_rs_type)                               :: density, gradient(3), kinetic, partial, &
-                                                            partial_tau
+      TYPE(pw_r3d_rs_type)                               :: density, kinetic, partial, partial_tau
       TYPE(pw_r3d_rs_type), POINTER                      :: native_density(:)
       TYPE(qs_ks_env_type), POINTER                      :: native_ks
       TYPE(qs_rho_type), POINTER                         :: rho
@@ -449,9 +448,6 @@ CONTAINS
       IF (.NOT. state%gaussian_background) THEN
          CALL partial%create(grid)
          CALL partial_tau%create(grid)
-         DO axis = 1, 3
-            CALL gradient(axis)%create(grid)
-         END DO
       END IF
       DO spin = 1, ns
          CPASSERT(ASSOCIATED(density_direction(spin)%pw_grid))
@@ -466,7 +462,7 @@ CONTAINS
             DO ik = 1, nk
                frame => source_frame(state, ik)
                CALL qs_upf_inverse_grid_collocate_dense(frame, weights(ik)*matrices_direction(:, :, ik, spin), &
-                                                        partial, gradient, partial_tau, augmentation=augmentation, &
+                                                        partial, tau=partial_tau, augmentation=augmentation, &
                                                         fourier_charge=.TRUE., kinetic=state%kinetic_cache, &
                                                         orbital_fields=.NOT. state%native_gaussian)
                density%array = density%array + partial%array
@@ -496,9 +492,6 @@ CONTAINS
       IF (.NOT. state%gaussian_background) THEN
          CALL partial%release()
          CALL partial_tau%release()
-         DO axis = 1, 3
-            CALL gradient(axis)%release()
-         END DO
       END IF
    END SUBROUTINE qs_upf_inverse_scf_xc_source_direction
 

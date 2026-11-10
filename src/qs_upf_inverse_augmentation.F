@@ -94,7 +94,7 @@ CONTAINS
 !> \param augmentation ...
 !> \param projector_density Full Hermitian W P W^dagger, including occupations and k weights.
 !> \param density Local density, incremented without weights.
-!> \param gradient Local physical Cartesian density gradient, axis last, incremented.
+!> \param gradient Optional local physical Cartesian density gradient, axis last, incremented.
 !> \param points Optional evaluation points, independent of the frame's defining quadrature.
 !> \param laplacian Optional accumulated Cartesian Laplacian of the original Q augmentation.
 ! **************************************************************************************************
@@ -103,9 +103,9 @@ CONTAINS
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: projector_density(:, :)
-      REAL(dp), INTENT(INOUT)                            :: density(:), gradient(:, :)
+      REAL(dp), INTENT(INOUT)                            :: density(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: points(:, :)
-      REAL(dp), INTENT(INOUT), OPTIONAL                  :: laplacian(:)
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: gradient(:, :), laplacian(:)
 
       INTEGER                                            :: atom, center, first, ikind, image, last, &
                                                             n
@@ -121,12 +121,14 @@ CONTAINS
       ELSE
          CPASSERT(SIZE(density) == SIZE(frame%weights))
       END IF
-      CPASSERT(ALL(SHAPE(gradient) == [SIZE(density), 3]))
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == [SIZE(density), 3]))
+         ALLOCATE (g(3, SIZE(density)), SOURCE=0.0_dp)
+      END IF
       tolerance = 128.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, MAXVAL(ABS(projector_density)))
       hermiticity = MAXVAL(ABS(projector_density - CONJG(TRANSPOSE(projector_density))))
       CPASSERT(hermiticity <= tolerance)
-      ALLOCATE (displacements(3, SIZE(density)), g(3, SIZE(density)))
-      g = 0.0_dp
+      ALLOCATE (displacements(3, SIZE(density)))
       IF (PRESENT(points)) THEN
          lower = MINVAL(points, DIM=2)
          upper = MAXVAL(points, DIM=2)
@@ -153,7 +155,7 @@ CONTAINS
                                                   REAL(projector_density(first:last, first:last), dp), density, g, laplacian)
          END DO
       END DO
-      gradient = gradient + TRANSPOSE(g)
+      IF (PRESENT(gradient)) gradient = gradient + TRANSPOSE(g)
    END SUBROUTINE qs_upf_inverse_augmentation_collocate
 
 ! **************************************************************************************************
@@ -423,14 +425,15 @@ CONTAINS
 !> \param augmentation Original kernels; only their bounded Fourier caches are updated.
 !> \param projector_density Full Hermitian W P W^dagger, with occupations and k weights.
 !> \param density Matching native real density, incremented.
-!> \param gradient Matching physical Cartesian density gradient, incremented.
+!> \param gradient Optional physical Cartesian density gradient, incremented.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_augmentation_fourier_collocate(frame, augmentation, projector_density, density, gradient)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: projector_density(:, :)
-      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3)
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density
+      TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: gradient(3)
 
       COMPLEX(dp), ALLOCATABLE                           :: kernel(:, :)
       INTEGER                                            :: atom, axis, center, first, ikind, index, &
@@ -445,7 +448,6 @@ CONTAINS
       hermiticity = MAXVAL(ABS(projector_density - CONJG(TRANSPOSE(projector_density))))
       CPASSERT(hermiticity <= tolerance)
       CALL charge_g%create(density%pw_grid)
-      CALL derivative_g%create(density%pw_grid)
       CALL work_r%create(density%pw_grid)
       charge_g%array = CMPLX(0.0_dp, 0.0_dp, dp)
       DO center = 1, SIZE(frame%center_atoms)
@@ -465,19 +467,22 @@ CONTAINS
       END DO
       CALL pw_transfer(charge_g, work_r)
       density%array = density%array + work_r%array
-      ! Retain the same real function for gradients, including the FULLSPACE Nyquist projection.
-      CALL pw_transfer(work_r, charge_g)
-      DO axis = 1, 3
-         CPASSERT(ASSOCIATED(gradient(axis)%pw_grid, density%pw_grid))
-         orders = 0
-         orders(axis) = 1
-         derivative_g%array = charge_g%array
-         CALL pw_derive(derivative_g, orders)
-         CALL pw_transfer(derivative_g, work_r)
-         gradient(axis)%array = gradient(axis)%array + work_r%array
-      END DO
+      IF (PRESENT(gradient)) THEN
+         ! Retain the same real function for gradients, including the FULLSPACE Nyquist projection.
+         CALL derivative_g%create(density%pw_grid)
+         CALL pw_transfer(work_r, charge_g)
+         DO axis = 1, 3
+            CPASSERT(ASSOCIATED(gradient(axis)%pw_grid, density%pw_grid))
+            orders = 0
+            orders(axis) = 1
+            derivative_g%array = charge_g%array
+            CALL pw_derive(derivative_g, orders)
+            CALL pw_transfer(derivative_g, work_r)
+            gradient(axis)%array = gradient(axis)%array + work_r%array
+         END DO
+         CALL derivative_g%release()
+      END IF
       CALL charge_g%release()
-      CALL derivative_g%release()
       CALL work_r%release()
    END SUBROUTINE qs_upf_inverse_augmentation_fourier_collocate
 

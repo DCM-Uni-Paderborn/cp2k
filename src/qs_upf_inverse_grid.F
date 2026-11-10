@@ -134,7 +134,7 @@ CONTAINS
 !> \param frame Prepared native-grid inverse frame.
 !> \param density_real Native real AO density component in reconstructed Gaussian variables.
 !> \param density Density on an allocated native PW grid; includes charge augmentation if supplied.
-!> \param gradient Its three physical Cartesian gradient components.
+!> \param gradient Optional three physical Cartesian gradient components.
 !> \param tau Smooth kinetic density, including the factor one half.
 !> \param density_imag Optional native imaginary AO density component, with its actual sign.
 !> \param projector_density Optional W P W^dagger for remaining original augmentation.
@@ -149,7 +149,8 @@ CONTAINS
                                             projector_density, augmentation, fourier_charge, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(dbcsr_type), INTENT(IN)                       :: density_real
-      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, tau
+      TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: gradient(3)
       TYPE(dbcsr_type), INTENT(IN), OPTIONAL             :: density_imag
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: projector_density(:, :)
       TYPE(qs_upf_inverse_augmentation_type), &
@@ -172,7 +173,7 @@ CONTAINS
 !> \param frame ...
 !> \param p Hermitian AO density in the inverse variables.
 !> \param density ...
-!> \param gradient ...
+!> \param gradient Optional Cartesian density gradient on the native grid.
 !> \param tau Smooth kinetic density only.
 !> \param projector_density ...
 !> \param augmentation ...
@@ -184,7 +185,8 @@ CONTAINS
                                                   projector_density, augmentation, fourier_charge, kinetic, orbital_fields)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       COMPLEX(dp), INTENT(IN)                            :: p(:, :)
-      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, gradient(3), tau
+      TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, tau
+      TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: gradient(3)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: projector_density(:, :)
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT), OPTIONAL                         :: augmentation
@@ -210,9 +212,9 @@ CONTAINS
       n = SIZE(frame%ao%weights)
       nao = SIZE(frame%ao%coefficients, 2)
       block = qs_upf_inverse_block_size(frame%ao)
-      ALLOCATE (rho(n), dn(n, 3), t(n))
+      ALLOCATE (rho(n), t(n))
+      IF (PRESENT(gradient)) ALLOCATE (dn(n, 3), SOURCE=0.0_dp)
       rho = 0.0_dp
-      dn = 0.0_dp
       t = 0.0_dp
       IF (use_orbitals) THEN
          ALLOCATE (soft(block, nao), sg(block, nao, 3))
@@ -221,7 +223,11 @@ CONTAINS
             m = hi - lo + 1
             CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :))
             ! The complete orbital density equals the Gaussian density plus its inverse residual.
-            CALL upf_inverse_smooth_density(soft(:m, :), sg(:m, :, :), p, rho(lo:hi), dn(lo:hi, :), t(lo:hi))
+            IF (PRESENT(gradient)) THEN
+               CALL upf_inverse_smooth_density(soft(:m, :), sg(:m, :, :), p, rho(lo:hi), dn(lo:hi, :), t(lo:hi))
+            ELSE
+               CALL upf_inverse_smooth_density(soft(:m, :), sg(:m, :, :), p, rho(lo:hi), tau=t(lo:hi))
+            END IF
          END DO
       END IF
       IF (PRESENT(projector_density) .OR. PRESENT(augmentation)) THEN
@@ -243,9 +249,11 @@ CONTAINS
       END IF
       CALL unpack_grid(frame, rho, density)
       CALL unpack_grid(frame, t, tau)
-      DO axis = 1, 3
-         CALL unpack_grid(frame, dn(:, axis), gradient(axis))
-      END DO
+      IF (PRESENT(gradient)) THEN
+         DO axis = 1, 3
+            CALL unpack_grid(frame, dn(:, axis), gradient(axis))
+         END DO
+      END IF
       IF (use_fourier) THEN
          CALL qs_upf_inverse_augmentation_fourier_collocate(frame%ao, augmentation, projected, density, gradient)
       END IF
