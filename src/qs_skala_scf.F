@@ -3046,10 +3046,10 @@ CONTAINS
       weights = 0.0_dp
       assembled = .FALSE.
       CALL skala_density_constraints_update_weights(state%constraints, weights)
-      ! Primitive readouts must cover the complete active functional combination.
-      ! Unsupported combinations and nonunique owners retain complete KS evaluations.
-      capture_jumps = ALL(targets == 0.0_dp) .AND. skala_only_functional(state)
-      IF (ALL(targets >= 0.0_dp) .AND. ANY(targets > 0.0_dp) .AND. &
+      ! Native Skala selects the limiting covector independently at each registered descriptor,
+      ! including positive density floors. Missing or nonunique owners still use full KS evaluations.
+      capture_jumps = skala_only_functional(state)
+      IF (.NOT. capture_jumps .AND. ALL(targets >= 0.0_dp) .AND. ANY(targets > 0.0_dp) .AND. &
           ALL(descriptors == skala_density_descriptor)) THEN
          functionals => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC%XC_FUNCTIONAL")
          capture_jumps = xc_functionals_floor_jumps_available(functionals)
@@ -3108,7 +3108,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Require a single active native model before composing complete jumps from its covectors.
 !> \param state Native orbital state.
-!> \return Whether GAUXC is the only active XC functional. Missing model covectors still fall back.
+!> \return Whether native Skala is the only active XC functional.
 ! **************************************************************************************************
    FUNCTION skala_only_functional(state) RESULT(skala_only)
       TYPE(qs_skala_scf_type), INTENT(IN)                :: state
