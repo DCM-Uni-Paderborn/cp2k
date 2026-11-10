@@ -163,8 +163,8 @@ CONTAINS
          OPEN (NEWUNIT=unit, FILE=fixture, STATUS='REPLACE', ACTION='WRITE')
          WRITE (unit, '(A)') &
             '<UPF version="2.0.1">', &
-            '<PP_HEADER element="Pt" pseudo_type="USPP" is_ultrasoft="true"', &
-            ' z_valence="16" mesh_size="3" number_of_proj="2" l_max="1"', &
+            "<PP_HEADER generated='Generated using ""atomic""' element=""Pt"" pseudo_type=""USPP""", &
+            " is_ultrasoft='true' z_valence='16' mesh_size=""3"" number_of_proj=""2"" l_max=""1""", &
             ' core_correction="true" with_metagga_info="true" />', &
             '<PP_MESH mesh="3">', &
             '<PP_R>', &
@@ -214,6 +214,7 @@ CONTAINS
       END IF
       CALL logger%para_env%sync()
       CALL atom_read_upf(pot, fixture, read_augmentation=.TRUE.)
+      IF (pot%generated /= 'Generated using "atomic"') ERROR STOP 'Quoted UPF header value was changed'
       IF (ANY(pot%econf(0:3) /= [1, 6, 9, 0])) ERROR STOP 'Wrong 62-electron core subtraction'
       IF (ANY(SHAPE(pot%qijl) /= [3, 3, 3]) .OR. LBOUND(pot%qijl, 3) /= 0) ERROR STOP 'Wrong augmentation shape'
       IF (MAXVAL(ABS(pot%qij - RESHAPE([2._dp, 0._dp, 0._dp, 3._dp], [2, 2]))) > 1.e-14_dp) THEN

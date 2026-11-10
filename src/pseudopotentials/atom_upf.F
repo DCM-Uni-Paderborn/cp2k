@@ -336,9 +336,12 @@ CONTAINS
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
       TYPE(atom_upfpot_type)                             :: pot
 
+      CHARACTER(LEN=1)                                   :: quote
       CHARACTER(LEN=default_string_length)               :: string
+      INTEGER                                            :: value_start
       LOGICAL                                            :: at_end
 
+      quote = parser%quote_character
       DO
          IF (parser_test_next_token(parser) == "EOL") THEN
             CALL parser_get_next_line(parser, 1, at_end)
@@ -346,6 +349,14 @@ CONTAINS
          END IF
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
          IF (string == "/>") EXIT
+         ! Legacy UPFs can enclose header values containing double quotes in single quotes.
+         IF (parser%icol < LEN(parser%input_line)) THEN
+            value_start = VERIFY(parser%input_line(parser%icol + 1:), " "//ACHAR(9)//TRIM(parser%separators))
+            IF (value_start > 0) THEN
+               value_start = value_start + parser%icol
+               IF (parser%input_line(value_start:value_start) == "'") parser%quote_character = "'"
+            END IF
+         END IF
          SELECT CASE (string)
          CASE ("GENERATED")
             CALL parser_get_object(parser, pot%generated, allow_empty=.TRUE.)
@@ -403,10 +414,9 @@ CONTAINS
          CASE ("NUMBER_OF_PROJ")
             CALL parser_get_object(parser, pot%number_of_proj)
          CASE DEFAULT
-            CPWARN(string)
-            CALL cp_abort(__LOCATION__, "Error while parsing UPF header: "// &
-                          "Adjust format of delimiters ... only double quotes are admissible.")
+            CPABORT("Unknown UPF header attribute "//TRIM(string))
          END SELECT
+         parser%quote_character = quote
       END DO
 
    END SUBROUTINE upf_header_option
