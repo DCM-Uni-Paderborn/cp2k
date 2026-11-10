@@ -464,7 +464,7 @@ CONTAINS
 !> \param kind Borrowed native kind of this center, including its GAPW_1C basis and atom grid.
 !> \param pairs Prepared native OCE pair map for this same center and geometry.
 !> \param matrix Hermitian AO occupations for one spin and k point, without a mesh weight.
-!> \param radial Complete signed harmonic density, without the radial measure.
+!> \param radial Optional signed harmonic density, without the radial measure.
 !> \param response Optional fixed-matrix atom/cell/Bloch response of this complete center density.
 !> \param atom_response Cartesian motion of all original atoms.
 !> \param cell_response Physical lattice response.
@@ -483,8 +483,7 @@ CONTAINS
       TYPE(qs_upf_inverse_gaussian_pairs_type), &
          INTENT(IN)                                      :: pairs
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
-      REAL(dp), INTENT(OUT)                              :: radial(:, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: radial(:, :), response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
@@ -496,7 +495,7 @@ CONTAINS
       INTEGER                                            :: atom, n, nh, np
       LOGICAL                                            :: derive
       REAL(dp), ALLOCATABLE :: deh(:, :), des(:, :), dh(:, :), ds(:, :), dvalues(:), eh(:, :), &
-         es(:, :), hard(:, :), point_response(:, :), points(:, :), soft(:, :), values(:), zero(:)
+         es(:, :), hard(:, :), point_response(:, :), points(:, :), soft(:, :), values(:)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(qs_upf_inverse_gapw_view_type), TARGET         :: view
@@ -505,15 +504,19 @@ CONTAINS
       IF (center > 0) CALL check_center(frame, augmentation, center, points)
       nh = harmonics%max_iso_not0
       np = SIZE(points, 2)
-      CPASSERT(ALL(SHAPE(radial) == [grid%nr, nh]))
       derive = PRESENT(response)
+      CPASSERT(PRESENT(radial) .OR. derive)
       CPASSERT(derive .EQV. PRESENT(atom_response))
       CPASSERT(derive .EQV. PRESENT(cell_response))
       CPASSERT(derive .EQV. PRESENT(reduced_k_response))
       CPASSERT(derive .EQV. PRESENT(coefficients_response))
-      ALLOCATE (hard(n, n), soft(n, n), eh(grid%nr, nh), es(grid%nr, nh), values(np))
+      IF (PRESENT(radial)) THEN
+         CPASSERT(ALL(SHAPE(radial) == [grid%nr, nh]))
+         ALLOCATE (hard(n, n), soft(n, n), eh(grid%nr, nh), es(grid%nr, nh), values(np))
+         values = 0.0_dp
+      END IF
       IF (derive) THEN
-         CPASSERT(ALL(SHAPE(response) == SHAPE(radial)))
+         CPASSERT(ALL(SHAPE(response) == [grid%nr, nh]))
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
          IF (PRESENT(atom_index)) THEN
             atom = atom_index
@@ -521,13 +524,13 @@ CONTAINS
             atom = frame%center_atoms(center)
          END IF
          ALLOCATE (dh(n, n), ds(n, n), deh(grid%nr, nh), des(grid%nr, nh), &
-                   dvalues(np), point_response(3, np), zero(grid%nr))
+                   dvalues(np), point_response(3, np))
          point_response(:, :) = SPREAD(atom_response(:, atom), 2, np)
-         zero = 0.0_dp
          CALL qs_upf_inverse_gaussian_pairs_density(pairs, frame%reduced_k, matrix, hard, soft, &
                                                     dh, ds, atom_response, cell_response, reduced_k_response)
-         CALL qs_upf_inverse_gaussian_radial(kind, hard, eh, deh, dh, zero)
-         CALL qs_upf_inverse_gaussian_radial(kind, soft, es, des, ds, zero)
+         ! The physical radial nodes are fixed. The derivative acts only on the coefficients.
+         CALL qs_upf_inverse_gaussian_radial(kind, dh, deh)
+         CALL qs_upf_inverse_gaussian_radial(kind, ds, des)
          dvalues = 0.0_dp
          IF (center > 0) THEN
             CALL qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, values, dvalues, &
@@ -537,13 +540,13 @@ CONTAINS
          CALL qs_upf_inverse_density_radial(grid, harmonics, dvalues, response, deh, des)
       ELSE
          CALL qs_upf_inverse_gaussian_pairs_density(pairs, frame%reduced_k, matrix, hard, soft)
-         CALL qs_upf_inverse_gaussian_radial(kind, hard, eh)
-         CALL qs_upf_inverse_gaussian_radial(kind, soft, es)
-         values = 0.0_dp
          IF (center > 0) CALL qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, values, cache=cache)
       END IF
-      IF (center == 0) values = 0.0_dp
-      CALL qs_upf_inverse_density_radial(grid, harmonics, values, radial, eh, es)
+      IF (PRESENT(radial)) THEN
+         CALL qs_upf_inverse_gaussian_radial(kind, hard, eh)
+         CALL qs_upf_inverse_gaussian_radial(kind, soft, es)
+         CALL qs_upf_inverse_density_radial(grid, harmonics, values, radial, eh, es)
+      END IF
    END SUBROUTINE qs_upf_inverse_density_gapw
 
 ! **************************************************************************************************
@@ -692,7 +695,7 @@ CONTAINS
 !> \param center Selected home center, including a possible NC center with zero reconstruction/Q.
 !> \param points Cartesian evaluation points, possibly an empty batch.
 !> \param matrix Hermitian AO occupation density for one spin and k point.
-!> \param density Signed home-center charge density, excluding Gaussian hard/soft and core.
+!> \param density Optional signed home-center charge density, excluding Gaussian hard/soft and core.
 !> \param response Optional joint density response at fixed matrix. All response inputs are required.
 !> \param point_response Motion of the evaluation points.
 !> \param atom_response Motion of every original atom.
@@ -709,8 +712,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: center
       REAL(dp), INTENT(IN)                               :: points(:, :)
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
-      REAL(dp), INTENT(OUT)                              :: density(:)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: response(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: density(:), response(:)
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             atom_response(:, :), &
                                                             cell_response(3, 3), &
@@ -724,23 +726,26 @@ CONTAINS
                                                             projected(:, :), &
                                                             projected_response(:, :)
       INTEGER                                            :: atom, first, kind, last, n, np, nproj
-      LOGICAL                                            :: derive
-      REAL(dp), ALLOCATABLE                              :: dq(:), q(:), qgradient(:, :)
+      LOGICAL                                            :: derive, moving_q
+      REAL(dp), ALLOCATABLE                              :: displacements(:, :), dq(:), q(:), &
+                                                            qgradient(:, :)
 
       CALL check_center(frame, augmentation, center, points)
       np = SIZE(points, 2)
       n = SIZE(frame%coefficients, 2)
       nproj = SIZE(frame%coefficients, 1)
-      CPASSERT(SIZE(density) == np)
       CPASSERT(ALL(SHAPE(matrix) == [n, n]))
       derive = PRESENT(response)
+      CPASSERT(PRESENT(density) .OR. derive)
       CPASSERT(derive .EQV. PRESENT(point_response))
       CPASSERT(derive .EQV. PRESENT(atom_response))
       CPASSERT(derive .EQV. PRESENT(cell_response))
       CPASSERT(derive .EQV. PRESENT(reduced_k_response))
       CPASSERT(derive .EQV. PRESENT(coefficients_response))
-      ALLOCATE (q(np), qgradient(3, np), projected(nproj, nproj))
-      density = 0.0_dp
+      IF (PRESENT(density)) THEN
+         CPASSERT(SIZE(density) == np)
+         density = 0.0_dp
+      END IF
       IF (derive) THEN
          CPASSERT(SIZE(response) == np)
          CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
@@ -763,30 +768,34 @@ CONTAINS
          ELSE
             CALL center_fields(frame, center, points, d, e, gd, ge, cache=cache)
          END IF
-         CALL upf_inverse_cross_density(d, e, ao_density=matrix, density=density)
+         IF (PRESENT(density)) CALL upf_inverse_cross_density(d, e, ao_density=matrix, density=density)
       END IF
       atom = frame%center_atoms(center)
       kind = frame%center_kinds(center)
       IF (augmentation%kinds(kind)%nproj == 0) RETURN
       first = frame%projector_first(center)
       last = frame%projector_last(center)
-      CALL upf_inverse_projector_density(frame%coefficients, matrix, projected)
-      q = 0.0_dp
-      qgradient = 0.0_dp
-      CALL uspp_augmentation_collocate_atom(augmentation%kinds(kind), &
-                                            points - SPREAD(frame%positions(:, atom), 2, np), &
-                                            REAL(projected(first:last, first:last), dp), q, qgradient)
-      density = density + q
+      ALLOCATE (q(np), displacements(3, np))
+      displacements(:, :) = points - SPREAD(frame%positions(:, atom), 2, np)
+      moving_q = .FALSE.
+      IF (derive) moving_q = ANY(point_response /= SPREAD(atom_response(:, atom), 2, np))
+      IF (PRESENT(density) .OR. moving_q) THEN
+         ALLOCATE (projected(nproj, nproj))
+         CALL upf_inverse_projector_density(frame%coefficients, matrix, projected)
+         q = 0.0_dp
+         IF (moving_q) ALLOCATE (qgradient(3, np), SOURCE=0.0_dp)
+         CALL uspp_augmentation_collocate_atom(augmentation%kinds(kind), displacements, &
+                                               REAL(projected(first:last, first:last), dp), q, qgradient)
+         IF (PRESENT(density)) density = density + q
+         IF (moving_q) response = response + SUM(qgradient*(point_response - SPREAD(atom_response(:, atom), 2, np)), DIM=1)
+      END IF
       IF (derive) THEN
-         response = response + SUM(qgradient*(point_response - SPREAD(atom_response(:, atom), 2, np)), DIM=1)
          ALLOCATE (projected_response(nproj, nproj))
          projected_response(:, :) = MATMUL(coefficients_response, MATMUL(matrix, CONJG(TRANSPOSE(frame%coefficients))))
          projected_response(:, :) = projected_response + CONJG(TRANSPOSE(projected_response))
          q = 0.0_dp
-         qgradient = 0.0_dp
-         CALL uspp_augmentation_collocate_atom(augmentation%kinds(kind), &
-                                               points - SPREAD(frame%positions(:, atom), 2, np), &
-                                               REAL(projected_response(first:last, first:last), dp), q, qgradient)
+         CALL uspp_augmentation_collocate_atom(augmentation%kinds(kind), displacements, &
+                                               REAL(projected_response(first:last, first:last), dp), q)
          response = response + q
       END IF
    END SUBROUTINE qs_upf_inverse_density_center

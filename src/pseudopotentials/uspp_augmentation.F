@@ -241,7 +241,7 @@ CONTAINS
 
       INTEGER                                            :: a, axis, axis2, hi, i, j, l, lm, lo, m, &
                                                             mid, p, pair, powers(3), q, reduced(3)
-      LOGICAL                                            :: use_laplacian, valid
+      LOGICAL                                            :: use_gradient, use_laplacian, valid
       REAL(KIND=dp) :: angular, angular_gradient(3), angular_hessian(3, 3), c0, c1, c2, c3, c4, &
          c5, factor, h, radial, radial_d, radial_dd, radial_ddd, radial_laplacian, s, t, term, value, value_gradient(3), &
          value_hessian(3, 3)
@@ -270,6 +270,7 @@ CONTAINS
          CPASSERT(valid)
          laplacian_gradient = 0.0_dp
       END IF
+      use_gradient = PRESENT(gradient) .OR. PRESENT(hessian) .OR. PRESENT(laplacian_gradient)
       use_laplacian = PRESENT(laplacian) .OR. PRESENT(laplacian_gradient)
       s = SUM(displacement**2)
       hi = SIZE(augmentation%radial_x)
@@ -295,6 +296,7 @@ CONTAINS
                powers = indco(:, ncoset(l - 1) + a)
                factor = orbtramat(l)%slm(l + m + 1, a)
                harmonics(lm) = harmonics(lm) + factor*PRODUCT(displacement**powers)
+               IF (.NOT. use_gradient) CYCLE
                DO axis = 1, 3
                   IF (powers(axis) == 0) CYCLE
                   reduced = powers
@@ -338,7 +340,9 @@ CONTAINS
                   c5 = -6.0_dp*c0 - 3.0_dp*c1 - c2
                END IF
                radial = c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*c5))))
-               radial_d = (c1 + t*(2.0_dp*c2 + t*(3.0_dp*c3 + t*(4.0_dp*c4 + t*5.0_dp*c5))))/h
+               IF (use_gradient .OR. use_laplacian) THEN
+                  radial_d = (c1 + t*(2.0_dp*c2 + t*(3.0_dp*c3 + t*(4.0_dp*c4 + t*5.0_dp*c5))))/h
+               END IF
                IF (PRESENT(hessian) .OR. use_laplacian) THEN
                   radial_dd = (2.0_dp*c2 + t*(6.0_dp*c3 + t*(12.0_dp*c4 + t*20.0_dp*c5)))/h**2
                END IF
@@ -348,7 +352,7 @@ CONTAINS
                DO lm = l*l + 1, (l + 1)**2
                   factor = augmentation%gaunt(p, q, lm)
                   angular = angular + factor*harmonics(lm)
-                  angular_gradient = angular_gradient + factor*dharmonics(:, lm)
+                  IF (use_gradient) angular_gradient = angular_gradient + factor*dharmonics(:, lm)
                   IF (PRESENT(hessian)) angular_hessian = angular_hessian + factor*ddharmonics(:, :, lm)
                END DO
                value = radial*angular
@@ -395,14 +399,14 @@ CONTAINS
 !> \param displacements Cartesian quadrature points relative to this center, in bohr.
 !> \param density Real symmetric on-site density matrix, including off-diagonal entries.
 !> \param rho Accumulated density values; no quadrature weights included.
-!> \param gradient Accumulated Cartesian density gradients.
+!> \param gradient Optional accumulated Cartesian density gradients.
 !> \param laplacian Optional accumulated Cartesian density Laplacian.
 ! **************************************************************************************************
    SUBROUTINE uspp_augmentation_collocate_atom(augmentation, displacements, density, rho, gradient, laplacian)
       TYPE(uspp_augmentation_type), INTENT(IN)           :: augmentation
       REAL(KIND=dp), INTENT(IN)                          :: displacements(:, :), density(:, :)
-      REAL(KIND=dp), INTENT(INOUT)                       :: rho(:), gradient(:, :)
-      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: laplacian(:)
+      REAL(KIND=dp), INTENT(INOUT)                       :: rho(:)
+      REAL(KIND=dp), INTENT(INOUT), OPTIONAL             :: gradient(:, :), laplacian(:)
 
       INTEGER                                            :: axis, n, point
       REAL(dp), ALLOCATABLE                              :: ddharmonics(:, :, :), dharmonics(:, :), &
@@ -412,11 +416,14 @@ CONTAINS
       n = augmentation%nproj
       CPASSERT(ALL(SHAPE(density) == n))
       CPASSERT(ALL(SHAPE(displacements) == [3, SIZE(rho)]))
-      CPASSERT(ALL(SHAPE(gradient) == SHAPE(displacements)))
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == SHAPE(displacements)))
+      END IF
       IF (SIZE(rho) > 0) THEN
          CPASSERT(ALLOCATED(augmentation%radial_x))
       END IF
-      ALLOCATE (qr(n, n), dqr(n, n, 3))
+      ALLOCATE (qr(n, n))
+      IF (PRESENT(gradient)) ALLOCATE (dqr(n, n, 3))
       IF (PRESENT(laplacian)) THEN
          CPASSERT(SIZE(laplacian) == SIZE(rho))
          ALLOCATE (laplace_q(n, n))
@@ -431,9 +438,11 @@ CONTAINS
                                        harmonics=harmonics, dharmonics=dharmonics, ddharmonics=ddharmonics, laplacian=laplace_q)
          rho(point) = rho(point) + SUM(density*qr)
          IF (PRESENT(laplacian)) laplacian(point) = laplacian(point) + SUM(density*laplace_q)
-         DO axis = 1, 3
-            gradient(axis, point) = gradient(axis, point) + SUM(density*dqr(:, :, axis))
-         END DO
+         IF (PRESENT(gradient)) THEN
+            DO axis = 1, 3
+               gradient(axis, point) = gradient(axis, point) + SUM(density*dqr(:, :, axis))
+            END DO
+         END IF
       END DO
    END SUBROUTINE uspp_augmentation_collocate_atom
 

@@ -1818,7 +1818,7 @@ CONTAINS
       INTEGER                                            :: a, info, k, kind, nao, nk, nproj
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
                                                             trace_strain
-      REAL(dp), ALLOCATABLE                              :: point_response(:, :), radial(:, :), &
+      REAL(dp), ALLOCATABLE                              :: point_response(:, :), &
                                                             radial_response(:, :), &
                                                             weights_response(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
@@ -1863,13 +1863,14 @@ CONTAINS
          END IF
          DO a = 1, SIZE(centers_response)
             kind = map%center_kinds(a)
-            ALLOCATE (radial, MOLD=map%centers(a)%density)
-            ALLOCATE (radial_response, MOLD=radial)
-         CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), map%pairs(a), matrix(:, :, k), &
-                                             radial, radial_response, atom_response, cell_response, &
-                                             [0.0_dp, 0.0_dp, 0.0_dp], coefficients_response, map%center_atoms(a))
+            ALLOCATE (radial_response, MOLD=map%centers(a)%density)
+            CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), &
+                                             map%pairs(a), matrix(:, :, k), response=radial_response, &
+                                             atom_response=atom_response, cell_response=cell_response, &
+                                             reduced_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
+                                             coefficients_response=coefficients_response, atom_index=map%center_atoms(a))
             centers_response(a)%density(:, :) = centers_response(a)%density + map%weights(k)*radial_response
-            DEALLOCATE (radial, radial_response)
+            DEALLOCATE (radial_response)
          END DO
       END DO
    END SUBROUTINE center_density_response

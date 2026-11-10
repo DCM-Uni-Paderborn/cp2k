@@ -215,8 +215,8 @@ CONTAINS
 !> \param map ...
 !> \param reduced_k Reduced Bloch vector, with native Gaussian phase exp(i*2*pi*k.T).
 !> \param matrix Unweighted Hermitian AO density, or arbitrary ordered row/column coefficients.
-!> \param hard New replicated compressed hard Gaussian coefficients, rectangular for an ordered map.
-!> \param soft New replicated compressed soft Gaussian density coefficients.
+!> \param hard Optional replicated compressed hard Gaussian coefficients, rectangular for an ordered map.
+!> \param soft Matching soft coefficients, present with hard.
 !> \param hard_response Optional fixed-matrix geometry/Bloch response. All response inputs are required.
 !> \param soft_response ...
 !> \param atom_response Cartesian response of all original atoms.
@@ -230,8 +230,9 @@ CONTAINS
          INTENT(IN)                                      :: map
       REAL(dp), INTENT(IN)                               :: reduced_k(3)
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :)
-      REAL(dp), INTENT(OUT)                              :: hard(:, :), soft(:, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: hard_response(:, :), soft_response(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: hard(:, :), soft(:, :), &
+                                                            hard_response(:, :), &
+                                                            soft_response(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
@@ -241,7 +242,9 @@ CONTAINS
       LOGICAL                                            :: derive
       REAL(dp)                                           :: dl(3), dr(3)
 
-      CALL check_map(map, SHAPE(matrix), SHAPE(hard), SHAPE(soft))
+      CPASSERT(PRESENT(hard) .EQV. PRESENT(soft))
+      CPASSERT(PRESENT(hard) .OR. PRESENT(hard_response))
+      IF (PRESENT(hard)) CALL check_map(map, SHAPE(matrix), SHAPE(hard), SHAPE(soft))
       IF (.NOT. map%ordered) THEN
          IF (MAXVAL(ABS(matrix - CONJG(TRANSPOSE(matrix)))) > 1.e-10_dp*MAX(1.0_dp, MAXVAL(ABS(matrix)))) THEN
             CPABORT("Non-Hermitian Gaussian AO density")
@@ -260,15 +263,19 @@ CONTAINS
          hard_response = 0.0_dp
          soft_response = 0.0_dp
       END IF
-      hard = 0.0_dp
-      soft = 0.0_dp
+      IF (PRESENT(hard)) THEN
+         hard = 0.0_dp
+         soft = 0.0_dp
+      END IF
       DO slot = 1, SIZE(map%pairs)
          ASSOCIATE (pair => map%pairs(slot))
             phase = pair_phase(pair, reduced_k)
-            CALL add_density(pair%left_h(:, :, 1), pair%right_h(:, :, 1), &
-                             matrix(pair%rows, pair%cols), pair%factor*phase, hard, map%ordered)
-            CALL add_density(pair%left_s(:, :, 1), pair%right_s(:, :, 1), &
-                             matrix(pair%rows, pair%cols), pair%factor*phase, soft, map%ordered)
+            IF (PRESENT(hard)) THEN
+               CALL add_density(pair%left_h(:, :, 1), pair%right_h(:, :, 1), &
+                                matrix(pair%rows, pair%cols), pair%factor*phase, hard, map%ordered)
+               CALL add_density(pair%left_s(:, :, 1), pair%right_s(:, :, 1), &
+                                matrix(pair%rows, pair%cols), pair%factor*phase, soft, map%ordered)
+            END IF
             IF (derive) THEN
                CPASSERT(SIZE(atom_response, 2) >= pair%left_atom)
                CPASSERT(SIZE(atom_response, 2) >= pair%right_atom)
@@ -284,8 +291,10 @@ CONTAINS
             END IF
          END ASSOCIATE
       END DO
-      CALL map%comm%sum(hard)
-      CALL map%comm%sum(soft)
+      IF (PRESENT(hard)) THEN
+         CALL map%comm%sum(hard)
+         CALL map%comm%sum(soft)
+      END IF
       IF (derive) THEN
          CALL map%comm%sum(hard_response)
          CALL map%comm%sum(soft_response)
