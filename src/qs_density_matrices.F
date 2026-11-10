@@ -200,16 +200,17 @@ CONTAINS
 !>        mo_deriv:
 !> \param mo_deriv ...
 !> \param w_matrix sparse matrix
-!> \param s_matrix sparse matrix for the overlap
-!>        error
+!> \param s_matrix Sparse overlap matrix for the gradient check.
+!> \param symmetrize Use the symmetric energy-weighted density in the overlap response.
 !> \par History
 !>         Creation (JV)
 !> \author MK
 ! **************************************************************************************************
-   SUBROUTINE calculate_w_matrix_ot(mo_set, mo_deriv, w_matrix, s_matrix)
+   SUBROUTINE calculate_w_matrix_ot(mo_set, mo_deriv, w_matrix, s_matrix, symmetrize)
 
       TYPE(mo_set_type), INTENT(IN)                      :: mo_set
       TYPE(dbcsr_type), POINTER                          :: mo_deriv, w_matrix, s_matrix
+      LOGICAL, INTENT(IN)                                :: symmetrize
 
       CHARACTER(len=*), PARAMETER :: routineN = 'calculate_w_matrix_ot'
       LOGICAL, PARAMETER                                 :: check_gradient = .FALSE., &
@@ -261,12 +262,10 @@ CONTAINS
                          mo_set%mo_coeff, h_block, 0.0_dp, weighted_vectors)
 
       CALL dbcsr_set(w_matrix, 0.0_dp)
-      ! The overlap response couples to the symmetric energy-weighted density even when the
-      ! occupied OT Hamiltonian retains a finite SCF residual.
       CALL cp_dbcsr_plus_fm_fm_t(sparse_matrix=w_matrix, &
                                  matrix_v=mo_set%mo_coeff, &
                                  matrix_g=weighted_vectors, &
-                                 ncol=mo_set%homo, symmetry_mode=1)
+                                 ncol=mo_set%homo, symmetry_mode=MERGE(1, 0, symmetrize))
 
       IF (check_gradient) THEN
          CALL cp_fm_create(gradient, mo_set%mo_coeff%matrix_struct, "gradient")

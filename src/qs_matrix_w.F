@@ -90,7 +90,7 @@ CONTAINS
       CHARACTER(len=*), PARAMETER                        :: routineN = 'compute_matrix_w'
 
       INTEGER                                            :: handle, is, ispin, nao, nspin
-      LOGICAL                                            :: do_kpoints, has_unit_metric
+      LOGICAL                                            :: do_kpoints, has_unit_metric, symmetrize
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s, matrix_w, &
                                                             mo_derivs, rho_ao
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -183,6 +183,10 @@ CONTAINS
 
             CALL qs_rho_get(rho, rho_ao=rho_ao)
 
+            ! The UPF overlap response uses the symmetric energy-weighted density
+            ! also at a finite OT residual.
+            symmetrize = .FALSE.
+            IF (scf_control%use_ot) symmetrize = qs_upf_inverse_scf_active(qs_env%ks_env)
             nspin = SIZE(mos)
             DO ispin = 1, nspin
                mo_set => mos(ispin)
@@ -193,7 +197,7 @@ CONTAINS
                         CALL dbcsr_set(matrix_w(ispin)%matrix, 0.0_dp)
                      ELSE
                         CALL calculate_w_matrix_ot(mo_set, mo_derivs(ispin)%matrix, &
-                                                   matrix_w(ispin)%matrix, matrix_s(1)%matrix)
+                                                   matrix_w(ispin)%matrix, matrix_s(1)%matrix, symmetrize)
                      END IF
                   ELSE
                      CALL calculate_w_matrix(mo_set=mo_set, &
@@ -204,7 +208,7 @@ CONTAINS
                ELSE
                   IF (scf_control%use_ot) THEN
                      CALL calculate_w_matrix_ot(mo_set, mo_derivs(ispin)%matrix, &
-                                                matrix_w(ispin)%matrix, matrix_s(1)%matrix)
+                                                matrix_w(ispin)%matrix, matrix_s(1)%matrix, symmetrize)
                   ELSE
                      CALL calculate_w_matrix(mo_set, matrix_w(ispin)%matrix)
                   END IF
