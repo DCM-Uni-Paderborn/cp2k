@@ -86,17 +86,20 @@ CONTAINS
 !> \param density Overwritten positive core-density convention, without spin splitting.
 !> \param gradient Overwritten Cartesian point gradient, indexed (point,axis).
 !> \param hessian Optional Cartesian point Hessian, indexed (point,axis,axis).
+!> \param laplacian Optional Laplacian of the same Gaussian density.
+!> \param laplacian_gradient Optional Cartesian derivative of its Laplacian.
 ! **************************************************************************************************
-   SUBROUTINE nlcc_gaussian_fields(alpha, nct, cval, displacement, density, gradient, hessian)
+   SUBROUTINE nlcc_gaussian_fields(alpha, nct, cval, displacement, density, gradient, hessian, laplacian, laplacian_gradient)
       REAL(dp), INTENT(IN)                               :: alpha(:)
       INTEGER, INTENT(IN)                                :: nct(:)
       REAL(dp), INTENT(IN)                               :: cval(:, :), displacement(:, :)
       REAL(dp), INTENT(OUT)                              :: density(:), gradient(:, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: hessian(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: hessian(:, :, :), laplacian(:), laplacian_gradient(:, :)
 
       INTEGER                                            :: axis, exponent, m, point
+      LOGICAL                                            :: with_laplacian
       REAL(dp)                                           :: derivative, e, first, inverse_width2, &
-                                                            polynomial, second, x
+                                                            polynomial, second, third, x
 
       CPASSERT(SIZE(nct) == SIZE(alpha))
       CPASSERT(SIZE(cval, 2) == SIZE(alpha))
@@ -110,6 +113,15 @@ CONTAINS
          CPASSERT(SIZE(hessian, 2) == 3 .AND. SIZE(hessian, 3) == 3)
          hessian = 0.0_dp
       END IF
+      with_laplacian = PRESENT(laplacian) .OR. PRESENT(laplacian_gradient)
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(SIZE(laplacian) == SIZE(density))
+         laplacian = 0.0_dp
+      END IF
+      IF (PRESENT(laplacian_gradient)) THEN
+         CPASSERT(ALL(SHAPE(laplacian_gradient) == SHAPE(gradient)))
+         laplacian_gradient = 0.0_dp
+      END IF
       DO exponent = 1, SIZE(alpha)
          CPASSERT(alpha(exponent) > 0.0_dp)
          CPASSERT(nct(exponent) >= 0)
@@ -121,7 +133,9 @@ CONTAINS
             polynomial = cval(nct(exponent), exponent)
             derivative = 0.0_dp
             second = 0.0_dp
+            third = 0.0_dp
             DO m = nct(exponent) - 1, 1, -1
+               IF (PRESENT(laplacian_gradient)) third = third*x + 3.0_dp*second
                second = second*x + 2.0_dp*derivative
                derivative = derivative*x + polynomial
                polynomial = polynomial*x + cval(m, exponent)
@@ -130,8 +144,19 @@ CONTAINS
             density(point) = density(point) + e*polynomial
             first = 2.0_dp*e*inverse_width2*(derivative - 0.5_dp*polynomial)
             gradient(point, :) = gradient(point, :) + first*displacement(:, point)
+            IF (PRESENT(laplacian_gradient)) THEN
+               third = e*(third - 1.5_dp*second + 0.75_dp*derivative - 0.125_dp*polynomial)
+            END IF
+            IF (PRESENT(hessian) .OR. with_laplacian) second = e*(second - derivative + 0.25_dp*polynomial)
+            IF (PRESENT(laplacian)) THEN
+               laplacian(point) = laplacian(point) + 3.0_dp*first + 4.0_dp*inverse_width2*x*second
+            END IF
+            IF (PRESENT(laplacian_gradient)) THEN
+               laplacian_gradient(point, :) = laplacian_gradient(point, :) + &
+                  2.0_dp*inverse_width2**2*(10.0_dp*second + 4.0_dp*x*third)*displacement(:, point)
+            END IF
             IF (PRESENT(hessian)) THEN
-               second = 4.0_dp*e*inverse_width2**2*(second - derivative + 0.25_dp*polynomial)
+               second = 4.0_dp*inverse_width2**2*second
                DO axis = 1, 3
                   hessian(point, :, axis) = hessian(point, :, axis) + second*displacement(:, point)*displacement(axis, point)
                   hessian(point, axis, axis) = hessian(point, axis, axis) + first

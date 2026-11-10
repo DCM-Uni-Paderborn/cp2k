@@ -49,7 +49,8 @@ MODULE qs_upf_inverse_atom_grid
       ! Atom derivatives followed by the three strain columns, for each local row.
       REAL(dp), ALLOCATABLE :: partition_derivatives(:, :, :)
       ! Native inverse frames and this quadrature share one geometry lifetime.
-      COMPLEX(dp), ALLOCATABLE :: inverse_values(:, :, :), inverse_gradients(:, :, :, :)
+      COMPLEX(dp), ALLOCATABLE :: inverse_values(:, :, :), inverse_gradients(:, :, :, :), &
+                                  inverse_laplacians(:, :, :)
    END TYPE qs_upf_inverse_atom_grid_type
 
    PUBLIC :: qs_upf_inverse_atom_grid_ref_type, qs_upf_inverse_atom_grid_type

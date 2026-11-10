@@ -116,6 +116,7 @@ MODULE qs_upf_inverse_types
       REAL(dp), ALLOCATABLE :: density(:, :), density_gradient(:, :, :), energy_density(:), &
                                vdensity(:, :), vgradient(:, :, :), background_vdensity(:, :), &
                                background_vgradient(:, :, :), tau(:, :), vtau(:, :), background_vtau(:, :)
+      REAL(dp), ALLOCATABLE :: laplacian(:, :), vlaplacian(:, :), background_vlaplacian(:, :)
       ! Independent auxiliary-cell measure for a periodic FFT background in isolated directions.
       ! With a separate background measure, energy_density stores the physical energy density.
       REAL(dp), ALLOCATABLE :: background_weights(:), background_energy_density(:), background_weight_derivative(:)

@@ -12,6 +12,7 @@ MODULE qs_upf_inverse_scf_xc
    USE cp_control_types,                ONLY: dft_control_type
    USE cp_dbcsr_api,                    ONLY: dbcsr_p_type
    USE input_section_types,             ONLY: section_get_ival,&
+                                              section_vals_get_subs_vals,&
                                               section_vals_type
    USE kinds,                           ONLY: dp,&
                                               int_8
@@ -74,7 +75,8 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_xc_grid_model_response,&
                                               qs_upf_inverse_xc_grid_response,&
                                               qs_upf_inverse_xc_pw_adjoint,&
-                                              qs_upf_inverse_xc_pw_fields
+                                              qs_upf_inverse_xc_pw_fields,&
+                                              qs_upf_inverse_xc_pw_geometry
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
                                               skala_density_constraints_type
@@ -84,7 +86,9 @@ MODULE qs_upf_inverse_scf_xc
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
    USE upf_types,                       ONLY: upf_nlcc_kinetic,&
                                               upf_uses_model_core_tau
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
    USE xc_input_constants,              ONLY: xc_deriv_pw
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -195,12 +199,13 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: density_matrices(:, :, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: gamma(:, :), matrix(:, :, :)
+      COMPLEX(dp), POINTER                               :: block_laplacian(:, :)
       INTEGER                                            :: block, core_components, hi, ik, lo, nao, &
                                                             nk, np, ns, smooth_id, spin
-      INTEGER(KIND=int_8)                                :: core_bytes, retained_bytes
-      LOGICAL                                            :: valid
+      INTEGER(KIND=int_8)                                :: core_bytes, field_bytes, retained_bytes
+      LOGICAL                                            :: valid, with_laplacian
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), core(:, :), &
-                                                            core_gradient(:, :, :), core_tau(:, :)
+                                                            core_gradient(:, :, :), core_laplacian(:, :), core_tau(:, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), POINTER                        :: density_ao(:, :)
       TYPE(mp_comm_type)                                 :: comm
@@ -213,6 +218,7 @@ CONTAINS
       TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(skala_density_constraints_type), POINTER      :: density_constraints
+      TYPE(xc_rho_cflags_type)                           :: needs
 
       CALL get_ks_env(ks_env, upf_inverse=state, rho=rho, cell=cell, para_env=para_env, &
                       skala_constraints=density_constraints)
@@ -242,6 +248,9 @@ CONTAINS
       nk = SIZE(frames)
       nao = SIZE(frames(1)%frame%coefficients, 2)
       ns = SIZE(density)
+      needs = xc_functionals_get_needs(section_vals_get_subs_vals(xc_section, "XC_FUNCTIONAL"), &
+                                      lsd=ns == 2, calc_potential=.TRUE.)
+      with_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
       IF (PRESENT(kinetic)) THEN
          CPASSERT(SIZE(kinetic) == ns)
       END IF
@@ -255,16 +264,22 @@ CONTAINS
          ! Reuse fixed-geometry fields across orbital trials. The inverse SCF reset
          ! releases this quadrature together with its defining frames. Larger sets
          ! keep the existing bounded-block evaluation without a persistent cache.
-         IF (64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes) THEN
+         field_bytes = 64_int_8*INT(np, int_8)*nao*nk
+         IF (with_laplacian) field_bytes = field_bytes + 16_int_8*INT(np, int_8)*nao*nk
+         IF (field_bytes <= max_xc_field_bytes) THEN
             ALLOCATE (state%atom_grid%inverse_values(np, nao, nk), &
                       state%atom_grid%inverse_gradients(np, nao, 3, nk))
+            IF (with_laplacian) ALLOCATE (state%atom_grid%inverse_laplacians(np, nao, nk))
+            NULLIFY (block_laplacian)
             block = qs_upf_inverse_block_size(frames(1)%frame)
             DO ik = 1, nk
                DO lo = 1, np, block
                   hi = MIN(np, lo + block - 1)
+                  IF (with_laplacian) block_laplacian => state%atom_grid%inverse_laplacians(lo:hi, :, ik)
                   CALL qs_upf_inverse_evaluate(frames(ik)%frame, state%atom_grid%points(:, lo:hi), &
                                                state%atom_grid%inverse_values(lo:hi, :, ik), &
-                                               state%atom_grid%inverse_gradients(lo:hi, :, :, ik))
+                                               state%atom_grid%inverse_gradients(lo:hi, :, :, ik), &
+                                               laplacian=block_laplacian)
                END DO
             END DO
          END IF
@@ -288,11 +303,15 @@ CONTAINS
          END DO
       END IF
       state%xc_grid => density(1)%pw_grid
-      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic, smooth_id)
+      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic, smooth_id, with_laplacian)
       ALLOCATE (core(np, ns), core_gradient(np, 3, ns))
       IF (PRESENT(kinetic)) ALLOCATE (core_tau(np, ns))
       core_components = 4
       IF (PRESENT(kinetic)) core_components = 5
+      IF (with_laplacian) THEN
+         core_components = core_components + 1
+         ALLOCATE (core_laplacian(np, ns))
+      END IF
       IF (ALLOCATED(state%xc_core)) THEN
          IF (ANY(SHAPE(state%xc_core) /= [np, core_components, ns])) DEALLOCATE (state%xc_core)
       END IF
@@ -300,12 +319,16 @@ CONTAINS
          core(:, :) = state%xc_core(:, 1, :)
          core_gradient(:, :, :) = state%xc_core(:, 2:4, :)
          IF (PRESENT(kinetic)) core_tau(:, :) = state%xc_core(:, 5, :)
+         IF (with_laplacian) core_laplacian(:, :) = state%xc_core(:, core_components, :)
       ELSE
-         CALL core_fields(ks_env, state, core, core_gradient, kinetic=core_tau)
+         CALL core_fields(ks_env, state, core, core_gradient, kinetic=core_tau, laplacian=core_laplacian)
          retained_bytes = 0_int_8
          IF (ALLOCATED(state%atom_grid%inverse_values)) THEN
             retained_bytes = 16_int_8*(SIZE(state%atom_grid%inverse_values, KIND=int_8) + &
                                        SIZE(state%atom_grid%inverse_gradients, KIND=int_8))
+         END IF
+         IF (ALLOCATED(state%atom_grid%inverse_laplacians)) THEN
+            retained_bytes = retained_bytes + 16_int_8*SIZE(state%atom_grid%inverse_laplacians, KIND=int_8)
          END IF
          core_bytes = 8_int_8*np*core_components*ns
          ! Share the existing fixed-geometry field budget. Oversized cases recompute.
@@ -315,6 +338,7 @@ CONTAINS
             state%xc_core(:, 1, :) = core
             state%xc_core(:, 2:4, :) = core_gradient
             IF (PRESENT(kinetic)) state%xc_core(:, 5, :) = core_tau
+            IF (with_laplacian) state%xc_core(:, core_components, :) = core_laplacian
          END IF
       END IF
       NULLIFY (orbital_factors)
@@ -326,7 +350,8 @@ CONTAINS
                                            state%xc_grid, cell, core, core_gradient, xc_section, ns == 2, &
                                            comm, state%xc, energy, adjoint, state%kinetic_cache, core_tau, state%atom_grid, &
                                            state%paw_reconstruction, density_constraints, &
-                                           just_energy=.NOT. PRESENT(potential), orbital_factors=orbital_factors)
+                                           just_energy=.NOT. PRESENT(potential), orbital_factors=orbital_factors, &
+                                           core_laplacian=core_laplacian)
       IF (PRESENT(potential)) THEN
          CPASSERT(SIZE(potential) == ns)
          ALLOCATE (background_potential(ns))
@@ -335,7 +360,7 @@ CONTAINS
             CALL background_potential(spin)%create(state%xc_grid)
             IF (PRESENT(kinetic_potential)) CALL background_kinetic(spin)%create(state%xc_grid)
          END DO
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, background_potential, background_kinetic, smooth_id)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, background_potential, background_kinetic, smooth_id, with_laplacian)
          DO spin = 1, ns
             CPASSERT(ASSOCIATED(potential(spin)%pw_grid, state%xc_grid))
             potential(spin)%array = potential(spin)%array + background_potential(spin)%array
@@ -977,11 +1002,10 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_coefficients(:, :, :)
       COMPLEX(dp), POINTER                               :: coefficients(:, :, :)
-      INTEGER                                            :: axis, ik, nao, nk, np, nproj, ns, offset, &
-                                                            other, spin, stride, timing_handle
+      INTEGER                                            :: ik, nao, nk, np, nproj, ns, timing_handle
       REAL(dp)                                           :: strain(3, 3)
       REAL(dp), ALLOCATABLE :: background_weights(:), core(:, :), core_gradient(:, :, :), &
-         core_tau(:, :), defining_points(:, :), defining_weights(:), fields(:, :, :, :), &
+         core_laplacian(:, :), core_tau(:, :), defining_points(:, :), defining_weights(:), fields(:, :, :, :), &
          points(:, :), weights(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(mp_comm_type)                                 :: comm
@@ -1005,10 +1029,9 @@ CONTAINS
       nproj = SIZE(frame%coefficients, 1)
       np = SIZE(state%atom_grid%weights)
       ns = SIZE(state%xc_matrices, 4)
-      stride = 4
-      IF (state%xc%kinetic) stride = 5
       ALLOCATE (points(3, np), weights(np), background_weights(np), core(np, ns), core_gradient(np, 3, ns))
       IF (state%xc%kinetic) ALLOCATE (core_tau(np, ns))
+      IF (ALLOCATED(state%xc%laplacian)) ALLOCATE (core_laplacian(np, ns))
       CALL qs_upf_inverse_atom_grid_response(state%atom_grid, atom_response, cell_response, points, weights, &
                                              background_weights)
       strain = MATMUL(cell_response, cell%h_inv)
@@ -1028,28 +1051,21 @@ CONTAINS
             DEALLOCATE (defining_points, defining_weights)
          END DO
       END IF
-      ! With fixed grid indices, only strain changes the Cartesian gradient components.
+      ! Only strain changes the Fourier operators at fixed grid indices.
       ! Atomic displacements still differentiate the interpolation point positions.
       IF (ANY(strain /= 0.0_dp)) THEN
          ALLOCATE (fields, MOLD=state%xc_fields)
          fields = 0.0_dp
-         DO spin = 1, ns
-            offset = stride*(spin - 1) + 1
-            DO axis = 1, 3
-               DO other = 1, 3
-                  IF (strain(other, axis) == 0.0_dp) CYCLE
-                  fields(:, :, :, offset + axis) = fields(:, :, :, offset + axis) - &
-                                                  strain(other, axis)*state%xc_fields(:, :, :, offset + other)
-               END DO
-            END DO
-         END DO
+         CALL qs_upf_inverse_xc_pw_geometry(state%xc_fields, state%xc_grid, strain, ns, fields, &
+                                            laplacian=ALLOCATED(core_laplacian))
       END IF
-      CALL core_fields(ks_env, state, core, core_gradient, points, atom_response, cell_response, core_tau)
+      CALL core_fields(ks_env, state, core, core_gradient, points, atom_response, cell_response, core_tau, core_laplacian)
       CALL qs_upf_inverse_xc_grid_response(frames, augmentation, state%xc_matrices, state%xc_kweights, &
                                            state%atom_grid%points, state%atom_grid%weights, state%xc, state%xc_fields, &
                                            fields, state%xc_grid, cell, points, weights, atom_response, cell_response, &
                                            reduced_k_response, coefficients, core, core_gradient, comm, response, &
-                                           state%kinetic_cache, core_tau, state%paw_reconstruction, background_weights)
+                                           state%kinetic_cache, core_tau, state%paw_reconstruction, background_weights, &
+                                           core_laplacian)
       CALL timestop(timing_handle)
    END SUBROUTINE qs_upf_inverse_scf_xc_response
 
@@ -1252,17 +1268,18 @@ CONTAINS
 !> \param atom_response ...
 !> \param cell_response ...
 !> \param kinetic Optional independently supplied core kinetic density or its geometry response.
+!> \param laplacian Optional Laplacian of the model core density or its geometry response.
 ! **************************************************************************************************
-   SUBROUTINE core_fields(ks_env, state, density, gradient, point_response, atom_response, cell_response, kinetic)
+   SUBROUTINE core_fields(ks_env, state, density, gradient, point_response, atom_response, cell_response, kinetic, laplacian)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
       REAL(dp), INTENT(OUT)                              :: density(:, :), gradient(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             atom_response(:, :), &
                                                             cell_response(3, 3)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :), laplacian(:, :)
 
-      COMPLEX(dp), ALLOCATABLE                           :: dg(:, :, :), dv(:, :), spatial(:, :, :), &
+      COMPLEX(dp), ALLOCATABLE                           :: dg(:, :, :), dv(:, :), laplace(:, :), spatial(:, :, :), &
                                                             value(:, :)
       INTEGER                                            :: atom, axis, block, hi, ikind, image, lo, &
                                                             m, np, point, spin
@@ -1273,6 +1290,8 @@ CONTAINS
                                                             tau, tau_gradient(3)
       REAL(dp), ALLOCATABLE :: coefficients(:, :), native_density(:), native_gradient(:, :), &
          native_hessian(:, :, :), native_points(:, :), widths(:)
+      REAL(dp), ALLOCATABLE, TARGET                      :: native_laplacian(:), native_laplacian_gradient(:, :)
+      REAL(dp), POINTER                                  :: block_laplacian(:), block_laplacian_gradient(:, :)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(particle_type), POINTER                       :: atoms(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
@@ -1289,9 +1308,22 @@ CONTAINS
       block = MAX(1, MIN(1024, np))
       ALLOCATE (native_points(3, block), native_density(block), native_gradient(block, 3))
       IF (PRESENT(point_response)) ALLOCATE (native_hessian(block, 3, 3))
+      NULLIFY (block_laplacian, block_laplacian_gradient)
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(density)))
+         CPASSERT(.NOT. ALLOCATED(state%paw_reconstruction))
+         laplacian = 0.0_dp
+         ALLOCATE (laplace(np, 1))
+         IF (PRESENT(point_response)) THEN
+            ALLOCATE (native_laplacian_gradient(block, 3))
+         ELSE
+            ALLOCATE (native_laplacian(block))
+         END IF
+      END IF
       DO atom = 1, SIZE(atoms)
          ikind = atoms(atom)%atomic_kind%kind_number
          reconstruct_core = ALLOCATED(state%paw_reconstruction) .AND. state%paw(ikind)%active
+         IF (ALLOCATED(laplace)) laplace = CMPLX(0.0_dp, 0.0_dp, dp)
          IF (ASSOCIATED(kinds(ikind)%gth_potential)) THEN
             IF (kinds(ikind)%ghost) CYCLE
             CALL get_nlcc_gaussians(kinds(ikind), widths, nct, coefficients)
@@ -1310,17 +1342,25 @@ CONTAINS
                   m = hi - lo + 1
                   native_points(:, :m) = state%atom_grid%points(:, lo:hi) - SPREAD(displacement, 2, m)
                   IF (PRESENT(point_response)) THEN
+                     IF (ALLOCATED(native_laplacian_gradient)) THEN
+                        block_laplacian_gradient => native_laplacian_gradient(:m, :)
+                     END IF
                      CALL nlcc_gaussian_fields(widths, nct, coefficients, native_points(:, :m), native_density(:m), &
-                                               native_gradient(:m, :), native_hessian(:m, :, :))
+                                               native_gradient(:m, :), native_hessian(:m, :, :), &
+                                               laplacian_gradient=block_laplacian_gradient)
                      native_points(:, :m) = point_response(:, lo:hi) - SPREAD(motion, 2, m)
                      value(lo:hi, 1) = value(lo:hi, 1) + SUM(native_gradient(:m, :)*TRANSPOSE(native_points(:, :m)), DIM=2)
+                     IF (ALLOCATED(laplace)) laplace(lo:hi, 1) = laplace(lo:hi, 1) + &
+                        SUM(block_laplacian_gradient*TRANSPOSE(native_points(:, :m)), DIM=2)
                      DO axis = 1, 3
                         spatial(lo:hi, 1, axis) = spatial(lo:hi, 1, axis) + &
                                                   SUM(native_hessian(:m, axis, :)*TRANSPOSE(native_points(:, :m)), DIM=2)
                      END DO
                   ELSE
+                     IF (ALLOCATED(native_laplacian)) block_laplacian => native_laplacian(:m)
                      CALL nlcc_gaussian_fields(widths, nct, coefficients, native_points(:, :m), native_density(:m), &
-                                               native_gradient(:m, :))
+                                               native_gradient(:m, :), laplacian=block_laplacian)
+                     IF (ALLOCATED(laplace)) laplace(lo:hi, 1) = laplace(lo:hi, 1) + block_laplacian
                      value(lo:hi, 1) = value(lo:hi, 1) + native_density(:m)
                      spatial(lo:hi, 1, :) = spatial(lo:hi, 1, :) + native_gradient(:m, :)
                   END IF
@@ -1351,14 +1391,16 @@ CONTAINS
             CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
             CALL upf_radial_fields_periodic(state%core_cache(ikind), state%atom_grid%points, atoms(atom)%r, &
                                             cell%hmat, state%core_images, [0.0_dp, 0.0_dp, 0.0_dp], value, spatial, dv, dg, &
-                                            point_response, atom_response(:, atom), cell_response)
+                                            point_response, atom_response(:, atom), cell_response, laplacian_response=laplace)
             value(:, :) = dv
             spatial(:, :, :) = dg
          ELSE
             CALL upf_radial_fields_periodic(state%core_cache(ikind), state%atom_grid%points, atoms(atom)%r, &
-                                            cell%hmat, state%core_images, [0.0_dp, 0.0_dp, 0.0_dp], value, spatial)
+                                            cell%hmat, state%core_images, [0.0_dp, 0.0_dp, 0.0_dp], value, spatial, &
+                                            laplacian=laplace)
          END IF
          DO spin = 1, SIZE(density, 2)
+            IF (PRESENT(laplacian)) laplacian(:, spin) = laplacian(:, spin) + REAL(laplace(:, 1), dp)/SIZE(density, 2)
             density(:, spin) = density(:, spin) + REAL(value(:, 1), dp)/REAL(SIZE(density, 2), dp)
             gradient(:, :, spin) = gradient(:, :, spin) + REAL(spatial(:, 1, :), dp)/REAL(SIZE(density, 2), dp)
          END DO
