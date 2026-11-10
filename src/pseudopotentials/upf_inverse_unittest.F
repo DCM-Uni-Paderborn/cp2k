@@ -2738,10 +2738,10 @@ CONTAINS
                  'Inverse kinetic center point and coefficient response', 3.e-8_dp)
       CALL qs_upf_inverse_kinetic_integrate(frame, kinetic, 1, points(:, :0), weights(:0), potential(:0), matrix)
       CALL check(MAXVAL(ABS(matrix)), 'Empty kinetic point batch', 0.0_dp)
-      ALLOCATE (frame%center_kinds(1), frame%images(3, 3))
+      ALLOCATE (frame%center_kinds(1), frame%images(3, 4))
       frame%center_kinds = 1
       frame%images = 0
-      frame%images(1, :) = [-1, 0, 1]
+      frame%images(1, :) = [-1, 0, 1, 8]
       frame%inverse%ready = .TRUE.
       cell = 0.0_dp
       DO axis = 1, 3
@@ -2757,7 +2757,7 @@ CONTAINS
       CALL qs_upf_inverse_kinetic_operator(frame, kinetics, points, weights, potential, matrix)
       CALL check(ABS(SUM(weights*potential*density) - REAL(SUM(ao*CONJG(matrix)), dp)), 'Periodic kinetic AO adjoint')
       reference = 0.0_dp
-      DO image = 1, 3
+      DO image = 1, SIZE(frame%images, 2)
          position = MATMUL(cell, REAL(frame%images(:, image), dp))
          CALL qs_upf_inverse_kinetic_center(frame, kinetic, 1, points - SPREAD(position, 2, 3), ao, shifted)
          reference = reference + shifted

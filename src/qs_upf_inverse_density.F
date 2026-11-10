@@ -20,6 +20,7 @@ MODULE qs_upf_inverse_density
                                               qs_upf_inverse_center_fields,&
                                               qs_upf_inverse_evaluate
    USE qs_upf_inverse_atom_grid,        ONLY: qs_upf_atom_angular_average
+   USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_has_support
    USE qs_upf_inverse_gaussian,         ONLY: qs_upf_inverse_gaussian_integrate,&
                                               qs_upf_inverse_gaussian_radial
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_density,&
@@ -140,7 +141,7 @@ CONTAINS
       INTEGER                                            :: atom, axis, center, first, ikind, image, &
                                                             last, n, nao, np, point
       LOGICAL                                            :: derive
-      REAL(dp)                                           :: position(3), position_response(3)
+      REAL(dp)                                           :: lower(3), position(3), position_response(3), radius, upper(3)
       REAL(dp), ALLOCATABLE                              :: gradient(:, :, :), kernel(:, :)
 
       nao = SIZE(frame%coefficients, 2)
@@ -160,10 +161,13 @@ CONTAINS
          CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
          response = 0.0_dp
       END IF
+      lower = MINVAL(points, DIM=2)
+      upper = MAXVAL(points, DIM=2)
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)
          CPASSERT(ikind >= 1 .AND. ikind <= SIZE(kinetic))
          IF (kinetic(ikind)%delta%nproj == 0) CYCLE
+         radius = kinetic(ikind)%delta%radius
          CALL kinetic_center_indices(frame, kinetic(ikind), center, points, atom, first, last)
          n = last - first + 1
          ALLOCATE (projected(n, n), kernel(n, n))
@@ -177,10 +181,11 @@ CONTAINS
          END IF
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+            IF (.NOT. qs_upf_inverse_augmentation_has_support(position, radius, lower, upper)) CYCLE
             IF (derive) position_response = atom_response(:, atom) + &
                                             MATMUL(cell_response, REAL(frame%images(:, image), dp))
             DO point = 1, np
-               IF (SUM((points(:, point) - position)**2) >= kinetic(ikind)%delta%radius**2) CYCLE
+               IF (SUM((points(:, point) - position)**2) >= radius**2) CYCLE
                IF (derive) THEN
                   CALL upf_inverse_kinetic_evaluate(kinetic(ikind), points(:, point) - position, kernel, gradient)
                   response(point) = response(point) + REAL(SUM(projected_response*kernel), dp)
@@ -235,7 +240,7 @@ CONTAINS
       INTEGER                                            :: atom, center, first, ikind, image, last, &
                                                             n, nao, np, point
       LOGICAL                                            :: derive
-      REAL(dp)                                           :: position(3), position_response(3)
+      REAL(dp)                                           :: lower(3), position(3), position_response(3), radius, upper(3)
       REAL(dp), ALLOCATABLE                              :: kernel(:, :), kernel_gradient(:, :, :), &
                                                             OPERATOR(:, :), operator_response(:, :)
 
@@ -261,10 +266,13 @@ CONTAINS
          ao_response = CMPLX(0.0_dp, 0.0_dp, dp)
       END IF
       ao_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      lower = MINVAL(points, DIM=2)
+      upper = MAXVAL(points, DIM=2)
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)
          CPASSERT(ikind >= 1 .AND. ikind <= SIZE(kinetic))
          IF (kinetic(ikind)%delta%nproj == 0) CYCLE
+         radius = kinetic(ikind)%delta%radius
          CALL kinetic_center_indices(frame, kinetic(ikind), center, points, atom, first, last)
          n = last - first + 1
          ALLOCATE (kernel(n, n), OPERATOR(n, n))
@@ -275,10 +283,11 @@ CONTAINS
          END IF
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+            IF (.NOT. qs_upf_inverse_augmentation_has_support(position, radius, lower, upper)) CYCLE
             IF (derive) position_response = atom_response(:, atom) + &
                                             MATMUL(cell_response, REAL(frame%images(:, image), dp))
             DO point = 1, np
-               IF (SUM((points(:, point) - position)**2) >= kinetic(ikind)%delta%radius**2) CYCLE
+               IF (SUM((points(:, point) - position)**2) >= radius**2) CYCLE
                IF (derive) THEN
                   CALL upf_inverse_kinetic_evaluate(kinetic(ikind), points(:, point) - position, kernel, kernel_gradient)
                   operator_response(:, :) = operator_response + &

@@ -47,6 +47,7 @@ MODULE qs_upf_inverse_augmentation
    PUBLIC :: qs_upf_inverse_augmentation_response, qs_upf_inverse_augmentation_release
    PUBLIC :: qs_upf_inverse_augmentation_fourier_collocate, qs_upf_inverse_augmentation_fourier_integrate
    PUBLIC :: qs_upf_inverse_augmentation_fourier_response
+   PUBLIC :: qs_upf_inverse_augmentation_has_support
 
 CONTAINS
 
@@ -141,7 +142,8 @@ CONTAINS
          last = frame%projector_last(center)
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
-            IF (.NOT. image_has_support(position, augmentation%kinds(ikind)%realspace_radius, lower, upper)) CYCLE
+            IF (.NOT. qs_upf_inverse_augmentation_has_support(position, augmentation%kinds(ikind)%realspace_radius, &
+                                                               lower, upper)) CYCLE
             IF (PRESENT(points)) THEN
                displacements(:, :) = points - SPREAD(position, 2, SIZE(density))
             ELSE
@@ -268,7 +270,8 @@ CONTAINS
          ALLOCATE (matrix(last - first + 1, last - first + 1))
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
-            IF (.NOT. image_has_support(position, augmentation%kinds(ikind)%realspace_radius, lower, upper)) CYCLE
+            IF (.NOT. qs_upf_inverse_augmentation_has_support(position, augmentation%kinds(ikind)%realspace_radius, &
+                                                               lower, upper)) CYCLE
             IF (PRESENT(points)) THEN
                displacements(:, :) = points - SPREAD(position, 2, SIZE(vdensity))
                CALL uspp_augmentation_integrate_atom(augmentation%kinds(ikind), displacements, weights, &
@@ -293,12 +296,12 @@ CONTAINS
 !> \brief Exclude only images whose compact radial support cannot intersect the point bounds.
 !>        Empty local point sets remain empty. Retain a roundoff margin at box boundaries.
 !> \param position Image center in Cartesian coordinates.
-!> \param radius Exact compact support of the original charge kernel.
+!> \param radius Radius of the compact augmentation kernel.
 !> \param lower Componentwise lower point bounds.
 !> \param upper Componentwise upper point bounds.
 !> \return Whether this image may contribute at a local point.
 ! **************************************************************************************************
-   FUNCTION image_has_support(position, radius, lower, upper) RESULT(active)
+   FUNCTION qs_upf_inverse_augmentation_has_support(position, radius, lower, upper) RESULT(active)
       REAL(dp), INTENT(IN)                               :: position(3), radius, lower(3), upper(3)
       LOGICAL                                            :: active
 
@@ -309,7 +312,7 @@ CONTAINS
       margin = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, radius, MAXVAL(ABS(position)), &
                                            MAXVAL(ABS(lower)), MAXVAL(ABS(upper)))
       active = ALL(position >= lower - radius - margin .AND. position <= upper + radius + margin)
-   END FUNCTION image_has_support
+   END FUNCTION qs_upf_inverse_augmentation_has_support
 
 ! **************************************************************************************************
 !> \brief Original Q Fourier kernel projected onto the real tensor-product grid.
