@@ -1441,7 +1441,7 @@ CONTAINS
 !> \param center Index in the original frame's center/projector order.
 !> \param points Local Cartesian points, possibly an empty batch.
 !> \param difference Center difference in the full AO order.
-!> \param gradient Physical Cartesian gradient of that center difference.
+!> \param gradient Optional physical Cartesian gradient of that center difference.
 !> \param difference_response Optional joint field response, with all other response arguments.
 !> \param gradient_response Optional physical-gradient response.
 !> \param point_response Optional Cartesian evaluation-point motion.
@@ -1457,8 +1457,8 @@ CONTAINS
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center
       REAL(dp), INTENT(IN)                               :: points(:, :)
-      COMPLEX(dp), INTENT(OUT)                           :: difference(:, :), gradient(:, :, :)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: difference_response(:, :), &
+      COMPLEX(dp), INTENT(OUT)                           :: difference(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gradient(:, :, :), difference_response(:, :), &
                                                             gradient_response(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             atom_response(:, :), &
@@ -1493,12 +1493,15 @@ CONTAINS
       nao = SIZE(frame%coefficients, 2)
       nproj = last - first + 1
       CPASSERT(ALL(SHAPE(difference) == [np, nao]))
-      CPASSERT(ALL(SHAPE(gradient) == [np, nao, 3]))
+      IF (PRESENT(gradient)) THEN
+         CPASSERT(ALL(SHAPE(gradient) == [np, nao, 3]))
+      END IF
       calculate_response = PRESENT(difference_response) .OR. PRESENT(gradient_response) .OR. &
                            PRESENT(point_response) .OR. PRESENT(atom_response) .OR. &
                            PRESENT(cell_response) .OR. PRESENT(reduced_k_response) .OR. &
                            PRESENT(coefficients_response)
-      ALLOCATE (delta(np, nproj), gd(np, nproj, 3))
+      ALLOCATE (delta(np, nproj))
+      IF (PRESENT(gradient) .OR. PRESENT(gradient_response)) ALLOCATE (gd(np, nproj, 3))
       IF (calculate_response) THEN
          CPASSERT(PRESENT(difference_response))
          CPASSERT(PRESENT(point_response) .AND. PRESENT(atom_response))
@@ -1531,7 +1534,7 @@ CONTAINS
       END IF
       difference = -MATMUL(delta, frame%coefficients(first:last, :))
       DO axis = 1, 3
-         gradient(:, :, axis) = -MATMUL(gd(:, :, axis), frame%coefficients(first:last, :))
+         IF (PRESENT(gradient)) gradient(:, :, axis) = -MATMUL(gd(:, :, axis), frame%coefficients(first:last, :))
          IF (PRESENT(gradient_response)) THEN
             gradient_response(:, :, axis) = -MATMUL(dgd(:, :, axis), frame%coefficients(first:last, :)) - &
                                             MATMUL(gd(:, :, axis), coefficients_response(first:last, :))
