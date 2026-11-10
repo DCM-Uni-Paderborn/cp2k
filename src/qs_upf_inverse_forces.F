@@ -75,7 +75,8 @@ CONTAINS
                                                             other, spin, timing_handle
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       LOGICAL                                            :: complete_coulomb
-      REAL(dp) :: coulomb_cell_gradient(3, 3), coulomb_source_virial(3, 3), external_energy, external_response, field_measure, &
+      REAL(dp) :: cell_response(3, 3), coulomb_cell_gradient(3, 3), coulomb_source_virial(3, 3), &
+         external_energy, external_response, field_measure, &
          metric_response, response, source_virial(3, 3), strain(3, 3), work_virial(3, 3), &
          xc_response
       REAL(dp), ALLOCATABLE :: atom_response(:, :), coulomb_atom_gradient(:, :), coulomb_source_forces(:, :), positions(:, :), &
@@ -206,40 +207,46 @@ CONTAINS
          END DO
          DO axis = 1, 3
             IF (cell%perd(axis) == 0) CYCLE
-            DO other = 1, 3
+            DO other = 1, axis
                IF (cell%perd(other) == 0) CYCLE
                strain = 0.0_dp
-               strain(axis, other) = 1.0_dp
+               ! The reported virial is symmetric. A half shear gives the mean of both responses.
+               strain(axis, other) = 0.5_dp
+               strain(other, axis) = strain(other, axis) + 0.5_dp
                atom_response(:, :) = MATMUL(strain, positions)
+               cell_response = MATMUL(strain, cell%hmat)
                IF (complete_coulomb) THEN
                   CALL complete_response(qs_env, ks_env, state, total_density, total_weighted, vgradient, vgradient(1, :), &
-                                         atom_response, MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response, &
+                                         atom_response, cell_response, reduced_k_response, response, metric_response, &
                                          coefficients_response, pair_geometry_response= &
-                                         SUM(coulomb_atom_gradient*atom_response) + &
-                                         SUM(coulomb_cell_gradient*MATMUL(strain, cell%hmat)), &
+                                         SUM(coulomb_atom_gradient*atom_response) + SUM(coulomb_cell_gradient*cell_response), &
                                          source_forces=coulomb_source_forces, source_virial=coulomb_source_virial)
                   ! The folded XC source has fixed fractional rows. Native XC owns its explicit measure.
                   response = response - SUM(source_virial*strain)
                ELSE
                   CALL qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, &
-                                                   MATMUL(strain, cell%hmat), reduced_k_response, response, metric_response, &
+                                                   cell_response, reduced_k_response, response, metric_response, &
                                                    coefficients_response)
                END IF
-               CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, MATMUL(strain, cell%hmat), &
+               CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, cell_response, &
                                                    reduced_k_response, xc_response, coefficients_response)
                response = response + xc_response
                IF (axis == other .AND. .NOT. complete_coulomb) response = response - field_measure
                CALL external_upf_potential(qs_env, external_energy, response=external_response, &
-                                           atom_response=atom_response, cell_response=MATMUL(strain, cell%hmat), &
+                                           atom_response=atom_response, cell_response=cell_response, &
                                            coefficients_response=coefficients_response)
                response = response + external_response
                CALL qs_efield_upf_evaluate(qs_env, external_energy, response=external_response, &
-                                           atom_response=atom_response, cell_response=MATMUL(strain, cell%hmat), &
+                                           atom_response=atom_response, cell_response=cell_response, &
                                            coefficients_response=coefficients_response)
                response = response + external_response
                IF (para_env%is_source()) THEN
                   virial%pv_virial(axis, other) = virial%pv_virial(axis, other) - response
                   virial%pv_overlap(axis, other) = virial%pv_overlap(axis, other) - metric_response
+                  IF (axis /= other) THEN
+                     virial%pv_virial(other, axis) = virial%pv_virial(other, axis) - response
+                     virial%pv_overlap(other, axis) = virial%pv_overlap(other, axis) - metric_response
+                  END IF
                END IF
             END DO
          END DO
