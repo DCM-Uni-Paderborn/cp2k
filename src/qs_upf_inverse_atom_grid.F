@@ -22,6 +22,7 @@ MODULE qs_upf_inverse_atom_grid
    USE skala_periodic_partition,        ONLY: build_periodic_atom_image_layout,&
                                               periodic_atom_image_partition_from_layout,&
                                               skala_periodic_partition_type
+   USE upf_projector_integrals,         ONLY: upf_projector_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -31,6 +32,7 @@ MODULE qs_upf_inverse_atom_grid
 
    TYPE qs_upf_inverse_atom_grid_ref_type
       TYPE(grid_atom_type), POINTER :: grid => NULL()
+      TYPE(upf_projector_type) :: projectors
       REAL(dp), ALLOCATABLE :: directions(:, :), angular_weights(:)
    END TYPE qs_upf_inverse_atom_grid_ref_type
 

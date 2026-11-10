@@ -29,6 +29,7 @@ MODULE qs_upf_inverse_lattice
                                               upf_inverse_lattice_project
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
+   USE upf_projector_integrals,         ONLY: upf_projector_gaussian_overlap
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
                                               upf_radial_fields_periodic
    USE util,                            ONLY: sort
@@ -1161,7 +1162,7 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: atom_response(:, :), cell_response(3, 3), reduced_k_response(3)
       INTEGER, INTENT(IN), OPTIONAL                      :: image(3)
 
-      COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), chi(:, :), delta(:, :), dchi(:, :), ddelta(:, :), &
+      COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), delta(:, :), ddelta(:, :), &
                                                             pair_b(:, :), pair_k(:, :)
       INTEGER                                            :: atom, basis_atom, center, first, ir, kind, last, &
                                                             na, nao, nproj, other, p, q
@@ -1206,36 +1207,32 @@ CONTAINS
          CALL centered_grid(frame%defining_atom_grids(kind), directions, angular_weights)
          na = SIZE(angular_weights)
          ALLOCATE (points(3, na), weights(na), radial_beta(last - first + 1), &
-                   beta(na, last - first + 1), chi(na, nao), delta(na, nproj), &
+                   beta(na, last - first + 1), delta(na, nproj), &
                    pair_b(last - first + 1, nao), pair_k(last - first + 1, nproj))
          IF (derivative) THEN
-            ALLOCATE (motion(3, na), dchi(na, nao), ddelta(na, nproj))
+            ALLOCATE (motion(3, na), ddelta(na, nproj))
             motion(:, :) = SPREAD(atom_response(:, atom), 2, na)
          END IF
+         ! B uses the original radial weights and the analytic Gaussian angular integrals.
+         DO basis_atom = 1, SIZE(frame%bases)
+            p = frame%ao_first(basis_atom)
+            q = frame%ao_last(basis_atom)
+            ASSOCIATE (basis => frame%bases(basis_atom)%gto_basis_set, raw => frame%defining_atom_grids(kind)%projectors)
+               IF (derivative) THEN
+                  CALL upf_projector_gaussian_overlap(basis, raw, frame%positions(:, atom), frame%positions(:, basis_atom), &
+                       frame%cell, images, wavevector, pair_b(:, p:q), overlaps_response(first:last, p:q), &
+                       atom_response(:, atom), atom_response(:, basis_atom), cell_response, reduced_k_response)
+               ELSE
+                  CALL upf_projector_gaussian_overlap(basis, raw, frame%positions(:, atom), frame%positions(:, basis_atom), &
+                                                      frame%cell, images, wavevector, pair_b(:, p:q))
+               END IF
+            END ASSOCIATE
+            IF (values) overlaps(first:last, p:q) = pair_b(:, p:q)
+         END DO
          DO ir = 1, grid%nr
             IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
             CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
             weights(:) = grid%wr(ir)*angular_weights
-            DO basis_atom = 1, SIZE(frame%bases)
-               p = frame%ao_first(basis_atom)
-               q = frame%ao_last(basis_atom)
-               IF (derivative) THEN
-                  ! The bra and its integration points move together. Equal ket motion
-                  ! contributes no derivative at fixed cell and reduced wave vector.
-                  IF (shared_response .OR. ANY(atom_response(:, basis_atom) /= atom_response(:, atom))) THEN
-                     CALL gaussian_basis_fields_periodic(frame%bases(basis_atom)%gto_basis_set, points, &
-                            frame%positions(:, basis_atom), frame%cell, images, wavevector, chi(:, p:q), &
-                            response=dchi(:, p:q), point_response=motion, center_response=atom_response(:, basis_atom), &
-                            cell_response=cell_response, reduced_k_response=reduced_k_response)
-                     CYCLE
-                  END IF
-                  dchi(:, p:q) = CMPLX(0.0_dp, 0.0_dp, dp)
-               END IF
-               IF (values) THEN
-                  CALL gaussian_basis_fields_periodic(frame%bases(basis_atom)%gto_basis_set, points, &
-                            frame%positions(:, basis_atom), frame%cell, images, wavevector, chi(:, p:q))
-               END IF
-            END DO
             DO other = 1, SIZE(frame%center_atoms)
                p = frame%projector_first(other)
                q = frame%projector_last(other)
@@ -1257,20 +1254,16 @@ CONTAINS
                END ASSOCIATE
             END DO
             IF (values) THEN
-               CALL upf_inverse_pair(beta, chi, weights, pair_b)
                CALL upf_inverse_pair(beta, delta, weights, pair_k)
-               overlaps(first:last, :) = overlaps(first:last, :) + pair_b
                coupling(first:last, :) = coupling(first:last, :) + pair_k
             END IF
             IF (derivative) THEN
-               CALL upf_inverse_pair(beta, dchi, weights, pair_b)
                CALL upf_inverse_pair(beta, ddelta, weights, pair_k)
-               overlaps_response(first:last, :) = overlaps_response(first:last, :) + pair_b
                coupling_response(first:last, :) = coupling_response(first:last, :) + pair_k
             END IF
          END DO
-         DEALLOCATE (directions, angular_weights, points, weights, radial_beta, beta, chi, delta, pair_b, pair_k)
-         IF (derivative) DEALLOCATE (motion, dchi, ddelta)
+         DEALLOCATE (directions, angular_weights, points, weights, radial_beta, beta, delta, pair_b, pair_k)
+         IF (derivative) DEALLOCATE (motion, ddelta)
       END DO
       IF (values) THEN
          CALL frame%point_comm%sum(overlaps)
@@ -1412,10 +1405,10 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: atom_geometry(:, :), cell_geometry(3, 3)
 
       COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), delta(:, :), delta_gradient(:, :, :), &
-                                                            gaussian(:, :), gaussian_gradient(:, :, :), &
-                                                            g_delta(:, :), g_gaussian(:, :)
-      INTEGER                                            :: atom, center, first, home, image, ir, kind, last, &
+                                                            g_delta(:, :), overlap(:, :), overlap_gradient(:, :, :)
+      INTEGER                                            :: atom, axis, center, first, home, image, ir, kind, last, &
                                                             na, nao, nproj, p, q, single_image(3, 1)
+      REAL(dp)                                           :: response
       REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), points(:, :), &
                                                             radial_beta(:), weights(:)
       TYPE(grid_atom_type), POINTER                      :: grid
@@ -1435,34 +1428,43 @@ CONTAINS
          na = SIZE(angular_weights)
          ALLOCATE (points(3, na), weights(na), radial_beta(last - first + 1), beta(na, last - first + 1), &
                    delta(na, nproj), delta_gradient(na, nproj, 3), g_delta(na, nproj), &
-                   gaussian(na, nao), gaussian_gradient(na, nao, 3), g_gaussian(na, nao))
+                   overlap(last - first + 1, nao), overlap_gradient(last - first + 1, nao, 3))
+         DO image = 1, SIZE(images, 2)
+            single_image(:, 1) = images(:, image)
+            DO atom = 1, SIZE(frame%bases)
+               p = frame%ao_first(atom)
+               q = frame%ao_last(atom)
+               IF (ALL(overlaps_covector(first:last, p:q, image) == 0.0_dp)) CYCLE
+               CALL upf_projector_gaussian_overlap(frame%bases(atom)%gto_basis_set, &
+                     frame%defining_atom_grids(kind)%projectors, frame%positions(:, home), frame%positions(:, atom), &
+                     frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], overlap(:, p:q), gradient=overlap_gradient(:, p:q, :))
+               DO axis = 1, 3
+                  response = REAL(SUM(CONJG(overlaps_covector(first:last, p:q, image))*overlap_gradient(:, p:q, axis)), dp)
+                  IF (home /= atom) THEN
+                     atom_geometry(axis, home) = atom_geometry(axis, home) - response
+                     atom_geometry(axis, atom) = atom_geometry(axis, atom) + response
+                  END IF
+                  cell_geometry(axis, :) = cell_geometry(axis, :) + response*REAL(images(:, image), dp)
+               END DO
+            END DO
+         END DO
          DO ir = 1, grid%nr
             IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
             CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
             weights(:) = grid%wr(ir)*angular_weights
             DO image = 1, SIZE(images, 2)
-               IF (ALL(coupling_covector(first:last, :, image) == 0.0_dp) .AND. &
-                   ALL(overlaps_covector(first:last, :, image) == 0.0_dp)) CYCLE
-               single_image(:, 1) = images(:, image)
+               IF (ALL(coupling_covector(first:last, :, image) == 0.0_dp)) CYCLE
                g_delta(:, :) = SPREAD(weights, 2, nproj)*MATMUL(beta, coupling_covector(first:last, :, image))
-               g_gaussian(:, :) = SPREAD(weights, 2, nao)*MATMUL(beta, overlaps_covector(first:last, :, image))
                CALL qs_upf_inverse_lattice_delta_fields(frame, points, images(:, image), delta, delta_gradient)
                DO atom = 1, SIZE(frame%center_atoms)
                   p = frame%projector_first(atom)
                   q = frame%projector_last(atom)
                   CALL field_geometry(g_delta(:, p:q), delta_gradient(:, p:q, :), frame%center_atoms(atom))
                END DO
-               DO atom = 1, SIZE(frame%bases)
-                  p = frame%ao_first(atom)
-                  q = frame%ao_last(atom)
-                  CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
-                             frame%cell, single_image, [0.0_dp, 0.0_dp, 0.0_dp], gaussian(:, p:q), gaussian_gradient(:, p:q, :))
-                  CALL field_geometry(g_gaussian(:, p:q), gaussian_gradient(:, p:q, :), atom)
-               END DO
             END DO
          END DO
          DEALLOCATE (directions, angular_weights, points, weights, radial_beta, beta, delta, delta_gradient, g_delta, &
-                     gaussian, gaussian_gradient, g_gaussian)
+                     overlap, overlap_gradient)
       END DO
 
    CONTAINS

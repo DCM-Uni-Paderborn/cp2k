@@ -18,11 +18,9 @@ MODULE qs_upf_inverse
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
                                               lebedev_grid
-   USE mathconstants,                   ONLY: fourpi,&
-                                              twopi
+   USE mathconstants,                   ONLY: fourpi
    USE message_passing,                 ONLY: mp_comm_type
-   USE orbital_pointers,                ONLY: coset,&
-                                              indco,&
+   USE orbital_pointers,                ONLY: indco,&
                                               nco,&
                                               ncoset
    USE orbital_transformation_matrices, ONLY: orbtramat
@@ -46,8 +44,8 @@ MODULE qs_upf_inverse
                                               upf_inverse_exchange_response
    USE upf_inverse_quadrature,          ONLY: upf_inverse_pair,&
                                               upf_inverse_pair_response
-   USE upf_projector_integrals,         ONLY: upf_projector_init,&
-                                              upf_projector_overlap,&
+   USE upf_projector_integrals,         ONLY: qs_upf_inverse_atomic_overlap => upf_projector_gaussian_overlap,&
+                                              upf_projector_init,&
                                               upf_projector_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_periodic
 #include "./base/base_uses.f90"
@@ -219,143 +217,6 @@ CONTAINS
          IF (PRESENT(response)) response(first:last, :) = nc_response(first:last, :)
       END DO
    END SUBROUTINE qs_upf_inverse_soft_projectors
-
-! **************************************************************************************************
-!> \brief Contract atom-local hard projectors with native Gaussian AOs and explicit Bloch images.
-!>        Only the original radial quadrature is numerical. Gaussian Cartesian integrals and
-!>        AO-center derivatives use the existing UPF integrator, without a uniform-grid solve.
-!> \param basis Native contracted ORB basis and unchanged primitive normalization.
-!> \param hard Atom-local transformed projectors, including enough derivative degree.
-!> \param center Home projector center.
-!> \param ao_center Home Gaussian center.
-!> \param cell Cartesian lattice vectors.
-!> \param images Fixed integer Gaussian images.
-!> \param reduced_k Bloch vector, with phase exp(i*2*pi*k.image).
-!> \param overlaps Hard projector bras against Gaussian AO columns, without occupations.
-!> \param response Optional joint first response.
-!> \param center_response Optional projector-center displacement.
-!> \param ao_response Optional Gaussian-center displacement.
-!> \param cell_response Optional lattice displacement.
-!> \param reduced_k_response Optional reduced Bloch-vector displacement.
-!> \param kinetic Optional projector overlaps with the Gaussian kinetic operator.
-!> \param kinetic_response Optional joint first response of the kinetic overlaps.
-! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_atomic_overlap(basis, hard, center, ao_center, cell, images, reduced_k, overlaps, &
-                                            response, center_response, ao_response, cell_response, reduced_k_response, &
-                                            kinetic, kinetic_response)
-      TYPE(gto_basis_set_type), INTENT(IN)               :: basis
-      TYPE(upf_projector_type), INTENT(IN)               :: hard
-      REAL(dp), INTENT(IN)                               :: center(3), ao_center(3), cell(3, 3)
-      INTEGER, INTENT(IN)                                :: images(:, :)
-      REAL(dp), INTENT(IN)                               :: reduced_k(3)
-      COMPLEX(dp), INTENT(OUT)                           :: overlaps(:, :)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: response(:, :)
-      REAL(dp), INTENT(IN), OPTIONAL                     :: center_response(3), ao_response(3), &
-                                                            cell_response(3, 3), &
-                                                            reduced_k_response(3)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: kinetic(:, :), kinetic_response(:, :)
-
-      COMPLEX(dp)                                        :: phase, phase_response
-      INTEGER                                            :: axis, derivative_index, first, image, &
-                                                            image_nder, iset, last, nder, np, &
-                                                            nshell, powers(3)
-      REAL(dp)                                           :: direction(3), displacement(3), dk(3), &
-                                                            shift(3)
-      REAL(dp), ALLOCATABLE                              :: contracted(:, :), derivative(:, :), &
-                                                            integrals(:, :, :)
-
-      CPASSERT(SIZE(images, 1) == 3)
-      CPASSERT(ALL(SHAPE(overlaps) == [hard%nproj, basis%nsgf]))
-      nder = 0
-      IF (PRESENT(response)) THEN
-         CPASSERT(ALL(SHAPE(response) == SHAPE(overlaps)))
-         response = CMPLX(0.0_dp, 0.0_dp, dp)
-         nder = 1
-      END IF
-      IF (PRESENT(kinetic)) THEN
-         CPASSERT(ALL(SHAPE(kinetic) == SHAPE(overlaps)))
-         kinetic = CMPLX(0.0_dp, 0.0_dp, dp)
-         nder = MAX(nder, 2)
-      END IF
-      IF (PRESENT(kinetic_response)) THEN
-         CPASSERT(PRESENT(kinetic))
-         CPASSERT(ALL(SHAPE(kinetic_response) == SHAPE(overlaps)))
-         kinetic_response = CMPLX(0.0_dp, 0.0_dp, dp)
-         nder = 3
-      END IF
-      overlaps = CMPLX(0.0_dp, 0.0_dp, dp)
-      dk = 0.0_dp
-      IF (PRESENT(reduced_k_response)) dk = reduced_k_response
-      DO image = 1, SIZE(images, 2)
-         shift = MATMUL(cell, REAL(images(:, image), dp))
-         displacement = center - ao_center - shift
-         direction = 0.0_dp
-         IF (PRESENT(ao_response)) direction = direction + ao_response
-         IF (PRESENT(center_response)) direction = direction - center_response
-         IF (PRESENT(cell_response)) direction = direction + MATMUL(cell_response, REAL(images(:, image), dp))
-         phase = EXP(CMPLX(0.0_dp, twopi*DOT_PRODUCT(reduced_k, REAL(images(:, image), dp)), dp))
-         phase_response = CMPLX(0.0_dp, twopi*DOT_PRODUCT(dk, REAL(images(:, image), dp)), dp)*phase
-         ! A phase-only response needs the unperturbed integrals, including the kinetic Laplacian.
-         image_nder = nder
-         IF (ALL(direction == 0.0_dp)) THEN
-            image_nder = 0
-            IF (PRESENT(kinetic)) image_nder = 2
-         END IF
-         DO iset = 1, basis%nset
-            nshell = basis%nshell(iset)
-            first = MINVAL(basis%first_sgf(:nshell, iset))
-            last = MAXVAL(basis%last_sgf(:nshell, iset))
-            np = basis%npgf(iset)*ncoset(basis%lmax(iset))
-            ALLOCATE (integrals(np, hard%nproj, ncoset(image_nder)), contracted(last - first + 1, hard%nproj))
-            CALL upf_projector_overlap(hard, basis%lmax(iset), basis%zet(:basis%npgf(iset), iset), &
-                                       displacement, image_nder, integrals)
-            contracted(:, :) = MATMUL(TRANSPOSE(basis%sphi(:np, first:last)), integrals(:, :, 1))
-            overlaps(:, first:last) = overlaps(:, first:last) + phase*TRANSPOSE(contracted)
-            IF (PRESENT(response)) THEN
-               response(:, first:last) = response(:, first:last) + phase_response*TRANSPOSE(contracted)
-               ALLOCATE (derivative(last - first + 1, hard%nproj))
-               derivative = 0.0_dp
-               DO axis = 1, 3
-                  IF (direction(axis) == 0.0_dp) CYCLE
-                  derivative(:, :) = derivative + direction(axis)* &
-                                     MATMUL(TRANSPOSE(basis%sphi(:np, first:last)), integrals(:, :, axis + 1))
-               END DO
-               response(:, first:last) = response(:, first:last) + phase*TRANSPOSE(derivative)
-               DEALLOCATE (derivative)
-            END IF
-            IF (PRESENT(kinetic)) THEN
-               contracted = 0.0_dp
-               DO axis = 1, 3
-                  powers = 0
-                  powers(axis) = 2
-                  derivative_index = coset(powers(1), powers(2), powers(3))
-                  contracted(:, :) = contracted - 0.5_dp* &
-                                     MATMUL(TRANSPOSE(basis%sphi(:np, first:last)), integrals(:, :, derivative_index))
-               END DO
-               kinetic(:, first:last) = kinetic(:, first:last) + phase*TRANSPOSE(contracted)
-               IF (PRESENT(kinetic_response)) THEN
-                  kinetic_response(:, first:last) = kinetic_response(:, first:last) + phase_response*TRANSPOSE(contracted)
-                  ALLOCATE (derivative(last - first + 1, hard%nproj))
-                  derivative = 0.0_dp
-                  DO axis = 1, 3
-                     DO derivative_index = 1, 3
-                        IF (direction(derivative_index) == 0.0_dp) CYCLE
-                        powers = 0
-                        powers(axis) = 2
-                        powers(derivative_index) = powers(derivative_index) + 1
-                        derivative(:, :) = derivative - 0.5_dp*direction(derivative_index)* &
-                                           MATMUL(TRANSPOSE(basis%sphi(:np, first:last)), &
-                                                  integrals(:, :, coset(powers(1), powers(2), powers(3))))
-                     END DO
-                  END DO
-                  kinetic_response(:, first:last) = kinetic_response(:, first:last) + phase*TRANSPOSE(derivative)
-                  DEALLOCATE (derivative)
-               END IF
-            END IF
-            DEALLOCATE (integrals, contracted)
-         END DO
-      END DO
-   END SUBROUTINE qs_upf_inverse_atomic_overlap
 
 ! **************************************************************************************************
 !> \brief Read native geometry, ORB bases and original USPP operators from a prepared KS environment.
@@ -541,6 +402,7 @@ CONTAINS
             IF (ALLOCATED(frame%defining_atom_grids)) THEN
                ASSOCIATE (rule => frame%defining_atom_grids(ikind))
                   CALL get_qs_kind(kinds(ikind), grid_atom=rule%grid)
+                  CALL upf_projector_init(kinds(ikind)%sgp_potential%upf_data, degree, rule%projectors)
                   IF (PRESENT(center_rotations)) THEN
                      CALL qs_upf_atom_angular_average(rule%grid, center_rotations, rule%directions, rule%angular_weights)
                   END IF
