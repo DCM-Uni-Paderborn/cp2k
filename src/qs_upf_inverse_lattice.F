@@ -1164,11 +1164,12 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), delta(:, :), ddelta(:, :), &
                                                             pair_b(:, :), pair_k(:, :)
-      INTEGER                                            :: atom, basis_atom, center, first, ir, kind, last, &
-                                                            na, nao, nproj, other, p, q
+      INTEGER                                            :: atom, basis_atom, center, first, im, ir, kind, last, &
+                                                            na, nao, ni, nproj, other, p, q
       INTEGER, TARGET                                    :: single_image(3, 1)
-      INTEGER, POINTER                                   :: images(:, :)
-      LOGICAL                                            :: derivative, shared_response, values
+      INTEGER, ALLOCATABLE, TARGET                       :: translated_images(:, :)
+      INTEGER, POINTER                                   :: images(:, :), ket_images(:, :)
+      LOGICAL                                            :: derivative, includes_home, shared_response, values
       REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), motion(:, :), &
                                                             points(:, :), radial_beta(:), weights(:)
       REAL(dp)                                           :: wavevector(3)
@@ -1183,6 +1184,14 @@ CONTAINS
          images => single_image
          wavevector = 0.0_dp
       END IF
+      ALLOCATE (translated_images(3, SIZE(images, 2)))
+      ni = 0
+      DO im = 1, SIZE(images, 2)
+         IF (ALL(images(:, im) == 0)) CYCLE
+         ni = ni + 1
+         translated_images(:, ni) = images(:, im)
+      END DO
+      includes_home = ni < SIZE(images, 2)
       IF (values) THEN
          coupling = CMPLX(0.0_dp, 0.0_dp, dp)
          overlaps = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -1229,6 +1238,11 @@ CONTAINS
             END ASSOCIATE
             IF (values) overlaps(first:last, p:q) = pair_b(:, p:q)
          END DO
+         ! The home block uses the same radial integral as the local inverse.
+         ! Its atom, cell and Bloch-vector derivatives are zero.
+         IF (values .AND. includes_home) THEN
+            coupling(first:last, first:last) = frame%defining_atom_grids(kind)%home_coupling
+         END IF
          DO ir = 1, grid%nr
             IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
             CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
@@ -1236,11 +1250,13 @@ CONTAINS
             DO other = 1, SIZE(frame%center_atoms)
                p = frame%projector_first(other)
                q = frame%projector_last(other)
+               ket_images => images
+               IF (other == center) ket_images => translated_images(:, :ni)
                ASSOCIATE (field => frame%delta_cache(frame%center_kinds(other)), other_atom => frame%center_atoms(other))
                   IF (derivative) THEN
                      IF (shared_response .OR. ANY(atom_response(:, other_atom) /= atom_response(:, atom))) THEN
                         CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
-                               images, wavevector, delta(:, p:q), response=ddelta(:, p:q), &
+                               ket_images, wavevector, delta(:, p:q), response=ddelta(:, p:q), &
                                points_response=motion, center_response=atom_response(:, other_atom), &
                                cell_response=cell_response, reduced_k_response=reduced_k_response)
                         CYCLE
@@ -1249,7 +1265,7 @@ CONTAINS
                   END IF
                   IF (values) THEN
                      CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
-                               images, wavevector, delta(:, p:q))
+                               ket_images, wavevector, delta(:, p:q))
                   END IF
                END ASSOCIATE
             END DO
@@ -1457,6 +1473,7 @@ CONTAINS
                g_delta(:, :) = SPREAD(weights, 2, nproj)*MATMUL(beta, coupling_covector(first:last, :, image))
                CALL qs_upf_inverse_lattice_delta_fields(frame, points, images(:, image), delta, delta_gradient)
                DO atom = 1, SIZE(frame%center_atoms)
+                  IF (atom == center .AND. ALL(images(:, image) == 0)) CYCLE
                   p = frame%projector_first(atom)
                   q = frame%projector_last(atom)
                   CALL field_geometry(g_delta(:, p:q), delta_gradient(:, p:q, :), frame%center_atoms(atom))

@@ -403,13 +403,16 @@ CONTAINS
                ASSOCIATE (rule => frame%defining_atom_grids(ikind))
                   CALL get_qs_kind(kinds(ikind), grid_atom=rule%grid)
                   CALL upf_projector_init(kinds(ikind)%sgp_potential%upf_data, degree, rule%projectors)
+                  CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, frame%beta_cache(ikind), &
+                                               frame%delta_cache(ikind), home_coupling=rule%home_coupling)
                   IF (PRESENT(center_rotations)) THEN
                      CALL qs_upf_atom_angular_average(rule%grid, center_rotations, rule%directions, rule%angular_weights)
                   END IF
                END ASSOCIATE
+            ELSE
+               CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, &
+                                            frame%beta_cache(ikind), frame%delta_cache(ikind), frame%direct)
             END IF
-            CALL upf_inverse_fields_init(kinds(ikind)%sgp_potential%upf_data, &
-                                         frame%beta_cache(ikind), frame%delta_cache(ikind), frame%direct)
             IF (use_atomic) THEN
                CALL upf_inverse_atomic_init(kinds(ikind)%sgp_potential%upf_data, degree, &
                                             frame%atomic_cache(ikind), info, frame%direct)

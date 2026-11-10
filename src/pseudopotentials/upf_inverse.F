@@ -123,7 +123,7 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: delta_kinetic(:, :), &
                                                             delta_overlap(:, :), &
                                                             radial_kinetic(:, :), &
-                                                            radial_weights(:), weights(:)
+                                                            radial_weights(:)
       TYPE(atom_upfpot_type)                             :: hard, radial
       TYPE(upf_inverse_kinetic_type)                     :: kinetic
 
@@ -168,16 +168,11 @@ CONTAINS
       CALL upf_inverse_kinetic_matrix(pot, kinetic, radial_kinetic, delta_kinetic, delta_overlap)
       ALLOCATE (radial_weights, SOURCE=upf_radial_weights(pot))
       IF (.NOT. radial_only) THEN
-         ALLOCATE (weights, SOURCE=radial_weights*pot%r**2)
          ALLOCATE (coupling(nb, nb), identity(nb, nb), rotation(nb, nb))
-         coupling = CMPLX(0.0_dp, 0.0_dp, dp)
+         coupling = inverse_radial_coupling(pot, radial, radial_weights)
          identity = CMPLX(0.0_dp, 0.0_dp, dp)
          DO j = 1, nb
             identity(j, j) = CMPLX(1.0_dp, 0.0_dp, dp)
-            DO i = 1, nb
-               IF (pot%lbeta(i) /= pot%lbeta(j)) CYCLE
-               coupling(i, j) = CMPLX(SUM(weights*pot%beta(:, i)*radial%beta(:, j)), 0.0_dp, dp)
-            END DO
          END DO
          CALL upf_inverse_init(coupling, atomic%inverse, info)
          IF (info /= 0) RETURN
@@ -532,15 +527,20 @@ CONTAINS
 !> \param beta Original projector fields, without weights.
 !> \param delta Original reconstruction differences, without weights.
 !> \param direct Use zero reconstruction while retaining the original projector fields.
+!> \param home_coupling Optional same-center beta-Delta integral in projector/harmonic order.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_fields_init(pot, beta, delta, direct)
+   SUBROUTINE upf_inverse_fields_init(pot, beta, delta, direct, home_coupling)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_radial_fields_type), INTENT(OUT)          :: beta, delta
       LOGICAL, INTENT(IN), OPTIONAL                      :: direct
+      REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL        :: home_coupling(:, :)
 
+      INTEGER                                            :: p, q
+      REAL(dp), ALLOCATABLE                              :: radial_coupling(:, :)
       TYPE(atom_upfpot_type)                             :: radial
 
       CALL upf_radial_fields_init(pot%r, pot%beta, pot%lbeta, beta)
+      IF (PRESENT(home_coupling)) ALLOCATE (home_coupling(beta%nproj, beta%nproj), SOURCE=0.0_dp)
       IF (PRESENT(direct)) THEN
          IF (direct) THEN
             ALLOCATE (radial%beta(SIZE(pot%r), SIZE(pot%lbeta)), SOURCE=0.0_dp)
@@ -556,8 +556,42 @@ CONTAINS
       ELSE
          CALL inverse_radial_data(pot, radial)
          CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, delta)
+         IF (PRESENT(home_coupling)) THEN
+            radial_coupling = inverse_radial_coupling(pot, radial, upf_radial_weights(pot))
+            DO q = 1, delta%nproj
+               DO p = 1, beta%nproj
+                  IF (beta%angular_index(p) /= delta%angular_index(q)) CYCLE
+                  home_coupling(p, q) = radial_coupling(beta%radial_index(p), delta%radial_index(q))
+               END DO
+            END DO
+         END IF
       END IF
    END SUBROUTINE upf_inverse_fields_init
+
+! **************************************************************************************************
+!> \brief Integrate the same-center beta-Delta block on the original radial mesh.
+!> \param pot Original UPF projectors.
+!> \param radial Reconstruction differences on the same mesh.
+!> \param radial_weights Original UPF radial integration weights.
+!> \return Coupling in the original radial channel order.
+! **************************************************************************************************
+   FUNCTION inverse_radial_coupling(pot, radial, radial_weights) RESULT(coupling)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot, radial
+      REAL(dp), INTENT(IN)                               :: radial_weights(:)
+      REAL(dp)                                           :: coupling(pot%number_of_proj, pot%number_of_proj)
+
+      INTEGER                                            :: i, j
+      REAL(dp)                                           :: weights(SIZE(radial_weights))
+
+      weights = radial_weights*pot%r**2
+      coupling = 0.0_dp
+      DO j = 1, pot%number_of_proj
+         DO i = 1, pot%number_of_proj
+            IF (pot%lbeta(i) /= pot%lbeta(j)) CYCLE
+            coupling(i, j) = SUM(weights*pot%beta(:, i)*radial%beta(:, j))
+         END DO
+      END DO
+   END FUNCTION inverse_radial_coupling
 
 ! **************************************************************************************************
 !> \brief Assemble original reconstruction differences for overlap and point-field caches.

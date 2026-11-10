@@ -33,7 +33,7 @@ MODULE qs_upf_inverse_atom_grid
    TYPE qs_upf_inverse_atom_grid_ref_type
       TYPE(grid_atom_type), POINTER :: grid => NULL()
       TYPE(upf_projector_type) :: projectors
-      REAL(dp), ALLOCATABLE :: directions(:, :), angular_weights(:)
+      REAL(dp), ALLOCATABLE :: directions(:, :), angular_weights(:), home_coupling(:, :)
    END TYPE qs_upf_inverse_atom_grid_ref_type
 
    TYPE qs_upf_inverse_atom_grid_type
