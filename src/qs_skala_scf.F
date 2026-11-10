@@ -2346,10 +2346,11 @@ CONTAINS
 !> \param check_external Poll the normal CP2K external stop conditions, false by default.
 !> \param stopped Whether an external stop was requested.
 !> \param curve Optional original minimization chart, restoring active physical constraints at every root trial.
+!> \param endpoint_values Optional physical fields from a crossing scan of these endpoints and sample keys.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_boundary_root(state, first, last, points, domains, spins, descriptors, &
                                          targets, tolerances, root, values, selected, found, &
-                                         max_iterations, evaluations, check_external, stopped, curve)
+                                         max_iterations, evaluations, check_external, stopped, curve, endpoint_values)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -2363,9 +2364,11 @@ CONTAINS
       LOGICAL, INTENT(OUT), OPTIONAL                     :: stopped
       TYPE(skala_constraint_chart_type), INTENT(IN), &
          OPTIONAL                                        :: curve
+      REAL(dp), INTENT(IN), OPTIONAL                     :: endpoint_values(:, :)
 
       CALL boundary_root(state, first, last, points, domains, spins, descriptors, targets, tolerances, &
-                         root, values, selected, found, max_iterations, evaluations, check_external, stopped, curve)
+                         root, values, selected, found, max_iterations, evaluations, check_external, stopped, curve, &
+                         endpoint_values=endpoint_values)
    END SUBROUTINE qs_skala_scf_boundary_root
 
 ! **************************************************************************************************
@@ -2389,10 +2392,11 @@ CONTAINS
 !> \param stopped Whether an external stop was requested.
 !> \param curve Original minimization chart for restoring active constraints.
 !> \param energy_only Evaluate the complete energy without constructing the KS operator.
+!> \param endpoint_values Borrowed first and last physical fields in the current candidate order.
 ! **************************************************************************************************
    SUBROUTINE boundary_root(state, first, last, points, domains, spins, descriptors, &
                             targets, tolerances, root, values, selected, found, &
-                            max_iterations, evaluations, check_external, stopped, curve, energy_only)
+                            max_iterations, evaluations, check_external, stopped, curve, energy_only, endpoint_values)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -2407,6 +2411,7 @@ CONTAINS
       TYPE(skala_constraint_chart_type), INTENT(IN), &
          OPTIONAL                                        :: curve
       LOGICAL, INTENT(IN), OPTIONAL                      :: energy_only
+      REAL(dp), INTENT(IN), OPTIONAL                     :: endpoint_values(:, :)
 
       INTEGER                                            :: count, i, iteration, limit, m, n
       INTEGER, ALLOCATABLE                               :: rows(:)
@@ -2447,19 +2452,30 @@ CONTAINS
       found = .FALSE.
       selected = .FALSE.
       root(:) = first
-      count = 1
+      count = 0
       IF (m == 0) THEN
          CALL qs_skala_scf_evaluate(state, first, energy, gradient)
-         IF (PRESENT(evaluations)) evaluations = count
+         IF (PRESENT(evaluations)) evaluations = 1
          RETURN
       END IF
-      ! Initialize the bracket from physical fields alone. Every accepted root,
-      ! including an initial endpoint, still receives a complete functional check.
-      CALL sample_native_constraints(state, first)
-      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
+      ! The segment scan already evaluated the physical fields at both endpoints.
+      ! Every accepted root still receives a complete functional check.
+      IF (PRESENT(endpoint_values)) THEN
+         CPASSERT(ALL(SHAPE(endpoint_values) == [2, m]))
+         CPASSERT(ALL(ieee_is_finite(endpoint_values)))
+         initial(:) = endpoint_values(1, :)
+      ELSE
+         CALL sample_native_constraints(state, first)
+         CALL qs_skala_scf_values(state, domains, points, spins, descriptors, initial, rows)
+         count = count + 1
+      END IF
       values(:) = initial
       selected(:) = ABS(values - targets) <= tolerances
       IF (ANY(selected)) THEN
+         IF (PRESENT(endpoint_values)) THEN
+            CALL sample_native_constraints(state, first)
+            count = count + 1
+         END IF
          ! Keep the fields that passed the physical window during the complete evaluation.
          CALL qs_skala_scf_evaluate(state, first, energy, physical_gradient=gradient, reuse_fields=.TRUE.)
          count = count + 1
@@ -2471,9 +2487,13 @@ CONTAINS
       IF (.NOT. found) THEN
          sides(:) = SIGN(1.0_dp, initial - targets)
          direction(:) = last - first
-         CALL sample_native_constraints(state, last)
-         count = count + 1
-         CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+         IF (PRESENT(endpoint_values)) THEN
+            values(:) = endpoint_values(2, :)
+         ELSE
+            CALL sample_native_constraints(state, last)
+            CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+            count = count + 1
+         END IF
          IF (ALL(sides*(values - targets) <= tolerances)) THEN
             left = 0.0_dp
             right = 1.0_dp
@@ -4329,7 +4349,7 @@ CONTAINS
                             event%domains(pending), event%spins(pending), event%descriptors(pending), &
                             event%targets(pending), windows, root, values, selected, found, &
                             check_external=context%check_external, stopped=stopped, curve=event%curve, &
-                            energy_only=.TRUE.)
+                            energy_only=.TRUE., endpoint_values=event%values(:, pending))
          IF (stopped) THEN
             context%external_stopped = .TRUE.
             EXIT
