@@ -1,8 +1,8 @@
 # General inverse RI fitting needs auxiliary images beyond the compact AO cell map.
 # The atoms have different folding vectors, so RI and inverse image conventions must agree.
-# References use the rotationally invariant periodic atomic quadrature.
+# Defining overlaps use the UPF radial rule and retain intercenter image couplings.
 "H2_inverse_RI_images.inp"         = [
-  {matcher = "M011", tol = 1e-10, ref = 13.323533568179489},
+  {matcher = "M011", tol = 1e-10, ref = 12.812874584424481},
 ]
 # Native Gamma ACE retains the complete inverse USPP energy and geometry derivatives.
 "H_USPP_ACE.inp"                   = [
