@@ -307,7 +307,6 @@ CONTAINS
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(images, 1) == 3)
       CPASSERT(ALL(SHAPE(value) == [npoint, basis%nsgf]))
       need_gradient = PRESENT(gradient) .OR. PRESENT(response) .OR. PRESENT(gradient_response) .OR. PRESENT(cell_gradient)
-      need_hessian = PRESENT(gradient_response)
       need_geometry = PRESENT(response) .OR. PRESENT(gradient_response) .OR. PRESENT(laplacian_response)
       IF (PRESENT(gradient)) THEN
          CPASSERT(ALL(SHAPE(gradient) == [npoint, basis%nsgf, 3]))
@@ -346,8 +345,14 @@ CONTAINS
                                       value, gradient, cell_gradient, factored, response, point_response, &
                                       dcenter, dc, dk, gradient_response, laplacian, laplacian_response)
       IF (factored) RETURN
+      ! At fixed Cartesian geometry the response comes only from the Bloch phase.
+      IF (need_geometry) THEN
+         need_geometry = ANY(dcenter /= 0.0_dp) .OR. ANY(dc /= 0.0_dp)
+         IF (PRESENT(point_response)) need_geometry = need_geometry .OR. ANY(point_response /= 0.0_dp)
+      END IF
+      need_hessian = PRESENT(gradient_response) .AND. need_geometry
       IF (PRESENT(laplacian) .OR. PRESENT(laplacian_response)) ALLOCATE (laplace(npoint, basis%nsgf))
-      IF (PRESENT(laplacian_response)) ALLOCATE (laplace_gradient(npoint, basis%nsgf, 3))
+      IF (PRESENT(laplacian_response) .AND. need_geometry) ALLOCATE (laplace_gradient(npoint, basis%nsgf, 3))
       scratch => local_workspace
       IF (PRESENT(workspace)) scratch => workspace
       CALL prepare_workspace(scratch, npoint, basis%nsgf, need_geometry, need_gradient, need_hessian)
@@ -377,15 +382,7 @@ CONTAINS
                                              laplacian=laplace, laplacian_gradient=laplace_gradient)
          value = value + phase*field
          IF (PRESENT(laplacian)) laplacian = laplacian + phase*laplace
-         IF (PRESENT(laplacian_response)) THEN
-            laplacian_response = laplacian_response + phase_response*laplace
-            DO axis = 1, 3
-               DO ao = 1, basis%nsgf
-                  laplacian_response(:, ao) = laplacian_response(:, ao) + phase*ddisplacement(axis, :)* &
-                                              laplace_gradient(:, ao, axis)
-               END DO
-            END DO
-         END IF
+         IF (PRESENT(laplacian_response)) laplacian_response = laplacian_response + phase_response*laplace
          IF (PRESENT(gradient)) gradient = gradient + phase*g
          IF (PRESENT(cell_gradient)) THEN
             DO axis2 = 1, 3
@@ -394,8 +391,18 @@ CONTAINS
                END DO
             END DO
          END IF
+         IF (PRESENT(response)) response = response + phase_response*field
+         IF (PRESENT(gradient_response)) gradient_response = gradient_response + phase_response*g
+         IF (.NOT. need_geometry) CYCLE
+         IF (PRESENT(laplacian_response)) THEN
+            DO axis = 1, 3
+               DO ao = 1, basis%nsgf
+                  laplacian_response(:, ao) = laplacian_response(:, ao) + phase*ddisplacement(axis, :)* &
+                                              laplace_gradient(:, ao, axis)
+               END DO
+            END DO
+         END IF
          IF (PRESENT(response)) THEN
-            response = response + phase_response*field
             DO axis = 1, 3
                DO ao = 1, basis%nsgf
                   response(:, ao) = response(:, ao) + phase*ddisplacement(axis, :)*g(:, ao, axis)
@@ -403,7 +410,6 @@ CONTAINS
             END DO
          END IF
          IF (PRESENT(gradient_response)) THEN
-            gradient_response = gradient_response + phase_response*g
             DO axis = 1, 3
                DO axis2 = 1, 3
                   DO ao = 1, basis%nsgf

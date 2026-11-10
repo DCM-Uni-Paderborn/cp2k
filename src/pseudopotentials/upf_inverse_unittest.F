@@ -3920,7 +3920,7 @@ CONTAINS
       INTEGER, PARAMETER                                 :: nb = 11, nf = 5
 
       COMPLEX(dp) :: box_cell_gradient(nf, nb, 3, 3), dg(nf, nb, 3), dv(nf, nb), g(nf, nb, 3), &
-         gss(nf, nb, 3, 2), other(nf, nb), phase, reference_cell_gradient(nf, nb, 3, 3), &
+         gss(nf, nb, 3, 2), laplace_samples(nf, nb, 2), other(nf, nb), phase, reference_cell_gradient(nf, nb, 3, 3), &
          small(2, nb), v(nf, nb), vs(nf, nb, 2)
       INTEGER :: axis, box_images(3, 27), column, ico, image, images(3, 3), ix, iy, iz, kernel, &
          point, row, side, translated_images(3, 3), unit
@@ -4014,6 +4014,17 @@ CONTAINS
       END DO
       CALL check(MAXVAL(ABS(dv - (vs(:, :, 2) - vs(:, :, 1))/(2*step))), 'native Gaussian Bloch joint response', 2.e-8_dp)
      CALL check(MAXVAL(ABS(dg - (gss(:, :, :, 2) - gss(:, :, :, 1))/(2*step))), 'native Gaussian Bloch gradient response', 2.e-7_dp)
+      CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, bloch, v, g, dv, dg, &
+                                          reduced_k_response=dk, laplacian_response=other)
+      DO side = 1, 2
+         shift = (2*side - 3)*step
+         CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, bloch + shift*dk, &
+                                             vs(:, :, side), gss(:, :, :, side), laplacian=laplace_samples(:, :, side))
+      END DO
+      CALL check(MAXVAL(ABS(dv - (vs(:, :, 2) - vs(:, :, 1))/(2*step))), 'Gaussian phase-only value response', 2.e-8_dp)
+      CALL check(MAXVAL(ABS(dg - (gss(:, :, :, 2) - gss(:, :, :, 1))/(2*step))), 'Gaussian phase-only gradient response', 2.e-8_dp)
+      CALL check(MAXVAL(ABS(other - (laplace_samples(:, :, 2) - laplace_samples(:, :, 1))/(2*step))), &
+                 'Gaussian phase-only Laplacian response', 2.e-8_dp)
       CALL gaussian_basis_fields_periodic(basis, x, center, cell, images, -bloch, other, workspace=workspace)
       CALL check(MAXVAL(ABS(other - CONJG(v))), 'native Gaussian Bloch time reversal')
       DO image = 1, 3
