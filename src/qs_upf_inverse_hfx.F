@@ -1246,6 +1246,10 @@ CONTAINS
                            CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
                            transition_augmentation => augmentation(kind)
                            IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
+                           ! NC centers have neither reconstruction differences nor transition augmentation.
+                           IF (transition_augmentation%nproj == 0 .AND. &
+                               left_frame%delta_cache(kind)%radius == 0.0_dp .AND. &
+                               right_frame%delta_cache(kind)%radius == 0.0_dp) CYCLE
                            ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
                               ALLOCATE (radial_weights(SIZE(pot%r)))
                               radial_weights(:) = upf_radial_weights(pot)*pot%r**2
@@ -1737,6 +1741,9 @@ CONTAINS
                         CPASSERT(ALLOCATED(kinds(kind)%sgp_potential%upf_data))
                         transition_augmentation => augmentation(kind)
                         IF (paw_augmentation(kind)%nproj > 0) transition_augmentation => paw_augmentation(kind)
+                        IF (transition_augmentation%nproj == 0 .AND. &
+                            left_frame%delta_cache(kind)%radius == 0.0_dp .AND. &
+                            right_frame%delta_cache(kind)%radius == 0.0_dp) CYCLE
                         ASSOCIATE (pot => kinds(kind)%sgp_potential%upf_data)
                            ALLOCATE (radial_weights(SIZE(pot%r)))
                            radial_weights(:) = upf_radial_weights(pot)*pot%r**2
@@ -2960,13 +2967,15 @@ CONTAINS
                    cl(nang, nl), dl(nang, nl), cr(nang, nr), dr(nang, nr), &
                    gcl(nang, nl), gdl(nang, nl), gcr(nang, nr), gdr(nang, nr))
          NULLIFY (left_geometry_coefficients)
+         IF (geometry) THEN
+            ! Both inverse representations reuse the Gaussian gradient in the reverse pass.
+            IF (left_term) ALLOCATE (bare_left_gradient(nang, nl, 3))
+            IF (right_term .AND. .NOT. same_ao_block) ALLOCATE (bare_right_gradient(nang, nr, 3))
+         END IF
          IF (.NOT. frame%atom_local) THEN
             ALLOCATE (lattice_gl(SIZE(coupled_coefficients, 1), nl, SIZE(coefficient_images, 2)), &
                       lattice_gr(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))
             IF (geometry) THEN
-               ! The reverse pass uses the Gaussian gradient from the same angular points.
-               IF (left_term) ALLOCATE (bare_left_gradient(nang, nl, 3))
-               IF (right_term .AND. .NOT. same_ao_block) ALLOCATE (bare_right_gradient(nang, nr, 3))
                IF (.NOT. same_ao_block) left_geometry_coefficients => lattice_gl
             END IF
          END IF
@@ -3079,7 +3088,9 @@ CONTAINS
                IF (left_term) THEN
                   IF (frame%atom_local) THEN
                      CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, [0, 0, 0], left_range, gcl, &
-                                                    point_geometry, local_atoms, local_cell, 2.0_dp, workspace=left_fields%gaussian)
+                                                                  point_geometry, local_atoms, local_cell, 2.0_dp, &
+                                                                  workspace=left_fields%gaussian, &
+                                                                  bare_gradient=bare_left_gradient)
                   ELSE
                      CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, [0, 0, 0], coefficient_images, &
                                                                coupled_coefficients(:, left_range(1):left_range(2), :), &
@@ -3098,7 +3109,8 @@ CONTAINS
                   IF (frame%atom_local) THEN
                      CALL qs_upf_inverse_lattice_gaussian_adjoint(frame, points, ao_image, right_range, gcr, &
                                                                   point_geometry, local_atoms, local_cell, 2.0_dp, &
-                                                                  workspace=right_fields%gaussian)
+                                                                  workspace=right_fields%gaussian, &
+                                                                  bare_gradient=bare_right_gradient)
                   ELSE
                      CALL qs_upf_inverse_lattice_geometry_adjoint(frame, points, ao_image, coefficient_images, &
                                                                   coupled_coefficients(:, right_range(1):right_range(2), :), &
@@ -4342,7 +4354,7 @@ CONTAINS
       INTEGER                                            :: atom, first, hi, images(3, 1), last, lo, &
                                                             max_basis, np
 
-      CPASSERT(.NOT. PRESENT(bare_gradient) .OR. .NOT. frame%atom_local)
+      CPASSERT(.NOT. (PRESENT(bare_gradient) .AND. frame%atom_local .AND. derivatives))
       difference(:, :) = -MATMUL(delta, coefficients)
       IF (derivatives) difference_response(:, :) = -MATMUL(delta, coefficients_response)
       IF (.NOT. frame%atom_local) THEN
@@ -4373,6 +4385,12 @@ CONTAINS
          IF (derivatives) ALLOCATE (workspace%dphi(np, max_basis))
       END IF
       IF (.NOT. ALLOCATED(workspace%gaussian)) ALLOCATE (workspace%gaussian(SIZE(frame%bases)))
+      IF (PRESENT(bare_gradient)) THEN
+         CPASSERT(ALL(SHAPE(bare_gradient) == [np, ao_range(2) - ao_range(1) + 1, 3]))
+         IF (.NOT. ALLOCATED(workspace%phi_gradient)) THEN
+            ALLOCATE (workspace%phi_gradient(np, SIZE(workspace%phi, 2), 3))
+         END IF
+      END IF
       complete = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (derivatives) THEN
          complete_response = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -4392,6 +4410,14 @@ CONTAINS
                                                 cell_response=cell_response, workspace=workspace%gaussian(atom))
             complete_response(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1) = &
                2.0_dp*workspace%dphi(:, lo - first + 1:hi - first + 1)
+         ELSE IF (PRESENT(bare_gradient)) THEN
+            CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
+                                                frame%cell, images, [0.0_dp, 0.0_dp, 0.0_dp], &
+                                                workspace%phi(:, :last - first + 1), &
+                                                gradient=workspace%phi_gradient(:, :last - first + 1, :), &
+                                                workspace=workspace%gaussian(atom))
+            bare_gradient(:, lo - ao_range(1) + 1:hi - ao_range(1) + 1, :) = &
+               workspace%phi_gradient(:, lo - first + 1:hi - first + 1, :)
          ELSE
             CALL gaussian_basis_fields_periodic(frame%bases(atom)%gto_basis_set, points, frame%positions(:, atom), &
                                                 frame%cell, images, [0.0_dp, 0.0_dp, 0.0_dp], &
