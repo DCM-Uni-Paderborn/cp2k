@@ -45,7 +45,8 @@ MODULE qs_upf_inverse_basis
                                               qs_upf_inverse_type
    USE upf_inverse,                     ONLY: upf_inverse_fields_init
    USE upf_radial_fields,               ONLY: upf_radial_fields_type
-   USE xc,                              ONLY: xc_uses_kinetic_energy_density
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -206,7 +207,7 @@ CONTAINS
 
       INTEGER                                            :: info
       INTEGER, ALLOCATABLE                               :: images(:, :)
-      LOGICAL                                            :: kinetic
+      LOGICAL                                            :: kinetic, laplacian
       TYPE(admm_type), POINTER                           :: admm
       TYPE(dft_control_type), POINTER                    :: control
       TYPE(pw_c1d_gs_type), POINTER                      :: grids(:)
@@ -214,6 +215,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), POINTER             :: primary
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
       TYPE(section_vals_type), POINTER                   :: functional
+      TYPE(xc_rho_cflags_type)                           :: xc_needs
 
       CALL get_qs_env(qs_env, ks_env=ks_env, admm_env=admm, dft_control=control)
       CPASSERT(ASSOCIATED(admm))
@@ -224,16 +226,19 @@ CONTAINS
       frame => primary%frame%ao
       IF (ASSOCIATED(primary%bloch%kpoints)) frame => primary%bloch%frames(1)%ao
       kinetic = .FALSE.
+      laplacian = .FALSE.
       IF (ASSOCIATED(admm%xc_section_aux)) THEN
          functional => section_vals_get_subs_vals(admm%xc_section_aux, 'XC_FUNCTIONAL')
-         kinetic = xc_uses_kinetic_energy_density(functional, control%lsd)
+         xc_needs = xc_functionals_get_needs(functional, control%lsd, calc_potential=.FALSE.)
+         kinetic = xc_needs%tau .OR. xc_needs%tau_spin
+         laplacian = xc_needs%laplace_rho .OR. xc_needs%laplace_rho_spin
       END IF
       CALL qs_rho_get(admm%rho_aux_fit, rho_g=grids)
       CPASSERT(ASSOCIATED(grids))
       CALL qs_upf_inverse_basis_images(ks_env, images, basis_type='AUX_FIT', direct=frame%direct)
       CALL qs_upf_inverse_basis_prepare(ks_env, grids(1)%pw_grid, images, admm%upf_inverse, info, &
                                         atom_local=frame%atom_local, direct=frame%direct, basis_type='AUX_FIT', &
-                                        qs_env=qs_env, kinetic=kinetic, composite_paw=.FALSE.)
+                                        qs_env=qs_env, kinetic=kinetic, composite_paw=.FALSE., laplacian=laplacian)
       IF (info /= 0) THEN
          CPABORT('Singular or ill-conditioned auxiliary reconstruction')
       END IF
@@ -256,9 +261,10 @@ CONTAINS
 !> \param qs_env Matching native owner, required for auxiliary Gaussian references and task lists.
 !> \param kinetic Override the primary functional's kinetic-density data requirement.
 !> \param composite_paw Override its joint learned PAW valence reconstruction requirement.
+!> \param laplacian Override its PAW density-Laplacian requirement.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_basis_prepare(ks_env, grid, images, state, info, atom_local, direct, &
-                                           basis_type, qs_env, kinetic, composite_paw)
+                                           basis_type, qs_env, kinetic, composite_paw, laplacian)
       TYPE(qs_ks_env_type), INTENT(IN), TARGET           :: ks_env
       TYPE(pw_grid_type), INTENT(IN), POINTER            :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -267,12 +273,12 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
       TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
-      LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic, composite_paw
+      LOGICAL, INTENT(IN), OPTIONAL                      :: kinetic, composite_paw, laplacian
 
       CHARACTER(LEN=16)                                  :: role
       INTEGER                                            :: ikind
       LOGICAL                                            :: auxiliary, do_kpoints, gaussian_kinetic, use_atomic, &
-                                                            use_composite, use_kinetic
+                                                            use_composite, use_kinetic, use_laplacian
       REAL(dp), ALLOCATABLE, TARGET                       :: projector_rotations(:, :, :)
       REAL(dp), POINTER                                  :: center_rotations(:, :, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -311,13 +317,15 @@ CONTAINS
       state%native_gth_local = qs_upf_inverse_gth_local_active(kinds)
       use_kinetic = control%use_kinetic_energy_density
       IF (PRESENT(kinetic)) use_kinetic = kinetic
+      use_laplacian = control%use_density_laplacian
+      IF (PRESENT(laplacian)) use_laplacian = laplacian
       use_composite = control%use_gauxc
       IF (PRESENT(composite_paw)) use_composite = composite_paw
       CALL qs_upf_reference_rotations(cell, control%qs_control%upf_angular_reference_cell, kinds, &
                                       control%qs_control%gapw .OR. control%qs_control%gapw_xc, state%angular_rotations)
       NULLIFY (center_rotations)
       IF (control%qs_control%gapw .AND. ALLOCATED(state%angular_rotations)) center_rotations => state%angular_rotations
-      CALL qs_upf_inverse_scf_xc_reference(kinds, use_kinetic, use_composite, state)
+      CALL qs_upf_inverse_scf_xc_reference(kinds, use_kinetic, use_composite, use_laplacian, state)
       use_atomic = .FALSE.
       IF (PRESENT(atom_local)) use_atomic = atom_local
       IF (PRESENT(direct)) THEN

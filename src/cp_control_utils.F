@@ -89,7 +89,9 @@ MODULE cp_control_utils
    USE xas_tdp_types,                   ONLY: read_xas_tdp_control
    USE xc,                              ONLY: xc_uses_kinetic_energy_density,&
                                               xc_uses_norm_drho
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
    USE xc_input_constants,              ONLY: xc_deriv_collocate
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
    USE xc_write_output,                 ONLY: xc_write
 #include "./base/base_uses.f90"
 
@@ -139,6 +141,7 @@ CONTAINS
       TYPE(section_vals_type), POINTER :: hairy_probes_section, hfx_section, kg_xc_fun_section, &
          kg_xc_section, maxwell_section, sccs_section, scf_section, tmp_section, xc_fun_section, &
          xc_gauxc_subsection, xc_section
+      TYPE(xc_rho_cflags_type)                           :: xc_needs
 
       was_present = .FALSE.
 
@@ -211,7 +214,9 @@ CONTAINS
       END IF
 
       dft_control%lsd = (dft_control%nspins > 1)
-      dft_control%use_kinetic_energy_density = xc_uses_kinetic_energy_density(xc_fun_section, dft_control%lsd)
+      xc_needs = xc_functionals_get_needs(xc_fun_section, dft_control%lsd, calc_potential=.FALSE.)
+      dft_control%use_kinetic_energy_density = xc_needs%tau .OR. xc_needs%tau_spin
+      dft_control%use_density_laplacian = xc_needs%laplace_rho .OR. xc_needs%laplace_rho_spin
       IF (dft_control%use_gauxc) THEN
          native_skala_grid = .FALSE.
          CALL section_vals_val_get(xc_gauxc_subsection, "NATIVE_GRID", l_val=native_skala_grid)

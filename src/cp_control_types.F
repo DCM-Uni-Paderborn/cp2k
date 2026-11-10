@@ -834,6 +834,7 @@ MODULE cp_control_types
       LOGICAL                              :: do_xas_calculation = .FALSE., &
                                               do_xas_tdp_calculation = .FALSE., &
                                               drho_by_collocation = .FALSE., &
+                                              use_density_laplacian = .FALSE., &
                                               use_kinetic_energy_density = .FALSE., &
                                               restricted = .FALSE., &
                                               roks = .FALSE., &

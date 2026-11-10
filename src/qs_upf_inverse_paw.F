@@ -690,18 +690,20 @@ CONTAINS
 !> \param nang Requested atomic angular quadrature.
 !> \param cache Owned per-kind PAW data.
 !> \param rotations Fixed reference group for the one-center XC quadrature.
+!> \param use_laplacian Prepare density Laplacians for the selected functional.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_paw_init(pot, projectors, nang, cache, rotations)
+   SUBROUTINE qs_upf_inverse_paw_init(pot, projectors, nang, cache, rotations, use_laplacian)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_projector_type), INTENT(IN)               :: projectors
       INTEGER, INTENT(IN)                                :: nang
       TYPE(paw_kind_type), INTENT(OUT)                   :: cache
       REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
+      LOGICAL, INTENT(IN)                                :: use_laplacian
 
       CPASSERT(pot%is_paw .AND. .NOT. pot%has_so)
       CPASSERT(ALLOCATED(pot%paw))
       CALL paw_onecenter_init(pot, projectors, cache%onecenter)
-      CALL paw_xc_init(pot, nang, cache%xcgrid, rotations)
+      CALL paw_xc_init(pot, nang, cache%xcgrid, rotations, use_laplacian)
       cache%core_energy = pot%paw%core_energy
       cache%active = .TRUE.
    END SUBROUTINE qs_upf_inverse_paw_init

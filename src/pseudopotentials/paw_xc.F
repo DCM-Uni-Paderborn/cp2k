@@ -129,18 +129,20 @@ CONTAINS
 !> \param nang Minimum number of angular points; the selected rule also resolves harmonic products.
 !> \param grid Immutable per-kind one-center XC data.
 !> \param rotations Optional complete point group for the fixed angular quadrature.
+!> \param use_laplacian Prepare radial density Laplacians for the selected functional.
 ! **************************************************************************************************
-   SUBROUTINE paw_xc_init(pot, nang, grid, rotations)
+   SUBROUTINE paw_xc_init(pot, nang, grid, rotations, use_laplacian)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       INTEGER, INTENT(IN)                                :: nang
       TYPE(paw_xc_type), INTENT(OUT)                     :: grid
       REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
+      LOGICAL, INTENT(IN)                                :: use_laplacian
 
       INTEGER                                            :: a, axis, first, i, j, l, lm, m, nb, nr, &
                                                             ns, pair, powers(3), reduced(3), rule, &
                                                             s, side
-      REAL(dp)                                           :: angular_factor, factor
-      REAL(dp), ALLOCATABLE                              :: derivatives(:, :), values(:), waves(:, :)
+      REAL(dp)                                           :: angular_factor, curvature, factor, slope, value
+      REAL(dp), ALLOCATABLE                              :: derivatives(:, :), second(:), values(:), waves(:, :)
 
       CPASSERT(pot%is_paw .AND. .NOT. pot%has_so .AND. ALLOCATED(pot%paw))
       CPASSERT(ALLOCATED(pot%qijl))
@@ -195,6 +197,13 @@ CONTAINS
                 grid%core(nr, 2), grid%core_gradient(nr, 2))
       grid%radial = 0.0_dp
       grid%radial_gradient = 0.0_dp
+      first = 1
+      IF (pot%r(1) == 0.0_dp) first = 2
+      IF (use_laplacian) THEN
+         ALLOCATE (grid%radial_laplacian(grid%nval, grid%npair, 0:grid%lmax, 2), &
+                   grid%core_laplacian(nr, 2), SOURCE=0.0_dp)
+         ALLOCATE (second(nr))
+      END IF
       grid%core = 0.0_dp
       grid%core(:, 1) = pot%paw%rho_core
       IF (ALLOCATED(pot%rho_nlcc)) grid%core(:, 2) = pot%rho_nlcc
@@ -202,13 +211,22 @@ CONTAINS
          IF (side == 1) THEN
             CALL paw_core_radial_slopes(pot%r, grid%core(:, side), grid%core_gradient(:, side), &
                                         grid%core_endpoint_curvature, grid%core_support_index)
+            IF (use_laplacian) THEN
+               DO i = first, nr
+                  CALL paw_core_radial_value(pot%r, grid%core(:, side), grid%core_gradient(:, side), &
+                                             grid%core_endpoint_curvature, grid%core_support_index, &
+                                             pot%r(i), value, slope, curvature)
+                  grid%core_laplacian(i, side) = curvature + 2.0_dp*slope/pot%r(i)
+               END DO
+            END IF
          ELSE
-            CALL spline3ders(pot%r, grid%core(:, side), pot%r, dynew=grid%core_gradient(:, side))
+            CALL spline3ders(pot%r, grid%core(:, side), pot%r, dynew=grid%core_gradient(:, side), d2ynew=second)
+            IF (use_laplacian) THEN
+               grid%core_laplacian(first:, side) = second(first:) + 2.0_dp*grid%core_gradient(first:, side)/pot%r(first:)
+            END IF
          END IF
       END DO
       grid%has_ae_core = ANY(grid%core(:, 1) /= 0.0_dp)
-      first = 1
-      IF (pot%r(1) == 0.0_dp) first = 2
       ! Retain a few physical continuation samples for boundary derivatives, without
       ! differentiating an artificial jump to zero at the augmentation-sphere boundary.
       ns = MIN(nr, grid%nval + 3)
@@ -227,7 +245,13 @@ CONTAINS
                   END IF
                   CALL spline3ders(pot%r(first:ns), values(first:), pot%r(:grid%nval), &
                                    ynew=grid%radial(:, pair, l, side), &
-                                   dynew=grid%radial_gradient(:, pair, l, side))
+                                   dynew=grid%radial_gradient(:, pair, l, side), d2ynew=second)
+                  IF (use_laplacian) THEN
+                     ! The angular Laplacian of a spherical harmonic is -l(l+1) times that harmonic.
+                     grid%radial_laplacian(first:, pair, l, side) = second(first:grid%nval) + &
+                        2.0_dp*grid%radial_gradient(first:, pair, l, side)/pot%r(first:grid%nval) - &
+                        REAL(l*(l + 1), dp)*grid%radial(first:, pair, l, side)/pot%r(first:grid%nval)**2
+                  END IF
                END DO
             END DO
          END DO
@@ -357,15 +381,17 @@ CONTAINS
 !> \param rho Density including the prescribed frozen core.
 !> \param gradient Optional Cartesian density gradient.
 !> \param kinetic Optional independent valence kinetic density, without core or charge compensation.
-!> \param include_core Include frozen-core charge and gradient, default true.
+!> \param include_core Include the frozen-core density and its derivatives, default true.
+!> \param laplacian Optional Laplacian of the same density, including the selected core.
 ! **************************************************************************************************
-   SUBROUTINE collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic, include_core)
+   SUBROUTINE collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic, include_core, laplacian)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       TYPE(twofold_real_type), INTENT(IN)                :: coefficients(:, :, :)
       INTEGER, INTENT(IN)                                :: ir, side
       REAL(dp), INTENT(OUT)                              :: rho(:, :)
       REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :, :), kinetic(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: include_core
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: laplacian(:, :)
 
       INTEGER                                            :: angular, axis, l, lm, nlm, nspin, spin
       LOGICAL                                            :: assertion_valid
@@ -385,6 +411,10 @@ CONTAINS
       IF (PRESENT(gradient)) THEN
          assertion_valid = ALL(SHAPE(gradient) == [3, grid%na, nspin])
          CPASSERT(assertion_valid)
+      END IF
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALLOCATED(grid%radial_laplacian))
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(rho)))
       END IF
       radius = twofold_real_type(grid%r(ir), 0.0_dp)
       DO spin = 1, nspin
@@ -419,6 +449,19 @@ CONTAINS
             END IF
             DO angular = 1, grid%na
                kinetic(angular, spin) = twofold_value(component_dot(harmonics, grid%harmonics(angular, :)))
+            END DO
+         END IF
+         IF (PRESENT(laplacian)) THEN
+            harmonics = twofold_real_type()
+            IF (ir <= grid%nval) THEN
+               DO lm = 1, nlm
+                  l = INT(SQRT(REAL(lm - 1, dp)))
+                  harmonics(lm) = component_dot(coefficients(:, lm, spin), grid%radial_laplacian(ir, :, l, side))
+               END DO
+            END IF
+            CALL twofold_product(core_scale, grid%core_laplacian(ir, side), core%hi, core%lo)
+            DO angular = 1, grid%na
+               laplacian(angular, spin) = twofold_value(twofold_add(component_dot(harmonics, grid%harmonics(angular, :)), core))
             END DO
          END IF
       END DO
@@ -581,11 +624,12 @@ CONTAINS
                                                             side, spin
       INTEGER, ALLOCATABLE                               :: floor_rows(:), selected_keys(:, :)
       LOGICAL                                            :: assertion_valid, collect_jumps, fields_only, lsd, record_samples, &
-                                                            use_tau
+                                                            use_laplacian, use_tau
       REAL(dp)                                           :: batch_energy, sign
-      REAL(dp), ALLOCATABLE                              :: rho(:, :, :), weights(:, :)
-      REAL(dp), ALLOCATABLE, TARGET                      :: drho(:, :, :, :), tau(:, :, :)
-      REAL(dp), POINTER                                  :: gradient(:, :, :), kinetic(:, :), vtau(:, :, :), vxc(:, :, :), &
+      REAL(dp), ALLOCATABLE                              :: rho(:, :, :), vlaplacian(:, :, :), weights(:, :)
+      REAL(dp), ALLOCATABLE, TARGET                      :: drho(:, :, :, :), laplacian(:, :, :), tau(:, :, :)
+      REAL(dp), POINTER                                  :: gradient(:, :, :), kinetic(:, :), laplacian_shell(:, :), &
+                                                            vtau(:, :, :), vxc(:, :, :), &
                                                             vxg(:, :, :, :)
       TYPE(twofold_real_type) :: &
          coefficient_derivative(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3)), &
@@ -607,9 +651,7 @@ CONTAINS
       lsd = nspin == 2
       na = grid%na
       needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
-      IF (needs%laplace_rho .OR. needs%laplace_rho_spin) THEN
-         CPABORT("PAW one-center XC Laplacian dependence is not implemented")
-      END IF
+      use_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
       use_tau = needs%tau .OR. needs%tau_spin
       collect_jumps = .FALSE.
       record_samples = .FALSE.
@@ -644,6 +686,7 @@ CONTAINS
       IF (.NOT. fields_only) THEN
          ALLOCATE (drho(4, na, nr, nspin), weights(na, nr), &
                    vxc(na, nr, nspin), vxg(3, na, nr, nspin), vtau(na, nr, nspin))
+         IF (use_laplacian) ALLOCATE (laplacian(na, nr, nspin), vlaplacian(na, nr, nspin))
          CALL xc_rho_set_create(rho_set, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
          CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
          CALL xc_dset_create(derivatives, local_bounds=bounds)
@@ -658,6 +701,7 @@ CONTAINS
          DO first = 1, grid%nr, nr
             rho = 0.0_dp
             tau = 0.0_dp
+            IF (ALLOCATED(laplacian)) laplacian = 0.0_dp
             IF (.NOT. fields_only) THEN
                drho = 0.0_dp
                weights = 0.0_dp
@@ -666,10 +710,12 @@ CONTAINS
                ir = first + jr - 1
                IF (ir <= grid%nr) THEN
                   IF (grid%r(ir) > 0.0_dp) THEN
-                     NULLIFY (gradient, kinetic)
+                     NULLIFY (gradient, kinetic, laplacian_shell)
                      IF (.NOT. fields_only) gradient => drho(1:3, :, jr, :)
                      IF (use_tau) kinetic => tau(:, jr, :)
-                     CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), gradient, kinetic)
+                     IF (ALLOCATED(laplacian)) laplacian_shell => laplacian(:, jr, :)
+                     CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), gradient, kinetic, &
+                                                 laplacian=laplacian_shell)
                      IF (use_tau) THEN
                         IF (PRESENT(core_kinetic)) THEN
                            tau(:, jr, :) = tau(:, jr, :) + core_kinetic(ir, side)/REAL(nspin, dp)
@@ -683,7 +729,7 @@ CONTAINS
                      END IF
                   END IF
                END IF
-               IF (.NOT. fields_only) CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, jr)
+               IF (.NOT. fields_only) CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, jr, laplacian)
             END DO
             IF (record_samples) CALL record_xc_samples(grid, first, side, rho, tau, samples, atom, use_tau)
             IF (fields_only) CYCLE
@@ -716,14 +762,14 @@ CONTAINS
             vxg = 0.0_dp
             vtau = 0.0_dp
             CALL vxc_of_r_new(functional, rho_set, derivatives, 1, needs, weights, lsd, na, nr, &
-                              batch_energy, vxc, vxg, vtau)
+                              batch_energy, vxc, vxg, vtau, vlaplacian=vlaplacian)
             IF (collect_jumps) THEN
                CALL xc_functionals_collect_floor_jumps(functional, samples, rho_set, derivatives, floor_rows, &
                                                        domain, sign, RESHAPE(weights, [na, nr, 1]))
             END IF
             energy_sum = twofold_add(energy_sum, &
                                      twofold_multiply(twofold_real_type(sign, 0.0_dp), twofold_real_type(batch_energy, 0.0_dp)))
-            CALL accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative)
+            CALL accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative, vlaplacian)
          END DO
       END DO
       potential = 0.0_dp
@@ -758,17 +804,19 @@ CONTAINS
 !> \param vtau Weighted kinetic-density covectors.
 !> \param use_tau Include the independent kinetic-density transpose.
 !> \param coefficient_derivative Accumulated spin-resolved projector-pair/harmonic covectors.
+!> \param vlaplacian Optional weighted density-Laplacian covectors.
 ! **************************************************************************************************
-   SUBROUTINE accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative)
+   SUBROUTINE accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative, vlaplacian)
       TYPE(paw_xc_type), INTENT(IN)                      :: grid
       INTEGER, INTENT(IN)                                :: first, side
       REAL(dp), INTENT(IN)                               :: vxc(:, :, :), vxg(:, :, :, :), &
                                                             vtau(:, :, :)
       LOGICAL, INTENT(IN)                                :: use_tau
       TYPE(twofold_real_type), INTENT(INOUT) :: coefficient_derivative(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: vlaplacian(:, :, :)
 
       INTEGER                                            :: angular, axis, ir, jr, l, lm, spin
-      TYPE(twofold_real_type)                            :: av, radius, rv, sign, term, tv, &
+      TYPE(twofold_real_type)                            :: av, lv, radius, rv, sign, term, tv, &
                                                             weighted(grid%na)
 
       sign = twofold_real_type(REAL(3 - 2*side, dp), 0.0_dp)
@@ -790,11 +838,17 @@ CONTAINS
                END DO
                tv = twofold_real_type()
                IF (use_tau) tv = original_dot(grid%harmonics(:, lm), vtau(:, jr, spin))
+               IF (PRESENT(vlaplacian)) lv = original_dot(grid%harmonics(:, lm), vlaplacian(:, jr, spin))
                DO angular = 1, SIZE(coefficient_derivative, 1)
                   term = twofold_add(twofold_multiply(av, twofold_real_type(grid%radial(ir, angular, l, side), 0.0_dp)), &
                                      twofold_multiply(rv, twofold_real_type(grid%radial_gradient(ir, angular, l, side), 0.0_dp)))
                   IF (use_tau) THEN
                 term = twofold_add(term, twofold_multiply(tv, twofold_real_type(grid%kinetic_radial(ir, angular, l, side), 0.0_dp)))
+                  END IF
+                  IF (PRESENT(vlaplacian)) THEN
+                     term = twofold_add(term, &
+                                        twofold_multiply(lv, twofold_real_type( &
+                                                         grid%radial_laplacian(ir, angular, l, side), 0.0_dp)))
                   END IF
     coefficient_derivative(angular, lm, spin) = twofold_add(coefficient_derivative(angular, lm, spin), twofold_multiply(sign, term))
                END DO

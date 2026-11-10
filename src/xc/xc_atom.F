@@ -19,6 +19,7 @@ MODULE xc_atom
    USE xc,                              ONLY: divide_by_norm_drho,&
                                               xc_calc_2nd_deriv_analytical
    USE xc_derivative_desc,              ONLY: &
+        deriv_laplace_rho, deriv_laplace_rhoa, deriv_laplace_rhob, &
         deriv_norm_drho, deriv_norm_drhoa, deriv_norm_drhob, deriv_rho, deriv_rhoa, deriv_rhob, &
         deriv_tau, deriv_tau_a, deriv_tau_b
    USE xc_derivative_set_types,         ONLY: xc_derivative_set_type,&
@@ -60,10 +61,11 @@ CONTAINS
 !> \param vtau ...
 !> \param energy_only ...
 !> \param adiabatic_rescale_factor ...
+!> \param vlaplacian Optional weighted derivatives with respect to the spin density Laplacians.
 ! **************************************************************************************************
    SUBROUTINE vxc_of_r_new(xc_fun_section, rho_set, deriv_set, deriv_order, needs, w, &
                            lsd, na, nr, exc, vxc, vxg, vtau, &
-                           energy_only, adiabatic_rescale_factor)
+                           energy_only, adiabatic_rescale_factor, vlaplacian)
 
 ! This routine updates rho_set by giving to it the rho and drho that are needed.
 ! Since for the local densities rho1_h and rho1_s local grids are used it is not possible
@@ -89,16 +91,19 @@ CONTAINS
       REAL(dp), DIMENSION(:, :, :), POINTER              :: vtau
       LOGICAL, INTENT(IN), OPTIONAL                      :: energy_only
       REAL(dp), INTENT(IN), OPTIONAL                     :: adiabatic_rescale_factor
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: vlaplacian(:, :, :)
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'vxc_of_r_new'
 
-      INTEGER                                            :: handle, ia, idir, ir
+      INTEGER, PARAMETER                                 :: spin_laplace(2) = [deriv_laplace_rhoa, deriv_laplace_rhob]
+      INTEGER                                            :: handle, ia, idir, ir, spin
       LOGICAL                                            :: gradient_f, my_only_energy
       REAL(dp)                                           :: my_adiabatic_rescale_factor
       REAL(dp), DIMENSION(:, :, :), POINTER              :: deriv_data
       TYPE(xc_derivative_type), POINTER                  :: deriv_att
 
       CALL timeset(routineN, handle)
+      IF (PRESENT(vlaplacian)) vlaplacian = 0.0_dp
       my_only_energy = .FALSE.
       IF (PRESENT(energy_only)) my_only_energy = energy_only
 
@@ -287,6 +292,23 @@ CONTAINS
                NULLIFY (deriv_data)
             END IF
          END IF ! lsd
+         IF (PRESENT(vlaplacian)) THEN
+            deriv_att => xc_dset_get_derivative(deriv_set, [deriv_laplace_rho])
+            IF (ASSOCIATED(deriv_att)) THEN
+               CALL xc_derivative_get(deriv_att, deriv_data=deriv_data)
+               DO spin = 1, SIZE(vlaplacian, 3)
+                  vlaplacian(:, :, spin) = deriv_data(:, :, 1)*w*my_adiabatic_rescale_factor
+               END DO
+            END IF
+            IF (lsd) THEN
+               DO spin = 1, 2
+                  deriv_att => xc_dset_get_derivative(deriv_set, [spin_laplace(spin)])
+                  IF (.NOT. ASSOCIATED(deriv_att)) CYCLE
+                  CALL xc_derivative_get(deriv_att, deriv_data=deriv_data)
+                  vlaplacian(:, :, spin) = vlaplacian(:, :, spin) + deriv_data(:, :, 1)*w*my_adiabatic_rescale_factor
+               END DO
+            END IF
+         END IF
       END IF ! only_energy
 
       CALL timestop(handle)
@@ -738,8 +760,9 @@ CONTAINS
 !> \param tau ...
 !> \param na ...
 !> \param ir ...
+!> \param laplacian Optional density Laplacian on the same radial-angular grid as rho.
 ! **************************************************************************************************
-   SUBROUTINE fill_rho_set(rho_set, lsd, nspins, needs, rho, drho, tau, na, ir)
+   SUBROUTINE fill_rho_set(rho_set, lsd, nspins, needs, rho, drho, tau, na, ir, laplacian)
 
       TYPE(xc_rho_set_type), INTENT(INOUT)               :: rho_set
       LOGICAL, INTENT(IN)                                :: lsd
@@ -749,6 +772,7 @@ CONTAINS
       REAL(dp), DIMENSION(:, :, :, :), INTENT(IN)        :: drho
       REAL(dp), DIMENSION(:, :, :), INTENT(IN)           :: tau
       INTEGER, INTENT(IN)                                :: na, ir
+      REAL(dp), INTENT(IN), OPTIONAL                     :: laplacian(:, :, :)
 
       REAL(KIND=dp), PARAMETER                           :: f13 = (1.0_dp/3.0_dp)
 
@@ -979,6 +1003,24 @@ CONTAINS
          END DO
          rho_set%owns%tau_spin = .TRUE.
          rho_set%has%tau_spin = .TRUE.
+      END IF
+
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(SIZE(laplacian, 3) == nspins)
+         IF (needs%laplace_rho) THEN
+            rho_set%laplace_rho(1:na, ir, 1) = SUM(laplacian(1:na, ir, :), DIM=2)
+            rho_set%has%laplace_rho = .TRUE.
+         END IF
+         IF (needs%laplace_rho_spin) THEN
+            IF (tddft_split) THEN
+               rho_set%laplace_rhoa(1:na, ir, 1) = 0.5_dp*laplacian(1:na, ir, 1)
+               rho_set%laplace_rhob(1:na, ir, 1) = rho_set%laplace_rhoa(1:na, ir, 1)
+            ELSE
+               rho_set%laplace_rhoa(1:na, ir, 1) = laplacian(1:na, ir, 1)
+               rho_set%laplace_rhob(1:na, ir, 1) = laplacian(1:na, ir, 2)
+            END IF
+            rho_set%has%laplace_rho_spin = .TRUE.
+         END IF
       END IF
 
    END SUBROUTINE fill_rho_set

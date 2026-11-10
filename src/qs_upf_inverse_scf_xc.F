@@ -105,11 +105,12 @@ CONTAINS
 !> \param kinds Native kinds with original potentials and projector ordering.
 !> \param kinetic Require valence kinetic kernels and the specified core kinetic-density convention.
 !> \param composite_paw Use the original PAW AE valence fields for a composite learned functional.
+!> \param laplacian Prepare density Laplacians for PAW on-site XC.
 !> \param state Owned basis state with unallocated reference caches. Native SCF state is not installed.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_scf_xc_reference(kinds, kinetic, composite_paw, state)
+   SUBROUTINE qs_upf_inverse_scf_xc_reference(kinds, kinetic, composite_paw, laplacian, state)
       TYPE(qs_kind_type), INTENT(IN)                     :: kinds(:)
-      LOGICAL, INTENT(IN)                                :: kinetic, composite_paw
+      LOGICAL, INTENT(IN)                                :: kinetic, composite_paw, laplacian
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
 
       CHARACTER(LEN=256)                                 :: core_reason
@@ -130,7 +131,7 @@ CONTAINS
          IF (kinds(ikind)%sgp_potential%upf_data%is_paw) THEN
             CALL qs_upf_inverse_paw_init(kinds(ikind)%sgp_potential%upf_data, &
                                          kinds(ikind)%sgp_potential%upf_projectors, kinds(ikind)%ngrid_ang, &
-                                         state%paw(ikind), state%angular_rotations)
+                                         state%paw(ikind), state%angular_rotations, laplacian)
          END IF
          IF (.NOT. kinetic) CYCLE
          IF (state%paw(ikind)%active) THEN
