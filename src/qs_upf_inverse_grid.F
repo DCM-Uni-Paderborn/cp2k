@@ -58,8 +58,12 @@ MODULE qs_upf_inverse_grid
    PUBLIC :: qs_upf_inverse_grid_metric
    PUBLIC :: qs_upf_inverse_grid_collocate_dense, qs_upf_inverse_grid_integrate_dense, qs_upf_inverse_grid_metric_dense
    PUBLIC :: qs_upf_inverse_matrix_gather, qs_upf_inverse_matrix_scatter
-   PUBLIC :: qs_upf_inverse_grid_response
+   PUBLIC :: qs_upf_inverse_grid_response, qs_upf_inverse_grid_charge_type
    PUBLIC :: qs_upf_inverse_grid_gaussian_operator
+
+   TYPE qs_upf_inverse_grid_charge_type
+      COMPLEX(dp), ALLOCATABLE :: operator(:, :), derivative(:, :)
+   END TYPE qs_upf_inverse_grid_charge_type
 
 CONTAINS
 
@@ -685,12 +689,14 @@ CONTAINS
 !> \param known_coefficients_response Optional response for this defining frame and the same geometry variation.
 !> \param saved_coefficients_response Optional owned coefficient response for reuse within this variation.
 !> \param compute_metric Evaluate the metric response. If false, leave it unallocated.
+!> \param charge Optional initially empty Fourier Q operator and derivative. Reuse only across
+!>        k points at the same geometry, with identical potentials and geometry variation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_response(frame, augmentation, projector_metric, vdensity, vgradient, vtau, &
                                            atom_response, cell_response, reduced_k_response, vdensity_response, &
                                            vgradient_response, vtau_response, operator_response, metric_response, &
                                            projector_operator, kinetic, orbital_fields, &
-                                           known_coefficients_response, saved_coefficients_response, compute_metric)
+                                           known_coefficients_response, saved_coefficients_response, compute_metric, charge)
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
@@ -710,12 +716,14 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET :: known_coefficients_response(:, :)
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL :: saved_coefficients_response(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: compute_metric
+      TYPE(qs_upf_inverse_grid_charge_type), &
+         INTENT(INOUT), OPTIONAL, TARGET                 :: charge
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_grid_response'
 
       COMPLEX(dp), ALLOCATABLE :: gradient(:, :, :), gradient_response(:, :, :), &
          kinetic_operator(:, :), kinetic_response(:, :), partial(:, :), projected(:, :), &
-         projected_response(:, :), soft(:, :), soft_response(:, :)
+         soft(:, :), soft_response(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
       COMPLEX(dp), POINTER                               :: dw(:, :)
       INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
@@ -726,6 +734,8 @@ CONTAINS
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:), dvg(:, :), &
                                                             dvn(:), dvt(:), points_response(:, :), &
                                                             weights_response(:)
+      TYPE(qs_upf_inverse_grid_charge_type), POINTER     :: charge_terms
+      TYPE(qs_upf_inverse_grid_charge_type), TARGET      :: owned_charge
 
       CALL timeset(routineN, timing_handle)
       use_orbitals = .TRUE.
@@ -739,7 +749,6 @@ CONTAINS
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
       block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (dn(n), dg(n, 3), dt(n), dvn(n), dvg(n, 3), dvt(n), points_response(3, n), weights_response(n), &
-                projected(nproj, nproj), projected_response(nproj, nproj), &
                 operator_response(nao, nao))
       IF (use_metric) ALLOCATE (metric_response(nao, nao), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
       cell_inverse = frame%ao%cell
@@ -821,16 +830,22 @@ CONTAINS
                                               dw, weights_response, dvt)
          operator_response(:, :) = operator_response + kinetic_response
       END IF
-      CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
-      CALL qs_upf_inverse_augmentation_fourier_response(frame%ao, augmentation, vdensity, vgradient, atom_response, &
-                                                        cell_response, vdensity_response, vgradient_response, &
-                                                        projected_response)
+      charge_terms => owned_charge
+      IF (PRESENT(charge)) charge_terms => charge
+      IF (.NOT. ALLOCATED(charge_terms%operator)) THEN
+         ALLOCATE (charge_terms%operator(nproj, nproj), charge_terms%derivative(nproj, nproj))
+         CALL qs_upf_inverse_augmentation_fourier_response(frame%ao, augmentation, vdensity, vgradient, atom_response, &
+                                                           cell_response, vdensity_response, vgradient_response, &
+                                                           charge_terms%derivative, charge_terms%operator)
+      END IF
+      CPASSERT(ALL(SHAPE(charge_terms%operator) == [nproj, nproj]))
+      projected = charge_terms%operator
       IF (PRESENT(projector_operator)) THEN
          CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
          projected(:, :) = projected + projector_operator
       END IF
       operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), &
-                                                           MATMUL(projected_response, frame%ao%coefficients))
+                                                           MATMUL(charge_terms%derivative, frame%ao%coefficients))
       operator_response(:, :) = operator_response + MATMUL(CONJG(TRANSPOSE(dw)), &
                                                            MATMUL(projected, frame%ao%coefficients)) + &
                                 MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projected, dw))

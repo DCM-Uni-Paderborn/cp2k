@@ -549,10 +549,11 @@ CONTAINS
 !> \param vdensity_response Response of the unweighted potential at each moving grid row.
 !> \param vgradient_response Response of the Cartesian conjugate potentials at each grid row.
 !> \param response Original-Q projector operator response, overwritten and reduced once.
+!> \param projector_operator Optional unperturbed operator from the same quadrature.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_augmentation_fourier_response(frame, augmentation, vdensity, vgradient, &
                                                            atom_response, cell_response, vdensity_response, &
-                                                           vgradient_response, response)
+                                                           vgradient_response, response, projector_operator)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
@@ -560,6 +561,7 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), cell_response(3, 3)
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity_response, vgradient_response(3)
       COMPLEX(dp), INTENT(OUT)                           :: response(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: projector_operator(:, :)
 
       INTEGER                                            :: atom, axis, center, first, ikind, info, &
                                                             last, second
@@ -602,6 +604,10 @@ CONTAINS
          IF (vdensity%pw_grid%have_g0) multiplicity(1) = 1.0_dp
       END IF
       response = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(projector_operator)) THEN
+         CPASSERT(ALL(SHAPE(projector_operator) == SHAPE(response)))
+         projector_operator = CMPLX(0.0_dp, 0.0_dp, dp)
+      END IF
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
@@ -615,6 +621,7 @@ CONTAINS
          CALL uspp_augmentation_prepare_fourier(augmentation%kinds(ikind), vdensity%pw_grid%g)
          CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
                                        frame%positions(:, atom), potential_g%array, multiplicity, matrix, derivative, strain_matrix)
+         IF (PRESENT(projector_operator)) projector_operator(first:last, first:last) = matrix
          CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
                                           frame%positions(:, atom), response_g%array, multiplicity, potential_matrix)
          displacement = atom_response(:, atom) - MATMUL(strain, frame%positions(:, atom))
@@ -628,7 +635,10 @@ CONTAINS
          response(first:last, first:last) = matrix
          DEALLOCATE (matrix, potential_matrix, derivative, strain_matrix)
       END DO
-      IF (vdensity%pw_grid%para%mode /= PW_MODE_LOCAL) CALL frame%point_comm%sum(response)
+      IF (vdensity%pw_grid%para%mode /= PW_MODE_LOCAL) THEN
+         CALL frame%point_comm%sum(response)
+         IF (PRESENT(projector_operator)) CALL frame%point_comm%sum(projector_operator)
+      END IF
       CALL potential_g%release()
       CALL response_g%release()
       CALL derivative_g%release()

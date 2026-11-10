@@ -70,7 +70,8 @@ MODULE qs_upf_inverse_coulomb
                                               qs_upf_inverse_density_gapw_integrate
    USE qs_upf_inverse_gaussian_pairs,   ONLY: qs_upf_inverse_gaussian_pairs_has_derivatives,&
                                               qs_upf_inverse_gaussian_pairs_prepare
-   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_integrate_dense,&
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_charge_type,&
+                                              qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_response,&
                                               qs_upf_inverse_matrix_gather
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
@@ -386,6 +387,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_background_type), POINTER      :: background
+      TYPE(qs_upf_inverse_grid_charge_type)              :: charge
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
@@ -483,7 +485,7 @@ CONTAINS
                                                     field_response, zeros, zero, matrix, metric_response, &
                                                     orbital_fields=.NOT. state%native_gaussian, &
                                                     known_coefficients_response=coefficients_response(:, :, k), &
-                                                    compute_metric=.FALSE.)
+                                                    compute_metric=.FALSE., charge=charge)
                ELSE
                   CALL qs_upf_inverse_grid_response(state%frame, state%augmentation, frame%radial_q, potential, zeros, zero, &
                                                     atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], &

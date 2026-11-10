@@ -58,7 +58,8 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_background_integrate,&
                                               qs_upf_inverse_background_release,&
                                               qs_upf_inverse_background_scratch
-   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_collocate_dense,&
+   USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_grid_charge_type,&
+                                              qs_upf_inverse_grid_collocate_dense,&
                                               qs_upf_inverse_grid_integrate_dense,&
                                               qs_upf_inverse_grid_response,&
                                               qs_upf_inverse_matrix_gather
@@ -731,14 +732,18 @@ CONTAINS
             ! potential directions remove that measure without changing the source map.
             density_response%array = -trace_strain*density%array
             kinetic_response%array = -trace_strain*kinetic%array
-            DO ik = 1, nk
-               frame => source_frame(state, ik)
-               CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, density, gradient, kinetic, &
-                                                 atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], density_response, &
-                                                 gradient, kinetic_response, derivative, metric, kinetic=state%kinetic_cache, &
-                                                 orbital_fields=.NOT. state%native_gaussian, compute_metric=.FALSE.)
-               response = response + weights(ik)*REAL(SUM(CONJG(matrices(:, :, ik, spin))*derivative), dp)
-            END DO
+            BLOCK
+               TYPE(qs_upf_inverse_grid_charge_type) :: charge
+               DO ik = 1, nk
+                  frame => source_frame(state, ik)
+                  CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, density, gradient, kinetic, &
+                                                    atom_response, cell_response, [0.0_dp, 0.0_dp, 0.0_dp], density_response, &
+                                                    gradient, kinetic_response, derivative, metric, kinetic=state%kinetic_cache, &
+                                                    orbital_fields=.NOT. state%native_gaussian, compute_metric=.FALSE., &
+                                                    charge=charge)
+                  response = response + weights(ik)*REAL(SUM(CONJG(matrices(:, :, ik, spin))*derivative), dp)
+               END DO
+            END BLOCK
          END IF
          IF (state%gaussian_background .OR. state%native_gaussian) THEN
             CALL qs_upf_inverse_background_geometry(gaussian, qs_env, matrices(:, :, :, spin), density, forces, virial)
