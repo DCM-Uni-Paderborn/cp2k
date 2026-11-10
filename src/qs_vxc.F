@@ -54,6 +54,8 @@ MODULE qs_vxc
    USE qs_dispersion_types,             ONLY: qs_dispersion_type
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: qs_environment_type
+   USE qs_kind_types,                   ONLY: has_gaussian_upf,&
+                                              qs_kind_type
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
@@ -164,7 +166,7 @@ CONTAINS
                                                             nelec_spin(2), np, output_unit, vdw
       LOGICAL :: compute_virial, defer_native_skala_to_atom_composite, do_adiabatic_rescaling, &
          inverse_active, inverse_composite, my_just_energy, native_gapw_composite_direct_ao, &
-         native_gapw_composite_reference, native_grid_diagnostics, native_skala_grid, rho_g_valid, &
+         native_gapw_composite_reference, native_grid_diagnostics, native_skala_grid, real_grid_transfer, rho_g_valid, &
          sic_scaling_b_zero, tau_g_valid, tau_r_valid, uf_grid, vdW_nl
       REAL(dp), POINTER                                  :: xc_virial(:, :)
       REAL(dp), TARGET                                   :: independent_virial(3, 3)
@@ -575,6 +577,10 @@ CONTAINS
          END IF
 
          uf_grid = .NOT. pw_grid_compare(auxbas_pw_pool%pw_grid, xc_pw_pool%pw_grid)
+         real_grid_transfer = .FALSE.
+         IF (uf_grid) THEN
+            real_grid_transfer = inverse_active .OR. xc_uses_real_grid_transfer(ks_env, xc_section)
+         END IF
 
          IF (.NOT. uf_grid) THEN
             rho_r => rho_struct_r
@@ -594,14 +600,14 @@ CONTAINS
             ALLOCATE (rho_g(mspin))
             DO ispin = 1, mspin
                CALL xc_pw_pool%create_pw(rho_g(ispin))
-               CALL pw_real_transfer(rho_struct_g(ispin), rho_g(ispin))
+               CALL transfer_xc_spectrum(rho_struct_g(ispin), rho_g(ispin), real_grid_transfer)
             END DO
             DO ispin = 1, mspin
                CALL xc_pw_pool%create_pw(rho_r(ispin))
                CALL pw_transfer(rho_g(ispin), rho_r(ispin))
                ! Different FFT grids can have different reality constraints at Nyquist planes.
                ! Build XC gradients from the interpolated real density and use its same adjoint.
-               CALL pw_transfer(rho_r(ispin), rho_g(ispin))
+               IF (real_grid_transfer) CALL pw_transfer(rho_r(ispin), rho_g(ispin))
             END DO
             IF (tau_r_valid) THEN
                ALLOCATE (tau(mspin))
@@ -611,11 +617,11 @@ CONTAINS
                      TYPE(pw_c1d_gs_type) :: tau_g_aux, tau_g_xc
                      CALL xc_pw_pool%create_pw(tau_g_xc)
                      IF (tau_g_valid) THEN
-                        CALL pw_real_transfer(tau_struct_g(ispin), tau_g_xc)
+                        CALL transfer_xc_spectrum(tau_struct_g(ispin), tau_g_xc, real_grid_transfer)
                      ELSE
                         CALL auxbas_pw_pool%create_pw(tau_g_aux)
                         CALL pw_transfer(tau_struct_r(ispin), tau_g_aux)
-                        CALL pw_real_transfer(tau_g_aux, tau_g_xc)
+                        CALL transfer_xc_spectrum(tau_g_aux, tau_g_xc, real_grid_transfer)
                         CALL auxbas_pw_pool%give_back_pw(tau_g_aux)
                      END IF
                      CALL pw_transfer(tau_g_xc, tau(ispin))
@@ -631,7 +637,7 @@ CONTAINS
                   CALL auxbas_pw_pool%create_pw(weights_g_aux)
                   CALL xc_pw_pool%create_pw(weights_g_xc)
                   CALL pw_transfer(weights, weights_g_aux)
-                  CALL pw_real_transfer(weights_g_aux, weights_g_xc)
+                  CALL transfer_xc_spectrum(weights_g_aux, weights_g_xc, real_grid_transfer)
                   CALL pw_transfer(weights_g_xc, weights_xc)
                   CALL xc_pw_pool%give_back_pw(weights_g_xc)
                   CALL auxbas_pw_pool%give_back_pw(weights_g_aux)
@@ -643,9 +649,9 @@ CONTAINS
                ALLOCATE (rho_nlcc_g_xc, rho_nlcc_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_g_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_xc)
-               CALL pw_real_transfer(rho_nlcc_g, rho_nlcc_g_xc)
+               CALL transfer_xc_spectrum(rho_nlcc_g, rho_nlcc_g_xc, real_grid_transfer)
                CALL pw_transfer(rho_nlcc_g_xc, rho_nlcc_xc)
-               CALL pw_transfer(rho_nlcc_xc, rho_nlcc_g_xc)
+               IF (real_grid_transfer) CALL pw_transfer(rho_nlcc_xc, rho_nlcc_g_xc)
                rho_nlcc_use => rho_nlcc_xc
                rho_nlcc_g_use => rho_nlcc_g_xc
             END IF
@@ -1118,7 +1124,7 @@ CONTAINS
                   DO ispin = 1, SIZE(vxc_rho)
                      CALL auxbas_pw_pool%create_pw(tmp_pw)
                      CALL pw_transfer(vxc_rho(ispin), tmp_g)
-                     CALL pw_real_transfer(tmp_g, tmp_g2)
+                     CALL transfer_xc_spectrum(tmp_g, tmp_g2, real_grid_transfer)
                      CALL pw_transfer(tmp_g2, tmp_pw)
                      CALL xc_pw_pool%give_back_pw(vxc_rho(ispin))
                      vxc_rho(ispin) = tmp_pw
@@ -1128,7 +1134,7 @@ CONTAINS
                   DO ispin = 1, SIZE(vxc_tau)
                      CALL auxbas_pw_pool%create_pw(tmp_pw)
                      CALL pw_transfer(vxc_tau(ispin), tmp_g)
-                     CALL pw_real_transfer(tmp_g, tmp_g2)
+                     CALL transfer_xc_spectrum(tmp_g, tmp_g2, real_grid_transfer)
                      CALL pw_transfer(tmp_g2, tmp_pw)
                      CALL xc_pw_pool%give_back_pw(vxc_tau(ispin))
                      vxc_tau(ispin) = tmp_pw
@@ -1371,8 +1377,8 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin, mspin, myfun, np, nspins, &
                                                             vdw
-      LOGICAL                                            :: rho_g_valid, tau_g_valid, tau_r_valid, &
-                                                            uf_grid, vdW_nl
+      LOGICAL                                            :: real_grid_transfer, rho_g_valid, tau_g_valid, &
+                                                            tau_r_valid, uf_grid, vdW_nl
       REAL(KIND=dp)                                      :: edisp, excint, factor, rho_cutoff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: rhonl
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: drhonl
@@ -1438,6 +1444,8 @@ CONTAINS
 
       CALL pw_env_get(pw_env, xc_pw_pool=xc_pw_pool, auxbas_pw_pool=auxbas_pw_pool)
       uf_grid = .NOT. pw_grid_compare(auxbas_pw_pool%pw_grid, xc_pw_pool%pw_grid)
+      real_grid_transfer = .FALSE.
+      IF (uf_grid) real_grid_transfer = xc_uses_real_grid_transfer(ks_env, xc_section)
 
       IF (PRESENT(xc_ener)) THEN
          CALL pw_zero(xc_ener)
@@ -1467,17 +1475,22 @@ CONTAINS
          IF (uf_grid) THEN
             NULLIFY (rho_r, rho_g, tau_r, tau_g)
             IF (rho_g_valid) THEN
-               CALL create_density_on_pool(xc_pw_pool, rho_struct_g, rho_r, rho_g)
+               CALL create_density_on_pool(xc_pw_pool, rho_struct_g, rho_r, rho_g, real_grid_transfer)
             ELSE IF (ASSOCIATED(rho_struct_r)) THEN
-               CALL create_density_on_pool_from_r(auxbas_pw_pool, xc_pw_pool, rho_struct_r, rho_r, rho_g)
+               CALL create_density_on_pool_from_r(auxbas_pw_pool, xc_pw_pool, rho_struct_r, rho_r, rho_g, real_grid_transfer)
             ELSE
                CPABORT("Fine Grid in qs_xc_density requires rho_r or rho_g")
             END IF
+            IF (real_grid_transfer) THEN
+               DO ispin = 1, SIZE(rho_r)
+                  CALL pw_transfer(rho_r(ispin), rho_g(ispin))
+               END DO
+            END IF
             IF (tau_r_valid) THEN
                IF (tau_g_valid) THEN
-                  CALL create_density_on_pool(xc_pw_pool, tau_struct_g, tau_r, tau_g)
+                  CALL create_density_on_pool(xc_pw_pool, tau_struct_g, tau_r, tau_g, real_grid_transfer)
                ELSE IF (ASSOCIATED(tau_struct_r)) THEN
-                  CALL create_density_on_pool_from_r(auxbas_pw_pool, xc_pw_pool, tau_struct_r, tau_r, tau_g)
+                  CALL create_density_on_pool_from_r(auxbas_pw_pool, xc_pw_pool, tau_struct_r, tau_r, tau_g, real_grid_transfer)
                ELSE
                   CPABORT("Fine Grid in qs_xc_density requires tau_r or tau_g")
                END IF
@@ -1485,7 +1498,7 @@ CONTAINS
             IF (ASSOCIATED(weights)) THEN
                ALLOCATE (weights_xc)
                CALL xc_pw_pool%create_pw(weights_xc)
-               CALL transfer_rspace_between_pools(auxbas_pw_pool, xc_pw_pool, weights, weights_xc)
+               CALL transfer_rspace_between_pools(auxbas_pw_pool, xc_pw_pool, weights, weights_xc, real_grid_transfer)
                weights_use => weights_xc
             END IF
             IF (ASSOCIATED(rho_nlcc)) THEN
@@ -1493,8 +1506,9 @@ CONTAINS
                ALLOCATE (rho_nlcc_g_xc, rho_nlcc_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_g_xc)
                CALL xc_pw_pool%create_pw(rho_nlcc_xc)
-               CALL pw_real_transfer(rho_nlcc_g, rho_nlcc_g_xc)
+               CALL transfer_xc_spectrum(rho_nlcc_g, rho_nlcc_g_xc, real_grid_transfer)
                CALL pw_transfer(rho_nlcc_g_xc, rho_nlcc_xc)
+               IF (real_grid_transfer) CALL pw_transfer(rho_nlcc_xc, rho_nlcc_g_xc)
                rho_nlcc_use => rho_nlcc_xc
                rho_nlcc_g_use => rho_nlcc_g_xc
             END IF
@@ -1559,7 +1573,7 @@ CONTAINS
                   CALL xc_pw_pool%create_pw(tmp_pw)
                   CALL pw_copy(exc_r, tmp_pw)
                   CALL calc_xc_density(tmp_pw, rho_r, rho_cutoff)
-                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, tmp_pw, xc_den)
+                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, tmp_pw, xc_den, real_grid_transfer)
                   CALL xc_pw_pool%give_back_pw(tmp_pw)
                END BLOCK
             ELSE
@@ -1576,7 +1590,7 @@ CONTAINS
                   DO ispin = 1, nspins
                      CALL pw_multiply(tmp_pw, vxc_rho(ispin), rho_r(ispin), alpha=-1.0_dp)
                   END DO
-                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, tmp_pw, xc_ener)
+                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, tmp_pw, xc_ener, real_grid_transfer)
                   CALL xc_pw_pool%give_back_pw(tmp_pw)
                END BLOCK
             ELSE
@@ -1588,7 +1602,7 @@ CONTAINS
          END IF
          IF (PRESENT(exc)) THEN
             IF (uf_grid) THEN
-               CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, exc_r, exc)
+               CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, exc_r, exc, real_grid_transfer)
             ELSE
                CALL pw_copy(exc_r, exc)
             END IF
@@ -1596,7 +1610,7 @@ CONTAINS
          IF (PRESENT(vxc)) THEN
             DO ispin = 1, nspins
                IF (uf_grid) THEN
-                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, vxc_rho(ispin), vxc(ispin))
+                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, vxc_rho(ispin), vxc(ispin), real_grid_transfer)
                ELSE
                   CALL pw_copy(vxc_rho(ispin), vxc(ispin))
                END IF
@@ -1605,7 +1619,7 @@ CONTAINS
          IF (PRESENT(vtau) .AND. ASSOCIATED(vxc_tau)) THEN
             DO ispin = 1, nspins
                IF (uf_grid) THEN
-                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, vxc_tau(ispin), vtau(ispin))
+                  CALL transfer_rspace_between_pools(xc_pw_pool, auxbas_pw_pool, vxc_tau(ispin), vtau(ispin), real_grid_transfer)
                ELSE
                   CALL pw_copy(vxc_tau(ispin), vtau(ispin))
                END IF
@@ -1649,15 +1663,51 @@ CONTAINS
    END SUBROUTINE qs_xc_density
 
 ! **************************************************************************************************
+!> \brief Select real Fourier interpolation for native UPF and learned XC densities.
+!> \param ks_env Gaussian kinds of the calculation.
+!> \param xc_section Functional that consumes the transferred density.
+!> \return True when the XC map uses the real interpolation and its transpose.
+! **************************************************************************************************
+   LOGICAL FUNCTION xc_uses_real_grid_transfer(ks_env, xc_section) RESULT(use_real)
+      TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
+      TYPE(section_vals_type), POINTER                   :: xc_section
+
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+
+      CALL get_ks_env(ks_env, qs_kind_set=kinds)
+      use_real = has_gaussian_upf(kinds) .OR. xc_section_uses_native_skala_evaluator(xc_section)
+   END FUNCTION xc_uses_real_grid_transfer
+
+! **************************************************************************************************
+!> \brief Transfer an XC spectrum with the interpolation selected for its density and potential.
+!> \param source Reciprocal coefficients on the source grid.
+!> \param target Reciprocal coefficients on the target grid.
+!> \param real_grid_transfer Use real Fourier interpolation and its paired restriction.
+! **************************************************************************************************
+   SUBROUTINE transfer_xc_spectrum(source, target, real_grid_transfer)
+      TYPE(pw_c1d_gs_type), INTENT(IN)                    :: source
+      TYPE(pw_c1d_gs_type), INTENT(INOUT)                 :: target
+      LOGICAL, INTENT(IN)                                :: real_grid_transfer
+
+      IF (real_grid_transfer) THEN
+         CALL pw_real_transfer(source, target)
+      ELSE
+         CALL pw_transfer(source, target)
+      END IF
+   END SUBROUTINE transfer_xc_spectrum
+
+! **************************************************************************************************
 !> \brief transfers an r-space PW between two pools and writes into an existing target PW
 !> \param source_pw_pool ...
 !> \param target_pw_pool ...
 !> \param source ...
 !> \param TARGET ...
+!> \param real_grid_transfer Use the real Fourier interpolation and its paired restriction.
 ! **************************************************************************************************
-   SUBROUTINE transfer_rspace_between_pools(source_pw_pool, target_pw_pool, source, TARGET)
+   SUBROUTINE transfer_rspace_between_pools(source_pw_pool, target_pw_pool, source, TARGET, real_grid_transfer)
       TYPE(pw_pool_type), POINTER                        :: source_pw_pool, target_pw_pool
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: source, TARGET
+      LOGICAL, INTENT(IN)                                :: real_grid_transfer
 
       TYPE(pw_c1d_gs_type)                               :: source_g, target_g
 
@@ -1670,7 +1720,7 @@ CONTAINS
          CALL source_pw_pool%create_pw(source_g)
          CALL target_pw_pool%create_pw(target_g)
          CALL pw_transfer(source, source_g)
-         CALL pw_real_transfer(source_g, target_g)
+         CALL transfer_xc_spectrum(source_g, target_g, real_grid_transfer)
          CALL pw_transfer(target_g, TARGET)
          CALL target_pw_pool%give_back_pw(target_g)
          CALL source_pw_pool%give_back_pw(source_g)
@@ -1684,12 +1734,14 @@ CONTAINS
 !> \param rho_g_in ...
 !> \param rho_r_out ...
 !> \param rho_g_out ...
+!> \param real_grid_transfer Use the real Fourier interpolation and its paired restriction.
 ! **************************************************************************************************
-   SUBROUTINE create_density_on_pool(pw_pool, rho_g_in, rho_r_out, rho_g_out)
+   SUBROUTINE create_density_on_pool(pw_pool, rho_g_in, rho_r_out, rho_g_out, real_grid_transfer)
       TYPE(pw_pool_type), POINTER                        :: pw_pool
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g_in
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r_out
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g_out
+      LOGICAL, INTENT(IN)                                :: real_grid_transfer
 
       INTEGER                                            :: ispin, nspins
 
@@ -1701,7 +1753,7 @@ CONTAINS
       DO ispin = 1, nspins
          CALL pw_pool%create_pw(rho_g_out(ispin))
          CALL pw_pool%create_pw(rho_r_out(ispin))
-         CALL pw_real_transfer(rho_g_in(ispin), rho_g_out(ispin))
+         CALL transfer_xc_spectrum(rho_g_in(ispin), rho_g_out(ispin), real_grid_transfer)
          CALL pw_transfer(rho_g_out(ispin), rho_r_out(ispin))
       END DO
 
@@ -1714,11 +1766,13 @@ CONTAINS
 !> \param rho_r_in ...
 !> \param rho_r_out ...
 !> \param rho_g_out ...
+!> \param real_grid_transfer Use the real Fourier interpolation and its paired restriction.
 ! **************************************************************************************************
-   SUBROUTINE create_density_on_pool_from_r(source_pw_pool, target_pw_pool, rho_r_in, rho_r_out, rho_g_out)
+   SUBROUTINE create_density_on_pool_from_r(source_pw_pool, target_pw_pool, rho_r_in, rho_r_out, rho_g_out, real_grid_transfer)
       TYPE(pw_pool_type), POINTER                        :: source_pw_pool, target_pw_pool
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r_in, rho_r_out
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g_out
+      LOGICAL, INTENT(IN)                                :: real_grid_transfer
 
       INTEGER                                            :: ispin, nspins
       TYPE(pw_c1d_gs_type)                               :: rho_g_in
@@ -1734,7 +1788,7 @@ CONTAINS
          CALL target_pw_pool%create_pw(rho_g_out(ispin))
          CALL target_pw_pool%create_pw(rho_r_out(ispin))
          CALL pw_transfer(rho_r_in(ispin), rho_g_in)
-         CALL pw_real_transfer(rho_g_in, rho_g_out(ispin))
+         CALL transfer_xc_spectrum(rho_g_in, rho_g_out(ispin), real_grid_transfer)
          CALL pw_transfer(rho_g_out(ispin), rho_r_out(ispin))
          CALL source_pw_pool%give_back_pw(rho_g_in)
       END DO
