@@ -69,7 +69,6 @@ MODULE qs_upf_inverse_scf
    USE qs_upf_inverse,                  ONLY: qs_upf_inverse_atomic_operators,&
                                               qs_upf_inverse_soft_projectors
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
-                                              qs_upf_inverse_background_gaussian_geometry,&
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
                                               qs_upf_inverse_background_operator,&
@@ -92,7 +91,6 @@ MODULE qs_upf_inverse_scf
                                               qs_upf_inverse_gth_nonlocal
    USE qs_upf_inverse_gth_local,        ONLY: qs_upf_inverse_gth_local_active,&
                                               qs_upf_inverse_gth_local_field,&
-                                              qs_upf_inverse_gth_local_geometry,&
                                               qs_upf_inverse_gth_local_matrix,&
                                               qs_upf_inverse_gth_local_paw,&
                                               qs_upf_inverse_gth_local_residual
@@ -1149,9 +1147,11 @@ CONTAINS
 !> \param response Stationary electronic response, including the metric constraint.
 !> \param metric_response Signed metric contribution, zero when the caller supplies the full-GAPW metric.
 !> \param coefficients_response Optional owned per-k coefficient responses for this geometry variation.
+!> \param summed_density Optional accepted spin-summed matrix for the full-GAPW core-only response.
+!>        Its folded grid potentials are zero and the native Gaussian and GTH gradients are separate.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, cell_response, &
-                                          reduced_k_response, response, metric_response, coefficients_response)
+                                          reduced_k_response, response, metric_response, coefficients_response, summed_density)
       TYPE(qs_ks_env_type), INTENT(INOUT), TARGET        :: ks_env
       TYPE(pw_r3d_rs_type), INTENT(IN), TARGET           :: vdensity(:), vgradient(:, :), vtau(:)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
@@ -1159,6 +1159,7 @@ CONTAINS
                                                             reduced_k_response(:, :)
       REAL(dp), INTENT(OUT)                              :: response, metric_response
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: coefficients_response(:, :, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: summed_density(:, :, :)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_scf_response'
 
@@ -1168,16 +1169,14 @@ CONTAINS
       INTEGER                                            :: active_potential, axis, component, ik, &
                                                             info, nk, nspin, timing_handle
       LOGICAL                                            :: grid_metric, joint_grid
-      REAL(dp) :: cell_inverse(3, 3), foreign_energy, foreign_response, gaussian_virial(3, 3), &
+      REAL(dp) :: cell_inverse(3, 3), foreign_energy, foreign_response, &
          native_metric, native_response, paw_response, strain(3, 3), weight
-      REAL(dp), ALLOCATABLE                              :: gaussian_gradients(:, :), &
-                                                            relative_motion(:, :)
+      REAL(dp), ALLOCATABLE                              :: relative_motion(:, :)
       TYPE(dbcsr_p_type), POINTER                        :: density_gamma(:, :), energy_gamma(:)
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
       TYPE(pw_r3d_rs_type), POINTER                      :: joint_density, joint_gradient(:), joint_tau
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
-      TYPE(qs_ks_env_type), POINTER                      :: native_ks
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(qs_upf_inverse_orbitals_type), POINTER        :: orbital_factors
       TYPE(qs_upf_inverse_scf_type), POINTER             :: state
@@ -1210,10 +1209,9 @@ CONTAINS
       nk = 1
       IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
       CPASSERT(ALL(SHAPE(reduced_k_response) == [3, nk]))
-      IF (ALLOCATED(state%gaussian_kinetic) .OR. state%native_gth_local) THEN
+      IF (state%native_gaussian) THEN
          CPASSERT(ALL(reduced_k_response == 0.0_dp))
-         native_ks => ks_env
-         ALLOCATE (gaussian_gradients(3, SIZE(atom_response, 2)), relative_motion(3, SIZE(atom_response, 2)))
+         ALLOCATE (relative_motion(3, SIZE(atom_response, 2)))
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             cell_inverse = state%bloch%frames(1)%ao%cell
          ELSE
@@ -1270,7 +1268,15 @@ CONTAINS
       END IF
       response = 0.0_dp
       metric_response = 0.0_dp
-      IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN
+      IF (PRESENT(summed_density)) THEN
+         CPASSERT(.NOT. grid_metric)
+         CPASSERT(ALL(SHAPE(summed_density) == SHAPE(core)))
+         DO ik = 1, nk
+            weight = 1.0_dp
+            IF (ASSOCIATED(state%bloch%kpoints)) weight = state%bloch%weights(ik)
+            response = response + weight*REAL(SUM(summed_density(:, :, ik)*TRANSPOSE(core(:, :, ik))), dp)
+         END DO
+      ELSE IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN
          CALL qs_rho_get(rho, rho_ao_kp=density_gamma)
          CPASSERT(ASSOCIATED(density_gamma))
          CPASSERT(SIZE(density_gamma, 1) == nspin)
@@ -1283,6 +1289,7 @@ CONTAINS
          END IF
       END IF
       DO axis = 1, nspin
+         IF (PRESENT(summed_density)) EXIT
          active_potential = 0
          IF (.NOT. joint_grid) THEN
             active_potential = MERGE(1, 0, ANY(vdensity(axis)%array /= 0.0_dp) .OR. ANY(vtau(axis)%array /= 0.0_dp))
@@ -1306,15 +1313,6 @@ CONTAINS
                CALL qs_upf_inverse_matrix_gather(state%frame%ao, energy_gamma(axis)%matrix, matrix)
                energy_weighted(:, :, 1) = matrix
             END IF
-         END IF
-         IF (ALLOCATED(state%gaussian_kinetic)) THEN
-            CALL qs_upf_inverse_background_gaussian_geometry(state%gaussian, native_ks, density, .TRUE., &
-                                                             gaussian_gradients, gaussian_virial)
-            response = response + SUM(gaussian_gradients*relative_motion) - SUM(gaussian_virial*strain)
-         END IF
-         IF (state%native_gth_local) THEN
-            CALL qs_upf_inverse_gth_local_geometry(ks_env, state%gaussian, density, gaussian_gradients, gaussian_virial)
-            response = response + SUM(gaussian_gradients*relative_motion) - SUM(gaussian_virial*strain)
          END IF
          IF (state%native_gaussian) THEN
             CALL native_grid_response(ks_env, state, density, energy_weighted, vdensity(axis), vgradient(:, axis), vtau(axis), &

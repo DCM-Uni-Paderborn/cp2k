@@ -36,12 +36,14 @@ MODULE qs_upf_inverse_forces
                                               qs_ks_env_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
-   USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_geometry
+   USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_gaussian_geometry,&
+                                              qs_upf_inverse_background_geometry
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_center_metric_response,&
                                               qs_upf_inverse_coulomb_metric_geometry,&
                                               qs_upf_inverse_coulomb_pair_geometry,&
                                               qs_upf_inverse_coulomb_response
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
+   USE qs_upf_inverse_gth_local,        ONLY: qs_upf_inverse_gth_local_geometry
    USE qs_upf_inverse_kpoints,          ONLY: qs_upf_inverse_kpoints_density
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_response
    USE qs_upf_inverse_scf_xc,           ONLY: qs_upf_inverse_scf_xc_response
@@ -77,11 +79,11 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
       LOGICAL                                            :: complete_coulomb
       REAL(dp) :: cell_response(3, 3), coulomb_cell_gradient(3, 3), coulomb_source_virial(3, 3), &
-         external_energy, external_response, field_measure, metric_cell_gradient(3, 3), &
+         external_energy, external_response, field_measure, metric_cell_gradient(3, 3), native_virial(3, 3), &
          metric_response, response, source_virial(3, 3), strain(3, 3), work_virial(3, 3), &
          xc_response
       REAL(dp), ALLOCATABLE :: atom_response(:, :), coulomb_atom_gradient(:, :), coulomb_source_forces(:, :), positions(:, :), &
-         metric_atom_gradient(:, :), reduced_k_response(:, :), source_forces(:, :), work_forces(:, :)
+         metric_atom_gradient(:, :), native_gradients(:, :), reduced_k_response(:, :), source_forces(:, :), work_forces(:, :)
       TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
       TYPE(cell_type), POINTER                           :: cell
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -110,6 +112,7 @@ CONTAINS
       nk = 1
       IF (ASSOCIATED(state%bloch%kpoints)) nk = SIZE(state%bloch%weights)
       ALLOCATE (atom_response(3, SIZE(atoms)), positions(3, SIZE(atoms)), reduced_k_response(3, nk), &
+                native_gradients(3, SIZE(atoms)), work_forces(3, SIZE(atoms)), &
                 vdensity(nspin), vgradient(3, nspin), vtau(nspin))
       reduced_k_response = 0.0_dp
       DO atom = 1, SIZE(atoms)
@@ -130,7 +133,7 @@ CONTAINS
          END DO
       END DO
       IF (complete_coulomb) THEN
-         CALL stationary_matrices(ks_env, state, total_density, total_weighted, spin_density)
+         CALL stationary_matrices(ks_env, state, nspin, total_density, total_weighted, spin_density)
          ALLOCATE (metric_atom_gradient(3, SIZE(atoms)))
          CALL qs_upf_inverse_coulomb_metric_geometry(qs_env, state%coulomb, total_weighted, &
                                                      metric_atom_gradient, metric_cell_gradient)
@@ -138,7 +141,7 @@ CONTAINS
          CALL qs_upf_inverse_coulomb_pair_geometry(qs_env, state, state%coulomb, total_density, &
                                                    coulomb_atom_gradient, coulomb_cell_gradient, &
                                                    coulomb_source_forces, coulomb_source_virial)
-         ALLOCATE (source_forces(3, SIZE(atoms)), work_forces(3, SIZE(atoms)))
+         ALLOCATE (source_forces(3, SIZE(atoms)))
          source_forces = 0.0_dp
          source_virial = 0.0_dp
          DO spin = 1, nspin
@@ -155,6 +158,24 @@ CONTAINS
                source_virial(:, :) = source_virial + work_virial
             END IF
          END DO
+         DEALLOCATE (spin_density)
+      END IF
+      ! These ordinary Gaussian terms are linear in the accepted occupations.
+      ! All force directions share their Cartesian gradients and affine virial.
+      native_gradients = 0.0_dp
+      native_virial = 0.0_dp
+      IF (ALLOCATED(state%gaussian_kinetic) .OR. state%native_gth_local) THEN
+         IF (.NOT. complete_coulomb) CALL stationary_matrices(ks_env, state, nspin, total_density)
+         IF (ALLOCATED(state%gaussian_kinetic)) THEN
+            CALL qs_upf_inverse_background_gaussian_geometry(state%gaussian, ks_env, total_density, .TRUE., &
+                                                             native_gradients, native_virial)
+         END IF
+         IF (state%native_gth_local) THEN
+            CALL qs_upf_inverse_gth_local_geometry(ks_env, state%gaussian, total_density, work_forces, work_virial)
+            native_gradients(:, :) = native_gradients + work_forces
+            native_virial(:, :) = native_virial + work_virial
+         END IF
+         IF (.NOT. complete_coulomb) DEALLOCATE (total_density)
       END IF
       DO atom = 1, SIZE(atoms)
          kind = kind_of(atom)
@@ -176,7 +197,7 @@ CONTAINS
             END IF
             CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, 0.0_dp*cell%hmat, reduced_k_response, &
                                                 xc_response, coefficients_response)
-            response = response + xc_response
+            response = response + xc_response + native_gradients(axis, atom)
             CALL external_upf_potential(qs_env, external_energy, response=external_response, &
                            atom_response=atom_response, cell_response=0.0_dp*cell%hmat, coefficients_response=coefficients_response)
             response = response + external_response
@@ -237,7 +258,7 @@ CONTAINS
                END IF
                CALL qs_upf_inverse_scf_xc_response(ks_env, atom_response, cell_response, &
                                                    reduced_k_response, xc_response, coefficients_response)
-               response = response + xc_response
+               response = response + xc_response - SUM(native_virial*strain)
                IF (axis == other .AND. .NOT. complete_coulomb) response = response - field_measure
                CALL external_upf_potential(qs_env, external_energy, response=external_response, &
                                            atom_response=atom_response, cell_response=cell_response, &
@@ -269,49 +290,63 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_force
 
 ! **************************************************************************************************
-!> \brief Spin-summed accepted and energy-weighted densities in the complete metric's global k order.
-!> \param ks_env Native converged owners, including the prepared energy-weighted density service.
-!> \param state Same defining inverse ordering as the installed complete charge metric.
+!> \brief Accepted and optionally energy-weighted densities in the inverse's global k order.
+!> \param ks_env Native converged density and energy-weighted density owners.
+!> \param state Defining inverse frames.
+!> \param nspin Number of native spin channels.
 !> \param density New Hermitian occupation matrices, without mesh weights.
-!> \param weighted New Hermitian energy-weighted matrices, without mesh weights.
-!> \param spin_density Same accepted occupation matrices retained separately for each XC spin source.
+!> \param weighted Optional new Hermitian energy-weighted matrices, without mesh weights.
+!> \param spin_density Optional occupations retained separately for each XC spin source.
 ! **************************************************************************************************
-   SUBROUTINE stationary_matrices(ks_env, state, density, weighted, spin_density)
+   SUBROUTINE stationary_matrices(ks_env, state, nspin, density, weighted, spin_density)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN)          :: state
-      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density(:, :, :), weighted(:, :, :), &
-                                                            spin_density(:, :, :, :)
+      INTEGER, INTENT(IN)                                :: nspin
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: density(:, :, :)
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: weighted(:, :, :), spin_density(:, :, :, :)
 
       COMPLEX(dp), ALLOCATABLE                           :: component(:, :, :), gamma(:, :)
-      INTEGER                                            :: spin
+      INTEGER                                            :: nao, nk, spin
       TYPE(dbcsr_p_type), POINTER                        :: density_gamma(:, :), weighted_gamma(:)
       TYPE(qs_rho_type), POINTER                         :: rho
 
-      ALLOCATE (density, MOLD=state%coulomb%metric)
-      ALLOCATE (weighted, MOLD=state%coulomb%metric)
-      density = CMPLX(0.0_dp, 0.0_dp, dp)
-      weighted = CMPLX(0.0_dp, 0.0_dp, dp)
-      CALL get_ks_env(ks_env, rho=rho)
-      CALL qs_rho_get(rho, rho_ao_kp=density_gamma)
-      ALLOCATE (spin_density(SIZE(density, 1), SIZE(density, 2), SIZE(density, 3), SIZE(density_gamma, 1)))
-      IF (.NOT. ASSOCIATED(state%bloch%kpoints)) THEN
-         CALL get_ks_env(ks_env, matrix_w=weighted_gamma)
-         CPASSERT(ASSOCIATED(weighted_gamma))
-         CPASSERT(SIZE(weighted_gamma) == SIZE(density_gamma, 1))
+      IF (ASSOCIATED(state%bloch%kpoints)) THEN
+         nao = state%bloch%nao
+         nk = SIZE(state%bloch%weights)
+      ELSE
+         nao = SIZE(state%frame%ao%coefficients, 2)
+         nk = 1
+         CALL get_ks_env(ks_env, rho=rho)
+         CALL qs_rho_get(rho, rho_ao_kp=density_gamma)
+         CPASSERT(ASSOCIATED(density_gamma))
+         CPASSERT(SIZE(density_gamma, 1) == nspin)
+         IF (PRESENT(weighted)) THEN
+            CALL get_ks_env(ks_env, matrix_w=weighted_gamma)
+            CPASSERT(ASSOCIATED(weighted_gamma))
+            CPASSERT(SIZE(weighted_gamma) == nspin)
+         END IF
+         ALLOCATE (component(nao, nao, 1))
       END IF
-      DO spin = 1, SIZE(density_gamma, 1)
+      ALLOCATE (density(nao, nao, nk), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+      IF (PRESENT(weighted)) ALLOCATE (weighted, SOURCE=density)
+      IF (PRESENT(spin_density)) ALLOCATE (spin_density(nao, nao, nk, nspin))
+      DO spin = 1, nspin
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_kpoints_density(state%bloch, spin, component)
-            spin_density(:, :, :, spin) = component
-            density(:, :, :) = density + component
-            CALL qs_upf_inverse_kpoints_density(state%bloch, spin, component, energy_weighted=.TRUE.)
-            weighted(:, :, :) = weighted + component
          ELSE
             CALL qs_upf_inverse_matrix_gather(state%frame%ao, density_gamma(spin, 1)%matrix, gamma)
-            spin_density(:, :, 1, spin) = gamma
-            density(:, :, 1) = density(:, :, 1) + gamma
-            CALL qs_upf_inverse_matrix_gather(state%frame%ao, weighted_gamma(spin)%matrix, gamma)
-            weighted(:, :, 1) = weighted(:, :, 1) + gamma
+            component(:, :, 1) = gamma
+         END IF
+         density(:, :, :) = density + component
+         IF (PRESENT(spin_density)) spin_density(:, :, :, spin) = component
+         IF (PRESENT(weighted)) THEN
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               CALL qs_upf_inverse_kpoints_density(state%bloch, spin, component, energy_weighted=.TRUE.)
+            ELSE
+               CALL qs_upf_inverse_matrix_gather(state%frame%ao, weighted_gamma(spin)%matrix, gamma)
+               component(:, :, 1) = gamma
+            END IF
+            weighted(:, :, :) = weighted + component
          END IF
       END DO
    END SUBROUTINE stationary_matrices
@@ -358,7 +393,7 @@ CONTAINS
 
       CPASSERT(ALL(reduced_k_response == 0.0_dp))
       CALL qs_upf_inverse_scf_response(ks_env, zero, zeros, zero, atom_response, cell_response, reduced_k_response, &
-                                       response, metric_response, coefficients_response)
+                                       response, metric_response, coefficients_response, summed_density=density)
       CALL qs_upf_inverse_coulomb_center_metric_response(qs_env, state, state%coulomb, weighted, atom_response, cell_response, &
                                                          metric_response, coefficients_response)
       metric_response = -metric_response - metric_background_response
