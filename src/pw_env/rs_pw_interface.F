@@ -306,7 +306,11 @@ CONTAINS
             DO igrid_level = 1, gridlevel_info%ngrid_levels
                CALL pw_transfer(mgrid_rspace(igrid_level), &
                                 mgrid_gspace(igrid_level))
-               CALL pw_real_transfer(mgrid_gspace(igrid_level), rho_gspace, additive=.TRUE.)
+               IF (pw_env%real_grid_interpolation) THEN
+                  CALL pw_real_transfer(mgrid_gspace(igrid_level), rho_gspace, additive=.TRUE.)
+               ELSE
+                  CALL pw_axpy(mgrid_gspace(igrid_level), rho_gspace)
+               END IF
             END DO
             CALL pw_transfer(rho_gspace, rho)
          CASE (spline3_pbc_interp)
@@ -377,7 +381,11 @@ CONTAINS
          CALL pw_transfer(v_rspace, mgrid_gspace(auxbas_grid))
          DO igrid_level = 1, gridlevel_info%ngrid_levels
             IF (igrid_level /= auxbas_grid) THEN
-               CALL pw_real_transfer(mgrid_gspace(auxbas_grid), mgrid_gspace(igrid_level))
+               IF (pw_env%real_grid_interpolation) THEN
+                  CALL pw_real_transfer(mgrid_gspace(auxbas_grid), mgrid_gspace(igrid_level))
+               ELSE
+                  CALL pw_copy(mgrid_gspace(auxbas_grid), mgrid_gspace(igrid_level))
+               END IF
                CALL pw_transfer(mgrid_gspace(igrid_level), mgrid_rspace(igrid_level))
             ELSE
                IF (mgrid_gspace(auxbas_grid)%pw_grid%spherical) THEN

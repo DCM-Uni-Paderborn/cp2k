@@ -97,6 +97,7 @@ MODULE pw_env_methods
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              has_gaussian_upf,&
                                               has_uspp,&
                                               qs_kind_type
    USE qs_rho0_types,                   ONLY: get_rho0_mpole,&
@@ -105,6 +106,7 @@ MODULE pw_env_methods
         realspace_grid_desc_p_type, realspace_grid_desc_type, realspace_grid_input_type, &
         realspace_grid_type, rs_grid_create, rs_grid_create_descriptor, rs_grid_print, &
         rs_grid_release, rs_grid_release_descriptor
+   USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator
    USE xc_input_constants,              ONLY: &
         xc_deriv_collocate, xc_deriv_nn10_smooth, xc_deriv_nn50_smooth, xc_deriv_pw, &
         xc_deriv_spline2, xc_deriv_spline2_smooth, xc_deriv_spline3, xc_deriv_spline3_smooth, &
@@ -358,6 +360,8 @@ CONTAINS
       ! methods that require smoothing or nearest neighbor have to use a plane distributed setup
       ! find the xc properties (FIXME this could miss other xc sections that operate on the grid ...)
       xc_section => section_vals_get_subs_vals(input, "DFT%XC")
+      pw_env%real_grid_interpolation = has_gaussian_upf(qs_kind_set) .OR. &
+                                       xc_section_uses_native_skala_evaluator(xc_section)
       xc_deriv_method_id = section_get_ival(xc_section, "XC_GRID%XC_DERIV")
       xc_smooth_method_id = section_get_ival(xc_section, "XC_GRID%XC_SMOOTH_RHO")
       smooth_required = .FALSE.
