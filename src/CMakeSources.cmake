@@ -663,6 +663,7 @@ list(
   qs_integrate_potential_product.F
   qs_integrate_potential_single.F
   qs_interactions.F
+  qs_ionic_charge.F
   qs_kernel_methods.F
   qs_kernel_types.F
   qs_kind_types.F

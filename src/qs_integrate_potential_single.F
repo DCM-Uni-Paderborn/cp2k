@@ -60,10 +60,15 @@ MODULE qs_integrate_potential_single
    USE physcon,                         ONLY: pascal
    USE pw_env_types,                    ONLY: pw_env_get,&
                                               pw_env_type
-   USE pw_types,                        ONLY: pw_r3d_rs_type
+   USE pw_grid_types,                   ONLY: PW_MODE_LOCAL
+   USE pw_methods,                      ONLY: pw_transfer
+   USE pw_types,                        ONLY: pw_c1d_gs_type,&
+                                              pw_r3d_rs_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
    USE qs_force_types,                  ONLY: qs_force_type
+   USE qs_ionic_charge,                 ONLY: ionic_charge_geometry,&
+                                              use_fourier_ionic_charge
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
                                               qs_kind_type
@@ -609,7 +614,12 @@ CONTAINS
          CPASSERT(PRESENT(ccore))
       END IF
 
-      CALL get_qs_env(qs_env=qs_env, dft_control=dft_control)
+      CALL get_qs_env(qs_env=qs_env, dft_control=dft_control, qs_kind_set=qs_kind_set)
+      IF (.NOT. PRESENT(calpha) .AND. use_fourier_ionic_charge(dft_control%qs_control, qs_kind_set)) THEN
+         CALL integrate_core_fourier(v_rspace, qs_env, atecc, force_response, virial_response)
+         CALL timestop(handle)
+         RETURN
+      END IF
 
       isolated = PRESENT(force_response) .OR. PRESENT(virial_response)
       cutoff = 1.0_dp
@@ -757,6 +767,73 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE integrate_v_core_rspace
+
+! **************************************************************************************************
+!> \brief Apply the transpose of the Fourier ionic source to the native potential.
+!> \param v_rspace Real potential already multiplied by the grid volume element.
+!> \param qs_env Current Quickstep geometry and force owners.
+!> \param atecc Optional atomic energy contributions.
+!> \param force_response Optional local atomic energy gradients.
+!> \param virial_response Optional local source virial.
+! **************************************************************************************************
+   SUBROUTINE integrate_core_fourier(v_rspace, qs_env, atecc, force_response, virial_response)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: v_rspace
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: atecc(:)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: force_response(:, :), virial_response(3, 3)
+
+      INTEGER                                            :: atom, ikind, iatom, natom
+      INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
+      LOGICAL                                            :: isolated
+      REAL(dp)                                           :: source_virial(3, 3)
+      REAL(dp), ALLOCATABLE                              :: gradients(:, :), energies(:)
+      TYPE(atomic_kind_type), POINTER                    :: atomic_kinds(:)
+      TYPE(atprop_type), POINTER                         :: atprop
+      TYPE(mp_para_env_type), POINTER                    :: para_env
+      TYPE(particle_type), POINTER                       :: atoms(:)
+      TYPE(pw_c1d_gs_type)                               :: potential
+      TYPE(qs_force_type), POINTER                       :: force(:)
+      TYPE(qs_kind_type), POINTER                        :: kinds(:)
+      TYPE(virial_type), POINTER                         :: virial
+
+      CALL get_qs_env(qs_env, atomic_kind_set=atomic_kinds, qs_kind_set=kinds, particle_set=atoms, &
+                      para_env=para_env, force=force, virial=virial, atprop=atprop)
+      natom = SIZE(atoms)
+      IF (PRESENT(force_response)) THEN
+         CPASSERT(ALL(SHAPE(force_response) == [3, natom]))
+         force_response = 0.0_dp
+      END IF
+      IF (PRESENT(virial_response)) virial_response = 0.0_dp
+      isolated = PRESENT(force_response) .OR. PRESENT(virial_response)
+      IF (ASSOCIATED(atprop) .AND. .NOT. isolated) CALL atprop_array_init(atprop%ateb, natom)
+      IF (v_rspace%pw_grid%para%mode == PW_MODE_LOCAL .AND. .NOT. para_env%is_source()) RETURN
+
+      CALL potential%create(v_rspace%pw_grid)
+      CALL pw_transfer(v_rspace, potential)
+      potential%array = potential%array/v_rspace%pw_grid%dvol
+      ALLOCATE (gradients(3, natom), energies(natom))
+      CALL ionic_charge_geometry(atoms, kinds, potential, gradients, source_virial, energies)
+      CALL potential%release()
+      gradients = -gradients
+      IF (PRESENT(force_response)) force_response = gradients
+      IF (PRESENT(virial_response)) virial_response = source_virial
+      IF (PRESENT(atecc)) atecc(:natom) = atecc(:natom) + 0.5_dp*energies
+      IF (isolated) RETURN
+
+      IF (ASSOCIATED(atprop)) atprop%ateb(:) = atprop%ateb + 0.5_dp*energies
+      IF (ASSOCIATED(force)) THEN
+         CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
+         DO atom = 1, natom
+            ikind = kind_of(atom)
+            iatom = atom_of_kind(atom)
+            force(ikind)%rho_core(:, iatom) = force(ikind)%rho_core(:, iatom) + gradients(:, atom)
+         END DO
+      END IF
+      IF (virial%pv_availability .AND. .NOT. virial%pv_numer) THEN
+         virial%pv_ehartree = virial%pv_ehartree + source_virial
+         virial%pv_virial = virial%pv_virial + source_virial
+      END IF
+   END SUBROUTINE integrate_core_fourier
 
 ! **************************************************************************************************
 !> \brief computes the overlap of a set of Gaussians with a potential on grid

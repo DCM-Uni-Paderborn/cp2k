@@ -2,13 +2,13 @@
 # Tests native local/nonlocal operators, symmetric NC image screening, and mixed NLCC kinds.
 # GAPW cases retain nonzero one-center contributions.
 "HBr_GPW.inp"                      = [
-  {matcher = "M011", tol = 1e-11, ref = -16.119259834197031},
-  {matcher = "Atomic_force_1_z", tol = 1e-6, ref = -0.0206469227},
+  {matcher = "M011", tol = 1e-11, ref = -16.11926285994688},
+  {matcher = "Atomic_force_1_z", tol = 1e-6, ref = -0.0206473509},
   {matcher = "Atomic_force_2_y", tol = 1e-6, ref = 0.00643546579},
 ]
 "HBr_GAPW_XC.inp"                  = [
-  {matcher = "M011", tol = 1e-11, ref = -16.127538517092198},
-  {matcher = "Atomic_force_1_z", tol = 1e-6, ref = -0.0193301611},
+  {matcher = "M011", tol = 1e-11, ref = -16.12754154269774},
+  {matcher = "Atomic_force_1_z", tol = 1e-6, ref = -0.0193305845},
   {matcher = "Atomic_force_2_y", tol = 1e-6, ref = 0.00621529645},
 ]
 "HBr_GAPW.inp"                     = [
@@ -21,52 +21,52 @@
 # Original full-wave USPP with the native inverse GPW density, metric and derivatives.
 # General-inverse kinetic energy uses Gaussian integrals and radial corrections.
 "H2_inverse_GPW.inp"               = [
-  {matcher = "M011", tol = 1e-10, ref = -1.466587421878132},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.652781202},
-  {matcher = "M031", tol = 1e-7, ref = 977181.611802},
+  {matcher = "M011", tol = 1e-10, ref = -1.660598045294103},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0104538226},
+  {matcher = "M031", tol = 1e-7, ref = 296046.874591},
   {matcher = "Hirshfeld_total_charge", tol = 1e-3, ref = 0.0},
 ]
 # Complete complex Bloch density and native OT with unequal k-point weights.
 "H2_inverse_GPW_kpoints.inp"       = [
-  {matcher = "M011", tol = 1e-10, ref = -1.455773934229328},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.644572558},
-  {matcher = "M031", tol = 1e-7, ref = 989483.100575},
+  {matcher = "M011", tol = 1e-10, ref = -1.648324960331969},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0106974588},
+  {matcher = "M031", tol = 1e-7, ref = 314025.484139},
 ]
 # Native complex operators and density restart preserve the OT state in one diagonalization step.
 "H2_inverse_GPW_restart.inp"       = [
-  {matcher = "M011", tol = 1e-10, ref = -1.455773934229328},
+  {matcher = "M011", tol = 1e-10, ref = -1.648324960331968},
 ]
 # CDIIS convergence must satisfy the unchanged-H density map.
 "H2_USPP_cdiis.inp"                = [
-  {matcher = "M011", tol = 1e-10, ref = -0.272909797784936},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -1.98536899},
-  {matcher = "M031", tol = 1e-7, ref = 2377999.08176},
+  {matcher = "M011", tol = 1e-10, ref = -1.97634651379787},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.119011922},
+  {matcher = "M031", tol = 1e-7, ref = 145554.889981},
   {matcher = "SCF_raw_map_delta", tol = 1e-12, ref = 0.0},
 ]
 # Native time-reversal reduction retains the density, metric and geometry derivatives.
 "H2_inverse_GPW_time_reversal.inp" = [
   {matcher = "Kpoint_count", tol = 0, ref = 2},
-  {matcher = "M011", tol = 1e-10, ref = -1.455401725920278},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.643646579},
-  {matcher = "M031", tol = 1e-7, ref = 990625.897435},
+  {matcher = "M011", tol = 1e-10, ref = -1.647627383682056},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0106477829},
+  {matcher = "M031", tol = 1e-7, ref = 315474.048359},
 ]
 # Matched USPP representations with energy, atomic force and analytical stress.
 "H2_USPP_DIRECT.inp"               = [
-  {matcher = "M011", tol = 1e-10, ref = -0.823103831971355},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -1.85346886},
-  {matcher = "M031", tol = 1e-7, ref = 2254717.95047},
+  {matcher = "M011", tol = 1e-10, ref = -2.12526173049341},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0501239905},
+  {matcher = "M031", tol = 1e-7, ref = 262991.167868},
 ]
 "H2_USPP_INVERSE.inp"              = [
-  {matcher = "M011", tol = 1e-10, ref = -0.792216979335634},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -1.85041517},
-  {matcher = "M031", tol = 1e-7, ref = 2406096.96111},
+  {matcher = "M011", tol = 1e-10, ref = -2.132485340781509},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0538541905},
+  {matcher = "M031", tol = 1e-7, ref = 272566.59149},
 ]
 "H2_USPP_INVERSE_1C.inp"           = [
-  {matcher = "M011", tol = 1e-10, ref = -0.792216979335634},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -1.85041517},
-  {matcher = "M031", tol = 1e-7, ref = 2406096.96111},
+  {matcher = "M011", tol = 1e-10, ref = -2.132485340781509},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0538541905},
+  {matcher = "M031", tol = 1e-7, ref = 272566.59149},
 ]
 # Multiple occupied orbitals exercise canonical rotations before the OT force W reconstruction.
 "H4_USPP_OT.inp"                   = [
-  {matcher = "Atomic_force_1_x", tol = 1e-7, ref = 0.0971048859},
+  {matcher = "Atomic_force_1_x", tol = 1e-7, ref = 0.151570983},
 ]

@@ -366,6 +366,9 @@ registry["M024"] = GenericMatcher(r"DFT+U energy:", col=3)
 registry["M025"] = GenericMatcher(r"OPT| Local curvature", col=4)
 registry["M026"] = GenericMatcher(r"Total electronic charge (G-space):", col=6)
 registry["M027"] = GenericMatcher(r"Total electronic charge (R-space):", col=5)
+registry["Total_charge_gspace"] = GenericMatcher(
+    r"Total charge density g-space grids:", col=6
+)
 registry["M028"] = GenericMatcher(r"Total spin density (R-space)           :", col=6)
 registry["M029"] = GenericMatcher(r"Heat of formation [kcal/mol]:", col=5)
 

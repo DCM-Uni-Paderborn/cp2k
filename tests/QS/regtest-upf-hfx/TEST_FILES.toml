@@ -2,19 +2,20 @@
 # The atoms have different folding vectors, so RI and inverse image conventions must agree.
 # Defining overlaps use the UPF radial rule and retain intercenter image couplings.
 "H2_inverse_RI_images.inp"         = [
-  {matcher = "M011", tol = 1e-10, ref = 12.812874584424481},
+  {matcher = "M011", tol = 1e-10, ref = 1.109533300431026},
+  {matcher = "Total_charge_gspace", tol = 1e-8, ref = 0.0},
 ]
 # Native Gamma ACE retains the complete inverse USPP energy and geometry derivatives.
 "H_USPP_ACE.inp"                   = [
-  {matcher = "M011", tol = 1e-10, ref = 3.218508954230071},
-  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 2.78868961},
-  {matcher = "M031", tol = 1e-10, ref = -24869.1098219},
+  {matcher = "M011", tol = 1e-10, ref = 2.99497936968452},
+  {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0232689446},
+  {matcher = "M031", tol = 1e-10, ref = 11004.836478},
 ]
 # Auxiliary ACE refresh must agree across MPI ranks.
 "H_USPP_ADMM_ACE.inp"              = [
-  {matcher = "M011", tol = 1e-10, ref = 3.218897463154330},
+  {matcher = "M011", tol = 1e-10, ref = 2.995367878608775},
 ]
 # A Bloch calculation with one AO image still uses the k-point RI exchange path.
 # Splitting its exchange fraction into two terms preserves the energy and stress.
-"H_USPP_RI_single_image.inp" = [{matcher = "M011", tol = 1e-10, ref = 4.654840844364726},
-                                {matcher = "M031", tol = 1e-8, ref = -7048.79813418}]
+"H_USPP_RI_single_image.inp" = [{matcher = "M011", tol = 1e-10, ref = 2.995896044387756},
+                                {matcher = "M031", tol = 1e-8, ref = -380.021629839}]
