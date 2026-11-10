@@ -40,6 +40,7 @@ MODULE qs_energy
    USE qs_nonscf,                       ONLY: nonscf
    USE qs_scf,                          ONLY: scf
    USE qs_tddfpt2_smearing_methods,     ONLY: deallocate_fermi_params
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
    USE scf_control_types,               ONLY: scf_control_type
 #include "./base/base_uses.f90"
 
@@ -140,7 +141,10 @@ CONTAINS
             END IF
          END IF
 
-         IF (do_consistent_energies) THEN
+         ! Finalizing an original-UPF SCF can replace the last mixed density with the
+         ! accepted orbital density. Use that density for the reported single-point energy.
+         IF (do_consistent_energies .OR. (.NOT. my_calc_forces .AND. qs_env%scf_converged .AND. &
+                                        qs_upf_inverse_scf_active(qs_env%ks_env))) THEN
             CALL qs_ks_update_qs_env(qs_env, calculate_forces=.FALSE., just_energy=.FALSE.)
          END IF
 
