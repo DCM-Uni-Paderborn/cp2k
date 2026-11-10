@@ -474,7 +474,7 @@ CONTAINS
          omp_max_threads_restore, phase_handle, selected_cuda_device, xc_deriv_method_id, &
          xc_rho_smooth_id
       INTEGER, DIMENSION(2, 3)                           :: bo
-      LOGICAL :: has_atom_chunk_work, have_atom_coord_grad, lsd, my_just_energy, &
+      LOGICAL :: fields_only, has_atom_chunk_work, have_atom_coord_grad, lsd, my_just_energy, &
          native_grid_atom_chunk_routing, native_grid_atom_chunks, native_grid_diagnostics, &
          native_grid_use_cuda, need_response, needs_atom_force, response_collapsed_rks, &
          use_atom_subchunks, use_density_constraints
@@ -546,14 +546,15 @@ CONTAINS
 
       nspins = SIZE(rho_r)
       lsd = (nspins /= 1)
+      fields_only = .FALSE.
       use_density_constraints = .FALSE.
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
+            fields_only = skala_density_samples_only(density_constraints)
             use_density_constraints = density_constraints_match_geometry( &
                                       density_constraints, rho_r, particle_set, cell)
          END IF
       END IF
-      CALL get_skala_model_path(xc_section, model_path)
       gauxc_section => get_gauxc_section(xc_section)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_USE_CUDA", l_val=native_grid_use_cuda)
       CALL section_vals_val_get(gauxc_section, "NATIVE_GRID_CUDA_DEVICE", &
@@ -595,10 +596,13 @@ CONTAINS
          native_grid_atom_chunks = .FALSE.
       END IF
       ! The portable SKALA export used by the regtests builds ragged-index tensors on CPU.
-      CALL torch_use_cuda(native_grid_use_cuda)
-      selected_cuda_device = configure_native_grid_cuda( &
-                             native_grid_use_cuda, native_grid_cuda_device, rho_r(1)%pw_grid%para%group)
-      CALL ensure_model_loaded(model_path, selected_cuda_device, xc_section)
+      IF (.NOT. fields_only) THEN
+         CALL get_skala_model_path(xc_section, model_path)
+         CALL torch_use_cuda(native_grid_use_cuda)
+         selected_cuda_device = configure_native_grid_cuda( &
+                                native_grid_use_cuda, native_grid_cuda_device, rho_r(1)%pw_grid%para%group)
+         CALL ensure_model_loaded(model_path, selected_cuda_device, xc_section)
+      END IF
 
       IF (lsd) THEN
          needs%rho_spin = .TRUE.
@@ -624,13 +628,11 @@ CONTAINS
       IF (PRESENT(density_constraints)) THEN
          IF (ASSOCIATED(density_constraints)) THEN
             CALL record_fft_descriptors(density_constraints, rho_set, rho_r)
-            IF (skala_density_samples_only(density_constraints)) THEN
+            IF (fields_only) THEN
                CPASSERT(my_just_energy)
                CPASSERT(.NOT. compute_virial)
                CPASSERT(.NOT. needs_atom_force)
                CALL xc_rho_set_release(rho_set, pw_pool=pw_pool)
-               CALL torch_use_cuda(.TRUE.)
-               CALL omp_set_num_threads(omp_max_threads_restore)
                RETURN
             END IF
          END IF
