@@ -2392,6 +2392,7 @@ CONTAINS
 !> \param stopped Whether an external stop was requested.
 !> \param curve Original minimization chart for restoring active constraints.
 !> \param energy_only Evaluate the complete energy without constructing the KS operator.
+!>        On failure, return the original first fields. The caller restores the live state.
 !> \param endpoint_values Borrowed first and last physical fields in the current candidate order.
 ! **************************************************************************************************
    SUBROUTINE boundary_root(state, first, last, points, domains, spins, descriptors, &
@@ -2574,9 +2575,13 @@ CONTAINS
       IF (.NOT. found) THEN
          root(:) = first
          selected = .FALSE.
-         CALL qs_skala_scf_evaluate(state, first, energy, gradient)
-         count = count + 1
-         CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+         IF (need_operator) THEN
+            CALL qs_skala_scf_evaluate(state, first, energy, gradient, reuse_fields=.TRUE.)
+            count = count + 1
+            CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values, rows)
+         ELSE
+            values(:) = initial
+         END IF
       END IF
       IF (PRESENT(evaluations)) evaluations = count
       IF (PRESENT(stopped)) stopped = requested
@@ -4359,7 +4364,7 @@ CONTAINS
       END IF
       ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)), gradient(SIZE(first)))
       pending(:) = [(i, i=1, SIZE(pending))]
-      CALL qs_skala_scf_evaluate(context%state, first, first_energy)
+      CALL qs_skala_scf_evaluate(context%state, first, first_energy, reuse_fields=.TRUE.)
       first_energy = sum_ks_energies(context%state%energy, .TRUE.)
       DO WHILE (SIZE(pending) > 0)
          ALLOCATE (selected(SIZE(pending)), values(SIZE(pending)), windows(SIZE(pending)))
@@ -4416,7 +4421,7 @@ CONTAINS
       END DO
       IF (SIZE(pending) == 0) event%encountered = .FALSE.
       IF (.NOT. event%resolved) THEN
-         CALL qs_skala_scf_evaluate(context%state, first, energy)
+         CALL qs_skala_scf_evaluate(context%state, first, energy, reuse_fields=.TRUE.)
       END IF
    END SUBROUTINE classify_native_segment
 
