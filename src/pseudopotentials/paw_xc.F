@@ -888,10 +888,12 @@ CONTAINS
 
       INTEGER :: bounds(2, 3), first, first_shell, ir, jr, last_shell, na, nblocks, ncoeff, nr, ns, &
          p, pair, partition, partitions, q, side, spin
-      LOGICAL                                            :: assertion_valid, lsd, use_tau
+      LOGICAL                                            :: assertion_valid, lsd, use_laplacian, use_tau
       REAL(dp)                                           :: density_cutoff, gradient_cutoff
       REAL(dp), ALLOCATABLE :: delta_drho(:, :, :, :), delta_rho(:, :, :), delta_tau(:, :, :), &
-         drho(:, :, :, :), partials(:, :), rho(:, :, :), tau(:, :, :), weights(:, :)
+         drho(:, :, :, :), partials(:, :), rho(:, :, :), tau(:, :, :), vlaplacian(:, :, :), weights(:, :)
+      REAL(dp), ALLOCATABLE, TARGET :: laplacian(:, :, :), delta_laplacian(:, :, :)
+      REAL(dp), POINTER :: laplacian_shell(:, :), delta_laplacian_shell(:, :)
       REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
       REAL(dp), POINTER                                  :: vg(:, :, :, :)
       TYPE(section_vals_type), POINTER                   :: functional
@@ -915,8 +917,9 @@ CONTAINS
       CPASSERT(ns == 1 .OR. ns == 2)
       functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
       needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
-      IF (needs%laplace_rho .OR. needs%laplace_rho_spin) THEN
-         CPABORT('PAW one-center XC Laplacian response is not implemented')
+      use_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
+      IF (use_laplacian) THEN
+         CPASSERT(ALLOCATED(grid%radial_laplacian))
       END IF
       use_tau = needs%tau .OR. needs%tau_spin
       IF (use_tau) THEN
@@ -948,6 +951,8 @@ CONTAINS
       ALLOCATE (rho(na, nr, ns), drho(4, na, nr, ns), tau(na, nr, ns), delta_rho(na, nr, ns), &
                 delta_drho(4, na, nr, ns), delta_tau(na, nr, ns), weights(na, nr), vn(na, nr, ns), &
                 vg(3, na, nr, ns), vt(na, nr, ns))
+      IF (use_laplacian) ALLOCATE (laplacian(na, nr, ns), delta_laplacian(na, nr, ns), vlaplacian(na, nr, ns))
+      NULLIFY (laplacian_shell, delta_laplacian_shell)
       CALL xc_rho_set_create(base, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
       CALL xc_rho_set_atom_update(base, needs, ns, bounds)
       CALL xc_rho_set_create(delta, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
@@ -960,35 +965,47 @@ CONTAINS
          DO first = first_shell, last_shell, nr
             rho = 0.0_dp; drho = 0.0_dp; tau = 0.0_dp; weights = 0.0_dp
             delta_rho = 0.0_dp; delta_drho = 0.0_dp; delta_tau = 0.0_dp
+            IF (use_laplacian) THEN
+               laplacian = 0.0_dp
+               delta_laplacian = 0.0_dp
+            END IF
             DO jr = 1, nr
                ir = first + jr - 1
                IF (ir <= grid%nr) THEN
                   IF (grid%r(ir) > 0.0_dp) THEN
+                     IF (use_laplacian) THEN
+                        laplacian_shell => laplacian(:, jr, :)
+                        delta_laplacian_shell => delta_laplacian(:, jr, :)
+                     END IF
                      IF (use_tau) THEN
-                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :), tau(:, jr, :))
+                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :), &
+                                                    tau(:, jr, :), laplacian=laplacian_shell)
                         CALL collocate_coefficients(grid, direction_coefficients, ir, side, delta_rho(:, jr, :), &
-                                                    delta_drho(1:3, :, jr, :), delta_tau(:, jr, :), include_core=.FALSE.)
+                                                    delta_drho(1:3, :, jr, :), delta_tau(:, jr, :), include_core=.FALSE., &
+                                                    laplacian=delta_laplacian_shell)
                         IF (PRESENT(core_kinetic)) THEN
                            tau(:, jr, :) = tau(:, jr, :) + core_kinetic(ir, side)/REAL(ns, dp)
                         ELSE IF (grid%core_kinetic%available) THEN
                            tau(:, jr, :) = tau(:, jr, :) + grid%core_kinetic%kinetic(ir, side)/REAL(ns, dp)
                         END IF
                      ELSE
-                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :))
+                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :), &
+                                                    laplacian=laplacian_shell)
                         CALL collocate_coefficients(grid, direction_coefficients, ir, side, delta_rho(:, jr, :), &
-                                                    delta_drho(1:3, :, jr, :), include_core=.FALSE.)
+                                                    delta_drho(1:3, :, jr, :), include_core=.FALSE., &
+                                                    laplacian=delta_laplacian_shell)
                      END IF
                      drho(4, :, jr, :) = SQRT(SUM(drho(1:3, :, jr, :)**2, DIM=1))
                      delta_drho(4, :, jr, :) = SQRT(SUM(delta_drho(1:3, :, jr, :)**2, DIM=1))
                      weights(:, jr) = grid%wr(ir)*grid%wa
                   END IF
                END IF
-               CALL fill_rho_set(base, lsd, ns, needs, rho, drho, tau, na, jr)
-               CALL fill_rho_set(delta, lsd, ns, needs, delta_rho, delta_drho, delta_tau, na, jr)
+               CALL fill_rho_set(base, lsd, ns, needs, rho, drho, tau, na, jr, laplacian)
+               CALL fill_rho_set(delta, lsd, ns, needs, delta_rho, delta_drho, delta_tau, na, jr, delta_laplacian)
             END DO
             vn = 0.0_dp; vg = 0.0_dp; vt = 0.0_dp
-            CALL xc_2nd_deriv_of_r(base, delta, xc_section, derivatives, weights, vn, vg, vt)
-            CALL accumulate_xc_shells(grid, first, side, vn, vg, vt, use_tau, coefficient_response)
+            CALL xc_2nd_deriv_of_r(base, delta, xc_section, derivatives, weights, vn, vg, vt, vlaplacian=vlaplacian)
+            CALL accumulate_xc_shells(grid, first, side, vn, vg, vt, use_tau, coefficient_response, vlaplacian)
          END DO
       END DO
       IF (PRESENT(comm)) THEN

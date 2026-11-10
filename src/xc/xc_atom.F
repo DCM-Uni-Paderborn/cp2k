@@ -435,9 +435,10 @@ CONTAINS
 !> \param vtau ...
 !> \param do_triplet ...
 !> \param do_sf ...
+!> \param vlaplacian Optional weighted response conjugate to the spin density Laplacians.
 ! **************************************************************************************************
    SUBROUTINE xc_2nd_deriv_of_r(rho_set, rho1_set, xc_section, &
-                                deriv_set, w, vxc, vxg, vtau, do_triplet, do_sf)
+                                deriv_set, w, vxc, vxg, vtau, do_triplet, do_sf, vlaplacian)
 
 ! As input of this routine one gets rho and drho on a one dimensional grid.
 ! The grid is the angular grid corresponding to a given point ir on the radial grid.
@@ -455,6 +456,7 @@ CONTAINS
       REAL(dp), CONTIGUOUS, DIMENSION(:, :, :), &
          OPTIONAL, POINTER                               :: vtau
       LOGICAL, INTENT(IN), OPTIONAL                      :: do_triplet, do_sf
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: vlaplacian(:, :, :)
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'xc_2nd_deriv_of_r'
 
@@ -526,7 +528,7 @@ CONTAINS
 
       CALL xc_calc_2nd_deriv_analytical(vxc_pw, vxc_tau_pw, deriv_set, rho_set, rho1_set, pw_pool, &
                                         xc_section, gapw=.TRUE., vxg=vxg, &
-                                        tddfpt_fac=my_fac_triplet, spinflip=do_sf)
+                                        tddfpt_fac=my_fac_triplet, spinflip=do_sf, vlaplacian=vlaplacian)
 
       IF (ALLOCATED(field_response%potentials)) THEN
          CPASSERT(.NOT. my_do_sf .AND. my_fac_triplet == 1.0_dp)

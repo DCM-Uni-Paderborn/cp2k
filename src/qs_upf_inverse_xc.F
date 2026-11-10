@@ -352,12 +352,15 @@ CONTAINS
 !> \param paw_reconstruction ...
 !> \param orbital_factors Optional certified original factors of the unperturbed density.
 !> \param orbital_direction Matching original coefficient and occupation responses.
+!> \param background_laplacian Base interpolated density Laplacian.
+!> \param background_laplacian_direction Its signed density variation.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
                                                state, background_density, background_gradient, background_tau, &
                                                background_density_direction, background_gradient_direction, &
                                                background_tau_direction, xc_section, comm, response, kinetic, &
-                                               atom_grid, paw_reconstruction, orbital_factors, orbital_direction)
+                                               atom_grid, paw_reconstruction, orbital_factors, orbital_direction, &
+                                               background_laplacian, background_laplacian_direction)
       TYPE(qs_upf_inverse_frame_ref_type), INTENT(IN)    :: frames(:)
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: matrices_direction(:, :, :, :)
@@ -377,6 +380,8 @@ CONTAINS
       TYPE(qs_upf_inverse_orbitals_type), INTENT(IN), &
          OPTIONAL                                        :: orbital_factors, orbital_direction
 
+      REAL(dp), INTENT(IN), OPTIONAL                     :: background_laplacian(:, :), background_laplacian_direction(:, :)
+
       COMPLEX(dp), ALLOCATABLE                           :: cached_gradient(:, :, :, :), &
                                                             cached_soft(:, :, :)
       INTEGER                                            :: nao, nk, np, ns
@@ -391,6 +396,7 @@ CONTAINS
       CPASSERT(state%kinetic .EQV. PRESENT(kinetic))
       IF (model) THEN
          CPASSERT(state%kinetic)
+         CPASSERT(.NOT. ALLOCATED(state%laplacian))
       ELSE
          semilocal_available = qs_upf_inverse_xc_semilocal_kernel_available(xc_section, SIZE(state%density, 2) == 2)
          CPASSERT(semilocal_available)
@@ -429,7 +435,8 @@ CONTAINS
       IF (geometry_fields) THEN
          CPASSERT(ALL(SHAPE(atom_grid%inverse_values) == [np, nao, nk]))
          CPASSERT(ALL(SHAPE(atom_grid%inverse_gradients) == [np, nao, 3, nk]))
-      ELSE IF (np > 0 .AND. 64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes) THEN
+      ELSE IF (.NOT. ALLOCATED(state%laplacian) .AND. np > 0 .AND. &
+               64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes) THEN
          ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
       END IF
       response%kinetic = state%kinetic
@@ -445,12 +452,18 @@ CONTAINS
       response%density = 0.0_dp
       response%density_gradient = 0.0_dp
       response%tau = 0.0_dp
+      IF (ALLOCATED(state%laplacian)) THEN
+         CPASSERT(PRESENT(background_laplacian))
+         CPASSERT(PRESENT(background_laplacian_direction))
+         ALLOCATE (response%laplacian(np, ns), SOURCE=0.0_dp)
+         ALLOCATE (response%vlaplacian(np, ns), response%background_vlaplacian(np, ns))
+      END IF
       valid = PRESENT(orbital_factors) .EQV. PRESENT(orbital_direction)
       CPASSERT(valid)
       CALL collocate_xc_fields(frames, augmentation, matrices_direction, kweights, points, response%density, &
                                response%density_gradient, response%tau, kinetic, paw_reconstruction, atom_grid, &
                                cached_soft, cached_gradient, orbital_factors=orbital_factors, &
-                               orbital_direction=orbital_direction)
+                               orbital_direction=orbital_direction, density_laplacian=response%laplacian)
       IF (ALLOCATED(state%background_weights)) THEN
          ALLOCATE (fields%background_weights, SOURCE=state%background_weights)
       END IF
@@ -469,19 +482,25 @@ CONTAINS
                                       background_tau_direction=background_tau_direction)
       ELSE
          CALL qs_upf_inverse_xc_field_kernel(xc_section, state%density, state%density_gradient, fields%tau, &
-                    response%density, response%density_gradient, response%tau, response%vdensity, response%vgradient, response%vtau)
+                    response%density, response%density_gradient, response%tau, &
+                    response%vdensity, response%vgradient, response%vtau, &
+                    state%laplacian, response%laplacian, response%vlaplacian)
          CALL qs_upf_inverse_xc_field_kernel(xc_section, background_density, background_gradient, background_tau, &
                                             background_density_direction, background_gradient_direction, background_tau_direction, &
-                                             response%background_vdensity, response%background_vgradient, response%background_vtau)
+                                             response%background_vdensity, response%background_vgradient, &
+                                             response%background_vtau, &
+                                             background_laplacian, background_laplacian_direction, &
+                                             response%background_vlaplacian)
          response%background_vdensity = -response%background_vdensity
          response%background_vgradient = -response%background_vgradient
          response%background_vtau = -response%background_vtau
+         IF (ALLOCATED(response%laplacian)) response%background_vlaplacian = -response%background_vlaplacian
       END IF
       ALLOCATE (integration_weights(np), SOURCE=1.0_dp)
       IF (.NOT. response%weighted_adjoint) integration_weights(:) = weights
       CALL integrate_xc_fields(frames, augmentation, points, integration_weights, response%vdensity, &
                                response%vgradient, response%vtau, comm, response%operators, kinetic, paw_reconstruction, &
-                               atom_grid, cached_soft, cached_gradient)
+                               atom_grid, cached_soft, cached_gradient, response%vlaplacian)
    END SUBROUTINE qs_upf_inverse_xc_model_response
 
 ! **************************************************************************************************
@@ -1290,7 +1309,7 @@ CONTAINS
 !> \brief Check whether all active semilocal components supply independent-field second derivatives.
 !> \param xc_section Original complete XC section.
 !> \param lsd Original physical spin convention.
-!> \return True for supported pointwise density, gradient and independent-tau kernels.
+!> \return True when every active component supplies a semilocal Hessian.
 ! **************************************************************************************************
    FUNCTION qs_upf_inverse_xc_semilocal_kernel_available(xc_section, lsd) RESULT(available)
       TYPE(section_vals_type), POINTER                   :: xc_section
@@ -1300,14 +1319,11 @@ CONTAINS
       INTEGER                                            :: i, max_deriv
       LOGICAL                                            :: active
       TYPE(section_vals_type), POINTER                   :: component, functional
-      TYPE(xc_rho_cflags_type)                           :: needs
 
       available = .FALSE.
       IF (xc_section_uses_native_skala_evaluator(xc_section)) RETURN
       functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
       IF (.NOT. ASSOCIATED(functional)) RETURN
-      needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
-      IF (needs%laplace_rho .OR. needs%laplace_rho_spin) RETURN
       i = 0
       DO
          i = i + 1
@@ -1337,20 +1353,27 @@ CONTAINS
 !> \param vdensity Density-covector response.
 !> \param vgradient Cartesian-gradient-covector response.
 !> \param vkinetic Kinetic-density-covector response.
+!> \param laplacian Density Laplacian on the same points as density.
+!> \param laplacian_direction Signed direction of the density Laplacian.
+!> \param vlaplacian Laplacian-covector response.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_xc_field_kernel(xc_section, density, gradient, kinetic, density_direction, &
-                                             gradient_direction, kinetic_direction, vdensity, vgradient, vkinetic)
+                                             gradient_direction, kinetic_direction, vdensity, vgradient, vkinetic, &
+                                             laplacian, laplacian_direction, vlaplacian)
       TYPE(section_vals_type), POINTER                   :: xc_section
       REAL(dp), INTENT(IN) :: density(:, :), gradient(:, :, :), kinetic(:, :), &
          density_direction(:, :), gradient_direction(:, :, :), kinetic_direction(:, :)
       REAL(dp), INTENT(OUT)                              :: vdensity(:, :), vgradient(:, :, :), &
                                                             vkinetic(:, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: laplacian(:, :), laplacian_direction(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: vlaplacian(:, :)
 
       INTEGER                                            :: block, bounds(2, 3), hi, lo, n, np, ns, &
                                                             spin
-      LOGICAL                                            :: available, lsd
+      LOGICAL                                            :: available, lsd, use_laplacian
       REAL(dp), ALLOCATABLE :: delta_drho(:, :, :, :), delta_rho(:, :, :), delta_tau(:, :, :), &
-         drho(:, :, :, :), rho(:, :, :), tau(:, :, :), weights(:, :)
+         drho(:, :, :, :), rho(:, :, :), tau(:, :, :), weights(:, :), &
+         delta_laplace(:, :, :), laplace(:, :, :), v_laplace(:, :, :)
       REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
       REAL(dp), POINTER                                  :: vg(:, :, :, :)
       TYPE(section_vals_type), POINTER                   :: functional
@@ -1375,15 +1398,25 @@ CONTAINS
       vdensity = 0.0_dp
       vgradient = 0.0_dp
       vkinetic = 0.0_dp
-      IF (np == 0) RETURN
       functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
       needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
+      use_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
+      IF (PRESENT(vlaplacian)) vlaplacian = 0.0_dp
+      IF (use_laplacian) THEN
+         CPASSERT(PRESENT(laplacian) .AND. PRESENT(laplacian_direction))
+         CPASSERT(PRESENT(vlaplacian))
+         CPASSERT(ALL(SHAPE(laplacian) == [np, ns]))
+         CPASSERT(ALL(SHAPE(laplacian_direction) == [np, ns]))
+         CPASSERT(ALL(SHAPE(vlaplacian) == [np, ns]))
+      END IF
+      IF (np == 0) RETURN
       block = MIN(np, 2048)
       bounds = 1
       bounds(2, 1) = block
       ALLOCATE (rho(block, 1, ns), drho(4, block, 1, ns), tau(block, 1, ns), &
                 delta_rho(block, 1, ns), delta_drho(4, block, 1, ns), delta_tau(block, 1, ns), &
                 weights(block, 1), vn(block, 1, ns), vt(block, 1, ns), vg(3, block, 1, ns))
+      IF (use_laplacian) ALLOCATE (laplace(block, 1, ns), delta_laplace(block, 1, ns), v_laplace(block, 1, ns))
       CALL xc_rho_set_create(base, bounds, rho_cutoff=section_get_rval(xc_section, 'DENSITY_CUTOFF'), &
                  drho_cutoff=section_get_rval(xc_section, 'GRADIENT_CUTOFF'), tau_cutoff=section_get_rval(xc_section, 'TAU_CUTOFF'))
       CALL xc_rho_set_atom_update(base, needs, ns, bounds)
@@ -1412,14 +1445,21 @@ CONTAINS
          drho(4, :, 1, :) = SQRT(SUM(drho(1:3, :, 1, :)**2, DIM=1))
          delta_drho(4, :, 1, :) = SQRT(SUM(delta_drho(1:3, :, 1, :)**2, DIM=1))
          weights(:n, 1) = 1.0_dp
-         CALL fill_rho_set(base, lsd, ns, needs, rho, drho, tau, block, 1)
-         CALL fill_rho_set(delta, lsd, ns, needs, delta_rho, delta_drho, delta_tau, block, 1)
+         IF (use_laplacian) THEN
+            laplace = 0.0_dp
+            delta_laplace = 0.0_dp
+            laplace(:n, 1, :) = laplacian(lo:hi, :)
+            delta_laplace(:n, 1, :) = laplacian_direction(lo:hi, :)
+         END IF
+         CALL fill_rho_set(base, lsd, ns, needs, rho, drho, tau, block, 1, laplace)
+         CALL fill_rho_set(delta, lsd, ns, needs, delta_rho, delta_drho, delta_tau, block, 1, delta_laplace)
          vn = 0.0_dp
          vg = 0.0_dp
          vt = 0.0_dp
-         CALL xc_2nd_deriv_of_r(base, delta, xc_section, derivatives, weights, vn, vg, vt)
+         CALL xc_2nd_deriv_of_r(base, delta, xc_section, derivatives, weights, vn, vg, vt, vlaplacian=v_laplace)
          vdensity(lo:hi, :) = vn(:n, 1, :)
          vkinetic(lo:hi, :) = vt(:n, 1, :)
+         IF (use_laplacian) vlaplacian(lo:hi, :) = v_laplace(:n, 1, :)
          DO spin = 1, ns
             vgradient(lo:hi, :, spin) = TRANSPOSE(vg(:, :n, 1, spin))
          END DO
@@ -1778,7 +1818,7 @@ CONTAINS
       INTEGER                                            :: axis, np, ns, spin, stride
       REAL(dp), ALLOCATABLE :: background(:, :), background_direction(:, :), gradient(:, :, :), &
          gradient_direction(:, :, :), tau(:, :), tau_direction(:, :), values(:, :), &
-         values_direction(:, :)
+         values_direction(:, :), laplacian(:, :), laplacian_direction(:, :)
 
       CPASSERT(state%kinetic .EQV. PRESENT(kinetic))
       CPASSERT(ALLOCATED(state%density))
@@ -1787,10 +1827,12 @@ CONTAINS
       CPASSERT(ns == 1 .OR. ns == 2)
       stride = 4
       IF (state%kinetic) stride = 5
+      IF (ALLOCATED(state%laplacian)) stride = stride + 1
       CPASSERT(SIZE(fields, 4) == stride*ns)
       CPASSERT(ALL(SHAPE(fields_direction) == SHAPE(fields)))
       ALLOCATE (values(np, stride*ns), values_direction(np, stride*ns), background(np, ns), background_direction(np, ns), &
                 gradient(np, 3, ns), gradient_direction(np, 3, ns), tau(np, ns), tau_direction(np, ns))
+      IF (ALLOCATED(state%laplacian)) ALLOCATE (laplacian(np, ns), laplacian_direction(np, ns))
       CALL interpolate_native_grid_batch(fields, grid, cell, points, values, wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
       CALL interpolate_native_grid_batch(fields_direction, grid, cell, points, values_direction, &
                                          wrap_auxiliary_cell=.TRUE., continuous=.TRUE.)
@@ -1803,14 +1845,18 @@ CONTAINS
             gradient_direction(:, axis, spin) = values_direction(:, stride*(spin - 1) + 1 + axis)
          END DO
          IF (state%kinetic) THEN
-            tau(:, spin) = values(:, stride*spin)
-            tau_direction(:, spin) = values_direction(:, stride*spin)
+            tau(:, spin) = values(:, stride*(spin - 1) + 5)
+            tau_direction(:, spin) = values_direction(:, stride*(spin - 1) + 5)
+         END IF
+         IF (ALLOCATED(state%laplacian)) THEN
+            laplacian(:, spin) = values(:, stride*spin)
+            laplacian_direction(:, spin) = values_direction(:, stride*spin)
          END IF
       END DO
       CALL qs_upf_inverse_xc_model_response(frames, augmentation, matrices_direction, kweights, points, weights, &
                                             state, background, gradient, tau, background_direction, gradient_direction, &
                                             tau_direction, xc_section, comm, response, kinetic, atom_grid, paw_reconstruction, &
-                                            orbital_factors, orbital_direction)
+                                            orbital_factors, orbital_direction, laplacian, laplacian_direction)
       CALL xc_grid_adjoint(response, points, weights, fields, grid, cell, comm, grid_adjoint)
    END SUBROUTINE qs_upf_inverse_xc_grid_model_response
 
@@ -2281,6 +2327,8 @@ CONTAINS
 
       INTEGER                                            :: axis, dims(3), np, ns, orders(3), &
                                                             smooth_id, spin
+      LOGICAL                                            :: use_laplacian
+      REAL(dp), ALLOCATABLE                              :: dlaplace(:, :), laplace(:, :), vlaplace(:, :)
       REAL(dp), ALLOCATABLE                              :: dgrad(:, :, :), drho(:, :), dtau(:, :), &
                                                             grad(:, :, :), rho(:, :), tau(:, :), &
                                                             vg(:, :, :), vn(:, :), vt(:, :), w(:)
@@ -2289,14 +2337,18 @@ CONTAINS
       TYPE(pw_c1d_gs_type), TARGET                       :: smoothed_direction_g, smoothed_g
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: derivative_r, gradient_r, work_r
+      TYPE(xc_rho_cflags_type)                           :: needs
 
       smooth_id = section_get_ival(xc, "XC_GRID%XC_SMOOTH_RHO")
       grid => density(1)%pw_grid
       np = SIZE(density(1)%array)
       ns = SIZE(density)
+      needs = xc_functionals_get_needs(section_vals_get_subs_vals(xc, 'XC_FUNCTIONAL'), ns == 2, calc_potential=.TRUE.)
+      use_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
       dims = SHAPE(density(1)%array)
       ALLOCATE (rho(np, ns), grad(np, 3, ns), tau(np, ns), drho(np, ns), dgrad(np, 3, ns), dtau(np, ns), &
                 vn(np, ns), vg(np, 3, ns), vt(np, ns), w(np))
+      IF (use_laplacian) ALLOCATE (laplace(np, ns), dlaplace(np, ns), vlaplace(np, ns))
       w = 1.0_dp
       IF (ASSOCIATED(weights)) THEN
          CPASSERT(pw_grid_compare(weights%pw_grid, grid))
@@ -2342,8 +2394,18 @@ CONTAINS
             CALL pw_transfer(derivative_g, gradient_r)
             dgrad(:, axis, spin) = RESHAPE(gradient_r%array, [np])
          END DO
+         IF (use_laplacian) THEN
+            derivative_g%array = rho_g%array
+            CALL pw_laplace(derivative_g)
+            CALL pw_transfer(derivative_g, gradient_r)
+            laplace(:, spin) = RESHAPE(gradient_r%array, [np])
+            derivative_g%array = drho_g%array
+            CALL pw_laplace(derivative_g)
+            CALL pw_transfer(derivative_g, gradient_r)
+            dlaplace(:, spin) = RESHAPE(gradient_r%array, [np])
+         END IF
       END DO
-      CALL qs_upf_inverse_xc_field_kernel(xc, rho, grad, tau, drho, dgrad, dtau, vn, vg, vt)
+      CALL qs_upf_inverse_xc_field_kernel(xc, rho, grad, tau, drho, dgrad, dtau, vn, vg, vt, laplace, dlaplace, vlaplace)
       ALLOCATE (potential(ns), kinetic_potential(ns))
       DO spin = 1, ns
          CALL pool%create_pw(potential(spin))
@@ -2359,6 +2421,13 @@ CONTAINS
             CALL pw_transfer(derivative_g, derivative_r)
             potential(spin)%array = potential(spin)%array - derivative_r%array
          END DO
+         IF (use_laplacian) THEN
+            work_r%array = RESHAPE(w*vlaplace(:, spin), dims)
+            CALL pw_transfer(work_r, derivative_g)
+            CALL pw_laplace(derivative_g)
+            CALL pw_transfer(derivative_g, derivative_r)
+            potential(spin)%array = potential(spin)%array + derivative_r%array
+         END IF
          IF (smooth_id /= xc_rho_no_smooth) THEN
             ! The native density stencils are self-adjoint on the XC grid.
             CALL xc_pw_smooth(potential(spin), work_r, smooth_id)

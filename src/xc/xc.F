@@ -2150,7 +2150,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE xc_calc_2nd_deriv_analytical(v_xc, v_xc_tau, deriv_set, rho_set, rho1_set, &
                                            pw_pool, xc_section, gapw, vxg, tddfpt_fac, &
-                                           compute_virial, virial_xc, spinflip)
+                                           compute_virial, virial_xc, spinflip, vlaplacian)
 
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER             :: v_xc, v_xc_tau
       TYPE(xc_derivative_set_type)                       :: deriv_set
@@ -2165,6 +2165,7 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3, 3), INTENT(INOUT), &
          OPTIONAL                                        :: virial_xc
       LOGICAL, INTENT(in), OPTIONAL                      :: spinflip
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: vlaplacian(:, :, :)
 
       CHARACTER(len=*), PARAMETER :: routineN = 'xc_calc_2nd_deriv_analytical'
 
@@ -2263,8 +2264,11 @@ CONTAINS
          END DO
       END IF
 
-      IF (laplace_f .AND. my_gapw) THEN
-         CPABORT("Laplace-dependent functional not implemented with GAPW!")
+      IF (PRESENT(vlaplacian)) THEN
+         CPASSERT(my_gapw)
+         vlaplacian = 0.0_dp
+      ELSE IF (laplace_f .AND. my_gapw) THEN
+         CPABORT("Atomic XC response requires a density-Laplacian covector")
       END IF
 
       IF (my_compute_virial .AND. (gradient_f .OR. laplace_f)) CALL allocate_pw(virial_pw, pw_pool, bo)
@@ -2621,8 +2625,13 @@ CONTAINS
 
       IF (laplace_f) THEN
          DO ispin = 1, nspins
-            CALL xc_pw_laplace(v_laplace(ispin), pw_pool, xc_deriv_method_id)
-            CALL pw_axpy(v_laplace(ispin), v_xc(ispin))
+            IF (my_gapw) THEN
+               ! An atom-centered caller contracts this covector with its orbital-product Laplacians.
+               vlaplacian(:, :, ispin) = v_laplace(ispin)%array(:, :, 1)
+            ELSE
+               CALL xc_pw_laplace(v_laplace(ispin), pw_pool, xc_deriv_method_id)
+               CALL pw_axpy(v_laplace(ispin), v_xc(ispin))
+            END IF
          END DO
       END IF
 

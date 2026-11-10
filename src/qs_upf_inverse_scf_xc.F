@@ -887,7 +887,7 @@ CONTAINS
          OPTIONAL, TARGET                                :: context
 
       INTEGER                                            :: nao, nk, ns, selected, smooth_id, spin
-      LOGICAL                                            :: tangent, valid
+      LOGICAL                                            :: tangent, valid, with_laplacian
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), &
                                                             fields_direction(:, :, :, :)
       TYPE(cell_type), POINTER                           :: cell
@@ -953,10 +953,12 @@ CONTAINS
          CPASSERT(valid)
          orbital_factors => state%orbital_factors
       END IF
+      with_laplacian = ALLOCATED(state%xc%laplacian)
       IF (state%xc%kinetic) THEN
-         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction, smooth_id)
+         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, kinetic_direction, smooth_id, with_laplacian)
       ELSE
-         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, xc_smooth_id=smooth_id)
+         CALL qs_upf_inverse_xc_pw_fields(density_direction, fields_direction, xc_smooth_id=smooth_id, &
+                                          laplacian=with_laplacian)
       END IF
       CALL qs_upf_inverse_xc_grid_model_response(frames, augmentation, matrices_direction, state%xc_kweights, &
                                                  state%atom_grid%points, state%atom_grid%weights, state%xc, &
@@ -964,9 +966,10 @@ CONTAINS
                                                  comm, response, adjoint, state%kinetic_cache, state%atom_grid, &
                                                  state%paw_reconstruction, orbital_factors, orbital_direction)
       IF (state%xc%kinetic) THEN
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction, smooth_id)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, kinetic_potential_direction, smooth_id, &
+                                           with_laplacian)
       ELSE
-         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, xc_smooth_id=smooth_id)
+         CALL qs_upf_inverse_xc_pw_adjoint(adjoint, potential_direction, xc_smooth_id=smooth_id, laplacian=with_laplacian)
          DO spin = 1, ns
             kinetic_potential_direction(spin)%array = 0.0_dp
          END DO
