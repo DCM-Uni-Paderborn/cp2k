@@ -1033,10 +1033,13 @@ CONTAINS
 !> \param orbital_fields Include soft-orbital grid responses. False retains only augmentation and kinetic corrections.
 !> \param coefficients_response Optional owned coefficient response for this frame and geometry variation.
 !> \param include_atomic_kinetic Include the reconstruction kinetic response, unless contracted separately.
+!> \param vdensity Optional self-consistent scalar potential to integrate with the local potential.
+!> \param vgradient Gradient potentials, required with vdensity.
+!> \param vtau Kinetic-density potential, required with vdensity.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_scf_core_response(ks_env, frame, augmentation, grid, atom_response, cell_response, &
                                                reduced_k_response, core_response, metric_response, orbital_fields, &
-                                               coefficients_response, include_atomic_kinetic)
+                                               coefficients_response, include_atomic_kinetic, vdensity, vgradient, vtau)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
@@ -1050,6 +1053,7 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: orbital_fields
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL    :: coefficients_response(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: include_atomic_kinetic
+      TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: vdensity, vgradient(3), vtau
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_upf_inverse_scf_core_response'
 
@@ -1073,24 +1077,36 @@ CONTAINS
       CALL invmat(cell_inverse, info)
       CPASSERT(info == 0)
       strain = MATMUL(cell_response, cell_inverse)
+      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, upf_inverse=state)
+      CPASSERT(ASSOCIATED(state))
       CALL local_r%create(grid)
       CALL local_response%create(grid)
-      CALL unit_tau%create(grid)
       CALL zero%create(grid)
-      unit_tau%array = 1.0_dp
-      IF (ALLOCATED(frame%ao%atomic_cache)) unit_tau%array = 0.0_dp
       zero%array = 0.0_dp
       DO axis = 1, 3
          CALL zeros(axis)%create(grid)
          zeros(axis)%array = 0.0_dp
       END DO
       CALL local_potential(ks_env, grid, frame%ao%positions, local_r, local_response, atom_response, strain)
-      CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, local_r, zeros, unit_tau, &
-                                        atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
-                                        core_response, metric_response, frame%ao%dion, orbital_fields=orbital_fields, &
-                                        saved_coefficients_response=dw)
-      CALL get_ks_env(ks_env, qs_kind_set=kinds, particle_set=atoms, upf_inverse=state)
-      CPASSERT(ASSOCIATED(state))
+      IF (PRESENT(vdensity)) THEN
+         CPASSERT(PRESENT(vgradient) .AND. PRESENT(vtau))
+         ! The analytic kinetic matrix is separate. Only the XC tau potential acts on kinetic augmentation.
+         CPASSERT(ALLOCATED(frame%ao%atomic_cache))
+         local_r%array = local_r%array + vdensity%array
+         CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, local_r, vgradient, vtau, &
+                                           atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
+                                           core_response, metric_response, frame%ao%dion, kinetic=state%kinetic_cache, &
+                                           orbital_fields=orbital_fields, saved_coefficients_response=dw)
+      ELSE
+         CALL unit_tau%create(grid)
+         unit_tau%array = 1.0_dp
+         IF (ALLOCATED(frame%ao%atomic_cache)) unit_tau%array = 0.0_dp
+         CALL qs_upf_inverse_grid_response(frame, augmentation, frame%ao%radial_q, local_r, zeros, unit_tau, &
+                                           atom_response, cell_response, reduced_k_response, local_response, zeros, zero, &
+                                           core_response, metric_response, frame%ao%dion, orbital_fields=orbital_fields, &
+                                           saved_coefficients_response=dw)
+         CALL unit_tau%release()
+      END IF
       IF (ALLOCATED(frame%ao%atomic_cache) .AND. use_atomic_kinetic) THEN
          CALL qs_upf_inverse_atomic_operators(frame%ao, frame%ao%radial_q, atomic_t, atomic_m, dt, dm, &
                                               atom_response, cell_response, reduced_k_response, dw, kinds)
@@ -1110,7 +1126,6 @@ CONTAINS
       IF (PRESENT(coefficients_response)) CALL MOVE_ALLOC(dw, coefficients_response)
       CALL local_r%release()
       CALL local_response%release()
-      CALL unit_tau%release()
       CALL zero%release()
       DO axis = 1, 3
          CALL zeros(axis)%release()
@@ -1137,7 +1152,7 @@ CONTAINS
    SUBROUTINE qs_upf_inverse_scf_response(ks_env, vdensity, vgradient, vtau, atom_response, cell_response, &
                                           reduced_k_response, response, metric_response, coefficients_response)
       TYPE(qs_ks_env_type), INTENT(INOUT), TARGET        :: ks_env
-      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity(:), vgradient(:, :), vtau(:)
+      TYPE(pw_r3d_rs_type), INTENT(IN), TARGET           :: vdensity(:), vgradient(:, :), vtau(:)
       REAL(dp), INTENT(IN)                               :: atom_response(:, :), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(:, :)
@@ -1151,6 +1166,7 @@ CONTAINS
          energy_weighted(:, :, :), matrix(:, :), metric(:, :, :), metric_part(:, :)
       INTEGER                                            :: active_potential, axis, component, ik, &
                                                             info, nk, nspin, timing_handle
+      LOGICAL                                            :: joint_grid
       REAL(dp) :: cell_inverse(3, 3), foreign_energy, foreign_response, gaussian_virial(3, 3), &
          native_metric, native_response, paw_response, strain(3, 3), weight
       REAL(dp), ALLOCATABLE                              :: gaussian_gradients(:, :), &
@@ -1158,6 +1174,7 @@ CONTAINS
       TYPE(dbcsr_p_type), POINTER                        :: density_gamma(:, :), energy_gamma(:)
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: zero, zeros(3)
+      TYPE(pw_r3d_rs_type), POINTER                      :: joint_density, joint_gradient(:), joint_tau
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_ks_env_type), POINTER                      :: native_ks
       TYPE(qs_rho_type), POINTER                         :: rho
@@ -1172,6 +1189,15 @@ CONTAINS
       CPASSERT(ALL(SHAPE(vgradient) == [3, nspin]) .AND. SIZE(vtau) == nspin)
       grid => vdensity(1)%pw_grid
       CPASSERT(ASSOCIATED(grid))
+      ! Both potentials use the same soft fields and inverse coefficient response for one spin.
+      joint_grid = nspin == 1 .AND. ALLOCATED(state%gaussian_kinetic) .AND. &
+                   .NOT. (state%native_gaussian .OR. ASSOCIATED(state%coulomb))
+      NULLIFY (joint_density, joint_gradient, joint_tau)
+      IF (joint_grid) THEN
+         joint_density => vdensity(1)
+         joint_gradient => vgradient(:, 1)
+         joint_tau => vtau(1)
+      END IF
       CALL zero%create(grid)
       zero%array = 0.0_dp
       DO axis = 1, 3
@@ -1204,11 +1230,13 @@ CONTAINS
             CALL qs_upf_inverse_scf_core_response(ks_env, state%bloch%frames(ik), state%bloch%augmentation, grid, &
                                                   atom_response, cell_response, reduced_k_response(:, ik), matrix, metric_part, &
                                                   orbital_fields=.NOT. state%native_gaussian, coefficients_response=dw, &
-                                                  include_atomic_kinetic=.FALSE.)
+                                                  include_atomic_kinetic=.FALSE., vdensity=joint_density, &
+                                                  vgradient=joint_gradient, vtau=joint_tau)
          ELSE
             CALL qs_upf_inverse_scf_core_response(ks_env, state%frame, state%augmentation, grid, atom_response, &
                                                   cell_response, reduced_k_response(:, ik), matrix, metric_part, &
-                                                  orbital_fields=.NOT. state%native_gaussian, coefficients_response=dw)
+                                                  orbital_fields=.NOT. state%native_gaussian, coefficients_response=dw, &
+                                                  vdensity=joint_density, vgradient=joint_gradient, vtau=joint_tau)
          END IF
          IF (ik == 1) ALLOCATE (core(SIZE(matrix, 1), SIZE(matrix, 2), nk), metric(SIZE(matrix, 1), SIZE(matrix, 2), nk))
          IF (ik == 1) ALLOCATE (dw_all(SIZE(dw, 1), SIZE(dw, 2), nk))
@@ -1245,15 +1273,18 @@ CONTAINS
          ALLOCATE (density(SIZE(core, 1), SIZE(core, 2), 1), energy_weighted(SIZE(core, 1), SIZE(core, 2), 1))
       END IF
       DO axis = 1, nspin
-         active_potential = MERGE(1, 0, ANY(vdensity(axis)%array /= 0.0_dp) .OR. ANY(vtau(axis)%array /= 0.0_dp))
-         DO component = 1, 3
-            IF (ANY(vgradient(component, axis)%array /= 0.0_dp)) active_potential = 1
-         END DO
-         ! Empty or zero local slabs must follow the same collective response path as other ranks.
-         IF (ASSOCIATED(state%bloch%kpoints)) THEN
-            CALL state%bloch%frames(1)%ao%point_comm%max(active_potential)
-         ELSE
-            CALL state%frame%ao%point_comm%max(active_potential)
+         active_potential = 0
+         IF (.NOT. joint_grid) THEN
+            active_potential = MERGE(1, 0, ANY(vdensity(axis)%array /= 0.0_dp) .OR. ANY(vtau(axis)%array /= 0.0_dp))
+            DO component = 1, 3
+               IF (ANY(vgradient(component, axis)%array /= 0.0_dp)) active_potential = 1
+            END DO
+            ! Empty or zero local slabs must follow the same collective response path as other ranks.
+            IF (ASSOCIATED(state%bloch%kpoints)) THEN
+               CALL state%bloch%frames(1)%ao%point_comm%max(active_potential)
+            ELSE
+               CALL state%frame%ao%point_comm%max(active_potential)
+            END IF
          END IF
          IF (ASSOCIATED(state%bloch%kpoints)) THEN
             CALL qs_upf_inverse_kpoints_density(state%bloch, axis, density)
