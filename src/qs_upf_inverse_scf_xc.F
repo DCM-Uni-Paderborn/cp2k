@@ -976,8 +976,8 @@ CONTAINS
 
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_coefficients(:, :, :)
       COMPLEX(dp), POINTER                               :: coefficients(:, :, :)
-      INTEGER                                            :: axis, ik, nao, nk, np, nproj, ns, other, &
-                                                            stride, timing_handle
+      INTEGER                                            :: axis, ik, nao, nk, np, nproj, ns, offset, &
+                                                            other, spin, stride, timing_handle
       REAL(dp)                                           :: strain(3, 3)
       REAL(dp), ALLOCATABLE :: background_weights(:), core(:, :), core_gradient(:, :, :), &
          core_tau(:, :), defining_points(:, :), defining_weights(:), fields(:, :, :, :), &
@@ -1027,16 +1027,22 @@ CONTAINS
             DEALLOCATE (defining_points, defining_weights)
          END DO
       END IF
-      ALLOCATE (fields, MOLD=state%xc_fields)
-      fields = 0.0_dp
-      DO ik = 1, ns
-         DO axis = 1, 3
-            DO other = 1, 3
-               fields(:, :, :, stride*(ik - 1) + 1 + axis) = fields(:, :, :, stride*(ik - 1) + 1 + axis) - &
-                                                           strain(other, axis)*state%xc_fields(:, :, :, stride*(ik - 1) + 1 + other)
+      ! With fixed grid indices, only strain changes the Cartesian gradient components.
+      ! Atomic displacements still differentiate the interpolation point positions.
+      IF (ANY(strain /= 0.0_dp)) THEN
+         ALLOCATE (fields, MOLD=state%xc_fields)
+         fields = 0.0_dp
+         DO spin = 1, ns
+            offset = stride*(spin - 1) + 1
+            DO axis = 1, 3
+               DO other = 1, 3
+                  IF (strain(other, axis) == 0.0_dp) CYCLE
+                  fields(:, :, :, offset + axis) = fields(:, :, :, offset + axis) - &
+                                                  strain(other, axis)*state%xc_fields(:, :, :, offset + other)
+               END DO
             END DO
          END DO
-      END DO
+      END IF
       CALL core_fields(ks_env, state, core, core_gradient, points, atom_response, cell_response, core_tau)
       CALL qs_upf_inverse_xc_grid_response(frames, augmentation, state%xc_matrices, state%xc_kweights, &
                                            state%atom_grid%points, state%atom_grid%weights, state%xc, state%xc_fields, &

@@ -815,7 +815,7 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Joint source-field, point and PW-lattice response of descriptor interpolation.
 !> \param fields ...
-!> \param fields_response Source descriptor response at fixed native grid indices.
+!> \param fields_response Source descriptor response at fixed native grid indices, absent if zero.
 !> \param pw_grid ...
 !> \param cell ...
 !> \param points ...
@@ -827,8 +827,8 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE native_grid_batch_response(fields, fields_response, pw_grid, cell, points, &
                                          point_response, lattice_response, response, wrap_auxiliary_cell, continuous)
-      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :), &
-                                                            fields_response(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: fields_response(:, :, :, :)
       TYPE(pw_grid_type), INTENT(IN), POINTER            :: pw_grid
       TYPE(cell_type), INTENT(IN), POINTER               :: cell
       REAL(dp), INTENT(IN)                               :: points(:, :), point_response(:, :), &
@@ -842,9 +842,14 @@ CONTAINS
          relative_response(3), spacing_response(3, 3)
       TYPE(native_grid_batch_stencil_type)               :: stencil
 
-      CPASSERT(ALL(SHAPE(fields_response) == SHAPE(fields)))
       CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
-      CALL interpolate_native_grid_batch(fields_response, pw_grid, cell, points, response, wrap_auxiliary_cell, continuous)
+      IF (PRESENT(fields_response)) THEN
+         CPASSERT(ALL(SHAPE(fields_response) == SHAPE(fields)))
+         CALL interpolate_native_grid_batch(fields_response, pw_grid, cell, points, response, wrap_auxiliary_cell, continuous)
+      ELSE
+         CPASSERT(ALL(SHAPE(response) == [SIZE(points, 2), SIZE(fields, 4)]))
+         response = 0.0_dp
+      END IF
       DO axis = 1, 3
          spacing_response(:, axis) = lattice_response(:, axis)/REAL(pw_grid%npts(axis), dp)
       END DO

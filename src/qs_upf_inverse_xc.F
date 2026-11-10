@@ -1797,7 +1797,7 @@ CONTAINS
 !> \param weights ...
 !> \param state ...
 !> \param fields ...
-!> \param fields_response Native source descriptors at fixed grid indices, including spectral/core response.
+!> \param fields_response Native source descriptor response at fixed grid indices, absent if zero.
 !> \param grid ...
 !> \param cell ...
 !> \param point_response ...
@@ -1825,8 +1825,8 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: matrices(:, :, :, :)
       REAL(dp), INTENT(IN)                               :: kweights(:), points(:, :), weights(:)
       TYPE(qs_upf_inverse_xc_type), INTENT(IN)           :: state
-      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :), &
-                                                            fields_response(:, :, :, :)
+      REAL(dp), INTENT(IN)                               :: fields(:, :, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: fields_response(:, :, :, :)
       TYPE(pw_grid_type), INTENT(IN), POINTER            :: grid
       TYPE(cell_type), INTENT(IN), POINTER               :: cell
       REAL(dp), INTENT(IN) :: point_response(:, :), weights_response(:), atom_response(:, :), &
