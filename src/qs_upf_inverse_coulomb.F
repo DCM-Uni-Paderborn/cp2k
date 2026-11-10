@@ -1532,10 +1532,12 @@ CONTAINS
 !> \param pair_geometry_response Optional residual-kernel contraction captured at this accepted density.
 !> \param source_forces Optional smooth-source forces prepared with the pair geometry at this density.
 !> \param source_virial Corresponding smooth-source virial. Both arguments must be supplied together.
+!> \param metric_matrix Optional energy-weighted densities in the same AO and k ordering.
+!> \param metric_response One-center charge-metric derivative at metric_matrix, before the Pulay sign.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_coulomb_response(qs_env, state, map, matrix, atom_response, cell_response, &
                                               response, charge_response, coefficients_response, pair_geometry_response, &
-                                              source_forces, source_virial)
+                                              source_forces, source_virial, metric_matrix, metric_response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
@@ -1546,6 +1548,8 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: coefficients_response(:, :, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response, source_forces(:, :), &
                                                             source_virial(3, 3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: metric_matrix(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: metric_response
 
       COMPLEX(dp), ALLOCATABLE                           :: adjoint(:), background(:), &
                                                             background_response(:)
@@ -1591,7 +1595,7 @@ CONTAINS
          CALL unit%release()
       END IF
       CALL center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response, &
-                                   coefficients_response)
+                                   coefficients_response, metric_matrix, metric_response)
       IF (PRESENT(charge_response)) THEN
          DO a = 1, SIZE(centers_response)
             charge_response = charge_response + SQRT(fourpi)* &
@@ -1801,9 +1805,11 @@ CONTAINS
 !> \param cell_response Physical lattice derivative.
 !> \param centers_response New center layout with density and position responses.
 !> \param known_coefficients_response Optional defining-frame responses for the same variation and global k order.
+!> \param metric_matrix Optional second set of per-k matrices for the integrated one-center response.
+!> \param metric_response Optional integrated one-center response evaluated with metric_matrix.
 ! **************************************************************************************************
    SUBROUTINE center_density_response(qs_env, state, map, matrix, atom_response, cell_response, centers_response, &
-                                      known_coefficients_response)
+                                      known_coefficients_response, metric_matrix, metric_response)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(IN)      :: map
@@ -1812,19 +1818,27 @@ CONTAINS
       TYPE(upf_inverse_coulomb_center_type), &
          ALLOCATABLE, INTENT(OUT)                        :: centers_response(:)
       COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET :: known_coefficients_response(:, :, :)
+      COMPLEX(dp), INTENT(IN), OPTIONAL, TARGET          :: metric_matrix(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: metric_response
 
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_coefficients(:, :)
-      COMPLEX(dp), POINTER                               :: coefficients_response(:, :)
+      COMPLEX(dp), POINTER                               :: coefficients_response(:, :), metric_k(:, :)
       INTEGER                                            :: a, info, k, kind, nao, nk, nproj
       REAL(dp)                                           :: inverse_cell(3, 3), strain(3, 3), &
                                                             trace_strain
-      REAL(dp), ALLOCATABLE                              :: point_response(:, :), &
+      REAL(dp), ALLOCATABLE                              :: metric_radial(:, :), point_response(:, :), &
                                                             radial_response(:, :), &
                                                             weights_response(:)
       TYPE(qs_kind_type), POINTER                        :: kinds(:)
       TYPE(qs_upf_inverse_augmentation_type), POINTER    :: augmentation
       TYPE(qs_upf_inverse_type), POINTER                 :: frame
 
+      CPASSERT(PRESENT(metric_matrix) .EQV. PRESENT(metric_response))
+      NULLIFY (metric_k)
+      IF (PRESENT(metric_response)) THEN
+         CPASSERT(ALL(SHAPE(metric_matrix) == SHAPE(matrix)))
+         metric_response = 0.0_dp
+      END IF
       CALL get_qs_env(qs_env, qs_kind_set=kinds)
       inverse_cell = map%cell
       CALL invmat(inverse_cell, info)
@@ -1850,6 +1864,7 @@ CONTAINS
       END IF
       DO k = 1, SIZE(map%weights)
          CALL select_frame(state, k, frame, augmentation)
+         IF (PRESENT(metric_matrix)) metric_k => metric_matrix(:, :, k)
          IF (PRESENT(known_coefficients_response)) THEN
             coefficients_response => known_coefficients_response(:, :, k)
          ELSE
@@ -1864,15 +1879,22 @@ CONTAINS
          DO a = 1, SIZE(centers_response)
             kind = map%center_kinds(a)
             ALLOCATE (radial_response, MOLD=map%centers(a)%density)
+            IF (PRESENT(metric_response)) ALLOCATE (metric_radial(SIZE(radial_response, 1), 1))
             CALL qs_upf_inverse_density_gapw(frame, augmentation, map%inverse_centers(a), kinds(kind), &
                                              map%pairs(a), matrix(:, :, k), response=radial_response, &
                                              atom_response=atom_response, cell_response=cell_response, &
                                              reduced_k_response=[0.0_dp, 0.0_dp, 0.0_dp], &
-                                             coefficients_response=coefficients_response, atom_index=map%center_atoms(a))
+                                             coefficients_response=coefficients_response, atom_index=map%center_atoms(a), &
+                                             metric_matrix=metric_k, metric_response=metric_radial)
             centers_response(a)%density(:, :) = centers_response(a)%density + map%weights(k)*radial_response
+            IF (PRESENT(metric_response)) THEN
+               metric_response = metric_response + map%weights(k)*SUM(map%centers(a)%weights*metric_radial(:, 1))
+               DEALLOCATE (metric_radial)
+            END IF
             DEALLOCATE (radial_response)
          END DO
       END DO
+      IF (PRESENT(metric_response)) metric_response = SQRT(fourpi)*metric_response
    END SUBROUTINE center_density_response
 
 ! **************************************************************************************************

@@ -472,10 +472,12 @@ CONTAINS
 !> \param coefficients_response Complete dW from the original defining inverse quadrature.
 !> \param atom_index Native Gaussian center, required when center is zero and no inverse correction is present.
 !> \param cache Optional immutable point fields. Geometry responses bypass this cache.
+!> \param metric_matrix Optional energy-weighted AO density for the simultaneous normalization response.
+!> \param metric_response Radial monopole of the response contracted with metric_matrix.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_density_gapw(frame, augmentation, center, kind, pairs, matrix, radial, &
                                           response, atom_response, cell_response, reduced_k_response, &
-                                          coefficients_response, atom_index, cache)
+                                          coefficients_response, atom_index, cache, metric_matrix, metric_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       INTEGER, INTENT(IN)                                :: center
@@ -491,11 +493,13 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: atom_index
       TYPE(qs_upf_inverse_density_cache_type), &
          INTENT(IN), OPTIONAL                            :: cache
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: metric_matrix(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: metric_response(:, :)
 
       INTEGER                                            :: atom, n, nh, np
       LOGICAL                                            :: derive
       REAL(dp), ALLOCATABLE :: deh(:, :), des(:, :), dh(:, :), ds(:, :), dvalues(:), eh(:, :), &
-         es(:, :), hard(:, :), point_response(:, :), points(:, :), soft(:, :), values(:)
+         es(:, :), hard(:, :), metric_values(:), point_response(:, :), points(:, :), soft(:, :), values(:)
       TYPE(grid_atom_type), POINTER                      :: grid
       TYPE(harmonics_atom_type), POINTER                 :: harmonics
       TYPE(qs_upf_inverse_gapw_view_type), TARGET         :: view
@@ -510,6 +514,13 @@ CONTAINS
       CPASSERT(derive .EQV. PRESENT(cell_response))
       CPASSERT(derive .EQV. PRESENT(reduced_k_response))
       CPASSERT(derive .EQV. PRESENT(coefficients_response))
+      CPASSERT(PRESENT(metric_matrix) .EQV. PRESENT(metric_response))
+      IF (PRESENT(metric_response)) THEN
+         CPASSERT(derive)
+         CPASSERT(ALL(SHAPE(metric_matrix) == SHAPE(matrix)))
+         CPASSERT(ALL(SHAPE(metric_response) == [grid%nr, 1]))
+         ALLOCATE (metric_values(np), SOURCE=0.0_dp)
+      END IF
       IF (PRESENT(radial)) THEN
          CPASSERT(ALL(SHAPE(radial) == [grid%nr, nh]))
          ALLOCATE (hard(n, n), soft(n, n), eh(grid%nr, nh), es(grid%nr, nh), values(np))
@@ -535,9 +546,18 @@ CONTAINS
          IF (center > 0) THEN
             CALL qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, values, dvalues, &
                                                point_response, atom_response, cell_response, reduced_k_response, &
-                                               coefficients_response)
+                                               coefficients_response, metric_matrix=metric_matrix, &
+                                               metric_response=metric_values)
          END IF
          CALL qs_upf_inverse_density_radial(grid, harmonics, dvalues, response, deh, des)
+         IF (PRESENT(metric_response)) THEN
+            CALL qs_upf_inverse_gaussian_pairs_density(pairs, frame%reduced_k, metric_matrix, &
+                                                       hard_response=dh, soft_response=ds, atom_response=atom_response, &
+                                                       cell_response=cell_response, reduced_k_response=reduced_k_response)
+            CALL qs_upf_inverse_gaussian_radial(kind, dh, deh)
+            CALL qs_upf_inverse_gaussian_radial(kind, ds, des)
+            CALL qs_upf_inverse_density_radial(grid, harmonics, metric_values, metric_response, deh, des)
+         END IF
       ELSE
          CALL qs_upf_inverse_gaussian_pairs_density(pairs, frame%reduced_k, matrix, hard, soft)
          IF (center > 0) CALL qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, values, cache=cache)
@@ -703,10 +723,12 @@ CONTAINS
 !> \param reduced_k_response Reduced Bloch-vector response.
 !> \param coefficients_response Complete dW from the original defining inverse quadrature.
 !> \param cache Optional immutable point fields. Geometry responses bypass this cache.
+!> \param metric_matrix Optional second AO density on a grid moving rigidly with this center.
+!> \param metric_response Geometry response contracted with the second AO density.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_density_center(frame, augmentation, center, points, matrix, density, response, &
                                             point_response, atom_response, cell_response, reduced_k_response, &
-                                            coefficients_response, cache)
+                                            coefficients_response, cache, metric_matrix, metric_response)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       TYPE(qs_upf_inverse_augmentation_type), INTENT(IN) :: augmentation
       INTEGER, INTENT(IN)                                :: center
@@ -720,6 +742,8 @@ CONTAINS
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
       TYPE(qs_upf_inverse_density_cache_type), &
          INTENT(IN), OPTIONAL                            :: cache
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: metric_matrix(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: metric_response(:)
 
       COMPLEX(dp), ALLOCATABLE                           :: d(:, :), dd(:, :), de(:, :), e(:, :), &
                                                             projected(:, :), &
@@ -740,6 +764,13 @@ CONTAINS
       CPASSERT(derive .EQV. PRESENT(cell_response))
       CPASSERT(derive .EQV. PRESENT(reduced_k_response))
       CPASSERT(derive .EQV. PRESENT(coefficients_response))
+      CPASSERT(PRESENT(metric_matrix) .EQV. PRESENT(metric_response))
+      IF (PRESENT(metric_response)) THEN
+         CPASSERT(derive)
+         CPASSERT(ALL(SHAPE(metric_matrix) == SHAPE(matrix)))
+         CPASSERT(SIZE(metric_response) == np)
+         metric_response = 0.0_dp
+      END IF
       IF (PRESENT(density)) THEN
          CPASSERT(SIZE(density) == np)
          density = 0.0_dp
@@ -760,9 +791,8 @@ CONTAINS
             CALL center_fields(frame, center, points, d, e, dd=dd, de=de, &
                                point_response=point_response, atom_response=atom_response, cell_response=cell_response, &
                                reduced_k_response=reduced_k_response, coefficients_response=coefficients_response)
-            CALL upf_inverse_cross_density(dd, e, ao_density=matrix, density=response)
-            CALL upf_inverse_cross_density(d, de, ao_density=matrix, density=dq)
-            response = response + dq
+            CALL contract_fields(matrix, response)
+            IF (PRESENT(metric_response)) CALL contract_fields(metric_matrix, metric_response)
          ELSE
             CALL center_fields(frame, center, points, d, e, cache=cache)
          END IF
@@ -778,6 +808,9 @@ CONTAINS
       displacements(:, :) = points - SPREAD(frame%positions(:, atom), 2, np)
       moving_q = .FALSE.
       IF (derive) moving_q = ANY(point_response /= SPREAD(atom_response(:, atom), 2, np))
+      IF (PRESENT(metric_response)) THEN
+         CPASSERT(.NOT. moving_q)
+      END IF
       IF (PRESENT(density) .OR. moving_q) THEN
          ALLOCATE (projected(nproj, nproj))
          CALL upf_inverse_projector_density(frame%coefficients(first:last, :), matrix, projected)
@@ -790,14 +823,39 @@ CONTAINS
       END IF
       IF (derive) THEN
          ALLOCATE (projected_response(nproj, nproj))
+         CALL contract_projectors(matrix, response)
+         IF (PRESENT(metric_response)) CALL contract_projectors(metric_matrix, metric_response)
+      END IF
+
+   CONTAINS
+
+!> \brief Contract the shared orbital fields and their derivatives with one AO matrix.
+!> \param ao_density Hermitian density in the original Gaussian order.
+!> \param field_response Pointwise reconstruction response.
+      SUBROUTINE contract_fields(ao_density, field_response)
+         COMPLEX(dp), INTENT(IN)                         :: ao_density(:, :)
+         REAL(dp), INTENT(OUT)                           :: field_response(:)
+
+         CALL upf_inverse_cross_density(dd, e, ao_density=ao_density, density=field_response)
+         CALL upf_inverse_cross_density(d, de, ao_density=ao_density, density=dq)
+         field_response = field_response + dq
+      END SUBROUTINE contract_fields
+
+!> \brief Add the derivative of the projected density at fixed radial grid coordinates.
+!> \param ao_density Hermitian density in the original Gaussian order.
+!> \param field_response Accumulated pointwise charge response.
+      SUBROUTINE contract_projectors(ao_density, field_response)
+         COMPLEX(dp), INTENT(IN)                         :: ao_density(:, :)
+         REAL(dp), INTENT(INOUT)                         :: field_response(:)
+
          projected_response(:, :) = MATMUL(coefficients_response(first:last, :), &
-                                           MATMUL(matrix, CONJG(TRANSPOSE(frame%coefficients(first:last, :)))))
+                                           MATMUL(ao_density, CONJG(TRANSPOSE(frame%coefficients(first:last, :)))))
          projected_response(:, :) = projected_response + CONJG(TRANSPOSE(projected_response))
          q = 0.0_dp
          CALL uspp_augmentation_collocate_atom(augmentation%kinds(kind), displacements, &
                                                REAL(projected_response, dp), q)
-         response = response + q
-      END IF
+         field_response = field_response + q
+      END SUBROUTINE contract_projectors
    END SUBROUTINE qs_upf_inverse_density_center
 
 ! **************************************************************************************************
@@ -1070,7 +1128,7 @@ CONTAINS
 !> \param grid Borrowed native radial/angular quadrature, with complete replicated angular rows.
 !> \param harmonics Borrowed native real harmonics on that same angular quadrature.
 !> \param values Point density with angular rows fastest. No core or partition is added here.
-!> \param radial New real harmonic density coefficients, without the radial measure.
+!> \param radial Leading real harmonic density coefficients, without the radial measure.
 !> \param gaussian_hard Optional native Gaussian hard harmonic coefficients.
 !> \param gaussian_soft Matching native Gaussian soft harmonic coefficients.
 ! **************************************************************************************************
@@ -1081,7 +1139,7 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: radial(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: gaussian_hard(:, :), gaussian_soft(:, :)
 
-      INTEGER                                            :: first, ir, last, na, nh
+      INTEGER                                            :: first, ir, last, na, nh, nh_gaussian
       REAL(dp), ALLOCATABLE                              :: angular(:)
 
       na = grid%ng_sphere
@@ -1089,8 +1147,10 @@ CONTAINS
       CALL check_radial(grid, harmonics, values, radial)
       CPASSERT(PRESENT(gaussian_hard) .EQV. PRESENT(gaussian_soft))
       IF (PRESENT(gaussian_hard)) THEN
-         CPASSERT(ALL(SHAPE(gaussian_hard) == SHAPE(radial)))
-         CPASSERT(ALL(SHAPE(gaussian_soft) == SHAPE(radial)))
+         nh_gaussian = SIZE(gaussian_hard, 2)
+         CPASSERT(nh_gaussian <= SIZE(harmonics%slm, 2))
+         CPASSERT(SIZE(gaussian_hard, 1) == grid%nr)
+         CPASSERT(ALL(SHAPE(gaussian_hard) == SHAPE(gaussian_soft)))
       END IF
       ALLOCATE (angular(na))
       DO ir = 1, grid%nr
@@ -1098,7 +1158,8 @@ CONTAINS
          last = ir*na
          angular(:) = values(first:last)
          IF (PRESENT(gaussian_hard)) THEN
-            angular(:) = angular + MATMUL(harmonics%slm(:, 1:nh), gaussian_hard(ir, :) - gaussian_soft(ir, :))
+            ! All input harmonics contribute to the finite Gram map, even for monopole output.
+            angular(:) = angular + MATMUL(harmonics%slm(:, 1:nh_gaussian), gaussian_hard(ir, :) - gaussian_soft(ir, :))
          END IF
          radial(ir, :) = MATMUL(grid%wa*angular, harmonics%slm(:, 1:nh))
       END DO

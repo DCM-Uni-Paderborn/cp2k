@@ -2871,7 +2871,7 @@ CONTAINS
    SUBROUTINE check_center_angular()
       INTEGER                                            :: ir, side
       REAL(dp) :: adjoint(6), dh(2, 2), dpnt(6), ds(2, 2), exact, hard(2, 2), hard_adjoint(2, 2), &
-         potential(2, 2), radial(2, 2), response, samples(2), shift, soft(2, 2), &
+         monopole(2, 1), potential(2, 2), radial(2, 2), response, samples(2), shift, soft(2, 2), &
          soft_adjoint(2, 2), values(6), wr(2)
       TYPE(grid_atom_type)                               :: grid
       TYPE(harmonics_atom_type)                          :: harmonics
@@ -2893,6 +2893,8 @@ CONTAINS
       potential(:, 1) = [0.08_dp, -0.03_dp]
       potential(:, 2) = [0.04_dp, 0.07_dp]
       CALL qs_upf_inverse_density_radial(grid, harmonics, values, radial, hard, soft)
+      CALL qs_upf_inverse_density_radial(grid, harmonics, values, monopole, hard, soft)
+      CALL check(MAXVAL(ABS(monopole(:, 1) - radial(:, 1))), 'monopole retains the full finite Gram map', 2.e-14_dp)
       CALL qs_upf_inverse_density_radial_adjoint(grid, harmonics, potential, adjoint, hard_adjoint, soft_adjoint)
       exact = 0.0_dp
       response = 0.0_dp

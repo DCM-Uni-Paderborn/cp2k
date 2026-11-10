@@ -38,8 +38,7 @@ MODULE qs_upf_inverse_forces
                                               qs_rho_type
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_gaussian_geometry,&
                                               qs_upf_inverse_background_geometry
-   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_center_metric_response,&
-                                              qs_upf_inverse_coulomb_metric_geometry,&
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_metric_geometry,&
                                               qs_upf_inverse_coulomb_pair_geometry,&
                                               qs_upf_inverse_coulomb_response
    USE qs_upf_inverse_grid,             ONLY: qs_upf_inverse_matrix_gather
@@ -394,15 +393,13 @@ CONTAINS
       CPASSERT(ALL(reduced_k_response == 0.0_dp))
       CALL qs_upf_inverse_scf_response(ks_env, zero, zeros, zero, atom_response, cell_response, reduced_k_response, &
                                        response, metric_response, coefficients_response, summed_density=density)
-      CALL qs_upf_inverse_coulomb_center_metric_response(qs_env, state, state%coulomb, weighted, atom_response, cell_response, &
-                                                         metric_response, coefficients_response)
-      metric_response = -metric_response - metric_background_response
-      response = response + metric_response
       CALL qs_upf_inverse_coulomb_response(qs_env, state, state%coulomb, density, atom_response, cell_response, &
                                            coulomb_response, coefficients_response=coefficients_response, &
                                            pair_geometry_response=pair_geometry_response, &
-                                           source_forces=source_forces, source_virial=source_virial)
-      response = response + coulomb_response
+                                           source_forces=source_forces, source_virial=source_virial, &
+                                           metric_matrix=weighted, metric_response=metric_response)
+      metric_response = -metric_response - metric_background_response
+      response = response + metric_response + coulomb_response
    END SUBROUTINE complete_response
 
 END MODULE qs_upf_inverse_forces
