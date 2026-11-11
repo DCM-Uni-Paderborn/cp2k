@@ -53,6 +53,9 @@ PROGRAM upf_inverse_unittest
                                               paw_core_kinetic_type,&
                                               paw_core_radial_slopes,&
                                               paw_core_radial_value
+   USE paw_onecenter,                   ONLY: paw_onecenter_hartree,&
+                                              paw_onecenter_init,&
+                                              paw_onecenter_type
    USE paw_types,                       ONLY: paw_kind_type
    USE paw_xc,                          ONLY: paw_xc_ae_core_cartesian,&
                                               paw_xc_point_adjoint,&
@@ -127,7 +130,8 @@ PROGRAM upf_inverse_unittest
         upf_inverse_cross_density, upf_inverse_density_residual, upf_inverse_pair, &
         upf_inverse_projector_density, upf_inverse_projector_pair, upf_inverse_semilocal_pair, &
         upf_inverse_semilocal_residual, upf_inverse_semilocal_response, upf_inverse_smooth_density
-   USE upf_projector_integrals,         ONLY: upf_projector_init,&
+   USE upf_projector_integrals,         ONLY: upf_projector_angular_init,&
+                                              upf_projector_init,&
                                               upf_projector_overlap,&
                                               upf_projector_type
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
@@ -176,6 +180,7 @@ PROGRAM upf_inverse_unittest
    CALL check_fourier_coulomb()
    CALL check_core_fourier()
    CALL check_paw_core_fields()
+   CALL check_paw_hartree()
    CALL check_paw_density_fourier()
    CALL check_nc_fields()
    CALL check_kinetic_fields()
@@ -1982,6 +1987,32 @@ CONTAINS
       inverse_matrix = RESHAPE([matrix(2, 2), -matrix(2, 1), -matrix(1, 2), matrix(1, 1)], [2, 2])/ &
                        (matrix(1, 1)*matrix(2, 2) - matrix(1, 2)*matrix(2, 1))
    END SUBROUTINE invert_two
+! **************************************************************************************************
+!> \brief Analytic PAW Hartree correction and projector derivative for one s partial wave.
+! **************************************************************************************************
+   SUBROUTINE check_paw_hartree()
+      REAL(dp), PARAMETER                                :: occupation = 0.8_dp
+      REAL(dp)                                           :: energy, potential(1, 1)
+      TYPE(atom_upfpot_type)                             :: pot
+      TYPE(paw_onecenter_type)                           :: onecenter
+      TYPE(upf_projector_type)                           :: projectors
+
+      pot%is_paw = .TRUE.
+      pot%number_of_proj = 1
+      ALLOCATE (pot%paw, pot%lbeta(1), pot%qijl(5, 1, 0:0))
+      pot%lbeta = 0
+      pot%r = [0.0_dp, 0.25_dp, 0.5_dp, 0.75_dp, 1.0_dp]
+      pot%paw%cutoff_index = SIZE(pot%r)
+      pot%paw%ae_wfc = RESHAPE(SQRT(pot%r), [5, 1])
+      pot%paw%ps_wfc = 0.5_dp*pot%paw%ae_wfc
+      pot%qijl(:, 1, 0) = 0.25_dp*pot%r
+      CALL upf_projector_angular_init(pot%lbeta, 0, projectors)
+      CALL paw_onecenter_init(pot, projectors, onecenter)
+      CALL paw_onecenter_hartree(onecenter, RESHAPE([occupation], [1, 1]), energy, potential)
+      ! The two radial sources are r and r/2. The s harmonic cancels the kernel's 4*pi factor.
+      CALL check(ABS(energy - occupation**2/8.0_dp), 'PAW compensated Hartree energy', 2.e-15_dp)
+      CALL check(ABS(potential(1, 1) - occupation/4.0_dp), 'PAW compensated Hartree derivative', 2.e-15_dp)
+   END SUBROUTINE check_paw_hartree
 ! **************************************************************************************************
 !> \brief Cusped radial AE charge and signed-orbital kinetic fields with independent exact derivatives.
 ! **************************************************************************************************
