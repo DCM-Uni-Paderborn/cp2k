@@ -425,9 +425,10 @@ CONTAINS
          particle_set(iatom)%f = -force(ikind)%total(1:3, i)
       END DO
 
-      NULLIFY (cell, virial, energy)
-      CALL get_qs_env(qs_env=qs_env, cell=cell, virial=virial, energy=energy)
+      NULLIFY (cell, virial, energy, ks_env)
+      CALL get_qs_env(qs_env=qs_env, cell=cell, virial=virial, energy=energy, ks_env=ks_env)
       IF (virial%pv_availability) THEN
+         CALL get_ks_env(ks_env, upf_inverse=inverse)
          CALL para_env%sum(virial%pv_overlap)
          CALL para_env%sum(virial%pv_ekinetic)
          CALL para_env%sum(virial%pv_ppl)
@@ -461,8 +462,6 @@ CONTAINS
                END IF
             END IF
             hartree_measure = 2.0_dp*(energy%hartree + energy%sccs_pol)
-            CALL get_qs_env(qs_env, ks_env=ks_env)
-            CALL get_ks_env(ks_env, upf_inverse=inverse)
             IF (ASSOCIATED(inverse)) THEN
                ! The complete inverse Coulomb response already differentiates its Fourier measure.
                IF (ASSOCIATED(inverse%coulomb)) hartree_measure = 0.0_dp
@@ -483,9 +482,8 @@ CONTAINS
                ! There should be a more elegant solution to that ...
             END DO
          END IF
-         IF ((.NOT. virial%pv_numer) .AND. COUNT(cell%perd /= 0) == 0) THEN
-            CALL get_ks_env(ks_env, upf_inverse=inverse)
-            IF (ASSOCIATED(inverse)) CALL project_virial_to_periodic_subspace(virial, cell%perd)
+         IF ((.NOT. virial%pv_numer) .AND. COUNT(cell%perd /= 0) == 0 .AND. ASSOCIATED(inverse)) THEN
+            CALL project_virial_to_periodic_subspace(virial, cell%perd)
          END IF
          IF ((.NOT. virial%pv_numer) .AND. COUNT(cell%perd /= 0) >= 1 .AND. COUNT(cell%perd /= 0) <= 2) THEN
             SELECT CASE (dft_control%qs_control%method_id)
