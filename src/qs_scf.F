@@ -931,9 +931,10 @@ CONTAINS
                   IF (scf_control%smear%do_smear) THEN
                      inverse_ot_ready = MERGE(1, 0, scf_env%iter_delta < SQRT(scf_control%eps_scf) .OR. ot_energy_stagnated)
                   ELSE
-                     ! Refine a small fixed-occupation OT residual before the energy-based search stalls.
+                     ! At real Gamma the preconditioned residual can stall above the handoff threshold.
                      inverse_ot_ready = MERGE(1, 0, scf_env%iter_delta < &
-                                              MAX(scf_control%eps_scf, SQRT(scf_control%eps_scf)))
+                                              MAX(scf_control%eps_scf, SQRT(scf_control%eps_scf)) .OR. &
+                                              (.NOT. do_kpoints .AND. ot_energy_stagnated))
                   END IF
                END IF
                IF (do_kpoints) CALL para_env%min(inverse_ot_ready)
