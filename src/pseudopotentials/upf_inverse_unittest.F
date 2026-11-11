@@ -1250,6 +1250,17 @@ CONTAINS
           ABS(cusp_coordinate(1) - 0.175_dp) > 1.e-12_dp .OR. cusp_coordinate(2) /= 0.0_dp) THEN
          ERROR STOP 'A rejected uphill trial prevented ordinary downhill backtracking'
       END IF
+      scale = 1.0_dp
+      cusp_coordinate = [1.0_dp, 0.0_dp]
+      segment_queries = 0
+      CALL skala_constrained_stationarity(empty_constraints, uphill_trial_gradient, scale, cusp_coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=9, &
+                                          iterations=iterations, retain_progress=.TRUE., &
+                                          check_stalled_segment=crossing_segment, check_reversal_segment=bracketed_cusp_segment)
+      IF (converged .OR. iterations /= 9 .OR. segment_queries /= 0 .OR. &
+          ABS(cusp_coordinate(1) - 0.19375_dp) > 1.e-12_dp .OR. cusp_coordinate(2) /= 0.0_dp) THEN
+         ERROR STOP 'An uphill secant trial discarded a shorter resolved descent'
+      END IF
       coordinate = 1.e-8_dp
       CALL skala_constrained_stationarity(empty_constraints, roundoff_cusp_gradient, cusp, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=1, &
@@ -1522,11 +1533,11 @@ CONTAINS
    END SUBROUTINE absolute_energy_gradient
 
 ! **************************************************************************************************
-!> \brief Linear descent with a smooth rise between two trials having the same derivative.
+!> \brief Linear descent with a smooth rise before a long trial or its secant point.
 !> \param coordinate Two real orbital coordinates. Only the first affects the energy.
 !> \param energy Original scalar objective.
 !> \param gradient Exact objective derivative.
-!> \param context Unused test scale.
+!> \param context Select the profile with a positive slope at the long endpoint when equal to one.
 ! **************************************************************************************************
    SUBROUTINE uphill_trial_gradient(coordinate, energy, gradient, context)
       REAL(dp), INTENT(IN)                               :: coordinate(:)
@@ -1535,11 +1546,25 @@ CONTAINS
 
       REAL(dp)                                           :: z
 
-      MARK_USED(context)
-      z = MAX(0.0_dp, MIN(1.0_dp, (0.18_dp - coordinate(1))/0.08_dp))
-      energy = coordinate(1) + 0.2_dp*z*z*(3.0_dp - 2.0_dp*z)
       gradient = 0.0_dp
-      gradient(1) = 1.0_dp - 15.0_dp*z*(1.0_dp - z)
+      SELECT TYPE (context)
+      TYPE IS (REAL(dp))
+         IF (context /= 1.0_dp) THEN
+            z = MAX(0.0_dp, MIN(1.0_dp, (0.18_dp - coordinate(1))/0.08_dp))
+            energy = coordinate(1) + 0.2_dp*z*z*(3.0_dp - 2.0_dp*z)
+            gradient(1) = 1.0_dp - 15.0_dp*z*(1.0_dp - z)
+         ELSE IF (coordinate(1) >= 0.15_dp) THEN
+            z = MAX(0.0_dp, (0.2_dp - coordinate(1))/0.05_dp)
+            energy = coordinate(1) + 0.1_dp*z*z*(3.0_dp - 2.0_dp*z)
+            gradient(1) = 1.0_dp - 12.0_dp*z*(1.0_dp - z)
+         ELSE
+            z = (0.15_dp - coordinate(1))/0.05_dp
+            energy = coordinate(1) + 0.1_dp + 0.05_dp*z*z
+            gradient(1) = 1.0_dp - 2.0_dp*z
+         END IF
+      CLASS DEFAULT
+         ERROR STOP 'Invalid uphill trial context'
+      END SELECT
    END SUBROUTINE uphill_trial_gradient
 
 ! **************************************************************************************************

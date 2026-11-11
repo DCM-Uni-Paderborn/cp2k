@@ -1338,7 +1338,7 @@ CONTAINS
       TYPE(skala_constraint_chart_type) :: curve
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked, &
                  coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, &
-                 curvature_stalled, newton_used, gradient_progress, reversal_descent, deferred_scan
+                 curvature_stalled, newton_used, gradient_progress, reversal_descent, deferred_scan, uphill_excursion
       REAL(dp) :: curvature, energy, fraction, progress_norm, radius, maximum_radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
@@ -1489,11 +1489,16 @@ CONTAINS
                            ELSE IF (slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
                                     free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
                               CALL try_slope_bracket(trial, trial_energy, trial_reduced, fraction, &
-                                                     reversal_descent, event, newton_stopped)
+                                                     reversal_descent, event, newton_stopped, uphill_excursion)
                               IF (newton_stopped) RETURN
                               IF (reversal_descent) THEN
+                                 resolved_descent = .TRUE.
                                  direction(:) = trial(curve%free) - x(curve%free)
                                  EXIT
+                              END IF
+                              IF (uphill_excursion .AND. .NOT. event) THEN
+                                 deferred_trial = trial
+                                 deferred_scan = .TRUE.
                               END IF
                            END IF
                         END IF
@@ -1705,15 +1710,17 @@ CONTAINS
 !> \param descent Whether an Armijo step meeting the curvature condition was found.
 !> \param event_found Whether the caller must handle a physical crossing.
 !> \param terminated Whether the external stop check fired.
+!> \param uphill_excursion Whether a rejected interior trial still had a descending slope.
 ! **************************************************************************************************
       SUBROUTINE try_slope_bracket(endpoint, endpoint_energy, endpoint_gradient, endpoint_fraction, &
-                                   descent, event_found, terminated)
+                                   descent, event_found, terminated, uphill_excursion)
          REAL(dp), INTENT(INOUT)                            :: endpoint(:), endpoint_energy, &
                                                               endpoint_gradient(:), endpoint_fraction
          LOGICAL, INTENT(OUT)                               :: descent, event_found, terminated
+         LOGICAL, INTENT(OUT), OPTIONAL                     :: uphill_excursion
 
          INTEGER                                           :: bracket_steps, bracket_trial
-         LOGICAL                                           :: valid_trial
+         LOGICAL                                           :: positive_upper_slope, valid_trial
          REAL(dp)                                          :: left_fraction, right_fraction, slope_scale, upper_slope
          REAL(dp)                                          :: test_energy, test_fraction, test_slope, energy_window
          REAL(dp), ALLOCATABLE                             :: left(:), right(:), candidate(:), candidate_gradient(:)
@@ -1721,6 +1728,8 @@ CONTAINS
          descent = .FALSE.
          event_found = .FALSE.
          terminated = .FALSE.
+         IF (PRESENT(uphill_excursion)) uphill_excursion = .FALSE.
+         positive_upper_slope = .TRUE.
          bracket_steps = 1
          IF (ASSOCIATED(reversal_local)) bracket_steps = 6
          left_fraction = 0.0_dp
@@ -1757,7 +1766,15 @@ CONTAINS
             IF (test_slope > 0.0_dp) THEN
                right(:) = candidate
                right_fraction = test_fraction
-            ELSE IF (test_slope < 0.0_dp .AND. test_energy <= energy + energy_window) THEN
+               positive_upper_slope = .TRUE.
+            ELSE IF (test_energy > energy + energy_window) THEN
+               ! The energy bounds the local line search here. A physical slope
+               ! bracket must wait for a positive derivative at the upper endpoint.
+               right(:) = candidate
+               right_fraction = test_fraction
+               positive_upper_slope = .FALSE.
+               IF (PRESENT(uphill_excursion)) uphill_excursion = .TRUE.
+            ELSE IF (test_slope < 0.0_dp) THEN
                left(:) = candidate
                left_fraction = test_fraction
             ELSE
@@ -1765,7 +1782,8 @@ CONTAINS
             END IF
             test_fraction = left_fraction + 0.5_dp*(right_fraction - left_fraction)
          END DO
-         IF (ASSOCIATED(reversal_local) .AND. right_fraction - left_fraction <= 0.5_dp*endpoint_fraction) THEN
+         IF (ASSOCIATED(reversal_local) .AND. positive_upper_slope .AND. &
+             right_fraction - left_fraction <= 0.5_dp*endpoint_fraction) THEN
             CALL reversal_local(left, right, curve, context, energy, event_found)
          END IF
       END SUBROUTINE try_slope_bracket
