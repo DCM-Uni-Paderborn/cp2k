@@ -1480,8 +1480,7 @@ CONTAINS
                         event = .FALSE.
                         IF (PRESENT(check_reversal_segment)) THEN
                            trial_slope = DOT_PRODUCT(trial_reduced, direction)
-                           IF (curvature_stalled .AND. slope < 0.0_dp .AND. trial_slope <= 0.0_dp .AND. &
-                               trial_energy > energy + roundoff) THEN
+                           IF (slope < 0.0_dp .AND. trial_slope <= 0.0_dp .AND. trial_energy > energy + roundoff) THEN
                               ! Both endpoint slopes still descend. Try local curvature and backtracking
                               ! before searching the full rejected interval for a physical minimum.
                               deferred_trial = trial
