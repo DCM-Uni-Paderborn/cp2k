@@ -2774,6 +2774,7 @@ CONTAINS
       INTEGER                                            :: i, m
       LOGICAL                                            :: coupled_curvature, frozen_exchange, &
                                                             inner_converged, valid
+      PROCEDURE(check_native_reversal), POINTER           :: reversal
       REAL(dp)                                           :: search_tolerance
       REAL(dp), ALLOCATABLE :: combined_floors(:), coordinate_scales(:), density_floors(:), &
          gradient(:), origin(:), reference_gradient(:), response(:), zero(:), zero_multipliers(:)
@@ -2870,6 +2871,8 @@ CONTAINS
       END IF
       ALLOCATE (coordinate_scales(SIZE(coordinate)))
       CALL qs_skala_scf_coordinate_scales(state, coordinate_scales)
+      NULLIFY (reversal)
+      IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) reversal => check_native_reversal
       CALL skala_constrained_stationarity(evaluate_native_constraints, evaluate_native_gradient, context, &
                                           coordinate, physical_tolerances, search_tolerance, converged, &
                                           max_iterations=max_iterations, max_step=max_step, &
@@ -2880,7 +2883,7 @@ CONTAINS
                                           curvature_steps=coupled_curvature, check_curvature_segment=check_native_curvature, &
                                           precondition=evaluate_native_preconditioner, apply_hessian=evaluate_native_hessian, &
                                           apply_lagrangian_hessian=evaluate_native_lagrangian_hessian, &
-                                          report_iteration=report_native_iteration)
+                                          report_iteration=report_native_iteration, check_reversal_segment=reversal)
       context%gradient_tolerance = gradient_tolerance
       IF (context%admit_crossings .AND. ASSOCIATED(context%crossings)) THEN
          IF (context%crossings%resolved) THEN
@@ -4044,6 +4047,34 @@ CONTAINS
    END SUBROUTINE check_native_stall
 
 ! **************************************************************************************************
+!> \brief Search a slope bracket before falling back to the full native trial segment.
+!> \param first Feasible left bracket endpoint.
+!> \param last Feasible right bracket endpoint.
+!> \param curve Original independent/dependent coordinate partition.
+!> \param context Native state and physical boundary admission settings.
+!> \param reference_energy Energy of the accepted state outside or at the bracket.
+!> \param interrupted Whether a downhill root or an external stop was verified.
+! **************************************************************************************************
+   SUBROUTINE check_native_reversal(first, last, curve, context, reference_energy, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:), reference_energy
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+      CLASS(*), INTENT(INOUT)                            :: context
+      LOGICAL, INTENT(OUT)                               :: interrupted
+
+      interrupted = .FALSE.
+      SELECT TYPE (context)
+      TYPE IS (physical_constraints_context)
+         IF (.NOT. context%admit_crossings .OR. .NOT. ASSOCIATED(context%crossings)) RETURN
+         CALL check_native_segment(first, last, curve, context, interrupted, restore_operator=.FALSE., &
+                                   reference_energy=reference_energy)
+         interrupted = context%crossings%resolved .OR. context%external_stopped
+         IF (.NOT. interrupted) context%crossings%encountered = .FALSE.
+      CLASS DEFAULT
+         CPABORT("Invalid native orbital reversal context.")
+      END SELECT
+   END SUBROUTINE check_native_reversal
+
+! **************************************************************************************************
 !> \brief Apply the complete physical free-energy response at the accepted unconstrained native state.
 !> \param coordinate Complete orbital and Fermi coordinates.
 !> \param direction Direction in those same coordinates.
@@ -4263,9 +4294,10 @@ CONTAINS
 !> \param restore_operator Restore the accepted native operator after checking the segment.
 !> \param classify_candidates Classify and admit detected roots when true.
 !> \param leave_trial Keep the final descriptor-only trial for the following gradient evaluation.
+!> \param reference_energy Energy of the accepted state when first is only a bracket endpoint.
 ! **************************************************************************************************
    SUBROUTINE check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator, &
-                                   classify_candidates, leave_trial)
+                                   classify_candidates, leave_trial, reference_energy)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
 
@@ -4277,6 +4309,7 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: interrupted
       LOGICAL, INTENT(OUT), OPTIONAL                     :: crossed
       LOGICAL, INTENT(IN), OPTIONAL                      :: restore_operator, classify_candidates, leave_trial
+      REAL(dp), INTENT(IN), OPTIONAL                     :: reference_energy
 
       TYPE(qs_skala_scf_crossing_type), POINTER         :: crossings
       TYPE(qs_skala_scf_crossing_type) :: trimmed
@@ -4351,7 +4384,7 @@ CONTAINS
             IF (PRESENT(classify_candidates)) THEN
                IF (.NOT. classify_candidates) RETURN
             END IF
-            CALL classify_native_segment(first, last, context)
+            CALL classify_native_segment(first, last, context, reference_energy)
             interrupted = crossings%encountered .OR. context%external_stopped
          END IF
       CLASS DEFAULT
@@ -4365,13 +4398,15 @@ CONTAINS
 !>        one permitting normal descent, then inspect the remaining endpoint candidates. An
 !>        unresolved root leaves the original line search to test its complete energy and derivative.
 !>        A failed normal classification remains an event for the caller.
-!> \param first Last accepted feasible coordinates.
+!> \param first First feasible coordinates of the scanned segment.
 !> \param last Proposed feasible coordinates.
 !> \param context Native state, original constraint curve and optional crossing output.
+!> \param reference_energy Energy of the accepted state when it differs from first.
 ! **************************************************************************************************
-   SUBROUTINE classify_native_segment(first, last, context)
+   SUBROUTINE classify_native_segment(first, last, context, reference_energy)
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       TYPE(physical_constraints_context), INTENT(INOUT)  :: context
+      REAL(dp), INTENT(IN), OPTIONAL                     :: reference_energy
 
       INTEGER                                            :: i, old
       INTEGER, ALLOCATABLE :: old_descriptors(:), old_domains(:), old_points(:, :), old_spins(:), &
@@ -4396,8 +4431,12 @@ CONTAINS
       END IF
       ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)), gradient(SIZE(first)))
       pending(:) = [(i, i=1, SIZE(pending))]
-      CALL qs_skala_scf_evaluate(context%state, first, first_energy, reuse_fields=.TRUE.)
-      first_energy = sum_ks_energies(context%state%energy, .TRUE.)
+      IF (PRESENT(reference_energy)) THEN
+         first_energy = reference_energy
+      ELSE
+         CALL qs_skala_scf_evaluate(context%state, first, first_energy, reuse_fields=.TRUE.)
+         first_energy = sum_ks_energies(context%state%energy, .TRUE.)
+      END IF
       DO WHILE (SIZE(pending) > 0)
          ALLOCATE (selected(SIZE(pending)), values(SIZE(pending)), windows(SIZE(pending)))
          windows(:) = MERGE(tolerance, kinetic_tolerance, event%descriptors(pending) == skala_density_descriptor)

@@ -112,6 +112,22 @@ MODULE skala_orbital_constraints
          LOGICAL, INTENT(OUT) :: interrupted
       END SUBROUTINE orbital_segment
 ! **************************************************************************************************
+!> \brief Check a shortened derivative bracket for an admissible physical boundary.
+!> \param first Feasible endpoint with negative directional derivative.
+!> \param last Feasible endpoint with positive directional derivative.
+!> \param curve Current independent/dependent coordinate partition.
+!> \param context Borrowed problem state.
+!> \param reference_energy Complete energy of the last accepted state.
+!> \param interrupted Whether a boundary was verified or a stop was requested.
+! **************************************************************************************************
+      SUBROUTINE orbital_reversal_segment(first, last, curve, context, reference_energy, interrupted)
+         IMPORT :: dp, skala_constraint_chart_type
+         REAL(dp), INTENT(IN) :: first(:), last(:), reference_energy
+         TYPE(skala_constraint_chart_type), INTENT(IN) :: curve
+         CLASS(*), INTENT(INOUT) :: context
+         LOGICAL, INTENT(OUT) :: interrupted
+      END SUBROUTINE orbital_reversal_segment
+! **************************************************************************************************
 !> \brief Check a restored curvature probe for additional physical thresholds.
 !> \param first Accepted feasible coordinates.
 !> \param last Restored probe coordinates.
@@ -1277,19 +1293,21 @@ CONTAINS
 !> \param apply_lagrangian_hessian Optional analytical response on the original physical constraint curve.
 !>        Constraint curvature and original-unit multipliers are included before tangent projection.
 !> \param report_iteration Optional scalar-only report after reference evaluation and attempted steps.
+!> \param check_reversal_segment Optional search of a shortened derivative bracket before the original segment.
 ! **************************************************************************************************
    SUBROUTINE skala_constrained_stationarity(evaluate_constraints, evaluate_gradient, context, coordinate, &
                                              density_tolerances, gradient_tolerance, converged, &
                                              max_iterations, max_step, verify_stationarity, iterations, check_stop, stopped, &
                                              check_segment, interrupted, retain_progress, check_stalled_segment, &
                                              coordinate_scales, curvature_steps, check_curvature_segment, precondition, &
-                                             apply_hessian, apply_lagrangian_hessian, report_iteration)
+                                             apply_hessian, apply_lagrangian_hessian, report_iteration, check_reversal_segment)
       PROCEDURE(physical_constraints) :: evaluate_constraints
       PROCEDURE(orbital_energy_gradient) :: evaluate_gradient
       PROCEDURE(orbital_stationarity), OPTIONAL :: verify_stationarity
       PROCEDURE(orbital_stop), OPTIONAL :: check_stop
       PROCEDURE(orbital_segment), OPTIONAL :: check_segment
       PROCEDURE(orbital_segment), OPTIONAL :: check_stalled_segment
+      PROCEDURE(orbital_reversal_segment), OPTIONAL :: check_reversal_segment
       PROCEDURE(orbital_curvature_segment), OPTIONAL :: check_curvature_segment
       PROCEDURE(orbital_preconditioner), OPTIONAL :: precondition
       PROCEDURE(orbital_hessian_product), OPTIONAL :: apply_hessian
@@ -1533,24 +1551,38 @@ CONTAINS
                    slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
                    trial_energy < energy - roundoff .AND. trial_energy <= energy + 1.0e-4_dp*fraction*slope .AND. &
                    free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
-                  ! A resolved reversal can come from a smooth overshoot. Try one point
-                  ! inside the slope bracket before scanning it for physical crossings.
+                  ! Try the interpolated slope zero before scanning for physical crossings.
+                  ! If it fails, an available bracket search can use a few bisections.
                   BLOCK
+                     INTEGER :: bracket_steps, bracket_trial
                      LOGICAL :: interpolated_valid
-                     REAL(dp) :: interpolated_energy, interpolated_fraction, slope_scale
-                     REAL(dp), ALLOCATABLE :: interpolated(:), interpolated_reduced(:)
+                     REAL(dp) :: interpolated_energy, interpolated_fraction, interpolated_slope, slope_scale
+                     REAL(dp) :: left_fraction, right_fraction
+                     REAL(dp), ALLOCATABLE :: interpolated(:), interpolated_reduced(:), left(:), right(:)
 
+                     bracket_steps = 1
+                     IF (PRESENT(check_reversal_segment)) bracket_steps = 6
+                     left_fraction = 0.0_dp
+                     right_fraction = fraction
+                     ALLOCATE (left, SOURCE=x)
+                     ALLOCATE (right, SOURCE=trial)
                      slope_scale = MAX(-slope, trial_slope)
                      interpolated_fraction = fraction*((-slope/slope_scale)/(trial_slope/slope_scale - slope/slope_scale))
                      ALLOCATE (interpolated, SOURCE=x)
                      ALLOCATE (interpolated_reduced(nf))
-                     interpolated(curve%free) = x(curve%free) + interpolated_fraction*direction
-                     CALL reduced_evaluation(interpolated, interpolated_energy, interpolated_reduced, interpolated_valid)
-                     IF (interpolated_valid) THEN
+                     DO bracket_trial = 1, bracket_steps
+                        IF (stop_requested()) RETURN
+                        interpolated(:) = x
+                        interpolated(curve%free) = x(curve%free) + interpolated_fraction*direction
+                        IF (ALL(interpolated(curve%free) == left(curve%free)) .OR. &
+                            ALL(interpolated(curve%free) == right(curve%free))) EXIT
+                        CALL reduced_evaluation(interpolated, interpolated_energy, interpolated_reduced, interpolated_valid)
+                        IF (.NOT. interpolated_valid) EXIT
+                        interpolated_slope = DOT_PRODUCT(interpolated_reduced, direction)
                         roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(interpolated_energy), TINY(0.0_dp))
                         IF (interpolated_energy < energy - roundoff .AND. &
                             interpolated_energy <= energy + 1.0e-4_dp*interpolated_fraction*slope .AND. &
-                            ABS(DOT_PRODUCT(interpolated_reduced, direction)) <= 0.9_dp*ABS(slope)) THEN
+                            ABS(interpolated_slope) <= 0.9_dp*ABS(slope)) THEN
                            event = .FALSE.
                            IF (PRESENT(check_segment)) CALL check_segment(x, interpolated, curve, context, event)
                            IF (event) THEN
@@ -1565,10 +1597,28 @@ CONTAINS
                            accepted = .TRUE.
                            EXIT
                         END IF
+                        IF (interpolated_slope > 0.0_dp) THEN
+                           right(:) = interpolated
+                           right_fraction = interpolated_fraction
+                        ELSE IF (interpolated_slope < 0.0_dp .AND. interpolated_energy <= energy + roundoff) THEN
+                           left(:) = interpolated
+                           left_fraction = interpolated_fraction
+                        ELSE
+                           EXIT
+                        END IF
+                        interpolated_fraction = left_fraction + 0.5_dp*(right_fraction - left_fraction)
+                     END DO
+                     IF (accepted) EXIT
+                     IF (PRESENT(check_reversal_segment) .AND. right_fraction - left_fraction <= 0.5_dp*fraction) THEN
+                        CALL check_reversal_segment(left, right, curve, context, energy, event)
+                        IF (event) THEN
+                           coordinate(:) = x
+                           IF (PRESENT(interrupted)) interrupted = .TRUE.
+                           RETURN
+                        END IF
                      END IF
                   END BLOCK
-                  ! Use the original trial to resolve a possible cusp if interpolation
-                  ! did not satisfy both descent and curvature.
+                  ! Retain the original search when the shorter interval did not resolve the reversal.
                   roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                END IF
                IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. &

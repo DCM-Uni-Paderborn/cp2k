@@ -1201,6 +1201,15 @@ CONTAINS
       IF (converged .OR. .NOT. interrupted) THEN
          ERROR STOP 'A persistent cusp derivative exhausted the smooth search before boundary detection'
       END IF
+      cusp_coordinate = [0.7_dp, 0.5_dp]
+      segment_queries = 0
+      CALL skala_constrained_stationarity(empty_constraints, absolute_energy_gradient, scale, cusp_coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=4, &
+                                          iterations=iterations, interrupted=interrupted, &
+                                          check_stalled_segment=crossing_segment, check_reversal_segment=bracketed_cusp_segment)
+      IF (converged .OR. .NOT. interrupted .OR. segment_queries /= -1) THEN
+         ERROR STOP 'The shortened derivative bracket lost a persistent cusp'
+      END IF
       ! A smooth descent satisfying strong curvature does not require a boundary scan.
       scale = 0.5_dp
       coordinate = 0.08_dp
@@ -1436,6 +1445,31 @@ CONTAINS
          interrupted = first(1) > 0.9_dp .AND. last(1) <= 0.9_dp
       END IF
    END SUBROUTINE crossing_segment
+
+! **************************************************************************************************
+!> \brief Verify that the short bracket preserves the physical cusp and accepted energy.
+!> \param first Left bracket endpoint.
+!> \param last Right bracket endpoint.
+!> \param curve Current constraint chart.
+!> \param context Scale of the shallow tangential energy.
+!> \param reference_energy Energy at the last accepted point.
+!> \param interrupted Whether the physical cusp is inside the shortened bracket.
+! **************************************************************************************************
+   SUBROUTINE bracketed_cusp_segment(first, last, curve, context, reference_energy, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:), reference_energy
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: curve
+      CLASS(*), INTENT(INOUT)                            :: context
+      LOGICAL, INTENT(OUT)                               :: interrupted
+
+      REAL(dp)                                           :: energy, gradient(2)
+
+      CALL crossing_segment(first, last, curve, context, interrupted)
+      CALL absolute_energy_gradient(first, energy, gradient, context)
+      IF (.NOT. interrupted .OR. NORM2(last - first) >= 0.05_dp .OR. energy > reference_energy) THEN
+         ERROR STOP 'A shortened bracket changed its physical event or energy reference'
+      END IF
+      segment_queries = -1
+   END SUBROUTINE bracketed_cusp_segment
 
 ! **************************************************************************************************
 !> \brief Absolute-value energy whose ordinary derivative cannot vanish at its minimum.
