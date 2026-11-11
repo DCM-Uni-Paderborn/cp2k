@@ -1212,6 +1212,13 @@ CONTAINS
       IF (converged .OR. iterations /= 1 .OR. segment_queries /= 0 .OR. ABS(coordinate(1) + 0.02_dp) > 1.e-14_dp) THEN
          ERROR STOP 'A resolved smooth reversal was confused with a physical boundary'
       END IF
+      coordinate = 0.052_dp
+      CALL skala_constrained_stationarity(empty_constraints, scaled_energy_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          iterations=iterations, check_stalled_segment=crossing_segment)
+      IF (.NOT. converged .OR. iterations /= 1 .OR. segment_queries /= 0 .OR. ABS(coordinate(1)) > 1.e-14_dp) THEN
+         ERROR STOP 'A smooth overshoot did not use the stationary point inside the slope bracket'
+      END IF
       coordinate = 1.e-8_dp
       CALL skala_constrained_stationarity(empty_constraints, roundoff_cusp_gradient, cusp, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=1, &

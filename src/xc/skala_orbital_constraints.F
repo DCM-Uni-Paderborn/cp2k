@@ -1529,6 +1529,48 @@ CONTAINS
                ! Descent may increase the gradient norm in a region of negative curvature.
                roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                trial_slope = DOT_PRODUCT(trial_reduced, direction)
+               IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. .NOT. curvature_stalled .AND. &
+                   slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
+                   trial_energy < energy - roundoff .AND. trial_energy <= energy + 1.0e-4_dp*fraction*slope .AND. &
+                   free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
+                  ! A resolved reversal can come from a smooth overshoot. Try one point
+                  ! inside the slope bracket before scanning it for physical crossings.
+                  BLOCK
+                     LOGICAL :: interpolated_valid
+                     REAL(dp) :: interpolated_energy, interpolated_fraction, slope_scale
+                     REAL(dp), ALLOCATABLE :: interpolated(:), interpolated_reduced(:)
+
+                     slope_scale = MAX(-slope, trial_slope)
+                     interpolated_fraction = fraction*((-slope/slope_scale)/(trial_slope/slope_scale - slope/slope_scale))
+                     ALLOCATE (interpolated, SOURCE=x)
+                     ALLOCATE (interpolated_reduced(nf))
+                     interpolated(curve%free) = x(curve%free) + interpolated_fraction*direction
+                     CALL reduced_evaluation(interpolated, interpolated_energy, interpolated_reduced, interpolated_valid)
+                     IF (interpolated_valid) THEN
+                        roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(interpolated_energy), TINY(0.0_dp))
+                        IF (interpolated_energy < energy - roundoff .AND. &
+                            interpolated_energy <= energy + 1.0e-4_dp*interpolated_fraction*slope .AND. &
+                            ABS(DOT_PRODUCT(interpolated_reduced, direction)) <= 0.9_dp*ABS(slope)) THEN
+                           event = .FALSE.
+                           IF (PRESENT(check_segment)) CALL check_segment(x, interpolated, curve, context, event)
+                           IF (event) THEN
+                              coordinate(:) = x
+                              IF (PRESENT(interrupted)) interrupted = .TRUE.
+                              RETURN
+                           END IF
+                           trial(:) = interpolated
+                           trial_reduced(:) = interpolated_reduced
+                           trial_energy = interpolated_energy
+                           fraction = interpolated_fraction
+                           accepted = .TRUE.
+                           EXIT
+                        END IF
+                     END IF
+                  END BLOCK
+                  ! Use the original trial to resolve a possible cusp if interpolation
+                  ! did not satisfy both descent and curvature.
+                  roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
+               END IF
                IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. &
                    ((curvature_stalled .AND. .NOT. resolved_descent) .OR. ABS(trial_energy - energy) <= roundoff .OR. &
                     (trial_slope > 0.9_dp*ABS(slope) .AND. trial_energy < energy - roundoff)) .AND. &
