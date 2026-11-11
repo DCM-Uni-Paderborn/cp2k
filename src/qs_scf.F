@@ -254,7 +254,7 @@ MODULE qs_scf
         general_diag_method_nr, ot_diag_method_nr, ot_method_nr, qs_scf_env_type, &
         scf_env_release_ot_operators, smeagol_method_nr, special_diag_method_nr
    USE qs_skala_scf,                    ONLY: &
-        qs_skala_scf_accept, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
+        qs_skala_scf_accept, qs_skala_scf_align_preconditioner, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
         qs_skala_scf_create_symmetric, qs_skala_scf_crossing_type, qs_skala_scf_evaluate, &
         qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_release_cusp, &
         qs_skala_scf_retained_symmetry, qs_skala_scf_selected, qs_skala_scf_size, &
@@ -1183,7 +1183,7 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             points(:, :), reached(:), &
                                                             release_side(:), spins(:)
-      LOGICAL :: accepted, balanced, converged, do_hfx, do_kpoints, final_stage, rebase_fixed, &
+      LOGICAL :: accepted, align_preconditioner, balanced, converged, do_hfx, do_kpoints, final_stage, rebase_fixed, &
          rechart, reference_refreshed, refresh_attempted, refresh_pending, released, &
          retained_symmetry, space_grown, symmetry_seeded, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
@@ -1224,13 +1224,17 @@ CONTAINS
       CALL get_ks_env(qs_env%ks_env, upf_inverse=inverse)
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
-      IF (.NOT. final_stage .AND. .NOT. do_kpoints .AND. .NOT. scf_control%smear%do_smear .AND. &
-          .NOT. dft_control%use_gauxc) THEN
+      align_preconditioner = .FALSE.
+      IF (.NOT. do_kpoints .AND. .NOT. scf_control%smear%do_smear .AND. .NOT. dft_control%use_gauxc) THEN
          hfx_section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF")
          CALL section_vals_get(hfx_section, explicit=do_hfx)
          ! Fixed-occupation semilocal Gamma SCFs use the requested native OT preconditioner.
          ! The final refinement still checks the original physical stationarity tolerance.
-         IF (.NOT. do_hfx) RETURN
+         IF (.NOT. do_hfx) THEN
+            IF (.NOT. final_stage) RETURN
+            align_preconditioner = remaining > 0 .AND. &
+               scf_env%qs_ot_env(1)%settings%preconditioner_type == ot_precond_full_all
+         END IF
       END IF
       create_search_state => qs_skala_scf_create
       IF (do_kpoints) THEN
@@ -1297,6 +1301,7 @@ CONTAINS
          CALL qs_skala_scf_release(state)
          RETURN
       END IF
+      IF (align_preconditioner) CALL qs_skala_scf_align_preconditioner(state)
       handled = .TRUE.
       accepted = .FALSE.
       ALLOCATE (coordinate(n), gradient(n), physical(n))
@@ -1526,6 +1531,7 @@ CONTAINS
          CALL qs_skala_scf_release(state)
          CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
          IF (.NOT. valid) CPABORT("Could not rebuild the accepted inverse orbital chart.")
+         IF (align_preconditioner) CALL qs_skala_scf_align_preconditioner(state)
          ! Symmetry adaptation can change chart coordinates at a fixed retained band count.
          IF (qs_skala_scf_size(state) /= n) THEN
             n = qs_skala_scf_size(state)

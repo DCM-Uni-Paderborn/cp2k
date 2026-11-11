@@ -65,7 +65,7 @@ MODULE qs_skala_scf
                                               qs_rho_type
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE qs_skala_orbitals,               ONLY: &
-        qs_skala_orbitals_adapt_symmetry, qs_skala_orbitals_canonical_gamma, &
+        qs_skala_orbitals_adapt_symmetry, qs_skala_orbitals_align_preconditioner, qs_skala_orbitals_canonical_gamma, &
         qs_skala_orbitals_canonical_kpoint, qs_skala_orbitals_canonicalize, &
         qs_skala_orbitals_create, qs_skala_orbitals_evaluate, qs_skala_orbitals_install_gamma, &
         qs_skala_orbitals_install_kpoint, qs_skala_orbitals_release, &
@@ -135,6 +135,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_admissibility, qs_skala_scf_classify
    PUBLIC :: qs_skala_scf_release_cusp
    PUBLIC :: qs_skala_scf_accept
+   PUBLIC :: qs_skala_scf_align_preconditioner
    PUBLIC :: qs_skala_scf_coordinate_scales, qs_skala_scf_fermi_target
    PUBLIC :: qs_skala_scf_density_response, qs_skala_scf_operator_response
    PUBLIC :: qs_skala_scf_curvature, qs_skala_scf_lagrangian_curvature
@@ -469,6 +470,30 @@ CONTAINS
          CALL initialize_thermal_scales(state)
       END IF
    END SUBROUTINE create_orbital_state
+
+! **************************************************************************************************
+!> \brief Align a new unconstrained Gamma chart with the available frozen Hamiltonian.
+!> \param state Fixed-occupation state before its first trial evaluation.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_align_preconditioner(state)
+      TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
+
+      COMPLEX(dp), ALLOCATABLE                           :: hamiltonian(:, :), metric(:, :)
+      INTEGER                                            :: spin
+      TYPE(dbcsr_p_type), POINTER                        :: matrices(:, :), metrics(:)
+
+      CPASSERT(.NOT. state%evaluated)
+      CPASSERT(.NOT. state%bloch .AND. .NOT. state%thermal)
+      IF (skala_density_constraints_count(state%constraints) /= 0) RETURN
+      CALL get_ks_env(state%ks_env, matrix_ks_kp=matrices, matrix_metric=metrics)
+      IF (.NOT. ASSOCIATED(matrices)) RETURN
+      CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, metrics(1)%matrix, metric)
+      DO spin = 1, SIZE(state%orbitals, 2)
+         IF (state%dimensions(1, spin) == 0) CYCLE
+         CALL qs_upf_inverse_matrix_gather(state%inverse%frame%ao, matrices(spin, 1)%matrix, hamiltonian)
+         CALL qs_skala_orbitals_align_preconditioner(state%orbitals(1, spin), hamiltonian, metric)
+      END DO
+   END SUBROUTINE qs_skala_scf_align_preconditioner
 
 ! **************************************************************************************************
 !> \brief Release owned charts and buffers without releasing or resetting the borrowed native QS state.

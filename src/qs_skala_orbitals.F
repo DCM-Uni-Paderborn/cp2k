@@ -38,6 +38,7 @@ MODULE qs_skala_orbitals
    PUBLIC :: qs_skala_orbitals_adapt_symmetry
    PUBLIC :: qs_skala_orbitals_retained_symmetry
    PUBLIC :: qs_skala_orbitals_evaluate, qs_skala_orbitals_canonicalize
+   PUBLIC :: qs_skala_orbitals_align_preconditioner
    PUBLIC :: qs_skala_orbitals_install_gamma, qs_skala_orbitals_install_kpoint
    PUBLIC :: qs_skala_orbitals_canonical_gamma, qs_skala_orbitals_canonical_kpoint
 
@@ -573,28 +574,78 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: tolerance
       LOGICAL, INTENT(OUT)                               :: valid
 
-      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), rotation(:, :), &
-                                                            trial(:, :), work(:)
-      INTEGER                                            :: i, info, n, ng
-      INTEGER, ALLOCATABLE                               :: indices(:)
-      LOGICAL, ALLOCATABLE                               :: done(:)
-      REAL(dp)                                           :: block_mean
-      REAL(dp), ALLOCATABLE                              :: eigenvalues(:), gradient(:), &
-                                                            group_values(:), real_work(:)
+      COMPLEX(dp), ALLOCATABLE                           :: trial(:, :)
+      REAL(dp), ALLOCATABLE                              :: eigenvalues(:), gradient(:)
 
       CPASSERT(ASSOCIATED(state%native))
-      n = SIZE(state%occupations)
-      CPASSERT(ALL(SHAPE(hamiltonian) == [n, n]))
       CPASSERT(tolerance > 0.0_dp)
       state%canonicalized = .FALSE.
       ALLOCATE (gradient(skala_orbital_chart_size(state%chart)))
       CALL skala_orbital_chart_derivative(state%chart, state%weight*hamiltonian, gradient, physical_tangent=.TRUE.)
       valid = NORM2(gradient) <= tolerance
       IF (.NOT. valid) RETURN
+      CALL diagonalize_occupation_blocks(state, hamiltonian, tolerance, trial, eigenvalues, valid)
+      IF (.NOT. valid) RETURN
+      state%coefficients(:, :) = trial
+      state%eigenvalues(:) = eigenvalues
+      state%canonicalized = .TRUE.
+   END SUBROUTINE qs_skala_orbitals_canonicalize
+
+! **************************************************************************************************
+!> \brief Align the initial rotation coordinates with the frozen Hamiltonian in each occupation block.
+!>        Equal-occupation rotations preserve the density and the original charge metric.
+!> \param state Initial fixed-occupation orbital chart.
+!> \param hamiltonian Frozen native Hermitian operator in the original AO order.
+!> \param metric Original charge metric.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_orbitals_align_preconditioner(state, hamiltonian, metric)
+      TYPE(qs_skala_orbitals_type), INTENT(INOUT)        :: state
+      COMPLEX(dp), INTENT(IN)                            :: hamiltonian(:, :), metric(:, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: trial(:, :)
+      LOGICAL                                            :: valid
+      REAL(dp), ALLOCATABLE                              :: eigenvalues(:), zero(:)
+
+      CPASSERT(.NOT. state%variable_occupations)
+      CALL diagonalize_occupation_blocks(state, hamiltonian, 0.0_dp, trial, eigenvalues, valid)
+      IF (.NOT. valid) RETURN
+      CALL skala_orbital_chart_set_reference(state%chart, trial, metric, valid)
+      IF (.NOT. valid) RETURN
+      ALLOCATE (zero(skala_orbital_chart_size(state%chart)), SOURCE=0.0_dp)
+      CALL qs_skala_orbitals_evaluate(state, zero)
+   END SUBROUTINE qs_skala_orbitals_align_preconditioner
+
+! **************************************************************************************************
+!> \brief Diagonalize the projected Hamiltonian separately within each equal-occupation block.
+!> \param state Current metric-orthonormal orbitals and occupations.
+!> \param hamiltonian Native AO operator.
+!> \param tolerance Preserve the reference orientation in blocks degenerate within this tolerance.
+!> \param trial Rotated orbitals.
+!> \param eigenvalues Corresponding eigenvalues.
+!> \param valid Whether all block diagonalizations succeeded.
+! **************************************************************************************************
+   SUBROUTINE diagonalize_occupation_blocks(state, hamiltonian, tolerance, trial, eigenvalues, valid)
+      TYPE(qs_skala_orbitals_type), INTENT(IN)           :: state
+      COMPLEX(dp), INTENT(IN)                            :: hamiltonian(:, :)
+      REAL(dp), INTENT(IN)                               :: tolerance
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)             :: trial(:, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                :: eigenvalues(:)
+      LOGICAL, INTENT(OUT)                               :: valid
+
+      COMPLEX(dp), ALLOCATABLE                           :: projected(:, :), rotation(:, :), work(:)
+      INTEGER                                            :: i, info, n, ng
+      INTEGER, ALLOCATABLE                               :: indices(:)
+      LOGICAL, ALLOCATABLE                               :: done(:)
+      REAL(dp)                                           :: block_mean
+      REAL(dp), ALLOCATABLE                              :: group_values(:), real_work(:)
+
+      n = SIZE(state%occupations)
+      CPASSERT(ALL(SHAPE(hamiltonian) == [n, n]))
       ALLOCATE (projected(n, n), trial(n, n), eigenvalues(n), done(n))
       projected(:, :) = MATMUL(CONJG(TRANSPOSE(state%coefficients)), MATMUL(hamiltonian, state%coefficients))
       trial(:, :) = state%coefficients
       done = .FALSE.
+      valid = .TRUE.
       DO i = 1, n
          IF (done(i)) CYCLE
          ng = COUNT(state%occupations == state%occupations(i))
@@ -624,10 +675,7 @@ CONTAINS
          trial(:, indices) = MATMUL(state%coefficients(:, indices), rotation)
          DEALLOCATE (indices, rotation, group_values, work, real_work)
       END DO
-      state%coefficients(:, :) = trial
-      state%eigenvalues(:) = eigenvalues
-      state%canonicalized = .TRUE.
-   END SUBROUTINE qs_skala_orbitals_canonicalize
+   END SUBROUTINE diagonalize_occupation_blocks
 
 ! **************************************************************************************************
 !> \brief Install matching Gamma MOs and density, optionally including the canonical weighted density.
