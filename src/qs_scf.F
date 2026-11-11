@@ -1224,6 +1224,14 @@ CONTAINS
       CALL get_ks_env(qs_env%ks_env, upf_inverse=inverse)
       IF (.NOT. ASSOCIATED(inverse)) RETURN
       IF (.NOT. inverse%enabled) RETURN
+      IF (.NOT. final_stage .AND. .NOT. do_kpoints .AND. .NOT. scf_control%smear%do_smear .AND. &
+          .NOT. dft_control%use_gauxc) THEN
+         hfx_section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF")
+         CALL section_vals_get(hfx_section, explicit=do_hfx)
+         ! Fixed-occupation semilocal Gamma SCFs use the requested native OT preconditioner.
+         ! The final refinement still checks the original physical stationarity tolerance.
+         IF (.NOT. do_hfx) RETURN
+      END IF
       create_search_state => qs_skala_scf_create
       IF (do_kpoints) THEN
          ! The input-selected reduction also constrains operations leaving a point fixed.
