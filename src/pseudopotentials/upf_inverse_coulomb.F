@@ -1695,6 +1695,12 @@ CONTAINS
       END IF
       CALL init_orbital_pointers(MAXVAL(angular_momenta))
       CALL init_spherical_harmonics(MAXVAL(angular_momenta), -1)
+      ! Reciprocal vectors have independent shell coefficients and derivatives.
+!$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(STATIC) IF(SIZE(gvecs, 2) > 64) &
+!$OMP SHARED(radii, angular_momenta, harmonic_indices, gvecs, position, volume, kernel, response, &
+!$OMP        radii_response, gvecs_response, position_response, volume_response, nco, ncoset, indco, orbtramat) &
+!$OMP PRIVATE(ig, norm_g, bessel_ready, direction, phase, phase_response, channel, l, last_order, order, ir, m, &
+!$OMP         phase_l, angular, angular_gradient, a, powers, factor, axis, reduced, jl, gradient, radial, jnext, bessel_values)
       DO ig = 1, SIZE(gvecs, 2)
          norm_g = SQRT(SUM(gvecs(:, ig)**2))
          bessel_ready = .FALSE.
@@ -1755,6 +1761,7 @@ CONTAINS
             END DO
          END DO
       END DO
+!$OMP END PARALLEL DO
 
       IF (.NOT. PRESENT(grid_shape)) RETURN
       IF (ALL(grid_shape == 0)) RETURN
