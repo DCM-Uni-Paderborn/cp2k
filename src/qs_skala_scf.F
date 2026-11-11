@@ -4416,8 +4416,9 @@ CONTAINS
       REAL(dp)                                           :: energy, first_energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, roundoff, &
                                                             tolerance
-      REAL(dp), ALLOCATABLE                              :: gradient(:), root(:), targets(:), &
-                                                            values(:), weights(:), windows(:)
+      REAL(dp), ALLOCATABLE                              :: bracket(:, :), gradient(:), root(:), &
+                                                            segment_start(:), targets(:), values(:), &
+                                                            weights(:), windows(:)
       TYPE(qs_skala_scf_crossing_type), POINTER          :: event
 
       event => context%crossings
@@ -4431,6 +4432,8 @@ CONTAINS
       END IF
       ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)), gradient(SIZE(first)))
       pending(:) = [(i, i=1, SIZE(pending))]
+      ALLOCATE (segment_start, SOURCE=first)
+      ALLOCATE (bracket, SOURCE=event%values)
       IF (PRESENT(reference_energy)) THEN
          first_energy = reference_energy
       ELSE
@@ -4440,11 +4443,17 @@ CONTAINS
       DO WHILE (SIZE(pending) > 0)
          ALLOCATE (selected(SIZE(pending)), values(SIZE(pending)), windows(SIZE(pending)))
          windows(:) = MERGE(tolerance, kinetic_tolerance, event%descriptors(pending) == skala_density_descriptor)
-         CALL boundary_root(context%state, first, last, event%points(:, pending), &
-                            event%domains(pending), event%spins(pending), event%descriptors(pending), &
-                            event%targets(pending), windows, root, values, selected, found, &
-                            check_external=context%check_external, stopped=stopped, curve=event%curve, &
-                            energy_only=.TRUE., endpoint_values=event%values(:, pending))
+         DO
+            CALL boundary_root(context%state, segment_start, last, event%points(:, pending), &
+                               event%domains(pending), event%spins(pending), event%descriptors(pending), &
+                               event%targets(pending), windows, root, values, selected, found, &
+                               check_external=context%check_external, stopped=stopped, curve=event%curve, &
+                               energy_only=.TRUE., endpoint_values=bracket(:, pending))
+            IF (found .OR. stopped .OR. ALL(segment_start == first)) EXIT
+            ! A shortened interval can lose resolution on a curved constraint chart.
+            segment_start(:) = first
+            bracket(1, :) = event%values(1, :)
+         END DO
          IF (stopped) THEN
             context%external_stopped = .TRUE.
             EXIT
@@ -4461,34 +4470,38 @@ CONTAINS
          CPASSERT(native_samples_match(context%state, root))
          energy = sum_ks_energies(context%state%energy, .TRUE.)
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
-         IF (energy > first_energy + roundoff) THEN
-            ALLOCATE (remaining, SOURCE=PACK(pending,.NOT. selected))
-            CALL MOVE_ALLOC(remaining, pending)
-            DEALLOCATE (selected, values, windows)
-            CYCLE
-         END IF
-         ALLOCATE (reached, SOURCE=PACK(pending, selected))
-         ALLOCATE (admissible(SIZE(reached)), sides(SIZE(reached)))
-         CALL qs_skala_scf_classify(context%state, root, event%points(:, reached), event%domains(reached), &
-                                    event%spins(reached), event%descriptors(reached), event%targets(reached), &
-                                    admissible, sides, valid, restore_operator=.FALSE.)
-         IF (.NOT. valid) EXIT
-         IF (ANY(admissible)) THEN
-            ! Restore the original operator only when an admissible root can be returned.
-            CALL evaluate_limiting_state(context%state, root, energy, gradient, .TRUE.)
-            energy = sum_ks_energies(context%state%energy, .TRUE.)
-            roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
-            IF (energy <= first_energy + roundoff) THEN
-               ALLOCATE (event%selected(SIZE(event%spins)), SOURCE=.FALSE.)
-               event%selected(PACK(reached, admissible)) = .TRUE.
-               ALLOCATE (event%root, SOURCE=root)
-               event%resolved = .TRUE.
-               EXIT
+         IF (energy <= first_energy + roundoff) THEN
+            ALLOCATE (reached, SOURCE=PACK(pending, selected))
+            ALLOCATE (admissible(SIZE(reached)), sides(SIZE(reached)))
+            CALL qs_skala_scf_classify(context%state, root, event%points(:, reached), event%domains(reached), &
+                                       event%spins(reached), event%descriptors(reached), event%targets(reached), &
+                                       admissible, sides, valid, restore_operator=.FALSE.)
+            IF (.NOT. valid) EXIT
+            IF (ANY(admissible)) THEN
+               ! Restore the original operator only when an admissible root can be returned.
+               CALL evaluate_limiting_state(context%state, root, energy, gradient, .TRUE.)
+               energy = sum_ks_energies(context%state%energy, .TRUE.)
+               roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(first_energy), ABS(energy), TINY(0.0_dp))
+               IF (energy <= first_energy + roundoff) THEN
+                  ALLOCATE (event%selected(SIZE(event%spins)), SOURCE=.FALSE.)
+                  event%selected(PACK(reached, admissible)) = .TRUE.
+                  ALLOCATE (event%root, SOURCE=root)
+                  event%resolved = .TRUE.
+                  EXIT
+               END IF
             END IF
+            DEALLOCATE (admissible, sides, reached)
+         END IF
+         ! Advance only when every remaining candidate is still on its original side.
+         ! Compare energies with the accepted orbitals even after narrowing the bracket.
+         IF (ALL(selected .OR. SIGN(1.0_dp, event%values(1, pending) - event%targets(pending))* &
+                 (values - event%targets(pending)) > windows)) THEN
+            segment_start(:) = root
+            bracket(1, pending) = values
          END IF
          ALLOCATE (remaining, SOURCE=PACK(pending,.NOT. selected))
          CALL MOVE_ALLOC(remaining, pending)
-         DEALLOCATE (selected, values, windows, admissible, sides, reached)
+         DEALLOCATE (selected, values, windows)
       END DO
       IF (SIZE(pending) == 0) event%encountered = .FALSE.
       IF (.NOT. event%resolved) THEN
