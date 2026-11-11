@@ -1485,8 +1485,9 @@ CONTAINS
                CALL reduced_evaluation(x, energy, reduced, valid)
                IF (.NOT. valid) RETURN
             END IF
-            ! Keep a trial with verified gradient progress for the ordinary admission checks.
-            IF (.NOT. gradient_progress .AND. (coupled_curvature .OR. .NOT. resolved_descent)) THEN
+            ! A resolved energy decrease can coexist with stalled gradient progress.
+            IF (.NOT. gradient_progress .AND. &
+                (coupled_curvature .OR. curvature_stalled .OR. .NOT. resolved_descent)) THEN
                curvature_interrupted = .FALSE.
                CALL newton_direction(x, reduced, newton, newton_valid, newton_stopped)
                IF (curvature_interrupted) THEN

@@ -777,6 +777,15 @@ CONTAINS
       IF (NORM2(negative - [0.001_dp, 0.05_dp]) > 0.1_dp*(1.0_dp + 128.0_dp*EPSILON(1.0_dp))) THEN
          ERROR STOP 'Negative-curvature step exceeded the original step bound'
       END IF
+      ! Small resolved energy decreases in the concave region do not reduce the gradient.
+      negative = [0.0_dp, 0.02_dp]
+      energy_zero = 0.01_dp
+      CALL skala_constrained_stationarity(empty_constraints, negative_curvature_energy_gradient, energy_zero, &
+                                          negative, empty, tolerance, converged, max_iterations=80, &
+                                          check_stalled_segment=crossing_segment, precondition=scaled_inverse_curvature)
+      IF (.NOT. converged .OR. NORM2(negative - [0.0_dp, 1.0_dp]) > tolerance) THEN
+         ERROR STOP 'Resolved downhill steps suppressed curvature recovery after gradient stagnation'
+      END IF
    END SUBROUTINE check_constrained_curvature
 
 ! **************************************************************************************************
