@@ -4015,6 +4015,13 @@ CONTAINS
             ! Equal endpoints only ask whether an existing normal remains admissible.
             ! The following constraint restoration or the stationarity exit rebuilds KS.
             different_endpoints = ANY(first /= last)
+            ! Rebase the accepted feasible point before large Cayley coordinates
+            ! compress the orbital tangent.
+            IF (.NOT. different_endpoints .AND. .NOT. context%state%thermal .AND. NORM2(first) > 1.0_dp) THEN
+               context%rechart = .TRUE.
+               interrupted = .TRUE.
+               RETURN
+            END IF
             IF (different_endpoints) THEN
                CALL check_native_segment(first, last, curve, context, interrupted, restore_operator=.FALSE., &
                                          leave_trial=SIZE(context%spins) == 0)
