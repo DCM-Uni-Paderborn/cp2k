@@ -1485,7 +1485,8 @@ CONTAINS
                               ! before searching the full rejected interval for a physical minimum.
                               deferred_trial = trial
                               deferred_scan = .TRUE.
-                           ELSE IF (slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
+                           ELSE IF (slope < 0.0_dp .AND. trial_slope > 0.0_dp .AND. &
+                                    (trial_energy > energy + roundoff .OR. trial_slope > 0.9_dp*ABS(slope)) .AND. &
                                     free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
                               CALL try_slope_bracket(trial, trial_energy, trial_reduced, fraction, &
                                                      reversal_descent, event, newton_stopped, uphill_excursion)

@@ -1261,6 +1261,17 @@ CONTAINS
           ABS(cusp_coordinate(1) - 0.19375_dp) > 1.e-12_dp .OR. cusp_coordinate(2) /= 0.0_dp) THEN
          ERROR STOP 'An uphill secant trial discarded a shorter resolved descent'
       END IF
+      ! The uphill endpoint reverses only one tenth of the initial slope.
+      coordinate = 0.0_dp
+      segment_queries = 0
+      CALL skala_constrained_stationarity(empty_constraints, weak_reversal_gradient, scale, coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          iterations=iterations, retain_progress=.TRUE., curvature_steps=.TRUE., &
+                                          check_stalled_segment=crossing_segment, check_reversal_segment=bracketed_cusp_segment)
+      IF (converged .OR. iterations /= 1 .OR. segment_queries /= 0 .OR. &
+          ABS(coordinate(1) - 0.5_dp/11.0_dp) > 1.e-12_dp) THEN
+         ERROR STOP 'A weak uphill slope reversal bypassed the shorter descent'
+      END IF
       coordinate = 1.e-8_dp
       CALL skala_constrained_stationarity(empty_constraints, roundoff_cusp_gradient, cusp, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=1, &
@@ -1566,6 +1577,26 @@ CONTAINS
          ERROR STOP 'Invalid uphill trial context'
       END SELECT
    END SUBROUTINE uphill_trial_gradient
+
+! **************************************************************************************************
+!> \brief Smooth objective with a weak slope reversal at the rejected upper endpoint.
+!> \param coordinate Single scaled orbital coordinate.
+!> \param energy Objective value.
+!> \param gradient Exact objective derivative.
+!> \param context Unused callback context.
+! **************************************************************************************************
+   SUBROUTINE weak_reversal_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      REAL(dp)                                           :: z
+
+      MARK_USED(context)
+      z = 10.0_dp*coordinate(1)
+      energy = z*(-1.0_dp + z*(2.8_dp - 1.5_dp*z))
+      gradient(1) = 10.0_dp*(-1.0_dp + z*(5.6_dp - 4.5_dp*z))
+   END SUBROUTINE weak_reversal_gradient
 
 ! **************************************************************************************************
 !> \brief A failed line search must retain its first feasible segment around the cusp.
