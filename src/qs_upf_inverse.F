@@ -65,6 +65,7 @@ MODULE qs_upf_inverse
    PUBLIC :: qs_upf_inverse_transition, qs_upf_inverse_transition_response
    PUBLIC :: qs_upf_inverse_exchange_pair, qs_upf_inverse_exchange_pair_response
    PUBLIC :: qs_upf_inverse_block_size
+   PUBLIC :: max_point_field_bytes
 
 CONTAINS
 

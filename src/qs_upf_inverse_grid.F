@@ -18,7 +18,8 @@ MODULE qs_upf_inverse_grid
         dbcsr_release, dbcsr_type, dbcsr_type_antisymmetric, dbcsr_type_no_symmetry, &
         dbcsr_type_symmetric
    USE gaussian_basis_fields,           ONLY: gaussian_basis_fields_periodic
-   USE kinds,                           ONLY: dp
+   USE kinds,                           ONLY: dp,&
+                                              int_8
    USE mathlib,                         ONLY: invmat
    USE message_passing,                 ONLY: mp_comm_congruent,&
                                               mp_comm_ident,&
@@ -29,7 +30,8 @@ MODULE qs_upf_inverse_grid
                                               pw_grid_type
    USE pw_types,                        ONLY: pw_r3d_rs_type
    USE qs_ks_types,                     ONLY: qs_ks_env_type
-   USE qs_upf_inverse,                  ONLY: qs_upf_inverse_block_size,&
+   USE qs_upf_inverse,                  ONLY: max_point_field_bytes,&
+                                              qs_upf_inverse_block_size,&
                                               qs_upf_inverse_evaluate,&
                                               qs_upf_inverse_from_ks,&
                                               qs_upf_inverse_release,&
@@ -129,7 +131,47 @@ CONTAINS
       END DO
       CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct, &
                                   store_fields, basis_type, center_rotations)
+      IF (info == 0 .AND. .NOT. PRESENT(store_fields)) CALL cache_gamma_fields(frame)
    END SUBROUTINE qs_upf_inverse_grid_prepare
+
+! **************************************************************************************************
+!> \brief Keep the real soft fields for repeated electronic operations on a skew Gamma grid.
+!>        The full complex cache may exceed its budget even when these fields fit on their own.
+!> \param frame Prepared grid and inverse coefficients at the current geometry.
+! **************************************************************************************************
+   SUBROUTINE cache_gamma_fields(frame)
+      TYPE(qs_upf_inverse_grid_type), INTENT(INOUT)       :: frame
+
+      COMPLEX(dp), ALLOCATABLE                           :: gradient(:, :, :), soft(:, :)
+      INTEGER                                            :: axis, block, first, last, m, nao, npoint, status
+      REAL(dp)                                           :: skew(3, 3)
+
+      IF (frame%ao%fields_stored .OR. ANY(frame%ao%reduced_k /= 0.0_dp)) RETURN
+      skew = frame%ao%cell
+      DO axis = 1, 3
+         skew(axis, axis) = 0.0_dp
+      END DO
+      IF (ALL(skew == 0.0_dp)) RETURN
+      nao = SIZE(frame%ao%coefficients, 2)
+      npoint = SIZE(frame%ao%weights)
+      IF (npoint == 0 .OR. 32_int_8*nao*npoint > max_point_field_bytes) RETURN
+      block = MIN(npoint, qs_upf_inverse_block_size(frame%ao))
+      ALLOCATE (soft(block, nao), gradient(block, nao, 3), STAT=status)
+      IF (status /= 0) RETURN
+      ALLOCATE (frame%gamma_fields(npoint, nao, 4), STAT=status)
+      IF (status /= 0) RETURN
+      DO first = 1, npoint, block
+         last = MIN(npoint, first + block - 1)
+         m = last - first + 1
+         CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, first:last), soft(:m, :), gradient(:m, :, :))
+         IF (ANY(AIMAG(soft(:m, :)) /= 0.0_dp) .OR. ANY(AIMAG(gradient(:m, :, :)) /= 0.0_dp)) THEN
+            DEALLOCATE (frame%gamma_fields)
+            RETURN
+         END IF
+         frame%gamma_fields(first:last, :, 1) = REAL(soft(:m, :), dp)
+         frame%gamma_fields(first:last, :, 2:4) = REAL(gradient(:m, :, :), dp)
+      END DO
+   END SUBROUTINE cache_gamma_fields
 
 ! **************************************************************************************************
 !> \brief Collocate one spin/k contribution and its projector density in the same inverse frame.
@@ -225,7 +267,7 @@ CONTAINS
          DO lo = 1, n, block
             hi = MIN(n, lo + block - 1)
             m = hi - lo + 1
-            CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :))
+            CALL point_fields(frame, lo, hi, soft(:m, :), sg(:m, :, :))
             ! The complete orbital density equals the Gaussian density plus its inverse residual.
             IF (PRESENT(gradient)) THEN
                CALL upf_inverse_smooth_density(soft(:m, :), sg(:m, :, :), p, rho(lo:hi), dn(lo:hi, :), t(lo:hi))
@@ -358,11 +400,11 @@ CONTAINS
             hi = MIN(n, lo + block - 1)
             m = hi - lo + 1
             IF (use_gradients) THEN
-               CALL point_fields(frame%ao, lo, hi, soft(:m, :), sg(:m, :, :))
+               CALL point_fields(frame, lo, hi, soft(:m, :), sg(:m, :, :))
                CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), sg(:m, :, :), sg(:m, :, :), &
                                                frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
             ELSE
-               CALL point_fields(frame%ao, lo, hi, soft(:m, :))
+               CALL point_fields(frame, lo, hi, soft(:m, :))
                CALL upf_inverse_pair(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi)*dn(lo:hi), residual)
             END IF
             h(:, :) = h + residual
@@ -626,7 +668,7 @@ CONTAINS
                                             atom_response=atom_response, cell_response=cell_response, &
                                             reduced_k_response=reduced_k_response, coefficients_response=dw)
             ELSE
-               CALL point_fields(frame%ao, lo, hi, soft(:m, :), gradient(:m, :, :))
+               CALL point_fields(frame, lo, hi, soft(:m, :), gradient(:m, :, :))
             END IF
             IF (PRESENT(right_frame)) THEN
                IF (PRESENT(response)) THEN
@@ -636,7 +678,7 @@ CONTAINS
                                                cell_response=cell_response, reduced_k_response=reduced_k_response, &
                                                coefficients_response=right_coefficients_response)
                ELSE
-                  CALL point_fields(right%ao, lo, hi, right_soft(:m, :), right_gradient(:m, :, :))
+                  CALL point_fields(right, lo, hi, right_soft(:m, :), right_gradient(:m, :, :))
                END IF
                right_values => right_soft
             ELSE IF (PRESENT(response)) THEN
@@ -873,16 +915,19 @@ CONTAINS
 !> \param gradient Optional physical spatial gradients.
 ! **************************************************************************************************
    SUBROUTINE point_fields(frame, first, last, soft, gradient)
-      TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
       INTEGER, INTENT(IN)                                :: first, last
       COMPLEX(dp), INTENT(OUT)                           :: soft(:, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gradient(:, :, :)
 
-      IF (frame%fields_stored) THEN
-         soft(:, :) = frame%soft(first:last, :)
-         IF (PRESENT(gradient)) gradient(:, :, :) = frame%soft_gradient(first:last, :, :)
+      IF (frame%ao%fields_stored) THEN
+         soft(:, :) = frame%ao%soft(first:last, :)
+         IF (PRESENT(gradient)) gradient(:, :, :) = frame%ao%soft_gradient(first:last, :, :)
+      ELSE IF (ALLOCATED(frame%gamma_fields)) THEN
+         soft(:, :) = frame%gamma_fields(first:last, :, 1)
+         IF (PRESENT(gradient)) gradient(:, :, :) = frame%gamma_fields(first:last, :, 2:4)
       ELSE
-         CALL qs_upf_inverse_evaluate(frame, frame%points(:, first:last), soft, gradient)
+         CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, first:last), soft, gradient)
       END IF
    END SUBROUTINE point_fields
 
