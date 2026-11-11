@@ -584,7 +584,7 @@ endforeach()
 
 add_executable(
   dbm_miniapp dbm/dbm_miniapp.c ${CP2K_DBM_SRCS_C} ${CP2K_MPIWRAP_SRCS_C}
-              ${CP2K_DBM_SRCS_GPU} ${CP2K_OFFLOAD_SRCS_C})
+              ${CP2K_OFFLOAD_SRCS_C})
 if(CP2K_DBM_OPENCL)
   libxstream_add_dbm(dbm_miniapp)
 endif()
@@ -595,10 +595,13 @@ target_compile_definitions(
           $<$<BOOL:${CP2K_USE_LIBXSMM}>:__LIBXSMM>
           $<$<STREQUAL:"${CP2K_BLAS_VENDOR}","MKL">:__MKL>)
 
-if(CP2K_DISABLE_DBM_GPU)
+if(NOT CP2K_ENABLE_DBM_GPU)
   target_compile_definitions(dbm_miniapp PRIVATE __NO_OFFLOAD_DBM)
 else()
   target_compile_definitions(dbm_miniapp PRIVATE ${CP2K_GPU_DFLAGS})
+  if(CP2K_USE_CUDA OR CP2K_USE_HIP)
+    target_sources(dbm_miniapp PRIVATE ${CP2K_DBM_SRCS_GPU})
+  endif()
 endif()
 
 foreach(__app grid_miniapp grid_unittest)
