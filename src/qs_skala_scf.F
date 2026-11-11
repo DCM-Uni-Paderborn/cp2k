@@ -3064,9 +3064,10 @@ CONTAINS
 !>        invalid until the caller evaluates the restored selection.
 !> \param assemble_jumps Compose qualified jumps from primitive covectors, default true.
 !>        False retains the complete KS reference evaluation for every negative limit.
+!> \param windows_valid Whether the full evaluation satisfies every original physical window.
 ! **************************************************************************************************
    SUBROUTINE qs_skala_scf_limiting(state, coordinate, positive_gradient, negative_changes, physical_jacobian, &
-                                    hold_orbitals, restore_operator, assemble_jumps)
+                                    hold_orbitals, restore_operator, assemble_jumps, windows_valid)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
       REAL(dp), INTENT(OUT)                              :: positive_gradient(:), &
@@ -3074,6 +3075,7 @@ CONTAINS
       REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_jacobian(:, :)
       LOGICAL, INTENT(IN), OPTIONAL                      :: hold_orbitals, restore_operator, &
                                                             assemble_jumps
+      LOGICAL, INTENT(OUT), OPTIONAL                     :: windows_valid
 
       INTEGER                                            :: i, last_limit, m, n
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
@@ -3082,11 +3084,10 @@ CONTAINS
                                                             valid
       LOGICAL, ALLOCATABLE                               :: assembled(:)
       REAL(dp)                                           :: energy, kinetic_probe, &
-                                                            kinetic_tolerance, probe, tolerance, &
-                                                            value
+                                                            kinetic_tolerance, probe, tolerance
       REAL(dp), ALLOCATABLE                              :: gradient(:), jump_values(:), &
                                                             original_weights(:), physical(:), &
-                                                            targets(:), weights(:)
+                                                            targets(:), values(:), weights(:)
       TYPE(section_vals_type), POINTER                   :: functionals
 
       n = qs_skala_scf_size(state)
@@ -3107,6 +3108,7 @@ CONTAINS
          CPASSERT(valid)
       END IF
       negative_changes = 0.0_dp
+      IF (PRESENT(windows_valid)) windows_valid = .TRUE.
       IF (m == 0) THEN
          CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)
          RETURN
@@ -3114,7 +3116,7 @@ CONTAINS
       CALL skala_density_constraints_get(state%constraints, points, spins, original_weights, &
                                          probe, tolerance, descriptors=descriptors, domains=domains, &
                                          kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance, targets=targets)
-      ALLOCATE (weights(m), gradient(n), physical(n), assembled(m))
+      ALLOCATE (weights(m), gradient(n), physical(n), assembled(m), values(m))
       weights = 0.0_dp
       assembled = .FALSE.
       CALL skala_density_constraints_update_weights(state%constraints, weights)
@@ -3138,33 +3140,38 @@ CONTAINS
          CALL state%para_env%sum(jump_owners)
          assembled(:) = jump_owners == 1
       END IF
+      ! Reject limits outside the original windows before constructing their covectors.
+      CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values)
+      valid = ALL(descriptors == skala_density_descriptor .OR. descriptors == skala_kinetic_descriptor)
+      CPASSERT(valid)
+      valid = ALL(ABS(values - targets) <= MERGE(tolerance, kinetic_tolerance, descriptors == skala_density_descriptor))
+      IF (PRESENT(windows_valid)) THEN
+         windows_valid = valid
+      ELSE
+         CPASSERT(valid)
+      END IF
       ! Only the derivative selection changes from here. Keep the same installed MOs and density.
       fixed_orbitals = .TRUE.
-      DO i = 1, m
-         CALL qs_skala_scf_value(state, domains(i), points(:, i), spins(i), descriptors(i), value)
-         IF (descriptors(i) == skala_density_descriptor) THEN
-            CPASSERT(ABS(value - targets(i)) <= tolerance)
-         ELSE
-            CPASSERT(descriptors(i) == skala_kinetic_descriptor)
-            CPASSERT(ABS(value - targets(i)) <= kinetic_tolerance)
-         END IF
-         IF (PRESENT(physical_jacobian) .OR. assembled(i)) THEN
-            CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), &
-                                               gradient, physical)
-            IF (PRESENT(physical_jacobian)) physical_jacobian(i, :) = physical
-            IF (assembled(i)) negative_changes(:, i) = jump_values(i)*physical
-         END IF
-      END DO
       last_limit = 0
-      DO i = 1, m
-         IF (assembled(i)) CYCLE
-         weights(i) = 1.0_dp
-         CALL skala_density_constraints_update_weights(state%constraints, weights)
-         CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
-         negative_changes(:, i) = physical - positive_gradient
-         weights(i) = 0.0_dp
-         last_limit = i
-      END DO
+      IF (valid) THEN
+         DO i = 1, m
+            IF (PRESENT(physical_jacobian) .OR. assembled(i)) THEN
+               CALL qs_skala_scf_point_derivative(state, domains(i), points(:, i), spins(i), descriptors(i), &
+                                                  gradient, physical)
+               IF (PRESENT(physical_jacobian)) physical_jacobian(i, :) = physical
+               IF (assembled(i)) negative_changes(:, i) = jump_values(i)*physical
+            END IF
+         END DO
+         DO i = 1, m
+            IF (assembled(i)) CYCLE
+            weights(i) = 1.0_dp
+            CALL skala_density_constraints_update_weights(state%constraints, weights)
+            CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
+            negative_changes(:, i) = physical - positive_gradient
+            weights(i) = 0.0_dp
+            last_limit = i
+         END DO
+      END IF
       ! The positive limit or the last explicit negative limit may already use the original weights.
       IF (last_limit > 0) weights(last_limit) = 1.0_dp
       IF (restore .AND. ALL(weights == original_weights)) RETURN
@@ -3258,6 +3265,7 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: balanced
 
       INTEGER                                            :: m, n
+      LOGICAL                                            :: windows_valid
       REAL(dp)                                           :: energy
       REAL(dp), ALLOCATABLE                              :: changes(:, :), positive(:), predicted(:)
 
@@ -3265,8 +3273,12 @@ CONTAINS
       m = skala_density_constraints_count(state%constraints)
       CPASSERT(SIZE(balanced_gradient) == n)
       ALLOCATE (positive(n), changes(n, m), predicted(n))
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, restore_operator=.FALSE.)
-      CALL skala_density_constraints_balance(state%constraints, positive, changes, tolerance, predicted, balanced)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, restore_operator=.FALSE., &
+                                 windows_valid=windows_valid)
+      balanced = .FALSE.
+      IF (windows_valid) THEN
+         CALL skala_density_constraints_balance(state%constraints, positive, changes, tolerance, predicted, balanced)
+      END IF
       CALL evaluate_limiting_state(state, coordinate, energy, balanced_gradient, .TRUE.)
    END SUBROUTINE qs_skala_scf_balance
 
@@ -3306,7 +3318,9 @@ CONTAINS
       release_side = 0
       valid = .FALSE.
       ALLOCATE (positive(n), changes(n, m), jacobian(m, n))
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, hold_orbitals, restore_operator)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, hold_orbitals, restore_operator, &
+                                 windows_valid=valid)
+      IF (.NOT. valid) RETURN
       CALL skala_cusp_admissibility(positive, changes, jacobian, admissible, release_side, valid)
    END SUBROUTINE qs_skala_scf_admissibility
 
@@ -3359,7 +3373,8 @@ CONTAINS
       valid = .TRUE.
       IF (m == 0) RETURN
       ALLOCATE (positive(n), changes(n, m), physical(m, n), admissible(m), sides(m), groups(m), drop(m))
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, physical)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, physical, windows_valid=valid)
+      IF (.NOT. valid) RETURN
       CALL skala_cusp_admissibility(positive, changes, physical, admissible, sides, valid, group_ids=groups)
       IF (.NOT. valid .OR. ALL(admissible)) RETURN
       valid = .FALSE.
@@ -3552,8 +3567,9 @@ CONTAINS
       weights(:old) = old_weights
       CALL qs_skala_scf_select(state, all_points, all_domains, all_spins, all_descriptors, weights, &
                                probe, tolerance, kinetic_probe, kinetic_tolerance, targets=all_targets)
-      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, restore_operator=.FALSE.)
-      CALL skala_cusp_admissibility(positive, changes, jacobian, normal_admissible, sides, valid)
+      CALL qs_skala_scf_limiting(state, coordinate, positive, changes, jacobian, restore_operator=.FALSE., &
+                                 windows_valid=valid)
+      IF (valid) CALL skala_cusp_admissibility(positive, changes, jacobian, normal_admissible, sides, valid)
       IF (valid) THEN
          admissible(:) = normal_admissible(old + 1:)
          release_side(:) = sides(old + 1:)
