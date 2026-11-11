@@ -172,13 +172,17 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: cached_gradient(:, :, :, :), &
                                                             cached_soft(:, :, :)
       INTEGER                                            :: nao, nk, np, nspin
-      LOGICAL                                            :: energy_only, geometry_fields, &
+      LOGICAL                                            :: energy_only, fields_only, geometry_fields, &
                                                             store_fields
       REAL(dp), ALLOCATABLE                              :: density_scale(:, :), ebackground(:), &
                                                             integration_weights(:)
 
       energy_only = .FALSE.
       IF (PRESENT(just_energy)) energy_only = just_energy
+      fields_only = .FALSE.
+      IF (PRESENT(density_constraints)) THEN
+         IF (ASSOCIATED(density_constraints)) fields_only = skala_density_samples_only(density_constraints)
+      END IF
       nk = SIZE(frames)
       CPASSERT(nk > 0 .AND. SIZE(kweights) == nk)
       CPASSERT(ALL(kweights >= 0.0_dp))
@@ -207,7 +211,6 @@ CONTAINS
          CPASSERT(ALL(SHAPE(core_laplacian) == [np, nspin]))
          CPASSERT(ALL(SHAPE(background_laplacian) == [np, nspin]))
          ALLOCATE (state%laplacian, SOURCE=core_laplacian)
-         ALLOCATE (state%vlaplacian(np, nspin), state%background_vlaplacian(np, nspin))
       END IF
       geometry_fields = .FALSE.
       IF (PRESENT(atom_grid)) THEN
@@ -222,25 +225,10 @@ CONTAINS
       END IF
       ! Reuse only the orbital fields shared by the density and operator in this call.
       ! Larger point sets retain the original bounded-block evaluation.
-      store_fields = .NOT. energy_only .AND. .NOT. geometry_fields .AND. np > 0 .AND. &
+      store_fields = .NOT. (energy_only .OR. fields_only .OR. geometry_fields) .AND. np > 0 .AND. &
                      64_int_8*INT(np, int_8)*nao*nk <= max_xc_field_bytes
-      IF (PRESENT(density_constraints)) THEN
-         IF (ASSOCIATED(density_constraints)) THEN
-            IF (skala_density_samples_only(density_constraints)) store_fields = .FALSE.
-         END IF
-      END IF
-      IF (PRESENT(atom_grid)) THEN
-         IF (ALLOCATED(atom_grid%background_weights)) THEN
-            ALLOCATE (state%background_weights, SOURCE=atom_grid%background_weights)
-         END IF
-      END IF
       IF (store_fields .AND. .NOT. ALLOCATED(state%laplacian)) ALLOCATE (cached_soft(np, nao, nk), cached_gradient(np, nao, 3, nk))
-      ALLOCATE (state%operators(nao, nao, nk, nspin), state%density(np, nspin), &
-                state%density_gradient(np, 3, nspin), state%energy_density(np), &
-                state%vdensity(np, nspin), state%vgradient(np, 3, nspin), &
-                state%background_vdensity(np, nspin), state%background_vgradient(np, 3, nspin), &
-                state%tau(np, nspin), state%vtau(np, nspin), state%background_vtau(np, nspin), &
-                ebackground(np))
+      ALLOCATE (state%density(np, nspin), state%density_gradient(np, 3, nspin), state%tau(np, nspin))
       state%density(:, :) = core_density
       state%density_gradient(:, :, :) = core_gradient
       state%tau = 0.0_dp
@@ -256,31 +244,20 @@ CONTAINS
          CALL refine_cancelled_density(frames, augmentation, kweights, points, core_density, &
                                        orbital_factors, density_scale, state%density, atom_grid)
       END IF
-      IF (PRESENT(density_constraints)) THEN
-         IF (ASSOCIATED(density_constraints)) THEN
-            IF (skala_density_samples_only(density_constraints)) THEN
-               energy = 0.0_dp
-               state%operators = CMPLX(0.0_dp, 0.0_dp, dp)
-               state%energy_density = 0.0_dp
-               state%vdensity = 0.0_dp
-               state%vgradient = 0.0_dp
-               state%vtau = 0.0_dp
-               state%background_vdensity = 0.0_dp
-               state%background_vgradient = 0.0_dp
-               state%background_vtau = 0.0_dp
-               IF (ALLOCATED(state%laplacian)) THEN
-                  state%vlaplacian = 0.0_dp
-                  state%background_vlaplacian = 0.0_dp
-               END IF
-               state%weighted_adjoint = xc_section_uses_native_skala_evaluator(xc_section)
-               IF (state%weighted_adjoint) THEN
-                  ALLOCATE (state%point_derivative(3, np), state%weight_derivative(np), &
-                            state%atom_derivative(3, SIZE(frames(1)%frame%positions, 2)), SOURCE=0.0_dp)
-               END IF
-               RETURN
-            END IF
+      IF (fields_only) THEN
+         energy = 0.0_dp
+         RETURN
+      END IF
+      IF (PRESENT(atom_grid)) THEN
+         IF (ALLOCATED(atom_grid%background_weights)) THEN
+            ALLOCATE (state%background_weights, SOURCE=atom_grid%background_weights)
          END IF
       END IF
+      ALLOCATE (state%operators(nao, nao, nk, nspin), state%energy_density(np), &
+                state%vdensity(np, nspin), state%vgradient(np, 3, nspin), &
+                state%background_vdensity(np, nspin), state%background_vgradient(np, 3, nspin), &
+                state%vtau(np, nspin), state%background_vtau(np, nspin), ebackground(np))
+      IF (ALLOCATED(state%laplacian)) ALLOCATE (state%vlaplacian(np, nspin), state%background_vlaplacian(np, nspin))
       ALLOCATE (integration_weights(np))
       integration_weights(:) = weights
       IF (xc_section_uses_native_skala_evaluator(xc_section)) THEN
@@ -1647,6 +1624,7 @@ CONTAINS
 !> \param grid_adjoint Globally reduced negative background descriptor transpose including atom weights.
 !>                     Fold gradient covectors with the native spectral transpose and divide by the
 !>                     PW volume element before integrating an unweighted scalar potential.
+!>                     Unallocated for energy-only evaluation or descriptor sampling.
 !> \param kinetic Optional independent kind-indexed valence kinetic kernels.
 !> \param core_tau Prescribed exact frozen-core kinetic density when kinetic is supplied.
 !> \param atom_grid Complete local atom blocks for nonlocal Skala evaluation.
@@ -1751,19 +1729,12 @@ CONTAINS
                      CALL record_atom_descriptors(density_constraints, atom_grid, state, background)
                   END IF
                END IF
-               IF (skala_density_samples_only(density_constraints)) THEN
-                  ! Pure descriptor sampling has zero XC covectors. No transpose is needed.
-                  ALLOCATE (grid_adjoint(SIZE(fields, 1), SIZE(fields, 2), SIZE(fields, 3), SIZE(fields, 4)), SOURCE=0.0_dp)
-                  RETURN
-               END IF
+               IF (skala_density_samples_only(density_constraints)) RETURN
             END IF
          END IF
       END IF
       IF (PRESENT(just_energy)) THEN
-         IF (just_energy) THEN
-            ALLOCATE (grid_adjoint(SIZE(fields, 1), SIZE(fields, 2), SIZE(fields, 3), SIZE(fields, 4)), SOURCE=0.0_dp)
-            RETURN
-         END IF
+         IF (just_energy) RETURN
       END IF
       CALL xc_grid_adjoint(state, points, weights, fields, grid, cell, comm, grid_adjoint)
    END SUBROUTINE qs_upf_inverse_xc_grid_evaluate
