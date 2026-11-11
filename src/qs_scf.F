@@ -1398,7 +1398,9 @@ CONTAINS
             IF (.NOT. do_kpoints .OR. SIZE(tolerances) > 0 .OR. &
                 NORM2(physical) > SQRT(scf_control%eps_scf)) inner_limit = 1
          END IF
-         rebase_fixed = final_stage .AND. .NOT. scf_control%smear%do_smear .AND. SIZE(tolerances) == 0
+         ! Retain the aligned Gamma chart and its curvature history until recharting is requested.
+         rebase_fixed = final_stage .AND. .NOT. scf_control%smear%do_smear .AND. SIZE(tolerances) == 0 .AND. &
+                        .NOT. align_preconditioner
          IF (rebase_fixed) inner_limit = 1
          CALL qs_skala_scf_stationarity(state, coordinate, points, domains, spins, descriptors, tolerances, &
                                         scf_control%eps_scf, energy, converged, max_iterations=inner_limit, &
