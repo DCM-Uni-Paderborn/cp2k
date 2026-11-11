@@ -1329,6 +1329,8 @@ CONTAINS
       PROCEDURE(physical_constraints), POINTER :: constraints_local
       PROCEDURE(orbital_stationarity), POINTER :: stationarity_local
       PROCEDURE(orbital_stop), POINTER :: stop_local
+      PROCEDURE(orbital_segment), POINTER :: segment_local
+      PROCEDURE(orbital_reversal_segment), POINTER :: reversal_local
       PROCEDURE(orbital_curvature_segment), POINTER :: curvature_segment_local
       PROCEDURE(orbital_hessian_product), POINTER :: hessian_local
       PROCEDURE(orbital_lagrangian_hessian), POINTER :: lagrangian_hessian_local
@@ -1336,7 +1338,7 @@ CONTAINS
       TYPE(skala_constraint_chart_type) :: curve
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked, &
                  coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, &
-                 curvature_stalled, newton_used, gradient_progress
+                 curvature_stalled, newton_used, gradient_progress, reversal_descent
       REAL(dp) :: curvature, energy, fraction, progress_norm, radius, maximum_radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
@@ -1347,8 +1349,11 @@ CONTAINS
       ! the interfaces of host-associated procedure dummies with polymorphic arguments.
       constraints_local => evaluate_constraints
       NULLIFY (stationarity_local, stop_local, curvature_segment_local, hessian_local, lagrangian_hessian_local)
+      NULLIFY (segment_local, reversal_local)
       IF (PRESENT(verify_stationarity)) stationarity_local => verify_stationarity
       IF (PRESENT(check_stop)) stop_local => check_stop
+      IF (PRESENT(check_segment)) segment_local => check_segment
+      IF (PRESENT(check_reversal_segment)) reversal_local => check_reversal_segment
       IF (PRESENT(check_curvature_segment)) curvature_segment_local => check_curvature_segment
       IF (PRESENT(apply_hessian)) hessian_local => apply_hessian
       IF (PRESENT(apply_lagrangian_hessian)) lagrangian_hessian_local => apply_lagrangian_hessian
@@ -1451,6 +1456,7 @@ CONTAINS
          roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), TINY(0.0_dp))
          resolved_descent = .FALSE.
          gradient_progress = .FALSE.
+         reversal_descent = .FALSE.
          newton_used = .FALSE.
          slope = DOT_PRODUCT(reduced, direction)
          IF (coupled_curvature .OR. curvature_stalled .OR. (history > 0 .AND. -slope <= 32.0_dp*roundoff)) THEN
@@ -1471,7 +1477,20 @@ CONTAINS
                                         trial_energy <= energy + 1.0e-4_dp*fraction*slope
                      IF (.NOT. resolved_descent) THEN
                         event = .FALSE.
-                        CALL check_stalled_segment(x, trial, curve, context, event)
+                        IF (PRESENT(check_reversal_segment)) THEN
+                           trial_slope = DOT_PRODUCT(trial_reduced, direction)
+                           IF (slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
+                               free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
+                              CALL try_slope_bracket(trial, trial_energy, trial_reduced, fraction, &
+                                                     reversal_descent, event, newton_stopped)
+                              IF (newton_stopped) RETURN
+                              IF (reversal_descent) THEN
+                                 direction(:) = trial(curve%free) - x(curve%free)
+                                 EXIT
+                              END IF
+                           END IF
+                        END IF
+                        IF (.NOT. event) CALL check_stalled_segment(x, trial, curve, context, event)
                         IF (event) THEN
                            coordinate(:) = x
                            IF (PRESENT(interrupted)) interrupted = .TRUE.
@@ -1504,7 +1523,7 @@ CONTAINS
                IF (.NOT. valid) RETURN
             END IF
             ! A resolved energy decrease can coexist with stalled gradient progress.
-            IF (.NOT. gradient_progress .AND. &
+            IF (.NOT. gradient_progress .AND. .NOT. reversal_descent .AND. &
                 (coupled_curvature .OR. curvature_stalled .OR. .NOT. resolved_descent)) THEN
                curvature_interrupted = .FALSE.
                CALL newton_direction(x, reduced, newton, newton_valid, newton_stopped)
@@ -1551,73 +1570,14 @@ CONTAINS
                    slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
                    trial_energy < energy - roundoff .AND. trial_energy <= energy + 1.0e-4_dp*fraction*slope .AND. &
                    free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
-                  ! Try the interpolated slope zero before scanning for physical crossings.
-                  ! If it fails, an available bracket search can use a few bisections.
-                  BLOCK
-                     INTEGER :: bracket_steps, bracket_trial
-                     LOGICAL :: interpolated_valid
-                     REAL(dp) :: interpolated_energy, interpolated_fraction, interpolated_slope, slope_scale
-                     REAL(dp) :: left_fraction, right_fraction
-                     REAL(dp), ALLOCATABLE :: interpolated(:), interpolated_reduced(:), left(:), right(:)
-
-                     bracket_steps = 1
-                     IF (PRESENT(check_reversal_segment)) bracket_steps = 6
-                     left_fraction = 0.0_dp
-                     right_fraction = fraction
-                     ALLOCATE (left, SOURCE=x)
-                     ALLOCATE (right, SOURCE=trial)
-                     slope_scale = MAX(-slope, trial_slope)
-                     interpolated_fraction = fraction*((-slope/slope_scale)/(trial_slope/slope_scale - slope/slope_scale))
-                     ALLOCATE (interpolated, SOURCE=x)
-                     ALLOCATE (interpolated_reduced(nf))
-                     DO bracket_trial = 1, bracket_steps
-                        IF (stop_requested()) RETURN
-                        interpolated(:) = x
-                        interpolated(curve%free) = x(curve%free) + interpolated_fraction*direction
-                        IF (ALL(interpolated(curve%free) == left(curve%free)) .OR. &
-                            ALL(interpolated(curve%free) == right(curve%free))) EXIT
-                        CALL reduced_evaluation(interpolated, interpolated_energy, interpolated_reduced, interpolated_valid)
-                        IF (.NOT. interpolated_valid) EXIT
-                        interpolated_slope = DOT_PRODUCT(interpolated_reduced, direction)
-                        roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(interpolated_energy), TINY(0.0_dp))
-                        IF (interpolated_energy < energy - roundoff .AND. &
-                            interpolated_energy <= energy + 1.0e-4_dp*interpolated_fraction*slope .AND. &
-                            ABS(interpolated_slope) <= 0.9_dp*ABS(slope)) THEN
-                           event = .FALSE.
-                           IF (PRESENT(check_segment)) CALL check_segment(x, interpolated, curve, context, event)
-                           IF (event) THEN
-                              coordinate(:) = x
-                              IF (PRESENT(interrupted)) interrupted = .TRUE.
-                              RETURN
-                           END IF
-                           trial(:) = interpolated
-                           trial_reduced(:) = interpolated_reduced
-                           trial_energy = interpolated_energy
-                           fraction = interpolated_fraction
-                           accepted = .TRUE.
-                           EXIT
-                        END IF
-                        IF (interpolated_slope > 0.0_dp) THEN
-                           right(:) = interpolated
-                           right_fraction = interpolated_fraction
-                        ELSE IF (interpolated_slope < 0.0_dp .AND. interpolated_energy <= energy + roundoff) THEN
-                           left(:) = interpolated
-                           left_fraction = interpolated_fraction
-                        ELSE
-                           EXIT
-                        END IF
-                        interpolated_fraction = left_fraction + 0.5_dp*(right_fraction - left_fraction)
-                     END DO
-                     IF (accepted) EXIT
-                     IF (PRESENT(check_reversal_segment) .AND. right_fraction - left_fraction <= 0.5_dp*fraction) THEN
-                        CALL check_reversal_segment(left, right, curve, context, energy, event)
-                        IF (event) THEN
-                           coordinate(:) = x
-                           IF (PRESENT(interrupted)) interrupted = .TRUE.
-                           RETURN
-                        END IF
-                     END IF
-                  END BLOCK
+                  CALL try_slope_bracket(trial, trial_energy, trial_reduced, fraction, accepted, event, newton_stopped)
+                  IF (newton_stopped) RETURN
+                  IF (event) THEN
+                     coordinate(:) = x
+                     IF (PRESENT(interrupted)) interrupted = .TRUE.
+                     RETURN
+                  END IF
+                  IF (accepted) EXIT
                   ! Retain the original search when the shorter interval did not resolve the reversal.
                   roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                END IF
@@ -1722,6 +1682,81 @@ CONTAINS
       END IF
       ! Trial callbacks may update native caches; the returned coordinates remain authoritative.
    CONTAINS
+! **************************************************************************************************
+!> \brief Try a complete descent step or a physical boundary inside a slope reversal.
+!>        Failed probes leave the original interval available for the caller's full scan.
+!> \param endpoint Upper endpoint, replaced only when an interpolated descent is accepted.
+!> \param endpoint_energy Complete energy at the upper endpoint.
+!> \param endpoint_gradient Reduced derivative at the upper endpoint.
+!> \param endpoint_fraction Fraction along the current direction at the upper endpoint.
+!> \param descent Whether an Armijo step meeting the curvature condition was found.
+!> \param event_found Whether the caller must handle a physical crossing.
+!> \param terminated Whether the external stop check fired.
+! **************************************************************************************************
+      SUBROUTINE try_slope_bracket(endpoint, endpoint_energy, endpoint_gradient, endpoint_fraction, &
+                                   descent, event_found, terminated)
+         REAL(dp), INTENT(INOUT)                            :: endpoint(:), endpoint_energy, &
+                                                              endpoint_gradient(:), endpoint_fraction
+         LOGICAL, INTENT(OUT)                               :: descent, event_found, terminated
+
+         INTEGER                                           :: bracket_steps, bracket_trial
+         LOGICAL                                           :: valid_trial
+         REAL(dp)                                          :: left_fraction, right_fraction, slope_scale, upper_slope
+         REAL(dp)                                          :: test_energy, test_fraction, test_slope, energy_window
+         REAL(dp), ALLOCATABLE                             :: left(:), right(:), candidate(:), candidate_gradient(:)
+
+         descent = .FALSE.
+         event_found = .FALSE.
+         terminated = .FALSE.
+         bracket_steps = 1
+         IF (ASSOCIATED(reversal_local)) bracket_steps = 6
+         left_fraction = 0.0_dp
+         right_fraction = endpoint_fraction
+         ALLOCATE (left, SOURCE=x)
+         ALLOCATE (right, SOURCE=endpoint)
+         ALLOCATE (candidate(d), candidate_gradient(nf))
+         upper_slope = DOT_PRODUCT(endpoint_gradient, direction)
+         slope_scale = MAX(-slope, upper_slope)
+         test_fraction = endpoint_fraction*((-slope/slope_scale)/(upper_slope/slope_scale - slope/slope_scale))
+         DO bracket_trial = 1, bracket_steps
+            terminated = stop_requested()
+            IF (terminated) RETURN
+            candidate(:) = x
+            candidate(curve%free) = x(curve%free) + test_fraction*direction
+            IF (ALL(candidate(curve%free) == left(curve%free)) .OR. &
+                ALL(candidate(curve%free) == right(curve%free))) EXIT
+            CALL reduced_evaluation(candidate, test_energy, candidate_gradient, valid_trial)
+            IF (.NOT. valid_trial) EXIT
+            test_slope = DOT_PRODUCT(candidate_gradient, direction)
+            energy_window = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(test_energy), TINY(0.0_dp))
+            IF (test_energy < energy - energy_window .AND. &
+                test_energy <= energy + 1.0e-4_dp*test_fraction*slope .AND. &
+                ABS(test_slope) <= 0.9_dp*ABS(slope)) THEN
+               IF (ASSOCIATED(segment_local)) CALL segment_local(x, candidate, curve, context, event_found)
+               IF (event_found) RETURN
+               endpoint(:) = candidate
+               endpoint_gradient(:) = candidate_gradient
+               endpoint_energy = test_energy
+               endpoint_fraction = test_fraction
+               descent = .TRUE.
+               RETURN
+            END IF
+            IF (test_slope > 0.0_dp) THEN
+               right(:) = candidate
+               right_fraction = test_fraction
+            ELSE IF (test_slope < 0.0_dp .AND. test_energy <= energy + energy_window) THEN
+               left(:) = candidate
+               left_fraction = test_fraction
+            ELSE
+               EXIT
+            END IF
+            test_fraction = left_fraction + 0.5_dp*(right_fraction - left_fraction)
+         END DO
+         IF (ASSOCIATED(reversal_local) .AND. right_fraction - left_fraction <= 0.5_dp*endpoint_fraction) THEN
+            CALL reversal_local(left, right, curve, context, energy, event_found)
+         END IF
+      END SUBROUTINE try_slope_bracket
+
 ! **************************************************************************************************
 !> \brief Inexact Newton direction from central differences of the native derivatives.
 !>        Truncated conjugate gradients reuse the positive BFGS inverse as a fixed preconditioner

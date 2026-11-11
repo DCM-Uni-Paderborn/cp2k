@@ -1210,6 +1210,17 @@ CONTAINS
       IF (converged .OR. .NOT. interrupted .OR. segment_queries /= -1) THEN
          ERROR STOP 'The shortened derivative bracket lost a persistent cusp'
       END IF
+      ! An uphill first trial can still bracket a downhill cusp before the Newton solve.
+      cusp_coordinate = [0.7_dp, 0.23_dp]
+      segment_queries = 0
+      CALL skala_constrained_stationarity(empty_constraints, absolute_energy_gradient, scale, cusp_coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=1, &
+                                          iterations=iterations, interrupted=interrupted, curvature_steps=.TRUE., &
+                                          check_stalled_segment=crossing_segment, check_reversal_segment=bracketed_cusp_segment)
+      IF (converged .OR. .NOT. interrupted .OR. iterations /= 1 .OR. segment_queries /= -1 .OR. &
+          ANY(cusp_coordinate /= [0.7_dp, 0.23_dp])) THEN
+         ERROR STOP 'A rejected trial bypassed the shortened physical bracket'
+      END IF
       ! A smooth descent satisfying strong curvature does not require a boundary scan.
       scale = 0.5_dp
       coordinate = 0.08_dp
