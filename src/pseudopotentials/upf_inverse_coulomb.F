@@ -1108,33 +1108,53 @@ CONTAINS
                END DO
                CYCLE
             END IF
-            IF (ABS(radii_a(i) - radii_b(j)) > distance) THEN
-               IF (PRESENT(response)) THEN
-                  CALL contained_shell(radii_a(i), radii_b(j), l_a, l_b, &
-                                       displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i), dab)
-                  CALL contained_shell(radii_b(j), radii_a(i), l_b, l_a, &
-                                       -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j), dba)
-               ELSE
-                  CALL contained_shell(radii_a(i), radii_b(j), l_a, l_b, &
-                                       displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i))
-                  CALL contained_shell(radii_b(j), radii_a(i), l_b, l_a, &
-                                       -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j))
-               END IF
-            ELSE IF (PRESENT(response)) THEN
-               CALL translated_shell(radii_a(i), radii_b(j), l_a, l_b, &
-                                     displacement, da, db, delta, ab, nodes, weights, work_a, work_b, dab)
-               CALL translated_shell(radii_b(j), radii_a(i), l_b, l_a, &
-                                     -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, dba)
+            IF (ABS(radii_a(i) - radii_b(j)) <= distance) CYCLE
+            IF (PRESENT(response)) THEN
+               CALL contained_shell(radii_a(i), radii_b(j), l_a, l_b, &
+                                    displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i), dab)
+               CALL contained_shell(radii_b(j), radii_a(i), l_b, l_a, &
+                                    -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j), dba)
             ELSE
-               CALL translated_shell(radii_a(i), radii_b(j), l_a, l_b, &
-                                     displacement, da, db, delta, ab, nodes, weights, work_a, work_b)
-               CALL translated_shell(radii_b(j), radii_a(i), l_b, l_a, &
-                                     -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a)
+               CALL contained_shell(radii_a(i), radii_b(j), l_a, l_b, &
+                                    displacement, da, db, delta, ab, nodes, weights, work_a, work_b, contained_a(i))
+               CALL contained_shell(radii_b(j), radii_a(i), l_b, l_a, &
+                                    -displacement, db, da, -delta, ba, nodes, weights, work_b, work_a, contained_b(j))
             END IF
             kernel(i, :, j, :) = 0.5_dp*(ab + TRANSPOSE(ba))
             IF (PRESENT(response)) response(i, :, j, :) = 0.5_dp*(dab + TRANSPOSE(dba))
          END DO
       END DO
+
+      ! The remaining pairs have independent angular quadratures. Keep the shared
+      ! contained-shell caches in the serial loop so their reference radii are unchanged.
+!$OMP PARALLEL DEFAULT(NONE) IF(SIZE(radii_a) >= 32 .AND. SIZE(radii_b) >= 32) &
+!$OMP SHARED(radii_a, radii_b, l_a, l_b, indices_a, indices_b, distance, displacement, delta, &
+!$OMP        separated, kernel, response, dr_a, dr_b, sample_count, nodes, weights) &
+!$OMP PRIVATE(i, j, da, db, ab, ba, dab, dba, work_a, work_b)
+      CALL prepare_harmonic_work(l_a, indices_a, sample_count, PRESENT(response), work_a)
+      CALL prepare_harmonic_work(l_b, indices_b, sample_count, PRESENT(response), work_b)
+!$OMP DO SCHEDULE(DYNAMIC)
+      DO i = 1, SIZE(radii_a)
+         DO j = 1, SIZE(radii_b)
+            IF (separated .AND. distance > radii_a(i) + radii_b(j)) CYCLE
+            IF (ABS(radii_a(i) - radii_b(j)) > distance) CYCLE
+            IF (PRESENT(response)) THEN
+               CALL translated_shell(radii_a(i), radii_b(j), l_a, l_b, &
+                                     displacement, dr_a(i), dr_b(j), delta, ab, nodes, weights, work_a, work_b, dab)
+               CALL translated_shell(radii_b(j), radii_a(i), l_b, l_a, &
+                                     -displacement, dr_b(j), dr_a(i), -delta, ba, nodes, weights, work_b, work_a, dba)
+            ELSE
+               CALL translated_shell(radii_a(i), radii_b(j), l_a, l_b, &
+                                     displacement, 0.0_dp, 0.0_dp, delta, ab, nodes, weights, work_a, work_b)
+               CALL translated_shell(radii_b(j), radii_a(i), l_b, l_a, &
+                                     -displacement, 0.0_dp, 0.0_dp, -delta, ba, nodes, weights, work_b, work_a)
+            END IF
+            kernel(i, :, j, :) = 0.5_dp*(ab + TRANSPOSE(ba))
+            IF (PRESENT(response)) response(i, :, j, :) = 0.5_dp*(dab + TRANSPOSE(dba))
+         END DO
+      END DO
+!$OMP END DO
+!$OMP END PARALLEL
    END SUBROUTINE upf_inverse_coulomb_pair_kernel
 
 ! **************************************************************************************************
@@ -1406,18 +1426,32 @@ CONTAINS
             IF (derive) dweight = 0.5_dp*(dright - dleft)*weights(iq)*twopi/REAL(nphi, dp)
             sine = SQRT(MAX(0.0_dp, 1.0_dp - mu**2))
             CPASSERT(sine > 0.0_dp)
+            ! The source distance and its derivative are independent of the azimuth.
+            norm_x = SQRT((distance - a)**2 + 2.0_dp*distance*a*(mu + 1.0_dp))
+            IF (derive) radius_dot = (distance - a)*(dt - da) + &
+                                     (dt*a + distance*da)*(mu + 1.0_dp) + distance*a*dmu
+            DO order = min_order, max_order
+               IF (.NOT. active_order(order)) CYCLE
+               IF (norm_x < b) THEN
+                  factor = fourpi/REAL(2*order + 1, dp)/b**(order + 1)
+                  IF (derive) dfactor = -factor*(order + 1)*db/b
+               ELSE
+                  factor = fourpi/REAL(2*order + 1, dp)*(b/norm_x)**order/norm_x**(order + 1)
+                  IF (derive) dfactor = factor*(order*db/b - (2*order + 1)*radius_dot/norm_x**2)
+               END IF
+               source_factor(order) = factor
+               IF (derive) source_response(order) = dfactor
+            END DO
             DO iphi = 1, nphi
                sample = (iq - 1)*nphi + iphi
                u = mu*ez + sine*azimuth_directions(:, iphi)
                x = d + a*u
-               norm_x = SQRT(SUM(x**2))
                CALL solid_fields(u, work_a, derive)
                CALL solid_fields(x, work_b, derive)
                IF (derive) THEN
                   du = dmu*ez + mu*dez - mu*dmu/sine*azimuth_directions(:, iphi) + &
                        sine*azimuth_response(:, iphi)
                   dx = dd + da*u + a*du
-                  radius_dot = DOT_PRODUCT(x, dx)
                   DO channel = 1, SIZE(la)
                      work_a%response(channel) = DOT_PRODUCT(du, work_a%gradient(:, channel))
                   END DO
@@ -1425,19 +1459,6 @@ CONTAINS
                      work_b%response(channel) = DOT_PRODUCT(dx, work_b%gradient(:, channel))
                   END DO
                END IF
-               ! Every harmonic of a given source order uses the same radial factor.
-               DO order = min_order, max_order
-                  IF (.NOT. active_order(order)) CYCLE
-                  IF (norm_x < b) THEN
-                     factor = fourpi/REAL(2*order + 1, dp)/b**(order + 1)
-                     IF (derive) dfactor = -factor*(order + 1)*db/b
-                  ELSE
-                     factor = fourpi/REAL(2*order + 1, dp)*(b/norm_x)**order/norm_x**(order + 1)
-                     IF (derive) dfactor = factor*(order*db/b - (2*order + 1)*radius_dot/norm_x**2)
-                  END IF
-                  source_factor(order) = factor
-                  IF (derive) source_response(order) = dfactor
-               END DO
                work_a%sampled_values(:, sample) = work_a%values
                IF (derive) work_a%sampled_response(:, sample) = work_a%response
                DO channel = 1, SIZE(lb)
