@@ -1590,7 +1590,10 @@ CONTAINS
                      IF (PRESENT(interrupted)) interrupted = .TRUE.
                      RETURN
                   END IF
-                  IF (accepted) EXIT
+                  IF (accepted) THEN
+                     reversal_descent = .TRUE.
+                     EXIT
+                  END IF
                   ! Retain the original search when the shorter interval did not resolve the reversal.
                   roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                END IF
@@ -1659,7 +1662,10 @@ CONTAINS
             CYCLE
          END IF
          motion(:) = trial(curve%free) - x(curve%free)
-         IF (coupled_curvature .AND. newton_used) THEN
+         IF (coupled_curvature .AND. reversal_descent) THEN
+            ! Carry the scale of the accepted bracket step into the next curvature solve.
+            radius = MIN(radius, 2.0_dp*NORM2(motion))
+         ELSE IF (coupled_curvature .AND. newton_used) THEN
             ! A shortened step resolves a smaller neighborhood than the original CG sphere.
             ! Use that neighborhood in the next solve while retaining the user maximum.
             IF (fraction < 0.25_dp) THEN
