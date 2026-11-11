@@ -82,6 +82,7 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_xc_pw_geometry
    USE rs_pw_interface,                 ONLY: pw_real_transfer
    USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
+                                              skala_density_samples_only,&
                                               skala_density_constraints_type
    USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator
    USE upf_core,                        ONLY: upf_core_radial_init
@@ -206,7 +207,7 @@ CONTAINS
                                                             ik, lo, nao, nk, np, ns, smooth_id, &
                                                             spin
       INTEGER(KIND=int_8)                                :: core_bytes, field_bytes, retained_bytes
-      LOGICAL                                            :: valid, with_laplacian
+      LOGICAL                                            :: fields_only, valid, with_laplacian
       REAL(dp), ALLOCATABLE                              :: adjoint(:, :, :, :), core(:, :), &
                                                             core_gradient(:, :, :), &
                                                             core_laplacian(:, :), core_tau(:, :)
@@ -308,7 +309,11 @@ CONTAINS
          END DO
       END IF
       state%xc_grid => density(1)%pw_grid
-      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic, smooth_id, with_laplacian, deriv_id)
+      fields_only = .FALSE.
+      IF (ASSOCIATED(density_constraints)) fields_only = skala_density_samples_only(density_constraints)
+      CPASSERT(.NOT. (fields_only .AND. PRESENT(potential)))
+      CALL qs_upf_inverse_xc_pw_fields(density, state%xc_fields, kinetic, smooth_id, with_laplacian, deriv_id, &
+                                      include_gradient=.NOT. fields_only)
       ALLOCATE (core(np, ns), core_gradient(np, 3, ns))
       IF (PRESENT(kinetic)) ALLOCATE (core_tau(np, ns))
       core_components = 4

@@ -606,11 +606,11 @@ CONTAINS
 
       IF (lsd) THEN
          needs%rho_spin = .TRUE.
-         needs%drho_spin = .TRUE.
+         needs%drho_spin = .NOT. fields_only
          needs%tau_spin = .TRUE.
       ELSE
          needs%rho = .TRUE.
-         needs%drho = .TRUE.
+         needs%drho = .NOT. fields_only
          needs%tau = .TRUE.
       END IF
 

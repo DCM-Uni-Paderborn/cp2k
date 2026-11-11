@@ -2120,18 +2120,20 @@ CONTAINS
 !> \param xc_smooth_id Optional native smoothing of the density before taking its gradient.
 !> \param laplacian Append the spectral density Laplacian to each spin block.
 !> \param xc_deriv_id Native gradient selection, with PW as the default.
+!> \param include_gradient Compute the Cartesian gradient, default true. Otherwise its slots are zero.
 ! **************************************************************************************************
-   SUBROUTINE qs_upf_inverse_xc_pw_fields(density, fields, kinetic, xc_smooth_id, laplacian, xc_deriv_id)
+   SUBROUTINE qs_upf_inverse_xc_pw_fields(density, fields, kinetic, xc_smooth_id, laplacian, xc_deriv_id, include_gradient)
       TYPE(pw_r3d_rs_type), INTENT(IN), TARGET           :: density(:)
       REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: fields(:, :, :, :)
       TYPE(pw_r3d_rs_type), INTENT(IN), OPTIONAL         :: kinetic(:)
       INTEGER, INTENT(IN), OPTIONAL                      :: xc_smooth_id
       LOGICAL, INTENT(IN), OPTIONAL                      :: laplacian
       INTEGER, INTENT(IN), OPTIONAL                      :: xc_deriv_id
+      LOGICAL, INTENT(IN), OPTIONAL                      :: include_gradient
 
       INTEGER                                            :: axis, bounds(2, 3), deriv_id, smooth_id, &
                                                             spin, stride
-      LOGICAL                                            :: with_laplacian
+      LOGICAL                                            :: need_spectrum, with_gradient, with_laplacian
       TYPE(pw_c1d_gs_type)                               :: density_g, derivative_g
       TYPE(pw_grid_type), POINTER                        :: grid
       TYPE(pw_r3d_rs_type)                               :: gradient(3)
@@ -2153,16 +2155,21 @@ CONTAINS
       with_laplacian = .FALSE.
       IF (PRESENT(laplacian)) with_laplacian = laplacian
       IF (with_laplacian) stride = stride + 1
+      with_gradient = .TRUE.
+      IF (PRESENT(include_gradient)) with_gradient = include_gradient
       CPASSERT(qs_upf_inverse_xc_derivative_available(deriv_id, with_laplacian))
+      need_spectrum = with_laplacian .OR. (with_gradient .AND. xc_requires_tmp_g(deriv_id))
       bounds = grid%bounds_local - SPREAD(grid%bounds(1, :) - 1, 1, 2)
       ALLOCATE (fields(grid%npts(1), grid%npts(2), grid%npts(3), stride*SIZE(density)))
       fields = 0.0_dp
-      CALL density_g%create(grid)
-      CALL derivative_g%create(grid)
-      CALL work_r%create(grid)
-      DO axis = 1, 3
-         CALL gradient(axis)%create(grid)
-      END DO
+      IF (need_spectrum) CALL density_g%create(grid)
+      IF (with_gradient .OR. with_laplacian) CALL derivative_g%create(grid)
+      IF (smooth_id /= xc_rho_no_smooth .OR. with_laplacian) CALL work_r%create(grid)
+      IF (with_gradient) THEN
+         DO axis = 1, 3
+            CALL gradient(axis)%create(grid)
+         END DO
+      END IF
       DO spin = 1, SIZE(density)
          CPASSERT(ASSOCIATED(density(spin)%pw_grid, grid))
          source => density(spin)
@@ -2177,12 +2184,14 @@ CONTAINS
             fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
                    bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 5) = kinetic(spin)%array
          END IF
-         IF (xc_requires_tmp_g(deriv_id)) CALL pw_transfer(source, density_g)
-         CALL grid_gradient(source, density_g, derivative_g, gradient, deriv_id)
-         DO axis = 1, 3
-            fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
-                   bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1 + axis) = gradient(axis)%array
-         END DO
+         IF (need_spectrum) CALL pw_transfer(source, density_g)
+         IF (with_gradient) THEN
+            CALL grid_gradient(source, density_g, derivative_g, gradient, deriv_id)
+            DO axis = 1, 3
+               fields(bounds(1, 1):bounds(2, 1), bounds(1, 2):bounds(2, 2), &
+                      bounds(1, 3):bounds(2, 3), stride*(spin - 1) + 1 + axis) = gradient(axis)%array
+            END DO
+         END IF
          IF (with_laplacian) THEN
             derivative_g%array(:) = density_g%array
             CALL pw_laplace(derivative_g)
@@ -2192,12 +2201,14 @@ CONTAINS
          END IF
       END DO
       IF (grid%para%mode /= PW_MODE_LOCAL) CALL grid%para%group%sum(fields)
-      CALL density_g%release()
-      CALL derivative_g%release()
-      CALL work_r%release()
-      DO axis = 1, 3
-         CALL gradient(axis)%release()
-      END DO
+      IF (need_spectrum) CALL density_g%release()
+      IF (with_gradient .OR. with_laplacian) CALL derivative_g%release()
+      IF (smooth_id /= xc_rho_no_smooth .OR. with_laplacian) CALL work_r%release()
+      IF (with_gradient) THEN
+         DO axis = 1, 3
+            CALL gradient(axis)%release()
+         END DO
+      END IF
    END SUBROUTINE qs_upf_inverse_xc_pw_fields
 
 ! **************************************************************************************************
