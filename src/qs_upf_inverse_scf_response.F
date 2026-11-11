@@ -299,6 +299,13 @@ CONTAINS
          CPASSERT(ASSOCIATED(state%xc_grid, grid))
          CPASSERT(ALLOCATED(state%xc_matrices))
       END IF
+      ! The orbital solver probes kernel availability with an exact zero direction.
+      ! Keep the availability checks above and avoid evaluating the linear response to zero.
+      IF (ALL(matrices_direction == CMPLX(0.0_dp, 0.0_dp, dp))) THEN
+         ALLOCATE (operators_direction(n, n, nk, ns), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+         available = .TRUE.
+         RETURN
+      END IF
       ALLOCATE (density(ns), density_g(ns), kinetic(ns), direction(ns), direction_g(ns), kinetic_direction(ns))
       ALLOCATE (combined_rho(ns), combined_tau(ns))
       CALL work_g%create(grid)
