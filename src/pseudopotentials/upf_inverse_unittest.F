@@ -1239,6 +1239,17 @@ CONTAINS
       IF (.NOT. converged .OR. iterations /= 1 .OR. segment_queries /= 0 .OR. ABS(coordinate(1)) > 1.e-14_dp) THEN
          ERROR STOP 'A smooth overshoot did not use the stationary point inside the slope bracket'
       END IF
+      ! Eight steps with a constant slope trigger curvature recovery at an uphill trial.
+      cusp_coordinate = [1.0_dp, 0.0_dp]
+      segment_queries = 0
+      CALL skala_constrained_stationarity(empty_constraints, uphill_trial_gradient, scale, cusp_coordinate, &
+                                          empty, stationarity_tolerance, converged, max_iterations=9, &
+                                          iterations=iterations, retain_progress=.TRUE., &
+                                          check_stalled_segment=crossing_segment, check_reversal_segment=bracketed_cusp_segment)
+      IF (converged .OR. iterations /= 9 .OR. segment_queries /= 0 .OR. &
+          ABS(cusp_coordinate(1) - 0.175_dp) > 1.e-12_dp .OR. cusp_coordinate(2) /= 0.0_dp) THEN
+         ERROR STOP 'A rejected uphill trial prevented ordinary downhill backtracking'
+      END IF
       coordinate = 1.e-8_dp
       CALL skala_constrained_stationarity(empty_constraints, roundoff_cusp_gradient, cusp, coordinate, &
                                           empty, stationarity_tolerance, converged, max_iterations=1, &
@@ -1509,6 +1520,27 @@ CONTAINS
          ERROR STOP 'Invalid absolute-value context'
       END SELECT
    END SUBROUTINE absolute_energy_gradient
+
+! **************************************************************************************************
+!> \brief Linear descent with a smooth rise between two trials having the same derivative.
+!> \param coordinate Two real orbital coordinates. Only the first affects the energy.
+!> \param energy Original scalar objective.
+!> \param gradient Exact objective derivative.
+!> \param context Unused test scale.
+! **************************************************************************************************
+   SUBROUTINE uphill_trial_gradient(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      REAL(dp)                                           :: z
+
+      MARK_USED(context)
+      z = MAX(0.0_dp, MIN(1.0_dp, (0.18_dp - coordinate(1))/0.08_dp))
+      energy = coordinate(1) + 0.2_dp*z*z*(3.0_dp - 2.0_dp*z)
+      gradient = 0.0_dp
+      gradient(1) = 1.0_dp - 15.0_dp*z*(1.0_dp - z)
+   END SUBROUTINE uphill_trial_gradient
 
 ! **************************************************************************************************
 !> \brief A failed line search must retain its first feasible segment around the cusp.

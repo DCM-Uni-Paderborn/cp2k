@@ -1338,11 +1338,11 @@ CONTAINS
       TYPE(skala_constraint_chart_type) :: curve
       LOGICAL :: accepted, valid, event, newton_valid, newton_stopped, have_segment, resolution_checked, &
                  coupled_curvature, have_curvature_check, curvature_interrupted, active_preconditioner, resolved_descent, &
-                 curvature_stalled, newton_used, gradient_progress, reversal_descent
+                 curvature_stalled, newton_used, gradient_progress, reversal_descent, deferred_scan
       REAL(dp) :: curvature, energy, fraction, progress_norm, radius, maximum_radius, roundoff, slope, trial_energy, trial_slope
       REAL(dp), ALLOCATABLE :: direction(:), g(:), jacobian(:, :), motion(:), newton(:), &
                                old_gradient(:), reduced(:), steps(:, :), trial(:), trial_reduced(:), &
-                               values(:), x(:), changes(:, :), stalled_trial(:), &
+                               values(:), x(:), changes(:, :), stalled_trial(:), deferred_trial(:), &
                                inverse_diagonal(:), free_inverse(:)
 
       ! Preserve explicit interfaces in contained calls even on compilers that lose
@@ -1458,6 +1458,7 @@ CONTAINS
          gradient_progress = .FALSE.
          reversal_descent = .FALSE.
          newton_used = .FALSE.
+         deferred_scan = .FALSE.
          slope = DOT_PRODUCT(reduced, direction)
          IF (coupled_curvature .OR. curvature_stalled .OR. (history > 0 .AND. -slope <= 32.0_dp*roundoff)) THEN
             IF (PRESENT(check_stalled_segment)) THEN
@@ -1479,8 +1480,14 @@ CONTAINS
                         event = .FALSE.
                         IF (PRESENT(check_reversal_segment)) THEN
                            trial_slope = DOT_PRODUCT(trial_reduced, direction)
-                           IF (slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
-                               free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
+                           IF (curvature_stalled .AND. slope < 0.0_dp .AND. trial_slope <= 0.0_dp .AND. &
+                               trial_energy > energy + roundoff) THEN
+                              ! Both endpoint slopes still descend. Try local curvature and backtracking
+                              ! before searching the full rejected interval for a physical minimum.
+                              deferred_trial = trial
+                              deferred_scan = .TRUE.
+                           ELSE IF (slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
+                                    free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
                               CALL try_slope_bracket(trial, trial_energy, trial_reduced, fraction, &
                                                      reversal_descent, event, newton_stopped)
                               IF (newton_stopped) RETURN
@@ -1490,7 +1497,7 @@ CONTAINS
                               END IF
                            END IF
                         END IF
-                        IF (.NOT. event) CALL check_stalled_segment(x, trial, curve, context, event)
+                        IF (.NOT. event .AND. .NOT. deferred_scan) CALL check_stalled_segment(x, trial, curve, context, event)
                         IF (event) THEN
                            coordinate(:) = x
                            IF (PRESENT(interrupted)) interrupted = .TRUE.
@@ -1566,7 +1573,8 @@ CONTAINS
                ! Descent may increase the gradient norm in a region of negative curvature.
                roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                trial_slope = DOT_PRODUCT(trial_reduced, direction)
-               IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. .NOT. curvature_stalled .AND. &
+               IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. &
+                   (.NOT. curvature_stalled .OR. deferred_scan) .AND. &
                    slope < 0.0_dp .AND. trial_slope > 0.9_dp*ABS(slope) .AND. &
                    trial_energy < energy - roundoff .AND. trial_energy <= energy + 1.0e-4_dp*fraction*slope .AND. &
                    free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
@@ -1582,7 +1590,8 @@ CONTAINS
                   roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                END IF
                IF (PRESENT(check_stalled_segment) .AND. .NOT. resolution_checked .AND. &
-                   ((curvature_stalled .AND. .NOT. resolved_descent) .OR. ABS(trial_energy - energy) <= roundoff .OR. &
+                   ((curvature_stalled .AND. .NOT. resolved_descent .AND. .NOT. deferred_scan) .OR. &
+                    ABS(trial_energy - energy) <= roundoff .OR. &
                     (trial_slope > 0.9_dp*ABS(slope) .AND. trial_energy < energy - roundoff)) .AND. &
                    free_gradient_norm(trial_reduced) > gradient_tolerance) THEN
                   ! Inspect a reversal that fails the usual strong curvature condition.
@@ -1624,11 +1633,15 @@ CONTAINS
          END DO
          IF (.NOT. accepted) THEN
             IF (PRESENT(report_iteration)) CALL report_iteration(iteration, energy, free_gradient_norm(reduced), .FALSE., context)
-            IF (PRESENT(check_stalled_segment) .AND. have_segment) THEN
+            IF (PRESENT(check_stalled_segment)) THEN
                ! A rejected wide trial can enclose a downhill cusp. Keep its original
                ! feasible endpoints rather than the last nearly coincident shortened trial.
                event = .FALSE.
-               CALL check_stalled_segment(x, stalled_trial, curve, context, event)
+               IF (deferred_scan) CALL check_stalled_segment(x, deferred_trial, curve, context, event)
+               IF (.NOT. event .AND. have_segment) THEN
+                  IF (deferred_scan) have_segment = ANY(stalled_trial /= deferred_trial)
+                  IF (have_segment) CALL check_stalled_segment(x, stalled_trial, curve, context, event)
+               END IF
                IF (event) THEN
                   coordinate(:) = x
                   IF (PRESENT(interrupted)) interrupted = .TRUE.
