@@ -2391,9 +2391,12 @@ CONTAINS
          OPTIONAL                                        :: curve
       REAL(dp), INTENT(IN), OPTIONAL                     :: endpoint_values(:, :)
 
+      INTEGER, ALLOCATABLE                               :: rows(:)
+
+      ALLOCATE (rows(SIZE(targets)), SOURCE=-1)
       CALL boundary_root(state, first, last, points, domains, spins, descriptors, targets, tolerances, &
                          root, values, selected, found, max_iterations, evaluations, check_external, stopped, curve, &
-                         endpoint_values=endpoint_values)
+                         endpoint_values=endpoint_values, rows=rows)
    END SUBROUTINE qs_skala_scf_boundary_root
 
 ! **************************************************************************************************
@@ -2419,10 +2422,11 @@ CONTAINS
 !> \param energy_only Evaluate the complete energy without constructing the KS operator.
 !>        On failure, return the original first fields. The caller restores the live state.
 !> \param endpoint_values Borrowed first and last physical fields in the current candidate order.
+!> \param rows Local sample rows for the candidate keys at fixed geometry, initially -1.
 ! **************************************************************************************************
    SUBROUTINE boundary_root(state, first, last, points, domains, spins, descriptors, &
                             targets, tolerances, root, values, selected, found, &
-                            max_iterations, evaluations, check_external, stopped, curve, energy_only, endpoint_values)
+                            max_iterations, evaluations, check_external, stopped, curve, energy_only, endpoint_values, rows)
       TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
       REAL(dp), INTENT(IN)                               :: first(:), last(:)
       INTEGER, INTENT(IN)                                :: points(:, :), domains(:), spins(:), &
@@ -2438,9 +2442,9 @@ CONTAINS
          OPTIONAL                                        :: curve
       LOGICAL, INTENT(IN), OPTIONAL                      :: energy_only
       REAL(dp), INTENT(IN), OPTIONAL                     :: endpoint_values(:, :)
+      INTEGER, INTENT(INOUT)                             :: rows(:)
 
       INTEGER                                            :: count, i, iteration, limit, m, n
-      INTEGER, ALLOCATABLE                               :: rows(:)
       LOGICAL                                            :: bracketed, EXTERNAL, need_operator, &
                                                             requested, valid
       REAL(dp)                                           :: energy, fraction, left, previous_width, &
@@ -2455,6 +2459,7 @@ CONTAINS
       m = SIZE(targets)
       CPASSERT(SIZE(first) == n .AND. SIZE(last) == n .AND. SIZE(root) == n)
       CPASSERT(SIZE(values) == m .AND. SIZE(selected) == m .AND. SIZE(tolerances) == m)
+      CPASSERT(SIZE(rows) == m)
       CPASSERT(ALL(ieee_is_finite(targets)) .AND. ALL(ieee_is_finite(tolerances)))
       CPASSERT(ALL(tolerances > 0.0_dp))
       limit = 100
@@ -2468,7 +2473,6 @@ CONTAINS
       IF (PRESENT(energy_only)) need_operator = .NOT. energy_only
       ALLOCATE (initial(m), sides(m), edge_values(2, m), direction(n))
       IF (need_operator) ALLOCATE (gradient(n))
-      ALLOCATE (rows(m), SOURCE=-1)
       IF (PRESENT(curve)) THEN
          context%state => state
          CALL qs_skala_scf_selected(state, context%points, context%domains, context%spins, context%descriptors, &
@@ -4426,7 +4430,7 @@ CONTAINS
 
       INTEGER                                            :: i, old
       INTEGER, ALLOCATABLE :: old_descriptors(:), old_domains(:), old_points(:, :), old_spins(:), &
-         pending(:), reached(:), remaining(:), sides(:)
+         pending(:), reached(:), remaining(:), rows(:), sides(:)
       LOGICAL                                            :: found, stopped, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:), selected(:)
       REAL(dp)                                           :: energy, first_energy, kinetic_probe, &
@@ -4448,6 +4452,7 @@ CONTAINS
       END IF
       ALLOCATE (pending(SIZE(event%spins)), root(SIZE(first)), gradient(SIZE(first)))
       pending(:) = [(i, i=1, SIZE(pending))]
+      ALLOCATE (rows(SIZE(pending)), SOURCE=-1)
       ALLOCATE (segment_start, SOURCE=first)
       ALLOCATE (bracket, SOURCE=event%values)
       IF (PRESENT(reference_energy)) THEN
@@ -4464,7 +4469,7 @@ CONTAINS
                                event%domains(pending), event%spins(pending), event%descriptors(pending), &
                                event%targets(pending), windows, root, values, selected, found, &
                                check_external=context%check_external, stopped=stopped, curve=event%curve, &
-                               energy_only=.TRUE., endpoint_values=bracket(:, pending))
+                               energy_only=.TRUE., endpoint_values=bracket(:, pending), rows=rows)
             IF (found .OR. stopped .OR. ALL(segment_start == first)) EXIT
             ! A shortened interval can lose resolution on a curved constraint chart.
             segment_start(:) = first
@@ -4517,6 +4522,8 @@ CONTAINS
          END IF
          ALLOCATE (remaining, SOURCE=PACK(pending,.NOT. selected))
          CALL MOVE_ALLOC(remaining, pending)
+         ! The grid and its ownership are fixed while orbitals change along this segment.
+         rows = PACK(rows, .NOT. selected)
          DEALLOCATE (selected, values, windows)
       END DO
       IF (SIZE(pending) == 0) event%encountered = .FALSE.
