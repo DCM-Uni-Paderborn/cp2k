@@ -679,7 +679,7 @@ CONTAINS
                 (xc_deriv_method_id /= xc_deriv_pw)) THEN
                CALL cp_abort(__LOCATION__, &
                              "MGGA functionals that require the Laplacian are "// &
-                             "only compatible with 'XC_DERIV PW' and 'XC_SMOOTH_RHO NONE'")
+                             "only compatible with 'XC_DERIV PW'")
             END IF
 
             IF (needs_rho_g) THEN

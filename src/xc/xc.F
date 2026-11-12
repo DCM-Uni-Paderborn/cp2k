@@ -66,6 +66,7 @@ MODULE xc
                              xc_functionals_get_needs, xc_functionals_select_floor_limits, &
                              xc_functionals_collect_floor_jumps
    USE xc_gauxc_functional, ONLY: xc_section_uses_gauxc
+   USE xc_input_constants, ONLY: xc_rho_no_smooth
 #if defined(__LIBXC)
    USE xc_libxc, ONLY: libxc_set_backend
 #endif
@@ -794,8 +795,17 @@ CONTAINS
 
             CALL xc_dset_recover_pw(deriv_set, [deriv_id], pw_to_deriv(1), pw_grid)
 
-            IF (use_virial) CALL virial_laplace(rho_r(ispin), pw_pool, virial_xc, &
-                                                pw_to_deriv(1)%array)
+            IF (use_virial) THEN
+               IF (xc_rho_smooth_id == xc_rho_no_smooth) THEN
+                  CALL virial_laplace(rho_r(ispin), pw_pool, virial_xc, pw_to_deriv(1)%array)
+               ELSE
+                  ! The lattice derivative acts on the same filtered density as the forward Laplacian.
+                  CALL pw_pool%create_pw(virial_pw)
+                  CALL xc_pw_smooth(rho_r(ispin), virial_pw, xc_rho_smooth_id)
+                  CALL virial_laplace(virial_pw, pw_pool, virial_xc, pw_to_deriv(1)%array)
+                  CALL pw_pool%give_back_pw(virial_pw)
+               END IF
+            END IF
 
             CALL xc_pw_laplace(pw_to_deriv(1), pw_pool, xc_deriv_method_id)
 
