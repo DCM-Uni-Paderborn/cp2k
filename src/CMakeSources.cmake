@@ -1578,6 +1578,7 @@ list(
 list(
   APPEND
   CP2K_SRCS_C
+  libint_c_api.c
   sockets.c
   base/machine_cpuid.c
   base/openmp_trace.c
