@@ -257,7 +257,7 @@ MODULE qs_scf
         qs_skala_scf_accept, qs_skala_scf_align_preconditioner, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
         qs_skala_scf_create_symmetric, qs_skala_scf_crossing_type, qs_skala_scf_evaluate, &
         qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_release_cusp, &
-        qs_skala_scf_retained_symmetry, qs_skala_scf_selected, qs_skala_scf_size, &
+        qs_skala_scf_restore_restart, qs_skala_scf_retained_symmetry, qs_skala_scf_selected, qs_skala_scf_size, &
         qs_skala_scf_stationarity, qs_skala_scf_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_core
@@ -1187,7 +1187,7 @@ CONTAINS
                                                             release_side(:), spins(:)
       LOGICAL :: accepted, align_preconditioner, balanced, converged, do_hfx, do_kpoints, final_stage, rebase_fixed, &
          rechart, reference_refreshed, refresh_attempted, refresh_pending, released, &
-         retained_symmetry, space_grown, symmetry_seeded, valid
+         restored_boundaries, retained_symmetry, space_grown, symmetry_seeded, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
       REAL(dp)                                           :: energy, omitted_charge, previous_residual, step_radius
       REAL(dp), ALLOCATABLE                              :: coordinate(:), coordinate_bound, &
@@ -1315,6 +1315,17 @@ CONTAINS
          CALL qs_skala_scf_release(state)
          handled = symmetry_seeded
          RETURN
+      END IF
+      IF (.NOT. final_stage .AND. remaining > 0 .AND. dft_control%use_gauxc .AND. &
+          scf_control%density_guess == restart_guess .AND. SIZE(tolerances) == 0 .AND. &
+          NORM2(physical) > scf_control%eps_scf) THEN
+         CALL qs_skala_scf_restore_restart(state, coordinate, energy, gradient, physical, restored_boundaries)
+         IF (restored_boundaries) THEN
+            CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid)
+            CPASSERT(valid)
+            IF (output_unit > 0) WRITE (output_unit, '(T2,A,I0,A)') &
+               "INVERSE_SCF| Recovered ", SIZE(tolerances), " physical thresholds at the restart."
+         END IF
       END IF
       refresh_pending = .FALSE.
       IF (.NOT. final_stage .AND. scf_control%smear%do_smear .AND. do_kpoints .AND. &

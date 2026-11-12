@@ -1694,6 +1694,11 @@ CONTAINS
             history = 0
          END IF
          x(:) = trial
+         ! Later evaluations can fail to restore the physical targets at this point.
+         ! Preserve the last verified state even when that failure exits this routine.
+         IF (PRESENT(retain_progress)) THEN
+            IF (retain_progress) coordinate(:) = x
+         END IF
          reduced(:) = trial_reduced
          energy = trial_energy
          IF (PRESENT(report_iteration)) CALL report_iteration(iteration, energy, free_gradient_norm(reduced), .TRUE., context)
@@ -1702,9 +1707,6 @@ CONTAINS
       IF (stationary(x, reduced)) THEN
          coordinate(:) = x
          converged = .TRUE.
-      END IF
-      IF (PRESENT(retain_progress)) THEN
-         IF (retain_progress) coordinate(:) = x
       END IF
       ! Trial callbacks may update native caches; the returned coordinates remain authoritative.
    CONTAINS

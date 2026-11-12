@@ -163,6 +163,7 @@ PROGRAM upf_inverse_unittest
    CALL mp_world_init(comm)
    CALL check_inverse()
    CALL check_physical_stationarity()
+   CALL check_retained_failed_constraint()
    CALL check_constrained_curvature()
    CALL check_dependent_constraints()
    CALL check_cusp_normals()
@@ -1346,6 +1347,114 @@ CONTAINS
          ERROR STOP 'An inadmissible active normal was retained during tangent minimization'
       END IF
    END SUBROUTINE check_physical_stationarity
+
+! **************************************************************************************************
+!> \brief A failed reevaluation preserves the preceding feasible descent step.
+! **************************************************************************************************
+   SUBROUTINE check_retained_failed_constraint()
+      INTEGER                                            :: iterations
+      LOGICAL                                            :: converged, failed
+      REAL(dp)                                           :: coordinate(2)
+
+      failed = .FALSE.
+      coordinate = [0.4_dp, 0.0_dp]
+      CALL skala_constrained_stationarity(replayed_constraint, retained_step_energy, failed, coordinate, &
+                                          [1.e-12_dp], stationarity_tolerance, converged, max_iterations=3, &
+                                          iterations=iterations, retain_progress=.TRUE., report_iteration=fail_next_replay, &
+                                          check_stalled_segment=continue_replayed_constraint)
+      IF (converged .OR. iterations /= 2 .OR. .NOT. failed .OR. &
+          ABS(coordinate(1) - 0.3_dp) > 1.e-14_dp .OR. coordinate(2) /= 0.0_dp) THEN
+         ERROR STOP 'Failed constraint evaluation discarded the last feasible orbital step'
+      END IF
+   END SUBROUTINE check_retained_failed_constraint
+
+! **************************************************************************************************
+!> \brief Simulate a physical target whose fresh evaluation fails after an accepted step.
+!> \param coordinate Current orbital coordinates.
+!> \param values Constraint value for the second coordinate.
+!> \param jacobian Constraint derivative.
+!> \param context Whether the field evaluation has failed.
+! **************************************************************************************************
+   SUBROUTINE replayed_constraint(coordinate, values, jacobian, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: values(:), jacobian(:, :)
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      SELECT TYPE (context)
+      TYPE IS (LOGICAL)
+         values(1) = coordinate(2)
+         jacobian(1, :) = [0.0_dp, 1.0_dp]
+         IF (context) THEN
+            values(1) = 1.0_dp
+            jacobian(1, :) = 0.0_dp
+         END IF
+      CLASS DEFAULT
+         ERROR STOP 'Wrong constraint replay context'
+      END SELECT
+   END SUBROUTINE replayed_constraint
+
+! **************************************************************************************************
+!> \brief Quadratic energy with an interior feasible descent direction.
+!> \param coordinate Current orbital coordinates.
+!> \param energy Total energy.
+!> \param gradient Energy derivative.
+!> \param context Constraint replay state.
+! **************************************************************************************************
+   SUBROUTINE retained_step_energy(coordinate, energy, gradient, context)
+      REAL(dp), INTENT(IN)                               :: coordinate(:)
+      REAL(dp), INTENT(OUT)                              :: energy, gradient(:)
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      MARK_USED(context)
+      gradient = coordinate
+      energy = 0.5_dp*DOT_PRODUCT(coordinate, coordinate)
+   END SUBROUTINE retained_step_energy
+
+! **************************************************************************************************
+!> \brief Make the field reevaluation fail after the first successful step.
+!> \param step Current iteration.
+!> \param energy Accepted energy.
+!> \param gradient_norm Reduced gradient norm.
+!> \param accepted Whether the step passed the energy test.
+!> \param context Constraint replay state.
+! **************************************************************************************************
+   SUBROUTINE fail_next_replay(step, energy, gradient_norm, accepted, context)
+      INTEGER, INTENT(IN)                                :: step
+      REAL(dp), INTENT(IN)                               :: energy, gradient_norm
+      LOGICAL, INTENT(IN)                                :: accepted
+      CLASS(*), INTENT(INOUT)                            :: context
+
+      MARK_USED(step)
+      MARK_USED(energy)
+      MARK_USED(gradient_norm)
+      SELECT TYPE (context)
+      TYPE IS (LOGICAL)
+         IF (accepted) context = .TRUE.
+      CLASS DEFAULT
+         ERROR STOP 'Wrong constraint replay context'
+      END SELECT
+   END SUBROUTINE fail_next_replay
+
+! **************************************************************************************************
+!> \brief Continue to the physical reevaluation after the branch check.
+!> \param first Accepted coordinates.
+!> \param last Endpoint coordinates.
+!> \param chart Fixed constraint chart.
+!> \param context Constraint replay state.
+!> \param interrupted Whether the branch interrupts the line search.
+! **************************************************************************************************
+   SUBROUTINE continue_replayed_constraint(first, last, chart, context, interrupted)
+      REAL(dp), INTENT(IN)                               :: first(:), last(:)
+      TYPE(skala_constraint_chart_type), INTENT(IN)      :: chart
+      CLASS(*), INTENT(INOUT)                            :: context
+      LOGICAL, INTENT(OUT)                               :: interrupted
+
+      MARK_USED(first)
+      MARK_USED(last)
+      MARK_USED(chart)
+      MARK_USED(context)
+      interrupted = .FALSE.
+   END SUBROUTINE continue_replayed_constraint
 
 ! **************************************************************************************************
 !> \brief A curved cusp has downhill normal directions even before its tangent is stationary.

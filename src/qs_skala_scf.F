@@ -123,6 +123,7 @@ MODULE qs_skala_scf
 
    ! Atomic energy unit for temperature-independent frozen-Hamiltonian occupation curvature.
    REAL(dp), PARAMETER :: thermal_energy_unit = 1.0_dp
+   REAL(dp), PARAMETER :: native_boundary_tolerance = 1.0e-17_dp
    PUBLIC :: qs_skala_scf_create_symmetric
    PUBLIC :: qs_skala_scf_retained_symmetry
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
@@ -130,7 +131,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_point_derivative
    PUBLIC :: qs_skala_scf_crossings, qs_skala_scf_crossing_roots
    PUBLIC :: qs_skala_scf_choose_root, qs_skala_scf_boundary_root
-   PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_stationarity
+   PUBLIC :: qs_skala_scf_constraints, qs_skala_scf_restore_restart, qs_skala_scf_stationarity
    PUBLIC :: qs_skala_scf_crossing_type
    PUBLIC :: qs_skala_scf_select, qs_skala_scf_selected, qs_skala_scf_limiting, qs_skala_scf_balance
    PUBLIC :: qs_skala_scf_admissibility, qs_skala_scf_classify
@@ -2707,6 +2708,120 @@ CONTAINS
    END SUBROUTINE qs_skala_scf_constraints
 
 ! **************************************************************************************************
+!> \brief Recover a small set of nearby Skala thresholds after reading an orbital restart.
+!>        Restore the actual targets and require admissible limiting derivatives before using them.
+!>        If recovery fails, continue with the original orbitals and no new constraints.
+!> \param state Evaluated native Skala state with no selected thresholds.
+!> \param coordinate Orbital coordinates, updated only when the recovered state is accepted.
+!> \param energy Current native energy.
+!> \param gradient Current orbital coordinate covector.
+!> \param physical Current physical orbital covector.
+!> \param restored Whether the original native feasibility and energy checks accepted the recovery.
+! **************************************************************************************************
+   SUBROUTINE qs_skala_scf_restore_restart(state, coordinate, energy, gradient, physical, restored)
+      TYPE(qs_skala_scf_type), INTENT(INOUT), TARGET     :: state
+      REAL(dp), INTENT(INOUT)                            :: coordinate(:), energy, gradient(:), physical(:)
+      LOGICAL, INTENT(OUT)                              :: restored
+
+      INTEGER, PARAMETER                                :: maximum_candidates = 8
+      REAL(dp), PARAMETER                               :: discovery_window = 4.0_dp*native_boundary_tolerance
+      INTEGER                                            :: count, descriptor, domain, level, limit, &
+                                                            m, nlevels, offset, row, spin
+      INTEGER                                            :: keys(6, maximum_candidates)
+      INTEGER, ALLOCATABLE                               :: counts(:), gathered(:, :), sides(:)
+      INTEGER, POINTER                                   :: points(:, :)
+      LOGICAL                                            :: available, valid
+      LOGICAL, ALLOCATABLE                               :: admissible(:)
+      REAL(dp)                                           :: original_energy, target, trial_energy
+      REAL(dp)                                           :: local_targets(maximum_candidates)
+      REAL(dp), ALLOCATABLE                              :: floors(:), jacobian(:, :), tolerances(:), trial(:), values(:)
+      REAL(dp), POINTER                                  :: density(:, :), fields(:, :), kinetic(:, :)
+      TYPE(mp_comm_type)                                 :: comm
+      TYPE(physical_constraints_context)                 :: context
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      TYPE(skala_constraint_chart_type)                  :: chart
+
+      restored = .FALSE.
+      IF (.NOT. skala_only_functional(state)) RETURN
+      IF (.NOT. native_samples_match(state, coordinate)) RETURN
+      CPASSERT(skala_density_constraints_count(state%constraints) == 0)
+      limit = MIN(SIZE(coordinate), maximum_candidates)
+      xc_section => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC")
+      CALL comm%set_handle(state%para_env%get_handle())
+      floors = native_skala_spin_floors(xc_section, comm)
+      IF (ALL(floors /= 0.0_dp)) floors = [0.0_dp, floors]
+
+      count = 0
+      scan: DO domain = skala_fft_domain, skala_last_sample_domain
+         CALL skala_density_samples_view(state%constraints, domain, points, density, kinetic, available)
+         IF (.NOT. available) CYCLE
+         DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
+            fields => density
+            IF (descriptor == skala_kinetic_descriptor) fields => kinetic
+            nlevels = MERGE(SIZE(floors), 1, descriptor == skala_density_descriptor)
+            DO level = 1, nlevels
+               target = 0.0_dp
+               IF (descriptor == skala_density_descriptor) target = floors(level)
+               DO spin = 1, SIZE(fields, 2)
+                  DO row = 1, SIZE(fields, 1)
+                     IF (ABS(fields(row, spin) - target) > discovery_window) CYCLE
+                     count = count + 1
+                     IF (count > limit) EXIT scan
+                     keys(:, count) = [domain, points(:, row), MERGE(spin, 0, SIZE(fields, 2) > 1), descriptor]
+                     local_targets(count) = target
+                  END DO
+               END DO
+            END DO
+         END DO
+      END DO scan
+      ALLOCATE (counts(state%para_env%num_pe), SOURCE=0)
+      counts(state%para_env%mepos + 1) = count
+      CALL state%para_env%sum(counts)
+      m = SUM(counts)
+      ! A large set of nearby thresholds is handled by the regular line search.
+      IF (m == 0 .OR. m > limit) RETURN
+      offset = SUM(counts(:state%para_env%mepos))
+      ALLOCATE (gathered(6, m), SOURCE=0)
+      ALLOCATE (context%targets(m), SOURCE=0.0_dp)
+      gathered(:, offset + 1:offset + count) = keys(:, :count)
+      context%targets(offset + 1:offset + count) = local_targets(:count)
+      CALL state%para_env%sum(gathered)
+      CALL state%para_env%sum(context%targets)
+      context%state => state
+      context%domains = gathered(1, :)
+      context%points = gathered(2:4, :)
+      context%spins = gathered(5, :)
+      context%descriptors = gathered(6, :)
+
+      original_energy = sum_ks_energies(state%energy, .TRUE.)
+      ALLOCATE (trial, SOURCE=coordinate)
+      ALLOCATE (tolerances(m), SOURCE=native_boundary_tolerance)
+      ALLOCATE (values(m), jacobian(m, SIZE(coordinate)), admissible(m), sides(m))
+      CALL skala_constraint_chart_create(evaluate_native_constraints, context, trial, tolerances, chart, valid)
+      IF (valid) THEN
+         CALL skala_constraint_chart_restore(chart, evaluate_native_constraints, context, trial, values, jacobian, valid)
+      END IF
+      ! This recovery is local to the saved orbitals. Finite steps use the normal search.
+      IF (valid .AND. NORM2(trial - coordinate) <= SQRT(EPSILON(0.0_dp))) THEN
+         CALL qs_skala_scf_classify(state, trial, context%points, context%domains, context%spins, context%descriptors, &
+                                    context%targets, admissible, sides, valid, retain=.TRUE., restore_operator=.FALSE.)
+         IF (valid .AND. ALL(admissible)) THEN
+            CALL qs_skala_scf_evaluate(state, trial, energy, gradient, physical, reuse_fields=.TRUE.)
+            trial_energy = sum_ks_energies(state%energy, .TRUE.)
+            CALL qs_skala_scf_values(state, context%domains, context%points, context%spins, context%descriptors, values)
+            restored = ALL(ABS(values - context%targets) <= tolerances) .AND. &
+                       trial_energy <= original_energy + 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(original_energy), ABS(trial_energy))
+            IF (restored) THEN
+               coordinate(:) = trial
+               RETURN
+            END IF
+         END IF
+      END IF
+      CALL skala_density_constraints_clear_selection(state%constraints)
+      CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical, reuse_fields=.TRUE.)
+   END SUBROUTINE qs_skala_scf_restore_restart
+
+! **************************************************************************************************
 !> \brief Restore simultaneous physical targets and solve tangential native orbital stationarity.
 !>        Every constraint and energy trial reevaluates the original native fields and functional.
 !>        The caller's selected limiting derivatives remain in effect. Convergence does not
@@ -3540,9 +3655,9 @@ CONTAINS
       old = SIZE(old_spins)
       ! These are the qualified absolute native density windows, not relative energy tolerances.
       probe = 1.0e-14_dp
-      tolerance = 1.0e-17_dp
+      tolerance = native_boundary_tolerance
       kinetic_probe = 1.0e-14_dp
-      kinetic_tolerance = 1.0e-17_dp
+      kinetic_tolerance = native_boundary_tolerance
       IF (old > 0) THEN
          CALL skala_density_constraints_get(state%constraints, old_points, old_spins, old_weights, probe, tolerance, &
                                             descriptors=old_descriptors, domains=old_domains, targets=old_targets, &
@@ -4419,7 +4534,7 @@ CONTAINS
 !>        Keep the original selected samples and physical windows. Reject an uphill boundary or
 !>        one permitting normal descent, then inspect the remaining endpoint candidates. An
 !>        unresolved root leaves the original line search to test its complete energy and derivative.
-!>        A failed normal classification remains an event for the caller.
+!>        A rejected normal classification leaves the original line search active.
 !> \param first First feasible coordinates of the scanned segment.
 !> \param last Proposed feasible coordinates.
 !> \param context Native state, original constraint curve and optional crossing output.
@@ -4445,8 +4560,8 @@ CONTAINS
 
       event => context%crossings
       old = skala_density_constraints_count(context%state%constraints)
-      tolerance = 1.0e-17_dp
-      kinetic_tolerance = 1.0e-17_dp
+      tolerance = native_boundary_tolerance
+      kinetic_tolerance = native_boundary_tolerance
       IF (old > 0) THEN
          CALL skala_density_constraints_get(context%state%constraints, old_points, old_spins, weights, probe, tolerance, &
                                             descriptors=old_descriptors, domains=old_domains, &
@@ -4499,8 +4614,7 @@ CONTAINS
             CALL qs_skala_scf_classify(context%state, root, event%points(:, reached), event%domains(reached), &
                                        event%spins(reached), event%descriptors(reached), event%targets(reached), &
                                        admissible, sides, valid, restore_operator=.FALSE.)
-            IF (.NOT. valid) EXIT
-            IF (ANY(admissible)) THEN
+            IF (valid .AND. ANY(admissible)) THEN
                ! Restore the original operator only when an admissible root can be returned.
                CALL evaluate_limiting_state(context%state, root, energy, gradient, .TRUE.)
                energy = sum_ks_energies(context%state%energy, .TRUE.)
