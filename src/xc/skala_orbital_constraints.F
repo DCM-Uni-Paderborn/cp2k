@@ -1496,7 +1496,9 @@ CONTAINS
                                  direction(:) = trial(curve%free) - x(curve%free)
                                  EXIT
                               END IF
-                              IF (uphill_excursion .AND. .NOT. event) THEN
+                              IF ((uphill_excursion .OR. trial_energy > energy + roundoff) .AND. .NOT. event) THEN
+                                 ! The shortened bracket found no event. Give local curvature and
+                                 ! backtracking a chance before scanning the original uphill trial.
                                  deferred_trial = trial
                                  deferred_scan = .TRUE.
                               END IF
