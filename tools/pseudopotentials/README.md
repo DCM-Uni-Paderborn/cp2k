@@ -32,9 +32,11 @@ in `POTENTIAL_FILE_NAME` in the same `&KIND` section. This keyword accepts paths
 80-character limit of `POTENTIAL UPF <filename>`. Choose the matching basis separately.
 
 Set `METHOD` in `&QS` to `GPW`, `GAPW_XC`, or `GAPW` to choose the density evaluation.
-For prepared USPPs with overlapping reconstruction or projector supports, set `USPP_METHOD INVERSE`.
-The default `INVERSE_1C` requires disjoint supports. For LDA/GGA with original USPPs, choose
-`USPP_METHOD DIRECT` to use the tabulated projectors and augmentation without full reference waves.
+For USPP and PAW datasets with overlapping reconstruction or projector supports, set
+`USPP_METHOD INVERSE`. The default `INVERSE_1C` requires disjoint supports. `USPP_METHOD DIRECT`
+expands the soft orbitals for either family. In USPP LDA/GGA it uses the original projectors and
+augmentation without full reference waves. PAW uses its valence partial waves and one-center
+corrections in all three orbital representations.
 
 The prepared collection stores the SSSP selection under `data/{pbe,pbesol}/sssp/`. Add
 `--additional-uspp` to install non-SSSP PSLibrary and GBRV USPPs for the selected functionals. They
@@ -221,11 +223,12 @@ an explicit path to the source tree:
 &END KIND
 ```
 
-Calculation support depends on the CP2K build and Gaussian basis. `DIRECT` uses the original USPP
-data. Inverse representations additionally require complete projector-indexed reference waves and
-their density, metric, kinetic-energy and geometry corrections. Tau-dependent XC with NLCC also
-needs the declared model core kinetic density. NC, USPP and PAW datasets are not interchangeable.
-Installing data alone does not enable missing methods or properties.
+Calculation support depends on the CP2K build and Gaussian basis. Inverse USPP and tau-dependent
+XC with any USPP orbital representation require complete projector-indexed AE/PS waves. Inverse
+USPP retains the original density, metric and kinetic-energy corrections and their geometry
+derivatives. For tau-dependent XC, NC and USPP with NLCC also require a compatible model core
+kinetic density. PAW uses its AE/PS valence waves and, where present, the occupied frozen-core
+waves required to build the core kinetic density.
 
 Choose and converge a compatible Gaussian basis, grid and response settings for the intended
 calculation. SSSP plane-wave cutoffs are not GPW multigrid or Gaussian-basis recommendations. The
