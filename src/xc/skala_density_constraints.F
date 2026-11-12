@@ -23,7 +23,7 @@ MODULE skala_density_constraints
              skala_density_constraints_balance, skala_density_crossings, skala_density_root
    PUBLIC :: skala_density_samples_begin, skala_density_samples_end, skala_density_samples_active, &
              skala_density_samples_put, skala_density_samples_get, skala_density_samples_only, &
-             skala_density_samples_generation
+             skala_density_samples_generation, skala_density_samples_view
    PUBLIC :: skala_density_constraints_update_weights, skala_density_constraints_clear_selection
    PUBLIC :: skala_density_jumps_begin, skala_density_jumps_active, &
              skala_density_jumps_put, skala_density_jumps_finish
@@ -360,6 +360,36 @@ CONTAINS
          END IF
       END ASSOCIATE
    END SUBROUTINE skala_density_samples_get
+
+! **************************************************************************************************
+!> \brief Borrow the active local samples without copying the whole domain.
+!>        The views are read-only and expire on the next update of the sample collection.
+!> \param state Native descriptor storage with a live target.
+!> \param domain Physical domain of the samples.
+!> \param points Local physical keys.
+!> \param density Local spin densities.
+!> \param kinetic Local kinetic densities, with zero columns if not requested.
+!> \param available Whether this domain was evaluated.
+! **************************************************************************************************
+   SUBROUTINE skala_density_samples_view(state, domain, points, density, kinetic, available)
+      TYPE(skala_density_constraints_type), INTENT(IN), &
+         TARGET                                          :: state
+      INTEGER, INTENT(IN)                                :: domain
+      INTEGER, INTENT(OUT), POINTER                     :: points(:, :)
+      REAL(dp), INTENT(OUT), POINTER                    :: density(:, :), kinetic(:, :)
+      LOGICAL, INTENT(OUT)                               :: available
+
+      INTEGER                                            :: n
+
+      CPASSERT(domain >= skala_fft_domain .AND. domain <= skala_last_sample_domain)
+      NULLIFY (points, density, kinetic)
+      available = ALLOCATED(state%samples(domain)%points)
+      IF (.NOT. available) RETURN
+      n = state%samples(domain)%npoints
+      points => state%samples(domain)%points(:, :n)
+      density => state%samples(domain)%density(:n, :)
+      kinetic => state%samples(domain)%kinetic(:n, :)
+   END SUBROUTINE skala_density_samples_view
 
 ! **************************************************************************************************
 !> \brief Release current samples, including domains absent from the next evaluation.

@@ -96,6 +96,7 @@ MODULE qs_skala_scf
         skala_density_crossings, skala_density_descriptor, skala_density_jumps_begin, &
         skala_density_jumps_finish, skala_density_root, skala_density_samples_begin, &
         skala_density_samples_end, skala_density_samples_generation, skala_density_samples_get, &
+        skala_density_samples_view, &
         skala_fft_domain, skala_kinetic_descriptor, skala_last_sample_domain, skala_paw_ae_domain, &
         skala_paw_ps_domain
    USE skala_gpw_functional,            ONLY: native_skala_spin_floors
@@ -1384,9 +1385,10 @@ CONTAINS
 
       INTEGER                                            :: c, column, domain, first_row, i, &
                                                             last_row, m
-      INTEGER, ALLOCATABLE                               :: keys(:, :), owners(:)
+      INTEGER, ALLOCATABLE                               :: owners(:)
+      INTEGER, POINTER                                   :: keys(:, :)
       LOGICAL                                            :: available, valid
-      REAL(dp), ALLOCATABLE                              :: density(:, :), kinetic(:, :)
+      REAL(dp), POINTER                                  :: density(:, :), kinetic(:, :)
 
       CPASSERT(state%evaluated)
       m = SIZE(values)
@@ -1403,7 +1405,7 @@ CONTAINS
       ALLOCATE (owners(m), SOURCE=0)
       DO domain = skala_fft_domain, skala_last_sample_domain
          IF (.NOT. ANY(domains == domain)) CYCLE
-         CALL skala_density_samples_get(state%constraints, domain, keys, density, kinetic, available)
+         CALL skala_density_samples_view(state%constraints, domain, keys, density, kinetic, available)
          IF (.NOT. available) CYCLE
          DO c = 1, m
             IF (domains(c) /= domain) CYCLE
