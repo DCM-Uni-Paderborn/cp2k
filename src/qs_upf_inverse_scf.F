@@ -2019,9 +2019,9 @@ CONTAINS
       CALL pw_env_get(pw_env, auxbas_pw_pool=pool)
       CALL qs_upf_inverse_scf_prepare(ks_env, pool%pw_grid, images, info, use_atomic, use_direct)
       IF (info == -2) THEN
-         CPABORT("Overlapping USPP reconstruction regions. Use USPP_METHOD INVERSE")
+         CPABORT("INVERSE_1C regions overlap. Use USPP_METHOD INVERSE for this geometry")
       END IF
-      IF (info /= 0) CPABORT("Inverse USPP reconstruction is singular or ill-conditioned")
+      IF (info /= 0) CPABORT("UPF orbital reconstruction is singular or ill-conditioned")
    END SUBROUTINE qs_upf_inverse_scf_initialize
 
 END MODULE qs_upf_inverse_scf
