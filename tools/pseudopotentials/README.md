@@ -226,9 +226,13 @@ an explicit path to the source tree:
 Calculation support depends on the CP2K build and Gaussian basis. Inverse USPP and tau-dependent
 XC with any USPP orbital representation require complete projector-indexed AE/PS waves. Inverse
 USPP retains the original density, metric and kinetic-energy corrections and their geometry
-derivatives. For tau-dependent XC, NC and USPP with NLCC also require a compatible model core
-kinetic density. PAW uses its AE/PS valence waves and, where present, the occupied frozen-core
-waves required to build the core kinetic density.
+derivatives.
+
+For tau-dependent XC, USPPs with NLCC also require a compatible model core kinetic density.
+With an original NC UPF lacking this field, Quickstep uses valence tau and retains the NLCC
+charge density. Install the NC core supplement to include its model contribution to tau.
+PAW uses the AE/PS valence waves and the occupied frozen-core waves required to build the
+core kinetic density.
 
 Choose and converge a compatible Gaussian basis, grid and response settings for the intended
 calculation. SSSP plane-wave cutoffs are not GPW multigrid or Gaussian-basis recommendations. The
