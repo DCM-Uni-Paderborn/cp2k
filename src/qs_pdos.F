@@ -243,7 +243,7 @@ CONTAINS
       IF (output_unit > 0) WRITE (UNIT=output_unit, FMT='(/,(T3,A,T61,I10))') &
          " Calculate PDOS at iteration step ", iterstep
       CALL get_qs_env(qs_env=qs_env, &
-                      matrix_s=s_matrix, &
+                      matrix_metric=s_matrix, &
                       dft_control=dft_control)
 
       CALL get_atomic_kind_set(atomic_kind_set, natom=natom)
@@ -1139,7 +1139,7 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, &
                       kpoints=kpoints, &
                       dft_control=dft_control, &
-                      matrix_s_kp=matrix_s_kp, &
+                      matrix_metric_kp=matrix_s_kp, &
                       scf_env=scf_env, &
                       atomic_kind_set=atomic_kind_set, &
                       qs_kind_set=qs_kind_set, &
@@ -1215,12 +1215,13 @@ CONTAINS
 
       emin = HUGE(0.0_dp)
       emax = -HUGE(0.0_dp)
-      e_fermi(:) = 0.0_dp
+      e_fermi(:) = -HUGE(0.0_dp)
       hoco(:) = -HUGE(0.0_dp)
       fractional_occupation = .FALSE.
       IF (kpoints%nkp /= 0) THEN
          DO ik = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(ik)%kpoint_env
+            IF (kp%wkp == 0.0_dp) CYCLE
             DO ispin = 1, nspins
                mo_set => kp%mos(ispin)
                CALL get_mo_set(mo_set=mo_set, nmo=nmo_kp, mu=e_fermi(ispin))
@@ -1282,6 +1283,7 @@ CONTAINS
          DO ik = 1, SIZE(kpoints%kp_env)
             kp => kpoints%kp_env(ik)%kpoint_env
             wkp = kp%wkp
+            IF (wkp == 0.0_dp) CYCLE
             DO ispin = 1, nspins
                mo_set => kp%mos(ispin)
                CALL get_mo_set(mo_set=mo_set, nao=nao, nmo=nmo_kp)

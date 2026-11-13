@@ -471,11 +471,13 @@ CONTAINS
       emin = 1.e10_dp
       emax = -1.e10_dp
       nmo(:) = 0
-      e_fermi(:) = 0.0_dp
+      e_fermi(:) = -HUGE(0.0_dp)
       hoco(:) = -HUGE(0.0_dp)
       fractional_occupation = .FALSE.
       IF (kpoints%nkp /= 0) THEN
          DO ik = 1, SIZE(kpoints%kp_env)
+            ! Band points with zero integration weight do not set the DOS energy grid.
+            IF (kpoints%kp_env(ik)%kpoint_env%wkp == 0.0_dp) CYCLE
             mos => kpoints%kp_env(ik)%kpoint_env%mos
             CPASSERT(ASSOCIATED(mos))
             DO ispin = 1, nspins
@@ -521,8 +523,9 @@ CONTAINS
 
       IF (kpoints%nkp /= 0) THEN
          DO ik = 1, SIZE(kpoints%kp_env)
-            mos => kpoints%kp_env(ik)%kpoint_env%mos
             wkp = kpoints%kp_env(ik)%kpoint_env%wkp
+            IF (wkp == 0.0_dp) CYCLE
+            mos => kpoints%kp_env(ik)%kpoint_env%mos
             DO ispin = 1, nspins
                mo_set => mos(ispin)
                occupation_numbers => mo_set%occupation_numbers
