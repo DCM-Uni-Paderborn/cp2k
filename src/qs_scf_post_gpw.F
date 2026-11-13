@@ -2294,7 +2294,7 @@ CONTAINS
                                                             nlumo_required, nlumos, output_unit
       LOGICAL                                            :: defer_molden, do_curve, do_dos, &
                                                             do_kpoints, do_pdos, do_projected_dos, &
-                                                            explicit
+                                                            explicit, original_upf
       REAL(KIND=dp)                                      :: s_square, s_square_ideal, &
                                                             total_abs_spin_dens, total_spin_dens
       REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues
@@ -2314,6 +2314,7 @@ CONTAINS
       TYPE(molecule_type), POINTER                       :: molecule_set(:)
       TYPE(particle_list_type), POINTER                  :: particles
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
+      TYPE(pw_c1d_gs_type), ALLOCATABLE                  :: physical_density_g(:)
       TYPE(pw_env_type), POINTER                         :: pw_env
       TYPE(pw_pool_p_type), DIMENSION(:), POINTER        :: pw_pools
       TYPE(pw_pool_type), POINTER                        :: auxbas_pw_pool
@@ -2555,20 +2556,30 @@ CONTAINS
       IF (dft_control%nspins == 2) THEN
          total_spin_dens = 0.0_dp
          total_abs_spin_dens = 0.0_dp
-         IF (dft_control%qs_control%gapw) THEN
-            CALL get_qs_env(qs_env, qs_charges=qs_charges)
-            total_spin_dens = qs_charges%total_rho_hard_spin - &
-                              qs_charges%total_rho_soft_spin
-            total_abs_spin_dens = qs_charges%total_rho_hard_abs_spin - &
-                                  qs_charges%total_rho_soft_abs_spin
-         END IF
-         CALL get_qs_env(qs_env, mos=mos)
-         CALL get_qs_env(qs_env=qs_env, pw_env=pw_env)
+         CALL get_qs_env(qs_env, mos=mos, pw_env=pw_env)
          CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool, &
                          pw_pools=pw_pools)
          CALL auxbas_pw_pool%create_pw(wf_r)
-         CALL pw_copy(rho_r(1), wf_r)
-         CALL pw_axpy(rho_r(2), wf_r, alpha=-1._dp)
+         CALL qs_upf_inverse_electronic_density(qs_env, physical_density_g, original_upf)
+         IF (original_upf) THEN
+            ! Subtract the reconstructed spin fields before taking the absolute value.
+            CALL pw_axpy(physical_density_g(2), physical_density_g(1), alpha=-1.0_dp)
+            CALL pw_transfer(physical_density_g(1), wf_r)
+            DO ispin = 1, SIZE(physical_density_g)
+               CALL physical_density_g(ispin)%release()
+            END DO
+            DEALLOCATE (physical_density_g)
+         ELSE
+            IF (dft_control%qs_control%gapw) THEN
+               CALL get_qs_env(qs_env, qs_charges=qs_charges)
+               total_spin_dens = qs_charges%total_rho_hard_spin - &
+                                 qs_charges%total_rho_soft_spin
+               total_abs_spin_dens = qs_charges%total_rho_hard_abs_spin - &
+                                     qs_charges%total_rho_soft_abs_spin
+            END IF
+            CALL pw_copy(rho_r(1), wf_r)
+            CALL pw_axpy(rho_r(2), wf_r, alpha=-1.0_dp)
+         END IF
          total_spin_dens = total_spin_dens + pw_integrate_function(wf_r)
          IF (output_unit > 0) WRITE (UNIT=output_unit, FMT='(/,(T3,A,T61,F20.10))') &
             "Integrated spin density: ", total_spin_dens
