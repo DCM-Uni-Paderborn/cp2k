@@ -21,11 +21,19 @@
     &SCF
       EPS_SCF 1.E-11
       MAX_SCF 60
+      EPS_LUMO 1.E-9
       &OT
         MINIMIZER DIIS
         PRECONDITIONER FULL_ALL
       &END OT
     &END SCF
+    &PRINT
+      &MO_CUBES
+        NHOMO 1
+        NLUMO 1
+        WRITE_CUBE FALSE
+      &END MO_CUBES
+    &END PRINT
     &XC
       &XC_FUNCTIONAL PBE
       &END XC_FUNCTIONAL

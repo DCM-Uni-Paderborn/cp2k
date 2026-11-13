@@ -28,6 +28,7 @@
   {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0104538226},
   {matcher = "M031", tol = 1e-7, ref = 296046.874591},
   {matcher = "Hirshfeld_total_charge", tol = 1e-3, ref = 0.0},
+  {matcher = "E_gap_DFT", tol = 2e-6, ref = 14.717314},
 ]
 # Complete complex Bloch density, native OT, and band output in reversed k-point order.
 "H2_inverse_GPW_kpoints.inp"       = [
