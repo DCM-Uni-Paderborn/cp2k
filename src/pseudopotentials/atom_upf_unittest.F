@@ -636,10 +636,11 @@ CONTAINS
       IF (logger%para_env%is_source()) THEN
          CALL open_file(fixture, unit_number=unit, file_status="REPLACE", file_action="WRITE")
          WRITE (unit, '(A)') '<UPF version="2.0.1">', '<PP_INFO>'
-         DO i = 1, 105
+         WRITE (unit, '(A)') '  "Free-form generator information'
+         DO i = 2, 105
             WRITE (unit, '(A,I0)') 'Generator information line ', i
          END DO
-         WRITE (unit, '(A)') '</PP_INFO>'
+         WRITE (unit, '(A)') ACHAR(9)//'</PP_INFO>'
          WRITE (unit, '(A)') &
             '<PP_HEADER element="He" pseudo_type="NC" z_valence="2"', &
             ' mesh_size="3" number_of_proj="2" l_max="0" />', &
@@ -678,7 +679,7 @@ CONTAINS
       CALL init_atom_potential(atomic, potential_section, 2)
       ASSOCIATE (potential => atomic%upf_pot)
          IF (potential%maxinfo /= SIZE(potential%info)) ERROR STOP "Incorrect retained UPF information count"
-         IF (potential%info(1) /= "Generator information line 1" .OR. &
+         IF (potential%info(1) /= '  "Free-form generator information' .OR. &
              potential%info(potential%maxinfo) /= "Generator information line 100") THEN
             ERROR STOP "Incorrect retained UPF information"
          END IF

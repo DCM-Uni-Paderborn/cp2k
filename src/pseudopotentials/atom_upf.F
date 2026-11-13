@@ -312,8 +312,9 @@ CONTAINS
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
       TYPE(atom_upfpot_type)                             :: pot
 
-      CHARACTER(LEN=default_string_length)               :: line, string
-      INTEGER                                            :: icount, iline
+      CHARACTER(LEN=*), PARAMETER                        :: closing_tag = "</PP_INFO>"
+
+      INTEGER                                            :: first, icount, iline
       LOGICAL                                            :: at_end
 
       icount = 0
@@ -321,12 +322,16 @@ CONTAINS
          CALL parser_get_next_line(parser, 1, at_end)
          CPASSERT(.NOT. at_end)
          iline = parser%buffer%present_line_number
-         line = TRIM(parser%buffer%input_lines(iline))
-         CALL parser_get_object(parser, string)
-         IF (string(1:10) == "</PP_INFO>") EXIT
-         IF (icount == SIZE(pot%info)) CYCLE
-         icount = icount + 1
-         pot%info(icount) = line
+         ! PP_INFO can contain generator input and prose with unmatched quotes.
+         ASSOCIATE (line => parser%buffer%input_lines(iline))
+            first = VERIFY(line, " "//ACHAR(9))
+            IF (first > 0) THEN
+               IF (INDEX(line(first:), closing_tag) == 1) EXIT
+            END IF
+            IF (icount == SIZE(pot%info)) CYCLE
+            icount = icount + 1
+            pot%info(icount) = line
+         END ASSOCIATE
       END DO
       pot%maxinfo = icount
 
