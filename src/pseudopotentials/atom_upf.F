@@ -319,8 +319,8 @@ CONTAINS
          line = TRIM(parser%buffer%input_lines(iline))
          CALL parser_get_object(parser, string)
          IF (string(1:10) == "</PP_INFO>") EXIT
+         IF (icount == SIZE(pot%info)) CYCLE
          icount = icount + 1
-         IF (icount > pot%maxinfo) CYCLE
          pot%info(icount) = line
       END DO
       pot%maxinfo = icount

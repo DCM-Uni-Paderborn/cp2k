@@ -625,7 +625,7 @@ CONTAINS
          'upf-units-test-with-a-potential-filename-longer-than-'// &
          'the-default-eighty-character-string-buffer.upf'
 
-      INTEGER                                            :: unit
+      INTEGER                                            :: i, unit
       TYPE(atom_potential_type)                          :: atomic
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(section_type), POINTER                        :: specification
@@ -634,8 +634,12 @@ CONTAINS
       logger => cp_get_default_logger()
       IF (logger%para_env%is_source()) THEN
          CALL open_file(fixture, unit_number=unit, file_status="REPLACE", file_action="WRITE")
+         WRITE (unit, '(A)') '<UPF version="2.0.1">', '<PP_INFO>'
+         DO i = 1, 105
+            WRITE (unit, '(A,I0)') 'Generator information line ', i
+         END DO
+         WRITE (unit, '(A)') '</PP_INFO>'
          WRITE (unit, '(A)') &
-            '<UPF version="2.0.1">', &
             '<PP_HEADER element="He" pseudo_type="NC" z_valence="2"', &
             ' mesh_size="3" number_of_proj="2" l_max="0" />', &
             '<PP_MESH mesh="3">', &
@@ -672,6 +676,11 @@ CONTAINS
       CALL section_vals_val_set(potential_section, 'POTENTIAL_FILE_NAME', c_val=fixture)
       CALL init_atom_potential(atomic, potential_section, 2)
       ASSOCIATE (potential => atomic%upf_pot)
+         IF (potential%maxinfo /= SIZE(potential%info)) ERROR STOP "Incorrect retained UPF information count"
+         IF (potential%info(1) /= "Generator information line 1" .OR. &
+             potential%info(potential%maxinfo) /= "Generator information line 100") THEN
+            ERROR STOP "Incorrect retained UPF information"
+         END IF
          IF (MAXVAL(ABS(potential%vlocal - [3.0_dp, 2.0_dp, 1.0_dp])) > 1.e-14_dp) THEN
             ERROR STOP "UPF local potential is not in Hartree"
          END IF
