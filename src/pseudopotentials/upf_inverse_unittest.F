@@ -3474,6 +3474,8 @@ CONTAINS
                                         cached_potential, cached_adjoint, response=cached_response, center_response=changed, &
                                         cell_response=0.0_dp*dcell, gvecs_response=0.0_dp*dg, volume_response=0.0_dp, &
                                         background_response=0.0_dp*db, poisson_weights_response=0.0_dp*dkw, map=map)
+      CALL upf_inverse_coulomb_density(centers, cell, g, volume, density_g, map, density_response, &
+                                       changed, 0.0_dp*dg, 0.0_dp, cell_response=0.0_dp*dcell)
       DO side = 1, 2
          shift = REAL(2*side - 3, dp)*step
          changed = centers
@@ -3483,9 +3485,12 @@ CONTAINS
          CALL upf_inverse_coulomb_prepare(changed, cell, g, volume, map, grid_shape=[2, 3, 3])
          CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background, kw, samples(side), &
                                            potential, adjoint, map=map)
+         CALL upf_inverse_coulomb_density(changed, cell, g, volume, density_samples(:, side), map)
       END DO
       CALL check(ABS((samples(2) - samples(1))/(2.0_dp*step) - cached_response), &
                  "Atomic translation on aliased Fourier rows", 3.e-10_dp)
+      CALL check(MAXVAL(ABS((density_samples(:, 2) - density_samples(:, 1))/(2.0_dp*step) - density_response)), &
+                 "Complete signed density translation on aliased Fourier rows", 3.e-10_dp)
    END SUBROUTINE check_periodic_coulomb
 
 ! **************************************************************************************************

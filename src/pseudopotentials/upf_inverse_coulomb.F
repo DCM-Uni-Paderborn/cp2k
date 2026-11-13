@@ -403,14 +403,15 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: gvecs_response(:, :), volume_response, &
                                                             cell_response(3, 3)
 
-      COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), fourier(:, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), fourier(:, :, :), phase_response(:)
       INTEGER                                            :: a, channel, ir
-      LOGICAL                                            :: valid_shape
+      LOGICAL                                            :: derive_kernel, fixed_reciprocal, translation_only, valid_shape
       REAL(dp)                                           :: weight, weight_response
 
       CALL check_map(map, centers, cell, gvecs, volume, map%periodicity)
       CPASSERT(SIZE(density) == SIZE(gvecs, 2))
       density = CMPLX(0.0_dp, 0.0_dp, dp)
+      fixed_reciprocal = .FALSE.
       IF (PRESENT(response)) THEN
          CPASSERT(PRESENT(center_response))
          CPASSERT(PRESENT(gvecs_response))
@@ -419,6 +420,8 @@ CONTAINS
          CPASSERT(SIZE(center_response) == SIZE(centers))
          CPASSERT(ALL(SHAPE(gvecs_response) == SHAPE(gvecs)))
          response = CMPLX(0.0_dp, 0.0_dp, dp)
+         fixed_reciprocal = ALL(gvecs_response == 0.0_dp) .AND. volume_response == 0.0_dp
+         IF (PRESENT(cell_response)) fixed_reciprocal = fixed_reciprocal .AND. ALL(cell_response == 0.0_dp)
       END IF
       DO a = 1, SIZE(centers)
          CALL check_radial(centers(a)%radii, centers(a)%weights, centers(a)%l, centers(a)%density)
@@ -426,13 +429,26 @@ CONTAINS
             CALL check_radial(centers(a)%radii, centers(a)%weights, centers(a)%l, center_response(a)%density)
             valid_shape = SIZE(center_response(a)%weights) == SIZE(centers(a)%weights)
             CPASSERT(valid_shape)
-            ALLOCATE (fourier, MOLD=map%fourier(a)%values)
-            ALLOCATE (dfourier, MOLD=fourier)
-            CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
-                                                    gvecs, centers(a)%position, volume, fourier, dfourier, &
-                                                    center_response(a)%radii, gvecs_response, &
-                                                    center_response(a)%position, volume_response, &
-                                                    cell=cell, grid_shape=map%grid_shape, cell_response=cell_response)
+            valid_shape = SIZE(center_response(a)%radii) == SIZE(centers(a)%radii)
+            CPASSERT(valid_shape)
+            derive_kernel = .TRUE.
+            translation_only = .FALSE.
+            IF (fixed_reciprocal .AND. ALL(center_response(a)%radii == 0.0_dp)) THEN
+               derive_kernel = ANY(center_response(a)%position /= 0.0_dp)
+               translation_only = derive_kernel
+            END IF
+            IF (translation_only) THEN
+               CALL fourier_translation_response(centers(a), center_response(a)%position, map, phase_response, dfourier)
+            ELSE IF (derive_kernel) THEN
+               ALLOCATE (fourier, MOLD=map%fourier(a)%values)
+               ALLOCATE (dfourier, MOLD=fourier)
+               CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                       gvecs, centers(a)%position, volume, fourier, dfourier, &
+                                                       center_response(a)%radii, gvecs_response, &
+                                                       center_response(a)%position, volume_response, &
+                                                       cell=cell, grid_shape=map%grid_shape, cell_response=cell_response)
+               DEALLOCATE (fourier)
+            END IF
          END IF
          DO channel = 1, SIZE(centers(a)%l)
             DO ir = 1, SIZE(centers(a)%radii)
@@ -442,13 +458,50 @@ CONTAINS
                weight = centers(a)%weights(ir)*centers(a)%density(ir, channel)
                weight_response = center_response(a)%weights(ir)*centers(a)%density(ir, channel) + &
                                  centers(a)%weights(ir)*center_response(a)%density(ir, channel)
-               response(:) = response + map%fourier(a)%values(:, ir, channel)*weight_response + &
-                             dfourier(:, ir, channel)*weight
+               response(:) = response + map%fourier(a)%values(:, ir, channel)*weight_response
+               IF (translation_only) THEN
+                  response(:) = response + phase_response*map%fourier(a)%values(:, ir, channel)*weight
+                  response(map%alias_rows) = response(map%alias_rows) + dfourier(:, ir, channel)*weight
+               ELSE IF (derive_kernel) THEN
+                  response(:) = response + dfourier(:, ir, channel)*weight
+               END IF
             END DO
          END DO
-         IF (PRESENT(response)) DEALLOCATE (fourier, dfourier)
+         IF (ALLOCATED(phase_response)) DEALLOCATE (phase_response)
+         IF (ALLOCATED(dfourier)) DEALLOCATE (dfourier)
       END DO
    END SUBROUTINE upf_inverse_coulomb_density
+
+! **************************************************************************************************
+!> \brief Derivative of the cached Fourier kernel for a pure center translation.
+!> \param center Center and radial shell geometry of the cached coefficients.
+!> \param displacement Center displacement at fixed lattice and radial nodes.
+!> \param map Prepared Fourier geometry.
+!> \param phase_response Phase derivative multiplier, zero on aliased rows.
+!> \param alias_response Full kernel derivative on aliased rows.
+! **************************************************************************************************
+   SUBROUTINE fourier_translation_response(center, displacement, map, phase_response, alias_response)
+      TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: center
+      REAL(dp), INTENT(IN)                               :: displacement(3)
+      TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
+      COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: phase_response(:), alias_response(:, :, :)
+
+      COMPLEX(dp), ALLOCATABLE                           :: fourier(:, :, :)
+      INTEGER                                            :: nalias
+
+      nalias = SIZE(map%alias_rows)
+      ALLOCATE (phase_response, SOURCE=CMPLX(0.0_dp, -MATMUL(displacement, map%gvecs), dp))
+      ALLOCATE (alias_response(nalias, SIZE(center%radii), SIZE(center%l)))
+      IF (nalias == 0) RETURN
+      ! Each Nyquist row averages phases of several distinct physical vectors.
+      phase_response(map%alias_rows) = CMPLX(0.0_dp, 0.0_dp, dp)
+      ALLOCATE (fourier, MOLD=alias_response)
+      CALL upf_inverse_coulomb_fourier_kernel(center%radii, center%l, center%indices, &
+                                              map%gvecs(:, map%alias_rows), center%position, map%volume, &
+                                              fourier, alias_response, 0.0_dp*center%radii, &
+                                              0.0_dp*map%gvecs(:, map%alias_rows), displacement, &
+                                              0.0_dp, cell=map%cell, grid_shape=map%grid_shape)
+   END SUBROUTINE fourier_translation_response
 
 ! **************************************************************************************************
 !> \brief Transpose of the complete signed center-density Fourier projection for a local potential.
@@ -565,12 +618,12 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
       REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
 
-      COMPLEX(dp), ALLOCATABLE                           :: alias_fourier(:, :, :), dfourier(:, :, :), &
-                                                            dg(:), dh(:), e(:), h(:), phase_response(:)
+      COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
+                                                            h(:), phase_response(:)
       COMPLEX(dp), CONTIGUOUS, POINTER                   :: kernel_values(:, :, :)
       INTEGER                                            :: a, b, channel, fourier_shape(3), i, &
                                                             image(3), info, j, limits(2, 3), na, &
-                                                            nb, ng, nh, nr, REPEAT(3), nalias
+                                                            nb, ng, nh, nr, REPEAT(3)
       LOGICAL                                            :: derive, derive_kernel, fixed_reciprocal, &
                                                             reuse_fourier, reuse_pair_geometry, translation_only
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
@@ -683,19 +736,7 @@ CONTAINS
             work(a)%dq(:, :) = SPREAD(center_response(a)%weights, 2, nh)*work(a)%residual + &
                                SPREAD(centers(a)%weights, 2, nh)*de
             IF (translation_only) THEN
-               phase_response = CMPLX(0.0_dp, -MATMUL(center_response(a)%position, gvecs), dp)
-               nalias = SIZE(map%alias_rows)
-               IF (nalias > 0) THEN
-                  ! A Nyquist row averages phases of several distinct physical vectors.
-                  phase_response(map%alias_rows) = CMPLX(0.0_dp, 0.0_dp, dp)
-                  ALLOCATE (alias_fourier(nalias, nr, nh), dfourier(nalias, nr, nh))
-                  CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
-                                                          gvecs(:, map%alias_rows), centers(a)%position, volume, &
-                                                          alias_fourier, dfourier, center_response(a)%radii, &
-                                                          gvecs_response(:, map%alias_rows), center_response(a)%position, &
-                                                          volume_response, cell=cell, grid_shape=fourier_shape)
-                  DEALLOCATE (alias_fourier)
-               END IF
+               CALL fourier_translation_response(centers(a), center_response(a)%position, map, phase_response, dfourier)
             ELSE IF (derive_kernel) THEN
                ALLOCATE (dfourier(ng, nr, nh))
                CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
@@ -721,11 +762,9 @@ CONTAINS
                IF (translation_only) THEN
                   dh(:) = dh + phase_response*kernel_values(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
                   dg(:) = dg + phase_response*kernel_values(:, i, channel)*work(a)%q(i, channel)
-                  IF (nalias > 0) THEN
-                     dh(map%alias_rows) = dh(map%alias_rows) + &
-                                          dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
-                     dg(map%alias_rows) = dg(map%alias_rows) + dfourier(:, i, channel)*work(a)%q(i, channel)
-                  END IF
+                  dh(map%alias_rows) = dh(map%alias_rows) + &
+                                       dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
+                  dg(map%alias_rows) = dg(map%alias_rows) + dfourier(:, i, channel)*work(a)%q(i, channel)
                ELSE IF (derive_kernel) THEN
                   dh(:) = dh + dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
                   dg(:) = dg + dfourier(:, i, channel)*work(a)%q(i, channel)
@@ -737,6 +776,7 @@ CONTAINS
          END DO
          DEALLOCATE (moments)
          IF (derive) DEALLOCATE (dc, de, f, df)
+         IF (ALLOCATED(phase_response)) DEALLOCATE (phase_response)
          IF (ALLOCATED(dfourier)) DEALLOCATE (dfourier)
          IF (.NOT. PRESENT(potentials) .AND. .NOT. reuse_fourier) THEN
             IF (ALLOCATED(fourier(a)%values)) DEALLOCATE (fourier(a)%values)
