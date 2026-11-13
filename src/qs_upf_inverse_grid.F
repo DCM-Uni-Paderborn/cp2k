@@ -705,6 +705,12 @@ CONTAINS
                                          partial, frame%ao%point_comm)
          response(:, :) = response + partial
       END IF
+      IF (.NOT. PRESENT(right_frame)) THEN
+         ! The same-basis metric is Hermitian. Independent contractions of its two
+         ! triangles can differ by roundoff when the smooth and augmentation terms cancel.
+         metric(:, :) = 0.5_dp*(metric + CONJG(TRANSPOSE(metric)))
+         IF (PRESENT(response)) response(:, :) = 0.5_dp*(response + CONJG(TRANSPOSE(response)))
+      END IF
    END SUBROUTINE qs_upf_inverse_grid_metric_dense
 
 ! **************************************************************************************************
