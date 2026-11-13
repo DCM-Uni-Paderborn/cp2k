@@ -555,13 +555,13 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
 
       COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
-                                                            h(:)
+                                                            h(:), phase_response(:)
       COMPLEX(dp), CONTIGUOUS, POINTER                   :: kernel_values(:, :, :)
       INTEGER                                            :: a, b, channel, fourier_shape(3), i, &
                                                             image(3), info, j, limits(2, 3), na, &
                                                             nb, ng, nh, nr, REPEAT(3)
       LOGICAL                                            :: derive, derive_kernel, fixed_reciprocal, &
-                                                            reuse_fourier, reuse_pair_geometry
+                                                            reuse_fourier, reuse_pair_geometry, translation_only
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
                                                             dmoment, dnorm, dpair, dpw, epair, &
                                                             inverse_cell(3, 3), moment, norm, &
@@ -636,7 +636,14 @@ CONTAINS
             derive_kernel = ANY(center_response(a)%position /= 0.0_dp) .OR. &
                             ANY(center_response(a)%radii /= 0.0_dp)
          END IF
-         IF (derive_kernel .OR. (.NOT. derive .AND. .NOT. reuse_fourier)) ALLOCATE (fourier(a)%values(ng, nr, nh))
+         ! With no reciprocal aliases, a translation differentiates only the cached phase.
+         translation_only = .FALSE.
+         IF (derive_kernel .AND. fixed_reciprocal .AND. ALL(fourier_shape == 0)) THEN
+            translation_only = ALL(center_response(a)%radii == 0.0_dp)
+         END IF
+         IF ((derive_kernel .AND. .NOT. translation_only) .OR. (.NOT. derive .AND. .NOT. reuse_fourier)) THEN
+            ALLOCATE (fourier(a)%values(ng, nr, nh))
+         END IF
          CALL upf_inverse_coulomb_compensate(centers(a)%radii, centers(a)%weights, centers(a)%l, &
                                              centers(a)%density, centers(a)%shapes, work(a)%compensation, &
                                              work(a)%residual, moments)
@@ -664,7 +671,9 @@ CONTAINS
             de(:, :) = center_response(a)%density - dc
             work(a)%dq(:, :) = SPREAD(center_response(a)%weights, 2, nh)*work(a)%residual + &
                                SPREAD(centers(a)%weights, 2, nh)*de
-            IF (derive_kernel) THEN
+            IF (translation_only) THEN
+               phase_response = CMPLX(0.0_dp, -MATMUL(center_response(a)%position, gvecs), dp)
+            ELSE IF (derive_kernel) THEN
                ALLOCATE (dfourier(ng, nr, nh))
                CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
                                                        gvecs, centers(a)%position, volume, fourier(a)%values, dfourier, &
@@ -686,7 +695,10 @@ CONTAINS
                h(:) = h + kernel_values(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
                e(:) = e + kernel_values(:, i, channel)*work(a)%q(i, channel)
                IF (.NOT. derive) CYCLE
-               IF (derive_kernel) THEN
+               IF (translation_only) THEN
+                  dh(:) = dh + phase_response*kernel_values(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
+                  dg(:) = dg + phase_response*kernel_values(:, i, channel)*work(a)%q(i, channel)
+               ELSE IF (derive_kernel) THEN
                   dh(:) = dh + dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
                   dg(:) = dg + dfourier(:, i, channel)*work(a)%q(i, channel)
                END IF
@@ -697,7 +709,7 @@ CONTAINS
          END DO
          DEALLOCATE (moments)
          IF (derive) DEALLOCATE (dc, de, f, df)
-         IF (derive_kernel) DEALLOCATE (dfourier)
+         IF (ALLOCATED(dfourier)) DEALLOCATE (dfourier)
          IF (.NOT. PRESENT(potentials) .AND. .NOT. reuse_fourier) THEN
             IF (ALLOCATED(fourier(a)%values)) DEALLOCATE (fourier(a)%values)
          END IF

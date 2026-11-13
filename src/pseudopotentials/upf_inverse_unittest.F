@@ -3393,13 +3393,14 @@ CONTAINS
             IF (side == 1) changed(2)%position = changed(1)%position
             CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, exact, &
                                               potential, adjoint, response=trace, center_response=changed, &
-                                              cell_response=REAL(side - 1, dp)*dcell, gvecs_response=dg, &
-                                              volume_response=dvolume, background_response=db, &
+                                              cell_response=REAL(side - 1, dp)*dcell, gvecs_response=REAL(side - 1, dp)*dg, &
+                                              volume_response=REAL(side - 1, dp)*dvolume, background_response=db, &
                                               poisson_weights_response=dkw, periodicity=periodicity)
             CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
                                               cached_potential, cached_adjoint, response=cached_response, &
                                               center_response=changed, cell_response=REAL(side - 1, dp)*dcell, &
-                                              gvecs_response=dg, volume_response=dvolume, background_response=db, &
+                                              gvecs_response=REAL(side - 1, dp)*dg, volume_response=REAL(side - 1, dp)*dvolume, &
+                                              background_response=db, &
                                               poisson_weights_response=dkw, map=map)
             CALL check(ABS(cached_energy - exact), "Cached moving-center Coulomb energy", 3.e-12_dp)
             CALL check(ABS(cached_response - trace), "Cached moving-center Coulomb response", 3.e-12_dp)
@@ -3410,7 +3411,8 @@ CONTAINS
             CALL upf_inverse_coulomb_periodic(centers, cell, g, volume, background, kw, cached_energy, &
                                               cached_potential, cached_adjoint, response=cached_response, &
                                               center_response=changed, cell_response=REAL(side - 1, dp)*dcell, &
-                                              gvecs_response=dg, volume_response=dvolume, background_response=db, &
+                                              gvecs_response=REAL(side - 1, dp)*dg, volume_response=REAL(side - 1, dp)*dvolume, &
+                                              background_response=db, &
                                               poisson_weights_response=dkw, map=map, pair_geometry_response=pair_response)
             CALL check(ABS(cached_energy - exact), "Contracted residual-pair geometry preserves energy", 3.e-12_dp)
             CALL check(ABS(cached_response - trace), "Contracted residual-pair geometry response", 3.e-12_dp)
