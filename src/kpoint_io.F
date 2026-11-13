@@ -410,7 +410,7 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: natom, rst_unit
       LOGICAL, INTENT(OUT)                               :: natom_mismatch
 
-      INTEGER                                            :: ic, image, ispin, nao, nao_read, &
+      INTEGER                                            :: ic, image, io_status, ispin, nao, nao_read, &
                                                             natom_read, ni, nimages, nset_max, &
                                                             nshell_max, nspin, nspin_read, &
                                                             version_read
@@ -429,12 +429,13 @@ CONTAINS
       END IF
 
       IF (para_env%is_source()) THEN
-         READ (rst_unit) version_read
+         READ (rst_unit, IOSTAT=io_status) version_read
+         IF (io_status /= 0) CPABORT("Cannot read the k-point restart version")
          IF (version_read /= version .AND. version_read /= native_version) THEN
-            CALL cp_abort(__LOCATION__, &
-                          " READ RESTART : Version of restart file not supported")
+            CPABORT("Unsupported k-point restart version. Select a k-point restart (.kp) file.")
          END IF
-         READ (rst_unit) natom_read, nao_read, nset_max, nshell_max
+         READ (rst_unit, IOSTAT=io_status) natom_read, nao_read, nset_max, nshell_max
+         IF (io_status /= 0) CPABORT("Invalid k-point restart header. Select a k-point restart (.kp) file.")
          natom_match = (natom_read == natom)
          IF (natom_match) THEN
             IF (nao_read /= nao) THEN
