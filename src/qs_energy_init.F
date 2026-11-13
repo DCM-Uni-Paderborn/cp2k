@@ -53,6 +53,8 @@ MODULE qs_energy_init
                                               external_e_potential
    USE qs_gcp_method,                   ONLY: calculate_gcp_pairpot
    USE qs_gcp_types,                    ONLY: qs_gcp_type
+   USE qs_kind_types,                   ONLY: has_gaussian_upf,&
+                                              qs_kind_type
    USE qs_ks_methods,                   ONLY: qs_ks_allocate_basics
    USE qs_ks_types,                     ONLY: get_ks_env,&
                                               qs_ks_env_type,&
@@ -286,6 +288,7 @@ CONTAINS
       TYPE(qs_dispersion_type), POINTER                  :: dispersion_env
       TYPE(qs_energy_type), POINTER                      :: energy
       TYPE(qs_gcp_type), POINTER                         :: gcp_env
+      TYPE(qs_kind_type), POINTER                        :: qs_kind_set(:)
       TYPE(section_vals_type), POINTER                   :: input
 
       CALL timeset(routineN, handle)
@@ -303,10 +306,13 @@ CONTAINS
 
       ! calculate cell index for k-point calculations
       IF (do_kpoints) THEN
-         CALL get_qs_env(qs_env, sab_kp=sab_nl, sab_kp_nosym=sab_nl_nosym)
-         ! RI operators use both orientations of periodic pairs. Include their
-         ! unsymmetrized images while retaining the defining AO neighbor list.
-         CALL kpoint_init_cell_index(kpoints, sab_nl, para_env, dft_control%nimages, additional_nl=sab_nl_nosym)
+         CALL get_qs_env(qs_env, qs_kind_set=qs_kind_set, sab_kp=sab_nl, sab_kp_nosym=sab_nl_nosym)
+         IF (has_gaussian_upf(qs_kind_set)) THEN
+            ! Original UPF operators use both orientations of periodic pairs.
+            CALL kpoint_init_cell_index(kpoints, sab_nl, para_env, dft_control%nimages, additional_nl=sab_nl_nosym)
+         ELSE
+            CALL kpoint_init_cell_index(kpoints, sab_nl, para_env, dft_control%nimages)
+         END IF
          CALL set_kpoint_info(kpoints, sab_nl_nosym=sab_nl_nosym)
       END IF
       IF (dft_control%qs_control%cdft) THEN

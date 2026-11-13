@@ -481,7 +481,7 @@ CONTAINS
          sizes_RI_ext_split, starts_array_mc_block_int, starts_array_mc_int
       INTEGER, DIMENSION(3)                              :: pcoord, pdims
       INTEGER, DIMENSION(:), POINTER                     :: col_bsize, row_bsize
-      LOGICAL                                            :: converged, do_kpoints_prv
+      LOGICAL                                            :: converged, do_kpoints_prv, inverse_transition
       REAL(dp)                                           :: max_ev, min_ev, occ, RI_range
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(dbcsr_distribution_type)                      :: dbcsr_dist
@@ -503,6 +503,7 @@ CONTAINS
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: inverse
 
       CALL timeset(routineN, handle)
       NULLIFY (col_bsize, row_bsize, dist_2d, nl_2c_pot, nl_2c_RI, &
@@ -519,6 +520,8 @@ CONTAINS
          nimg = ri_data%nimg
          RI_range = ri_data%kp_RI_range
       END IF
+      inverse_transition = .FALSE.
+      IF (do_kpoints_prv) inverse_transition = qs_upf_inverse_basis_select(qs_env, ri_data%orb_basis_type, inverse)
 
       ALLOCATE (sizes_RI(natom), sizes_AO(natom))
       ALLOCATE (basis_set_RI(nkind), basis_set_AO(nkind))
@@ -647,11 +650,16 @@ CONTAINS
          DEALLOCATE (dist_RI, dist_AO_1, dist_AO_2)
 
          ! create 3c tensor for storage of ints
-         ! The Gaussian AO pair spans at most 2*RI_range and the auxiliary
-         ! site is within RI_range of its first AO center. Thus j,k spans 3*RI_range.
-         CALL build_3c_neighbor_lists_in_range(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
-                                               ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., &
-                                               own_dist=.TRUE., max_jk_distance=3.0_dp*RI_range)
+         IF (inverse_transition) THEN
+            ! The AO pair spans at most 2*RI_range and the auxiliary site
+            ! is within RI_range of its first AO center.
+            CALL build_3c_neighbor_lists_in_range(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, &
+                                                  ri_data%ri_metric, "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., &
+                                                  own_dist=.TRUE., max_jk_distance=3.0_dp*RI_range)
+         ELSE
+            CALL build_3c_neighbor_lists(nl_3c, basis_set_AO, basis_set_AO, basis_set_RI, dist_3d, ri_data%ri_metric, &
+                                         "HFX_3c_nl", qs_env, op_pos=2, sym_ij=.FALSE., own_dist=.TRUE.)
+         END IF
 
          CALL create_3c_tensor(t_3c_int(1, 1), dist_RI, dist_AO_1, dist_AO_2, ri_data%pgrid, &
                                sizes_RI_ext_split, ri_data%bsizes_AO_split, ri_data%bsizes_AO_split, &
@@ -726,14 +734,14 @@ CONTAINS
       CALL release_neighbor_list_sets(nl_2c_pot)
 
       IF (.NOT. ri_data%same_op) THEN
-         IF (do_kpoints_prv) THEN
+         IF (inverse_transition) THEN
             ! Two auxiliaries in the same local fitting domain are at most 2*RI_range apart.
             CALL build_2c_neighbor_lists_in_range(nl_2c_RI, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
                                                   "HFX_2c_nl_RI", qs_env, sym_ij=.FALSE., dist_2d=dist_2d, &
                                                   max_distance=2.0_dp*RI_range)
          ELSE
             CALL build_2c_neighbor_lists(nl_2c_RI, basis_set_RI, basis_set_RI, ri_data%ri_metric, &
-                                         "HFX_2c_nl_RI", qs_env, sym_ij=.TRUE., dist_2d=dist_2d)
+                                         "HFX_2c_nl_RI", qs_env, sym_ij=.NOT. do_kpoints_prv, dist_2d=dist_2d)
          END IF
 
          CALL build_2c_integrals(t_2c_int_RI, ri_data%filter_eps_2c, qs_env, nl_2c_RI, basis_set_RI, basis_set_RI, &
