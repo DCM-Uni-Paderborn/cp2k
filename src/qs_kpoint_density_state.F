@@ -10,9 +10,12 @@
 !>        No inverse transformation to a finite real-space image set is used for mixing.
 ! **************************************************************************************************
 MODULE qs_kpoint_density_state
+   USE cp_cfm_basic_linalg,             ONLY: cp_cfm_transpose
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_submatrix,&
-                                              cp_cfm_set_submatrix
+                                              cp_cfm_release,&
+                                              cp_cfm_set_submatrix,&
+                                              cp_cfm_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
    USE input_constants,                 ONLY: uspp_method_inverse,&
                                               uspp_method_inverse_1c
@@ -372,6 +375,7 @@ CONTAINS
       INTEGER                                            :: first, ik, last, n, nlocal, nspin, spin
       REAL(dp)                                           :: factor, sign_spin
       REAL(dp), ALLOCATABLE                              :: alpha(:)
+      TYPE(cp_cfm_type)                                  :: adjoint
 
       CPASSERT(kpoints%native_trial_valid)
       nspin = SIZE(kpoints%native_density, 2)
@@ -419,6 +423,16 @@ CONTAINS
                kpoints%native_density(ik, spin)%local_data(:, :) = &
                   RESHAPE((trial(first:last) + sign_spin*trial(first + n:last + n))/(SQRT(2.0_dp)*factor), &
                           SHAPE(kpoints%native_density(ik, spin)%local_data))
+            END IF
+            IF (factor /= 0.0_dp) THEN
+               ! The real Broyden coefficients preserve Hermiticity in exact arithmetic.
+               ! Remove accumulated roundoff before this density is used in the next iteration.
+               ASSOCIATE (density => kpoints%native_density(ik, spin))
+                  CALL cp_cfm_create(adjoint, density%matrix_struct)
+                  CALL cp_cfm_transpose(density, 'C', adjoint)
+                  density%local_data(:, :) = 0.5_dp*(density%local_data + adjoint%local_data)
+                  CALL cp_cfm_release(adjoint)
+               END ASSOCIATE
             END IF
          END DO
          first = first + nspin*n
