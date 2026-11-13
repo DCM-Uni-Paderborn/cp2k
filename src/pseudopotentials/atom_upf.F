@@ -474,99 +474,37 @@ CONTAINS
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
       TYPE(atom_upfpot_type)                             :: pot
 
-      CHARACTER(LEN=default_string_length)               :: line, string, string2
-      INTEGER                                            :: icount, m, mc, ms
+      CHARACTER(LEN=default_string_length)               :: tag
+      INTEGER                                            :: m
       LOGICAL                                            :: at_end
 
+      m = pot%mesh_size
+      CPASSERT(m > 0)
+      CPASSERT(.NOT. ALLOCATED(pot%r) .AND. .NOT. ALLOCATED(pot%rab))
       DO
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
-         CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-         SELECT CASE (string)
+         CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
+         SELECT CASE (tag)
          CASE ("<PP_R", "<PP_R>")
-            m = pot%mesh_size
-            ms = pot%mesh_size
-            mc = 1
-            IF (string /= "<PP_R>") THEN
-               ! options
-               DO
-                  IF (parser_test_next_token(parser) == "EOL") THEN
-                     CALL parser_get_next_line(parser, 1, at_end)
-                     CPASSERT(.NOT. at_end)
-                  END IF
-                  CALL parser_get_object(parser, string2, lower_to_upper=.TRUE.)
-                  IF (string2 == ">") EXIT
-                  SELECT CASE (string2)
-                  CASE ("TYPE")
-                     CALL parser_get_object(parser, line, lower_to_upper=.TRUE.)
-                     CPASSERT(line == "REAL")
-                  CASE ("SIZE")
-                     CALL parser_get_object(parser, ms)
-                     CPASSERT(ms <= m)
-                  CASE ("COLUMNS")
-                     CALL parser_get_object(parser, mc)
-                  CASE DEFAULT
-                     CPABORT("Unknown UPF PP_R option <"//TRIM(string2)//"> found")
-                  END SELECT
-               END DO
-            END IF
+            IF (ALLOCATED(pot%r)) CPABORT("Duplicate UPF PP_R radial mesh")
             ALLOCATE (pot%r(m))
-            pot%r = 0.0_dp
-            icount = 1
-            DO WHILE (icount <= ms)
-               IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
-                  CPASSERT(.NOT. at_end)
-               ELSE
-                  CALL parser_get_object(parser, pot%r(icount))
-                  icount = icount + 1
-               END IF
-            END DO
+            CALL upf_real_array(parser, tag, pot%r)
          CASE ("<PP_RAB", "<PP_RAB>")
-            m = pot%mesh_size
-            ms = pot%mesh_size
-            mc = 1
-            IF (string /= "<PP_RAB>") THEN
-               ! options
-               DO
-                  IF (parser_test_next_token(parser) == "EOL") THEN
-                     CALL parser_get_next_line(parser, 1, at_end)
-                     CPASSERT(.NOT. at_end)
-                  END IF
-                  CALL parser_get_object(parser, string2, lower_to_upper=.TRUE.)
-                  IF (string2 == ">") EXIT
-                  SELECT CASE (string2)
-                  CASE ("TYPE")
-                     CALL parser_get_object(parser, line, lower_to_upper=.TRUE.)
-                     CPASSERT(line == "REAL")
-                  CASE ("SIZE")
-                     CALL parser_get_object(parser, ms)
-                     CPASSERT(ms <= m)
-                  CASE ("COLUMNS")
-                     CALL parser_get_object(parser, mc)
-                  CASE DEFAULT
-                     CPABORT("Unknown UPF PP_RAB option <"//TRIM(string2)//"> found")
-                  END SELECT
-               END DO
-            END IF
+            IF (ALLOCATED(pot%rab)) CPABORT("Duplicate UPF PP_RAB radial mesh spacing")
             ALLOCATE (pot%rab(m))
-            pot%rab = 0.0_dp
-            icount = 1
-            DO WHILE (icount <= ms)
-               IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
-                  CPASSERT(.NOT. at_end)
-               ELSE
-                  CALL parser_get_object(parser, pot%rab(icount))
-                  icount = icount + 1
-               END IF
-            END DO
+            CALL upf_real_array(parser, tag, pot%rab)
          CASE ("</PP_MESH>")
             EXIT
-         CASE DEFAULT
-            !
          END SELECT
       END DO
+      IF (.NOT. ALLOCATED(pot%r) .OR. .NOT. ALLOCATED(pot%rab)) THEN
+         CPABORT("UPF radial mesh requires both PP_R and PP_RAB")
+      END IF
+      IF (pot%r(1) < 0.0_dp .OR. ANY(pot%r(2:) <= pot%r(:m - 1))) THEN
+         CPABORT("UPF radial mesh points must be nonnegative and strictly increasing")
+      END IF
+      IF (ANY(pot%rab <= 0.0_dp)) CPABORT("UPF radial mesh spacing must be positive")
 
    END SUBROUTINE upf_mesh_section
 
