@@ -266,6 +266,8 @@ MODULE qs_scf
    USE qs_wf_history_methods,           ONLY: wfi_purge_history,&
                                               wfi_update
    USE scf_control_types,               ONLY: scf_control_type
+   USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
+                                              skala_density_constraints_type
    USE smeagol_interface,               ONLY: run_smeagol_bulktrans,&
                                               run_smeagol_emtrans
    USE tblite_interface,                ONLY: tb_get_energy,&
@@ -490,7 +492,7 @@ CONTAINS
       LOGICAL :: added_mos_auto_grow, adiis_pushed, adiis_restarted, adiis_stagnated, &
          adiis_validation, density_full_step, diis_step, do_kpoints, energy_only, exit_inner_loop, &
          exit_outer_loop, inner_loop_converged, internal_tblite_density_full_step, &
-         internal_tblite_mixer, inverse_ot_handled, inverse_ot_stopped, just_energy, &
+         internal_tblite_mixer, inverse_ot_continue, inverse_ot_handled, inverse_ot_stopped, just_energy, &
          ot_energy_stagnated, ot_kp_subspace_refresh, ot_kp_subspace_refresh_pending, outer_loop_converged, &
          tblite_native_mixer, u_changed
       REAL(dp), POINTER                                  :: subspace_density(:, :), &
@@ -517,6 +519,7 @@ CONTAINS
       TYPE(qs_rho_type), POINTER                         :: rho
       TYPE(rho_atom_type), POINTER                       :: rho_atom(:)
       TYPE(section_vals_type), POINTER                   :: dft_section, input, scf_section
+      TYPE(skala_density_constraints_type), POINTER     :: skala_constraints
 
 ! Weak orbital metrics can need several bounded REF rebuilds to close the canonical density tail.
 
@@ -564,6 +567,7 @@ CONTAINS
                                           dft_control%qs_control%xtb_control%tblite_scc_mixer == tblite_scc_mixer_tblite
 
       CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
+      CALL get_ks_env(ks_env, skala_constraints=skala_constraints)
 
       dft_section => section_vals_get_subs_vals(input, "DFT")
       scf_section => section_vals_get_subs_vals(dft_section, "SCF")
@@ -641,6 +645,7 @@ CONTAINS
 
          CALL qs_scf_set_loop_flags(scf_env, diis_step, &
                                     energy_only, just_energy, exit_inner_loop)
+         inverse_ot_continue = .FALSE.
          IF (ot_kp_subspace_refresh_pending) THEN
             scf_env%iter_count = ot_kp_subspace_refresh_iter_count
             ot_kp_subspace_refresh_pending = .FALSE.
@@ -687,7 +692,7 @@ CONTAINS
 
             inverse_ot_handled = .FALSE.
             inverse_ot_stopped = .FALSE.
-            IF (.NOT. just_energy .AND. scf_env%iter_count == 1) THEN
+            IF (.NOT. just_energy .AND. (scf_env%iter_count == 1 .OR. inverse_ot_continue)) THEN
                ! Check the normalized native state before an ordinary OT update can move it.
                CALL qs_scf_inverse_ot(qs_env, scf_env, scf_control, inverse_ot_handled, inverse_ot_steps, &
                                       inverse_ot_stopped, output_unit, iter_count)
@@ -953,6 +958,11 @@ CONTAINS
                   just_energy = .FALSE.
                END IF
             END IF
+            ! Only the inverse search respects an active physical Skala threshold.
+            inverse_ot_continue = .FALSE.
+            IF (inverse_ot_handled .AND. dft_control%use_gauxc .AND. ASSOCIATED(skala_constraints)) THEN
+               inverse_ot_continue = skala_density_constraints_count(skala_constraints) > 0
+            END IF
             ! Local convergence and energy-only decisions can differ between k-point groups.
             ! Every rank must enter the collective refresh decision in the same SCF step.
             IF (hfx_ace_requires_refresh(qs_env,.NOT. just_energy .AND. .NOT. should_stop .AND. &
@@ -1006,7 +1016,7 @@ CONTAINS
                CYCLE scf_loop
             END IF
 
-            IF (inverse_ot_handled .AND. .NOT. exit_inner_loop) THEN
+            IF (inverse_ot_handled .AND. .NOT. (exit_inner_loop .OR. inverse_ot_continue)) THEN
                ! The inverse chart replaced the orbitals. Rebuild the ordinary OT reference,
                ! search history and preconditioner before continuing from that accepted state.
                DO ispin = 1, SIZE(scf_env%qs_ot_env)
@@ -1074,8 +1084,10 @@ CONTAINS
                END DO
             END IF
 
-            CALL qs_scf_rho_update(rho, qs_env, scf_env, ks_env, &
-                                   mix_rho=scf_env%mixing_method >= gspace_mixing_nr)
+            IF (.NOT. inverse_ot_continue) THEN
+               CALL qs_scf_rho_update(rho, qs_env, scf_env, ks_env, &
+                                      mix_rho=scf_env%mixing_method >= gspace_mixing_nr)
+            END IF
 
             CALL timestop(handle2)
 
