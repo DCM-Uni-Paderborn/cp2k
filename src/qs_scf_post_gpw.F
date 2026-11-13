@@ -2622,7 +2622,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: norm_factor, q_max, rho_hard, rho_soft, &
                                                             rho_total, rho_total_rspace, udvol, &
                                                             volume
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: zcharge
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: total_zcharge, zcharge
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: bfun
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :, :)     :: aedens, ccdens, ppdens
       REAL(KIND=dp), DIMENSION(3)                        :: checksum_hr
@@ -2892,11 +2892,23 @@ CONTAINS
          END IF
          IF (print_density == "TOTAL_DENSITY" .AND. .NOT. xrd_interface) THEN
             BLOCK
+               INTEGER :: z
                LOGICAL :: original_upf
                TYPE(pw_c1d_gs_type), ALLOCATABLE :: density_g(:)
 
                CALL qs_upf_inverse_electronic_density(qs_env, density_g, original_upf)
                IF (original_upf) THEN
+                  total_zcharge = zcharge
+                  ! Only PAW supplies frozen-core electrons in this export.
+                  DO ikind = 1, nkind
+                     qs_kind => qs_kind_set(ikind)
+                     IF (qs_kind%ghost) CYCLE
+                     IF (.NOT. ASSOCIATED(qs_kind%sgp_potential)) CYCLE
+                     IF (.NOT. ALLOCATED(qs_kind%sgp_potential%upf_data)) CYCLE
+                     IF (.NOT. qs_kind%sgp_potential%upf_data%is_paw) CYCLE
+                     CALL get_atomic_kind(atomic_kind_set(ikind), z=z)
+                     total_zcharge(atomic_kind_set(ikind)%atom_list) = REAL(z, dp)
+                  END DO
                   ALLOCATE (physical_density(SIZE(density_g)))
                   DO ispin = 1, SIZE(density_g)
                      CALL physical_density(ispin)%create(density_g(ispin)%pw_grid)
@@ -2911,6 +2923,7 @@ CONTAINS
          END IF
          IF (print_density == "TOTAL_DENSITY" .AND. &
              (dft_control%qs_control%gapw .OR. ALLOCATED(physical_density))) THEN
+            IF (.NOT. ALLOCATED(total_zcharge)) total_zcharge = zcharge
             ! Native GAPW atom coefficients already contain the Bloch density image sum.
             ! Print total electronic density
             CALL get_qs_env(qs_env=qs_env, &
@@ -2981,7 +2994,7 @@ CONTAINS
                   "Total electronic charge (R-space):", rho_total_rspace
             END IF
             CALL e_density_section%write_pw(rho_elec_rspace, unit_nr, "TOTAL ELECTRON DENSITY", &
-                                            particles=particles, zeff=zcharge, &
+                                            particles=particles, zeff=total_zcharge, &
                               stride=section_get_ivals(dft_section, e_density_section%concat_to_relative("%STRIDE")), mpi_io=mpi_io)
             CALL e_density_section%print_key_finished_output(unit_nr, logger, input, &
                                                              e_density_section%absolute_section_key, mpi_io=mpi_io)
@@ -3043,7 +3056,7 @@ CONTAINS
                      "Total spin density (R-space)           :", rho_total_rspace
                END IF
                CALL e_density_section%write_pw(rho_elec_rspace, unit_nr, "TOTAL SPIN DENSITY", &
-                                               particles=particles, zeff=zcharge, &
+                                               particles=particles, zeff=total_zcharge, &
                               stride=section_get_ivals(dft_section, e_density_section%concat_to_relative("%STRIDE")), mpi_io=mpi_io)
                CALL e_density_section%print_key_finished_output(unit_nr, logger, input, &
                                                                 e_density_section%absolute_section_key, mpi_io=mpi_io)

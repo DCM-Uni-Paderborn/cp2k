@@ -2774,6 +2774,7 @@ CONTAINS
                           "but may introduce non-physical features. The SOFT_DENSITY keyword will lead to only the "// &
                           "soft density being printed. With original UPF data, TOTAL_DENSITY includes USPP "// &
                           "augmentation and reconstructs PAW valence and frozen-core density in GPW, GAPW_XC, and GAPW. "// &
+                          "The exported PAW atom charges then include the frozen-core electrons. "// &
                           "For other GPW calculations the cube contains the valence electron density. "// &
                           "In all-electron GAPW, hard+soft contains "// &
                           "all electrons. The soft part is not a valence-only density and need not integrate "// &
