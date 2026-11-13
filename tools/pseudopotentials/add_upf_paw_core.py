@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from xml.parsers import expat
 
 from add_upf_core_tau import reference_orbitals, weights
-from add_upf_full_waves import compare, flag, integer, normalized, values
+from add_upf_full_waves import compare, flag, integer, normalized, parse_upf, values
 
 
 def core_span(data):
@@ -66,9 +66,8 @@ def core_waves(tree, mesh):
 def enrich(original_data, generated_data, tolerance=0.0):
     if not math.isfinite(tolerance) or tolerance < 0:
         raise ValueError("Core tolerance must be finite and nonnegative")
-    original, generated = (
-        ET.fromstring(data) for data in (original_data, generated_data)
-    )
+    original, original_xml = parse_upf(original_data)
+    generated, generated_xml = parse_upf(generated_data)
     headers = []
     for tree in (original, generated):
         header = tree.find("PP_HEADER")
@@ -137,8 +136,8 @@ def enrich(original_data, generated_data, tolerance=0.0):
         raise ValueError(
             "Complete core orbitals do not reproduce the original AE core density"
         )
-    first, last = core_span(original_data)
-    start, end = core_span(generated_data)
+    first, last = core_span(original_xml)
+    start, end = core_span(generated_xml)
     return original_data[:first] + generated_data[start:end] + original_data[last:]
 
 

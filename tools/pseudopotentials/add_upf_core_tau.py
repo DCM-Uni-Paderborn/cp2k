@@ -22,7 +22,15 @@ import re
 import struct
 import xml.etree.ElementTree as ET
 
-from add_upf_full_waves import flag, integer, real, top_level_spans, values
+from add_upf_full_waves import (
+    flag,
+    integer,
+    mask_upf_info,
+    parse_upf,
+    real,
+    top_level_spans,
+    values,
+)
 
 ELEMENTS = (
     "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn "
@@ -418,14 +426,7 @@ def oncv_document(data):
     ):
         raise ValueError("Unrecognized framing around the ONCV UPF block")
     document = match[0]
-    masked = re.sub(
-        rb"(<PP_INFO\b[^>]*>)(.*?)(</PP_INFO>)",
-        lambda m: m[1] + b" " * len(m[2]) + m[3],
-        document,
-        count=1,
-        flags=re.S,
-    )
-    return start, document, masked
+    return start, document, mask_upf_info(document)
 
 
 def oncv_configuration(document, header):
@@ -548,7 +549,7 @@ def oncv_qe_reference(document, header, donor, log, qe_wfc):
     """Match an independent scalar QE atom and extract normalized frozen shells."""
     element, z, nc, xc, configuration = oncv_configuration(document, header)
     functional = {4: "PBE", -116133: "PBESOL"}.get(xc)
-    tree = ET.fromstring(donor)
+    tree, _ = parse_upf(donor)
     source = tree.find("PP_HEADER")
     if (
         functional is None
@@ -655,8 +656,12 @@ def enrich(
 ):
     nc_inputs = (oncv_core, oncv_vanderbilt, oncv_qe)
     nc_model = any(value is not None for value in nc_inputs)
-    start, document, masked = oncv_document(data) if nc_model else (0, data, data)
-    tree = ET.fromstring(masked)
+    if nc_model:
+        start, document, masked = oncv_document(data)
+        tree = ET.fromstring(masked)
+    else:
+        start, document = 0, data
+        tree, masked = parse_upf(data)
     header = tree.find("PP_HEADER")
     if tree.tag != "UPF" or tree.get("version") != "2.0.1" or header is None:
         raise ValueError("Requires UPF version 2.0.1")

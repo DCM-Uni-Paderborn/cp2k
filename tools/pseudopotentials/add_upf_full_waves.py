@@ -70,6 +70,25 @@ def children(node):
     return result
 
 
+def mask_upf_info(data):
+    """Mask free-form UPF provenance without moving the surrounding byte offsets."""
+    return re.sub(
+        rb"(<PP_INFO\b[^>]*>)(.*?)(</PP_INFO>)",
+        lambda match: match[1] + b" " * len(match[2]) + match[3],
+        data,
+        count=1,
+        flags=re.S,
+    )
+
+
+def parse_upf(data):
+    try:
+        return ET.fromstring(data), data
+    except ET.ParseError:
+        masked = mask_upf_info(data)
+        return ET.fromstring(masked), masked
+
+
 def compare(original, generated, replay_tolerance=0.0):
     if not math.isfinite(replay_tolerance) or replay_tolerance < 0:
         raise ValueError("Replay tolerance must be finite and nonnegative")
@@ -176,9 +195,8 @@ def top_level_spans(data):
 
 
 def enrich(original_data, generated_data, replay_tolerance=0.0):
-    original, generated = (
-        ET.fromstring(data) for data in (original_data, generated_data)
-    )
+    original, original_xml = parse_upf(original_data)
+    generated, generated_xml = parse_upf(generated_data)
     for tree in (original, generated):
         if tree.tag != "UPF" or tree.get("version") != "2.0.1":
             raise ValueError("Requires UPF version 2.0.1")
@@ -232,8 +250,8 @@ def enrich(original_data, generated_data, replay_tolerance=0.0):
                 raise ValueError(f"Different full-wave channel for projector {i}")
             if len(values(wave)) != mesh:
                 raise ValueError(f"Incomplete full wave for projector {i}")
-    spans, root_end = top_level_spans(original_data)
-    generated_spans, _ = top_level_spans(generated_data)
+    spans, root_end = top_level_spans(original_xml)
+    generated_spans, _ = top_level_spans(generated_xml)
     start, end = spans["PP_HEADER"]
     old_header = original_data[start:end]
     if "has_wfc" in header.attrib:
