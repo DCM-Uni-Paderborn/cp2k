@@ -257,6 +257,10 @@ CONTAINS
 
       CPASSERT(ntag > 0)
 
+      IF (pot%number_of_proj > 0 .AND. .NOT. ALLOCATED(pot%beta)) THEN
+         CPABORT("UPF declares projectors but has no PP_NONLOCAL section")
+      END IF
+
       ! rescale projectors
       IF (ALLOCATED(pot%beta)) THEN
          CPASSERT(ALLOCATED(pot%r) .AND. ALLOCATED(pot%rab))
@@ -705,16 +709,19 @@ CONTAINS
       CHARACTER(LEN=default_string_length)               :: line, string
       INTEGER                                            :: i1, i2, ibeta, icount, la, m, mc, ms, &
                                                             nbeta
-      LOGICAL                                            :: at_end
+      LOGICAL                                            :: at_end, read_dij
 
       m = pot%mesh_size
       nbeta = pot%number_of_proj
+      CPASSERT(nbeta >= 0 .AND. m > 0)
+      CPASSERT(.NOT. ALLOCATED(pot%beta))
       ALLOCATE (pot%dion(nbeta, nbeta), pot%beta(m, nbeta), pot%lbeta(nbeta))
       pot%dion = 0.0_dp
       pot%beta = 0.0_dp
       pot%lbeta = -1
 
       ibeta = 0
+      read_dij = .FALSE.
       DO
          CALL parser_get_next_line(parser, 1, at_end)
          CPASSERT(.NOT. at_end)
@@ -743,7 +750,6 @@ CONTAINS
                   CALL parser_get_object(parser, mc)
                CASE ("INDEX")
                   CALL parser_get_object(parser, i1)
-                  CPASSERT(i1 <= nbeta)
                CASE ("ANGULAR_MOMENTUM")
                   CALL parser_get_object(parser, la)
                CASE ("LABEL")
@@ -765,6 +771,9 @@ CONTAINS
                   CPABORT("Unknown UPF PP_BETA option <"//TRIM(string)//"> found")
                END SELECT
             END DO
+            IF (i1 < 1 .OR. i1 > nbeta) CPABORT("UPF PP_BETA index is out of range")
+            IF (pot%lbeta(i1) >= 0) CPABORT("Duplicate UPF PP_BETA index")
+            CPASSERT(la >= 0)
             pot%lbeta(i1) = la
             icount = 1
             DO WHILE (icount <= ms)
@@ -777,6 +786,8 @@ CONTAINS
                END IF
             END DO
          ELSE IF (string(1:7) == "<PP_DIJ") THEN
+            IF (read_dij) CPABORT("Duplicate UPF PP_DIJ matrix")
+            read_dij = .TRUE.
             ms = nbeta*nbeta
             IF (string /= "<PP_DIJ>") THEN
                DO
@@ -818,6 +829,10 @@ CONTAINS
             EXIT
          END IF
       END DO
+
+      IF (ibeta /= nbeta) CPABORT("Missing UPF PP_BETA projectors")
+      IF (nbeta > 0 .AND. .NOT. read_dij) CPABORT("Missing UPF PP_DIJ matrix")
+      CPASSERT(ALL(ieee_is_finite(pot%beta)) .AND. ALL(ieee_is_finite(pot%dion)))
 
       ! Convert the complete beta*D*beta operator from Ry to Hartree without
       ! changing the tabulated projector amplitude. This also preserves the

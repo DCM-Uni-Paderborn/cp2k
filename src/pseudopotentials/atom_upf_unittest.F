@@ -654,12 +654,12 @@ CONTAINS
             '6.0 4.0 2.0', &
             '</PP_LOCAL>', &
             '<PP_NONLOCAL>', &
-            '<PP_BETA.1 type="real" size="3" index="1" angular_momentum="0">', &
-            '1.0 4.0 9.0', &
-            '</PP_BETA.1>', &
             '<PP_BETA.2 type="real" size="3" index="2" angular_momentum="0">', &
             '2.0 -1.0 3.0', &
             '</PP_BETA.2>', &
+            '<PP_BETA.1 type="real" size="3" index="1" angular_momentum="0">', &
+            '1.0 4.0 9.0', &
+            '</PP_BETA.1>', &
             '<PP_DIJ type="real" size="4">', &
             '2.0 0.4 0.4 8.0', &
             '</PP_DIJ>', &
