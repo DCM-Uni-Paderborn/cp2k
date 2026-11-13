@@ -71,6 +71,7 @@ MODULE upf_inverse_coulomb
       INTEGER :: periodicity(3) = [1, 1, 1], grid_shape(3) = 0
       REAL(dp) :: cell(3, 3) = 0.0_dp, volume = 0.0_dp
       REAL(dp), ALLOCATABLE :: gvecs(:, :)
+      INTEGER, ALLOCATABLE :: alias_rows(:)
       TYPE(upf_inverse_coulomb_center_type), ALLOCATABLE :: centers(:)
       TYPE(fourier_map_type), ALLOCATABLE :: fourier(:)
       TYPE(pair_map_type), ALLOCATABLE :: pairs(:, :)
@@ -110,8 +111,10 @@ CONTAINS
 
       INTEGER                                            :: a, b, channel, h, i, image(3), info, j, &
                                                             k, limits(2, 3), mask, nrank, owner, &
-                                                            r, rank
+                                                            r, rank, row
       INTEGER, ALLOCATABLE                               :: parity(:, :)
+      INTEGER                                            :: miller(3)
+      LOGICAL, ALLOCATABLE                               :: aliased(:)
       LOGICAL                                            :: cartesian, has_images, reflection_axes(3)
       REAL(dp)                                           :: displacement(3), image_center(3), inverse_cell(3, 3), &
                                                             multiplicity, radius, separation(3)
@@ -125,6 +128,14 @@ CONTAINS
       map%cell = cell
       map%volume = volume
       ALLOCATE (map%gvecs, SOURCE=gvecs)
+      ALLOCATE (aliased(SIZE(gvecs, 2)), SOURCE=.FALSE.)
+      IF (ALL(map%grid_shape > 0)) THEN
+         DO row = 1, SIZE(gvecs, 2)
+            miller = NINT(MATMUL(TRANSPOSE(cell), gvecs(:, row))/twopi)
+            aliased(row) = ANY(MOD(map%grid_shape, 2) == 0 .AND. ABS(miller) == map%grid_shape/2)
+         END DO
+      END IF
+      ALLOCATE (map%alias_rows, SOURCE=PACK([(row, row=1, SIZE(aliased))], aliased))
       ALLOCATE (map%centers, SOURCE=centers)
       ALLOCATE (map%fourier(SIZE(centers)), map%pairs(SIZE(centers), SIZE(centers)))
       inverse_cell = cell
@@ -554,12 +565,12 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: periodicity(3)
       REAL(dp), INTENT(IN), OPTIONAL                     :: pair_geometry_response
 
-      COMPLEX(dp), ALLOCATABLE                           :: dfourier(:, :, :), dg(:), dh(:), e(:), &
-                                                            h(:), phase_response(:)
+      COMPLEX(dp), ALLOCATABLE                           :: alias_fourier(:, :, :), dfourier(:, :, :), &
+                                                            dg(:), dh(:), e(:), h(:), phase_response(:)
       COMPLEX(dp), CONTIGUOUS, POINTER                   :: kernel_values(:, :, :)
       INTEGER                                            :: a, b, channel, fourier_shape(3), i, &
                                                             image(3), info, j, limits(2, 3), na, &
-                                                            nb, ng, nh, nr, REPEAT(3)
+                                                            nb, ng, nh, nr, REPEAT(3), nalias
       LOGICAL                                            :: derive, derive_kernel, fixed_reciprocal, &
                                                             reuse_fourier, reuse_pair_geometry, translation_only
       REAL(dp)                                           :: ddisplacement(3), displacement(3), &
@@ -636,9 +647,9 @@ CONTAINS
             derive_kernel = ANY(center_response(a)%position /= 0.0_dp) .OR. &
                             ANY(center_response(a)%radii /= 0.0_dp)
          END IF
-         ! With no reciprocal aliases, a translation differentiates only the cached phase.
+         ! A translation changes only the phase of each unaliased coefficient.
          translation_only = .FALSE.
-         IF (derive_kernel .AND. fixed_reciprocal .AND. ALL(fourier_shape == 0)) THEN
+         IF (derive_kernel .AND. fixed_reciprocal) THEN
             translation_only = ALL(center_response(a)%radii == 0.0_dp)
          END IF
          IF ((derive_kernel .AND. .NOT. translation_only) .OR. (.NOT. derive .AND. .NOT. reuse_fourier)) THEN
@@ -673,6 +684,18 @@ CONTAINS
                                SPREAD(centers(a)%weights, 2, nh)*de
             IF (translation_only) THEN
                phase_response = CMPLX(0.0_dp, -MATMUL(center_response(a)%position, gvecs), dp)
+               nalias = SIZE(map%alias_rows)
+               IF (nalias > 0) THEN
+                  ! A Nyquist row averages phases of several distinct physical vectors.
+                  phase_response(map%alias_rows) = CMPLX(0.0_dp, 0.0_dp, dp)
+                  ALLOCATE (alias_fourier(nalias, nr, nh), dfourier(nalias, nr, nh))
+                  CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
+                                                          gvecs(:, map%alias_rows), centers(a)%position, volume, &
+                                                          alias_fourier, dfourier, center_response(a)%radii, &
+                                                          gvecs_response(:, map%alias_rows), center_response(a)%position, &
+                                                          volume_response, cell=cell, grid_shape=fourier_shape)
+                  DEALLOCATE (alias_fourier)
+               END IF
             ELSE IF (derive_kernel) THEN
                ALLOCATE (dfourier(ng, nr, nh))
                CALL upf_inverse_coulomb_fourier_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
@@ -698,6 +721,11 @@ CONTAINS
                IF (translation_only) THEN
                   dh(:) = dh + phase_response*kernel_values(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
                   dg(:) = dg + phase_response*kernel_values(:, i, channel)*work(a)%q(i, channel)
+                  IF (nalias > 0) THEN
+                     dh(map%alias_rows) = dh(map%alias_rows) + &
+                                          dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
+                     dg(map%alias_rows) = dg(map%alias_rows) + dfourier(:, i, channel)*work(a)%q(i, channel)
+                  END IF
                ELSE IF (derive_kernel) THEN
                   dh(:) = dh + dfourier(:, i, channel)*centers(a)%weights(i)*work(a)%compensation(i, channel)
                   dg(:) = dg + dfourier(:, i, channel)*work(a)%q(i, channel)
