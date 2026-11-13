@@ -54,6 +54,7 @@ list(
   pseudopotentials/paw_core_kinetic.F
   pseudopotentials/paw_onecenter.F
   pseudopotentials/paw_types.F
+  pseudopotentials/paw_xc.F
   aobasis/gaussian_basis_fields.F
   pseudopotentials/upf_core.F
   pseudopotentials/upf_inverse.F

@@ -1,0 +1,972 @@
+!--------------------------------------------------------------------------------------------------!
+!   CP2K: A general program to perform molecular dynamics simulations                              !
+!   Copyright 2000-2026 CP2K developers group <https://cp2k.org>                                   !
+!                                                                                                  !
+!   SPDX-License-Identifier: GPL-2.0-or-later                                                      !
+!--------------------------------------------------------------------------------------------------!
+
+! **************************************************************************************************
+!> \brief Scalar PAW one-center semilocal XC on radial and spherical quadrature grids.
+!>        Evaluates AE minus compensated-PS densities, including the corresponding frozen cores.
+! **************************************************************************************************
+MODULE paw_xc
+   USE compensated_arithmetic,          ONLY: twofold_add,&
+                                              twofold_divide,&
+                                              twofold_multiply,&
+                                              twofold_product,&
+                                              twofold_real_type,&
+                                              twofold_value
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_section_types,             ONLY: section_get_rval,&
+                                              section_vals_get_subs_vals,&
+                                              section_vals_type
+   USE kinds,                           ONLY: dp
+   USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
+                                              lebedev_rotational_average
+   USE mathconstants,                   ONLY: fourpi
+   USE message_passing,                 ONLY: mp_comm_type
+   USE orbital_pointers,                ONLY: indco,&
+                                              init_orbital_pointers,&
+                                              nco,&
+                                              ncoset
+   USE orbital_transformation_matrices, ONLY: init_spherical_harmonics,&
+                                              orbtramat
+   USE paw_core_kinetic,                ONLY: paw_core_kinetic_init,&
+                                              paw_core_radial_slopes,&
+                                              paw_core_radial_value,&
+                                              paw_xc_build_ae_core_tau => paw_core_kinetic_build_ae
+   USE paw_onecenter,                   ONLY: paw_onecenter_type
+   USE paw_types,                       ONLY: paw_xc_type
+   USE splines,                         ONLY: spline3ders
+   USE upf_types,                       ONLY: atom_upfpot_type,&
+                                              upf_radial_weights
+   USE xc_atom,                         ONLY: fill_rho_set,&
+                                              vxc_of_r_new,&
+                                              xc_2nd_deriv_of_r,&
+                                              xc_rho_set_atom_update
+   USE xc_derivative_set_types,         ONLY: xc_derivative_set_type,&
+                                              xc_dset_create,&
+                                              xc_dset_release,&
+                                              xc_dset_zero_all
+   USE xc_derivatives,                  ONLY: xc_functionals_get_needs
+   USE xc_rho_cflags_types,             ONLY: xc_rho_cflags_type
+   USE xc_rho_set_types,                ONLY: xc_rho_set_create,&
+                                              xc_rho_set_release,&
+                                              xc_rho_set_type
+#include "../base/base_uses.f90"
+
+   IMPLICIT NONE
+   PRIVATE
+   CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'paw_xc'
+
+   PUBLIC :: paw_xc_type, paw_xc_init, paw_xc_evaluate, paw_xc_collocate
+   PUBLIC :: paw_xc_kinetic_adjoint
+   PUBLIC :: paw_xc_build_ae_core_tau
+   PUBLIC :: paw_xc_ae_core_cartesian
+   PUBLIC :: paw_xc_point_adjoint, paw_xc_response
+
+CONTAINS
+
+! **************************************************************************************************
+!> \brief Cartesian original AE core density, gradient and Hessian on positive-radius quadrature.
+!>        Retains the radial cusp and complete original table rather than smoothing in r squared.
+!>        Outside the supplied radial domain the field and its derivatives are zero.
+!> \param grid Original PAW XC cache with AE core density and its radial spline slopes.
+!> \param displacement Point minus core center; the nonempty core's exact origin is excluded.
+!> \param density Spin-summed AE core density, including the original UPF volume convention.
+!> \param gradient Optional spatial gradient.
+!> \param hessian Optional spatial Hessian, needed for moving density-gradient fields.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_ae_core_cartesian(grid, displacement, density, gradient, hessian)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      REAL(dp), INTENT(IN)                               :: displacement(3)
+      REAL(dp), INTENT(OUT)                              :: density
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(3), hessian(3, 3)
+
+      INTEGER                                            :: axis, other
+      REAL(dp)                                           :: radius, second, slope, unit(3)
+
+      CPASSERT(ALL(ieee_is_finite(displacement)))
+      CPASSERT(ALLOCATED(grid%r))
+      CPASSERT(ALLOCATED(grid%core) .AND. ALLOCATED(grid%core_gradient))
+      density = 0.0_dp
+      IF (PRESENT(gradient)) gradient = 0.0_dp
+      IF (PRESENT(hessian)) hessian = 0.0_dp
+      IF (.NOT. grid%has_ae_core) RETURN
+      radius = SQRT(SUM(displacement**2))
+      IF (radius > grid%r(grid%core_support_index)) RETURN
+      IF (radius == 0.0_dp) THEN
+         CALL cp_abort(__LOCATION__, &
+                       "Original AE core density fields require positive-radius quadrature")
+      END IF
+      CALL paw_core_radial_value(grid%r, grid%core(:, 1), grid%core_gradient(:, 1), &
+                                 grid%core_endpoint_curvature, grid%core_support_index, radius, density, slope, second)
+      unit = displacement/radius
+      IF (PRESENT(gradient)) gradient = slope*unit
+      IF (PRESENT(hessian)) THEN
+         DO axis = 1, 3
+            DO other = 1, 3
+               hessian(other, axis) = (second - slope/radius)*(unit(other)*unit(axis))
+            END DO
+            hessian(axis, axis) = hessian(axis, axis) + slope/radius
+         END DO
+      END IF
+   END SUBROUTINE paw_xc_ae_core_cartesian
+
+! **************************************************************************************************
+!> \brief Prepare radial density products, gradients, frozen cores and angular quadrature.
+!> \param pot Original scalar PAW UPF data.
+!> \param nang Minimum number of angular points; the selected rule also resolves harmonic products.
+!> \param grid Immutable per-kind one-center XC data.
+!> \param rotations Optional complete point group for the fixed angular quadrature.
+!> \param use_laplacian Prepare radial density Laplacians for the selected functional.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_init(pot, nang, grid, rotations, use_laplacian)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      INTEGER, INTENT(IN)                                :: nang
+      TYPE(paw_xc_type), INTENT(OUT)                     :: grid
+      REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
+      LOGICAL, INTENT(IN)                                :: use_laplacian
+
+      INTEGER                                            :: a, axis, first, i, j, l, lm, m, nb, nr, &
+                                                            ns, pair, powers(3), reduced(3), rule, &
+                                                            s, side
+      REAL(dp)                                           :: angular_factor, curvature, factor, slope, value
+      REAL(dp), ALLOCATABLE                              :: derivatives(:, :), second(:), values(:), waves(:, :)
+
+      CPASSERT(pot%is_paw .AND. .NOT. pot%has_so .AND. ALLOCATED(pot%paw))
+      CPASSERT(ALLOCATED(pot%qijl))
+      nr = SIZE(pot%r)
+      CALL paw_core_kinetic_init(pot, grid%core_kinetic)
+      grid%nr = nr
+      grid%nval = pot%paw%cutoff_index
+      CPASSERT(grid%nval >= 4 .AND. grid%nval <= nr)
+      nb = pot%number_of_proj
+      grid%npair = nb*(nb + 1)/2
+      grid%lmax = 2*MAXVAL(pot%lbeta)
+      rule = MAX(get_number_of_lebedev_grid(n=nang), get_number_of_lebedev_grid(l=2*grid%lmax))
+      CALL lebedev_rotational_average(rule, grid%directions, grid%wa, rotations)
+      grid%na = SIZE(grid%wa)
+      ALLOCATE (grid%r(nr), grid%wr(nr), &
+                grid%harmonics(grid%na, (grid%lmax + 1)**2), &
+                grid%angular_gradient(3, grid%na, (grid%lmax + 1)**2))
+      grid%r(:) = pot%r
+      grid%wr(:) = upf_radial_weights(pot)*pot%r**2
+      grid%wa(:) = fourpi*grid%wa
+      CALL init_orbital_pointers(grid%lmax)
+      CALL init_spherical_harmonics(grid%lmax, -1)
+      grid%harmonics = 0.0_dp
+      grid%angular_gradient = 0.0_dp
+      DO l = 0, grid%lmax
+         DO m = 1, 2*l + 1
+            lm = l*l + m
+            DO s = 1, nco(l)
+               powers = indco(:, ncoset(l - 1) + s)
+               factor = orbtramat(l)%slm(m, s)
+               DO a = 1, grid%na
+                  grid%harmonics(a, lm) = grid%harmonics(a, lm) + factor*PRODUCT(grid%directions(:, a)**powers)
+                  DO axis = 1, 3
+                     IF (powers(axis) == 0) CYCLE
+                     reduced = powers
+                     reduced(axis) = reduced(axis) - 1
+                     grid%angular_gradient(axis, a, lm) = grid%angular_gradient(axis, a, lm) + &
+                                                          factor*REAL(powers(axis), dp)*PRODUCT(grid%directions(:, a)**reduced)
+                  END DO
+               END DO
+            END DO
+            DO a = 1, grid%na
+               ! Subtract the radial derivative of r**l*Y_lm to obtain the tangent gradient.
+               grid%angular_gradient(:, a, lm) = grid%angular_gradient(:, a, lm) - &
+                                                 REAL(l, dp)*grid%harmonics(a, lm)*grid%directions(:, a)
+            END DO
+         END DO
+      END DO
+
+      ALLOCATE (grid%radial(grid%nval, grid%npair, 0:grid%lmax, 2), &
+                grid%radial_gradient(grid%nval, grid%npair, 0:grid%lmax, 2), &
+                grid%core(nr, 2), grid%core_gradient(nr, 2))
+      grid%radial = 0.0_dp
+      grid%radial_gradient = 0.0_dp
+      first = 1
+      IF (pot%r(1) == 0.0_dp) first = 2
+      IF (use_laplacian) THEN
+         ALLOCATE (grid%radial_laplacian(grid%nval, grid%npair, 0:grid%lmax, 2), &
+                   grid%core_laplacian(nr, 2), SOURCE=0.0_dp)
+         ALLOCATE (second(nr))
+      END IF
+      grid%core = 0.0_dp
+      grid%core(:, 1) = pot%paw%rho_core
+      IF (ALLOCATED(pot%rho_nlcc)) grid%core(:, 2) = pot%rho_nlcc
+      DO side = 1, 2
+         IF (side == 1) THEN
+            CALL paw_core_radial_slopes(pot%r, grid%core(:, side), grid%core_gradient(:, side), &
+                                        grid%core_endpoint_curvature, grid%core_support_index)
+            IF (use_laplacian) THEN
+               DO i = first, nr
+                  CALL paw_core_radial_value(pot%r, grid%core(:, side), grid%core_gradient(:, side), &
+                                             grid%core_endpoint_curvature, grid%core_support_index, &
+                                             pot%r(i), value, slope, curvature)
+                  grid%core_laplacian(i, side) = curvature + 2.0_dp*slope/pot%r(i)
+               END DO
+            END IF
+         ELSE
+            CALL spline3ders(pot%r, grid%core(:, side), pot%r, dynew=grid%core_gradient(:, side), d2ynew=second)
+            IF (use_laplacian) THEN
+               grid%core_laplacian(first:, side) = second(first:) + 2.0_dp*grid%core_gradient(first:, side)/pot%r(first:)
+            END IF
+         END IF
+      END DO
+      grid%has_ae_core = ANY(grid%core(:, 1) /= 0.0_dp)
+      ! Retain a few physical continuation samples for boundary derivatives, without
+      ! differentiating an artificial jump to zero at the augmentation-sphere boundary.
+      ns = MIN(nr, grid%nval + 3)
+      CPASSERT(ns - first + 1 >= 4)
+      ALLOCATE (values(ns))
+      DO j = 1, nb
+         DO i = 1, j
+            pair = j*(j - 1)/2 + i
+            DO l = ABS(pot%lbeta(i) - pot%lbeta(j)), pot%lbeta(i) + pot%lbeta(j), 2
+               DO side = 1, 2
+                  IF (side == 1) THEN
+                     values(first:) = pot%paw%ae_wfc(first:ns, i)*pot%paw%ae_wfc(first:ns, j)/pot%r(first:ns)**2
+                  ELSE
+                     values(first:) = (pot%paw%ps_wfc(first:ns, i)*pot%paw%ps_wfc(first:ns, j) + &
+                                       pot%qijl(first:ns, pair, l))/pot%r(first:ns)**2
+                  END IF
+                  CALL spline3ders(pot%r(first:ns), values(first:), pot%r(:grid%nval), &
+                                   ynew=grid%radial(:, pair, l, side), &
+                                   dynew=grid%radial_gradient(:, pair, l, side), d2ynew=second)
+                  IF (use_laplacian) THEN
+                     ! The angular Laplacian of a spherical harmonic is -l(l+1) times that harmonic.
+                     grid%radial_laplacian(first:, pair, l, side) = second(first:grid%nval) + &
+                        2.0_dp*grid%radial_gradient(first:, pair, l, side)/pot%r(first:grid%nval) - &
+                        REAL(l*(l + 1), dp)*grid%radial(first:, pair, l, side)/pot%r(first:grid%nval)**2
+                  END IF
+               END DO
+            END DO
+         END DO
+      END DO
+      ALLOCATE (grid%kinetic_radial(grid%nval, grid%npair, 0:grid%lmax, 2), &
+                waves(grid%nval, nb), derivatives(grid%nval, nb))
+      grid%kinetic_radial = 0.0_dp
+      DO side = 1, 2
+         DO i = 1, nb
+            IF (side == 1) THEN
+               values(first:) = pot%paw%ae_wfc(first:ns, i)/pot%r(first:ns)
+            ELSE
+               values(first:) = pot%paw%ps_wfc(first:ns, i)/pot%r(first:ns)
+            END IF
+            CALL spline3ders(pot%r(first:ns), values(first:), pot%r(:grid%nval), &
+                             ynew=waves(:, i), dynew=derivatives(:, i))
+         END DO
+         DO j = 1, nb
+            DO i = 1, j
+               pair = j*(j - 1)/2 + i
+               DO l = ABS(pot%lbeta(i) - pot%lbeta(j)), pot%lbeta(i) + pot%lbeta(j), 2
+                  ! grad_Omega(Y_i).grad_Omega(Y_j) has the same Gaunt coefficients,
+                  ! multiplied by [l_i(l_i+1)+l_j(l_j+1)-L(L+1)]/2.
+                  angular_factor = 0.5_dp*REAL(pot%lbeta(i)*(pot%lbeta(i) + 1) + &
+                                               pot%lbeta(j)*(pot%lbeta(j) + 1) - l*(l + 1), dp)
+                  grid%kinetic_radial(first:, pair, l, side) = 0.5_dp*( &
+                                                               derivatives(first:, i)*derivatives(first:, j) + &
+                                                         angular_factor*waves(first:, i)*waves(first:, j)/pot%r(first:grid%nval)**2)
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE paw_xc_init
+
+! **************************************************************************************************
+!> \brief Contract a real symmetric spin-resolved projector density with the product Gaunt tensor.
+!> \param onecenter Magnetic/radial mappings and angular integrals.
+!> \param density Projector density matrix, one or two spin channels.
+!> \param coefficients Radial-pair and real-harmonic coefficients for each spin.
+!> \param density_components Optional retained original projector occupation.
+! **************************************************************************************************
+   SUBROUTINE density_coefficients(onecenter, density, coefficients, density_components)
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      REAL(dp), INTENT(IN)                               :: density(:, :, :)
+      TYPE(twofold_real_type), INTENT(OUT)               :: coefficients(:, :, :)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :)
+
+      INTEGER                                            :: lm, p, pair, q, spin
+      LOGICAL                                            :: assertion_valid
+      TYPE(twofold_real_type)                            :: component
+
+      assertion_valid = ALL(SHAPE(density) == [onecenter%nproj, onecenter%nproj, SIZE(coefficients, 3)])
+      CPASSERT(assertion_valid)
+      assertion_valid = SIZE(density, 3) == 1 .OR. SIZE(density, 3) == 2
+      CPASSERT(assertion_valid)
+      CPASSERT(SIZE(coefficients, 1) == onecenter%npair)
+      assertion_valid = SIZE(coefficients, 2) == SIZE(onecenter%gaunt, 3)
+      CPASSERT(assertion_valid)
+      IF (PRESENT(density_components)) THEN
+         assertion_valid = ALL(SHAPE(density_components) == SHAPE(density))
+         CPASSERT(assertion_valid)
+      END IF
+      coefficients = twofold_real_type()
+      DO spin = 1, SIZE(density, 3)
+         DO q = 1, onecenter%nproj
+            DO p = 1, onecenter%nproj
+               pair = onecenter%pair_index(p, q)
+               component = twofold_real_type(density(p, q, spin), 0.0_dp)
+               IF (PRESENT(density_components)) component = density_components(p, q, spin)
+               DO lm = 1, SIZE(coefficients, 2)
+                  coefficients(pair, lm, spin) = twofold_add(coefficients(pair, lm, spin), &
+                                                  twofold_multiply(component, twofold_real_type(onecenter%gaunt(p, q, lm), 0.0_dp)))
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE density_coefficients
+
+! **************************************************************************************************
+!> \brief Dot product retaining the original linear field and quadrature contractions.
+!> \param a Retained first factors.
+!> \param b Original FP64 second factors.
+!> \return Retained dot product.
+! **************************************************************************************************
+   FUNCTION component_dot(a, b) RESULT(value)
+      TYPE(twofold_real_type), INTENT(IN)                :: a(:)
+      REAL(dp), INTENT(IN)                               :: b(:)
+      TYPE(twofold_real_type)                            :: value
+
+      INTEGER                                            :: i
+
+      CPASSERT(SIZE(a) == SIZE(b))
+      value = twofold_real_type()
+      DO i = 1, SIZE(a)
+         IF (b(i) == 0.0_dp) CYCLE
+         value = twofold_add(value, twofold_multiply(a(i), twofold_real_type(b(i), 0.0_dp)))
+      END DO
+   END FUNCTION component_dot
+
+! **************************************************************************************************
+!> \brief Dot product retaining the original FP64 products.
+!> \param a First factors.
+!> \param b Second factors.
+!> \return Retained dot product.
+! **************************************************************************************************
+   FUNCTION original_dot(a, b) RESULT(value)
+      REAL(dp), INTENT(IN)                               :: a(:), b(:)
+      TYPE(twofold_real_type)                            :: value
+
+      INTEGER                                            :: i
+      TYPE(twofold_real_type)                            :: term
+
+      CPASSERT(SIZE(a) == SIZE(b))
+      value = twofold_real_type()
+      DO i = 1, SIZE(a)
+         CALL twofold_product(a(i), b(i), term%hi, term%lo)
+         value = twofold_add(value, term)
+      END DO
+   END FUNCTION original_dot
+
+! **************************************************************************************************
+!> \brief One original AE or compensated-PS shell, rounded only after each complete field sum.
+!> \param grid Original PAW radial and angular fields.
+!> \param coefficients Retained Gaunt coefficients of the projector occupation.
+!> \param ir Positive radial node.
+!> \param side AE (1) or compensated PS (2).
+!> \param rho Density including the prescribed frozen core.
+!> \param gradient Optional Cartesian density gradient.
+!> \param kinetic Optional independent valence kinetic density, without core or charge compensation.
+!> \param include_core Include the frozen-core density and its derivatives, default true.
+!> \param laplacian Optional Laplacian of the same density, including the selected core.
+! **************************************************************************************************
+   SUBROUTINE collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic, include_core, laplacian)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(twofold_real_type), INTENT(IN)                :: coefficients(:, :, :)
+      INTEGER, INTENT(IN)                                :: ir, side
+      REAL(dp), INTENT(OUT)                              :: rho(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :, :), kinetic(:, :)
+      LOGICAL, INTENT(IN), OPTIONAL                      :: include_core
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: laplacian(:, :)
+
+      INTEGER                                            :: angular, axis, l, lm, nlm, nspin, spin
+      LOGICAL                                            :: assertion_valid
+      REAL(dp)                                           :: core_scale
+      TYPE(twofold_real_type) :: core, field, radial, radius, slope(SIZE(coefficients, 2)), &
+         harmonics(SIZE(coefficients, 2))
+
+      nspin = SIZE(coefficients, 3); nlm = SIZE(coefficients, 2)
+      core_scale = 1.0_dp/REAL(nspin, dp)
+      IF (PRESENT(include_core)) THEN
+         IF (.NOT. include_core) core_scale = 0.0_dp
+      END IF
+      CPASSERT(side >= 1 .AND. side <= 2)
+      assertion_valid = ir >= 1 .AND. ir <= grid%nr .AND. grid%r(ir) > 0.0_dp
+      CPASSERT(assertion_valid)
+      CPASSERT(ALL(SHAPE(rho) == [grid%na, nspin]))
+      IF (PRESENT(gradient)) THEN
+         assertion_valid = ALL(SHAPE(gradient) == [3, grid%na, nspin])
+         CPASSERT(assertion_valid)
+      END IF
+      IF (PRESENT(laplacian)) THEN
+         CPASSERT(ALLOCATED(grid%radial_laplacian))
+         CPASSERT(ALL(SHAPE(laplacian) == SHAPE(rho)))
+      END IF
+      radius = twofold_real_type(grid%r(ir), 0.0_dp)
+      DO spin = 1, nspin
+         harmonics = twofold_real_type(); slope = twofold_real_type()
+         IF (ir <= grid%nval) THEN
+            DO lm = 1, nlm
+               l = INT(SQRT(REAL(lm - 1, dp)))
+               harmonics(lm) = component_dot(coefficients(:, lm, spin), grid%radial(ir, :, l, side))
+               IF (PRESENT(gradient)) slope(lm) = component_dot(coefficients(:, lm, spin), grid%radial_gradient(ir, :, l, side))
+            END DO
+         END IF
+         DO angular = 1, grid%na
+            CALL twofold_product(core_scale, grid%core(ir, side), core%hi, core%lo)
+            rho(angular, spin) = twofold_value(twofold_add(component_dot(harmonics, grid%harmonics(angular, :)), core))
+            IF (.NOT. PRESENT(gradient)) CYCLE
+            CALL twofold_product(core_scale, grid%core_gradient(ir, side), core%hi, core%lo)
+            radial = twofold_add(component_dot(slope, grid%harmonics(angular, :)), core)
+            DO axis = 1, 3
+               field = twofold_add(twofold_multiply(twofold_real_type(grid%directions(axis, angular), 0.0_dp), radial), &
+                                   twofold_divide(component_dot(harmonics, grid%angular_gradient(axis, angular, :)), radius))
+               gradient(axis, angular, spin) = twofold_value(field)
+            END DO
+         END DO
+         IF (PRESENT(kinetic)) THEN
+            CPASSERT(ALL(SHAPE(kinetic) == SHAPE(rho)))
+            harmonics = twofold_real_type()
+            IF (ir <= grid%nval) THEN
+               DO lm = 1, nlm
+                  l = INT(SQRT(REAL(lm - 1, dp)))
+                  harmonics(lm) = component_dot(coefficients(:, lm, spin), grid%kinetic_radial(ir, :, l, side))
+               END DO
+            END IF
+            DO angular = 1, grid%na
+               kinetic(angular, spin) = twofold_value(component_dot(harmonics, grid%harmonics(angular, :)))
+            END DO
+         END IF
+         IF (PRESENT(laplacian)) THEN
+            harmonics = twofold_real_type()
+            IF (ir <= grid%nval) THEN
+               DO lm = 1, nlm
+                  l = INT(SQRT(REAL(lm - 1, dp)))
+                  harmonics(lm) = component_dot(coefficients(:, lm, spin), grid%radial_laplacian(ir, :, l, side))
+               END DO
+            END IF
+            CALL twofold_product(core_scale, grid%core_laplacian(ir, side), core%hi, core%lo)
+            DO angular = 1, grid%na
+               laplacian(angular, spin) = twofold_value(twofold_add(component_dot(harmonics, grid%harmonics(angular, :)), core))
+            END DO
+         END IF
+      END DO
+   END SUBROUTINE collocate_coefficients
+
+! **************************************************************************************************
+!> \brief Public shell collocation for diagnostics and consumers needing reconstructed fields.
+!> \param grid Prepared PAW XC grid.
+!> \param onecenter Corresponding magnetic/radial mapping.
+!> \param density Spin-resolved projector density.
+!> \param ir Nonzero radial node.
+!> \param side AE (1) or compensated PS (2).
+!> \param rho Angular point by spin density including frozen core.
+!> \param gradient Cartesian direction by angular point by spin gradient.
+!> \param kinetic Optional valence partial-wave kinetic density, excluding frozen core and charge compensation.
+!> \param density_components Optional retained occupation used by the corresponding energy.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_collocate(grid, onecenter, density, ir, side, rho, gradient, kinetic, density_components)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      REAL(dp), INTENT(IN)                               :: density(:, :, :)
+      INTEGER, INTENT(IN)                                :: ir, side
+      REAL(dp), INTENT(OUT)                              :: rho(:, :), gradient(:, :, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: kinetic(:, :)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :)
+
+      LOGICAL                                            :: assertion_valid
+      TYPE(twofold_real_type) :: &
+         coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3))
+
+      assertion_valid = grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax
+      CPASSERT(assertion_valid)
+      CALL density_coefficients(onecenter, density, coefficients, density_components)
+      CALL collocate_coefficients(grid, coefficients, ir, side, rho, gradient, kinetic)
+   END SUBROUTINE paw_xc_collocate
+
+! **************************************************************************************************
+!> \brief Projector-density derivative of one PAW density or kinetic-density sample.
+!>        Frozen cores are constant in this derivative. No energy sign, quadrature weight,
+!>        spin-pairing factor or k-point weight belongs to this unweighted field operator.
+!> \param grid Original radial and angular data.
+!> \param onecenter Corresponding projector mapping and Gaunt tensor.
+!> \param ir Positive radial node.
+!> \param angular Angular node.
+!> \param side AE (1) or compensated PS (2).
+!> \param kinetic Select the valence kinetic density instead of the charge density.
+!> \param potential Symmetric projector-density derivative of this scalar sample.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_point_adjoint(grid, onecenter, ir, angular, side, kinetic, potential)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      INTEGER, INTENT(IN)                                :: ir, angular, side
+      LOGICAL, INTENT(IN)                                :: kinetic
+      REAL(dp), INTENT(OUT)                              :: potential(:, :)
+
+      INTEGER                                            :: l, lm, p, pair, q
+      REAL(dp)                                           :: value
+      TYPE(twofold_real_type)                            :: retained, term
+
+      CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+      CPASSERT(ir >= 1 .AND. ir <= grid%nr)
+      CPASSERT(grid%r(ir) > 0.0_dp .AND. angular >= 1 .AND. angular <= grid%na)
+      CPASSERT(side == 1 .OR. side == 2)
+      CPASSERT(ALL(SHAPE(potential) == [onecenter%nproj, onecenter%nproj]))
+      potential = 0.0_dp
+      IF (ir > grid%nval) RETURN
+      DO q = 1, onecenter%nproj
+         DO p = 1, onecenter%nproj
+            pair = onecenter%pair_index(p, q)
+            retained = twofold_real_type()
+            DO lm = 1, SIZE(onecenter%gaunt, 3)
+               l = INT(SQRT(REAL(lm - 1, dp)))
+               value = grid%radial(ir, pair, l, side)
+               IF (kinetic) value = grid%kinetic_radial(ir, pair, l, side)
+               CALL twofold_product(onecenter%gaunt(p, q, lm), grid%harmonics(angular, lm), term%hi, term%lo)
+               retained = twofold_add(retained, twofold_multiply(term, twofold_real_type(value, 0.0_dp)))
+            END DO
+            potential(p, q) = twofold_value(retained)
+         END DO
+      END DO
+   END SUBROUTINE paw_xc_point_adjoint
+
+! **************************************************************************************************
+!> \brief Adjoint of valence kinetic-density collocation on a single radial shell.
+!> \param grid Prepared PAW radial and angular data.
+!> \param onecenter Projector indices and Gaunt coefficients.
+!> \param ir Nonzero radial node.
+!> \param side AE (1) or PS (2), without charge compensation in either kinetic field.
+!> \param weighted_potential Kinetic-density potential, including all integration weights.
+!> \param potential Projector-density derivative from this shell, separately for each spin.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_kinetic_adjoint(grid, onecenter, ir, side, weighted_potential, potential)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      INTEGER, INTENT(IN)                                :: ir, side
+      REAL(dp), INTENT(IN)                               :: weighted_potential(:, :)
+      REAL(dp), INTENT(OUT)                              :: potential(:, :, :)
+
+      INTEGER                                            :: l, lm, p, pair, q, spin
+      REAL(dp) :: derivative(onecenter%npair, SIZE(onecenter%gaunt, 3)), &
+         angular_value(SIZE(onecenter%gaunt, 3))
+
+      CPASSERT(grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax)
+      CPASSERT(ir >= 1 .AND. ir <= grid%nr .AND. side >= 1 .AND. side <= 2)
+      CPASSERT(SIZE(weighted_potential, 1) == grid%na)
+      CPASSERT(SIZE(potential, 1) == onecenter%nproj)
+      CPASSERT(SIZE(potential, 2) == onecenter%nproj)
+      CPASSERT(SIZE(potential, 3) == SIZE(weighted_potential, 2))
+      potential = 0.0_dp
+      IF (ir > grid%nval) RETURN
+      DO spin = 1, SIZE(weighted_potential, 2)
+         angular_value = MATMUL(TRANSPOSE(grid%harmonics), weighted_potential(:, spin))
+         DO lm = 1, SIZE(angular_value)
+            l = INT(SQRT(REAL(lm - 1, dp)))
+            derivative(:, lm) = angular_value(lm)*grid%kinetic_radial(ir, :, l, side)
+         END DO
+         DO q = 1, onecenter%nproj
+            DO p = 1, onecenter%nproj
+               pair = onecenter%pair_index(p, q)
+               potential(p, q, spin) = SUM(onecenter%gaunt(p, q, :)*derivative(pair, :))
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE paw_xc_kinetic_adjoint
+
+! **************************************************************************************************
+!> \brief Semilocal PAW XC correction and its full projector-density derivative.
+!> \param grid Prepared AE/PS radial and angular data.
+!> \param onecenter Matching projector mapping and Gaunt tensor.
+!> \param functional XC_FUNCTIONAL section, with activated functionals.
+!> \param density Spin-resolved projector density, already summed over k points.
+!> \param density_cutoff XC evaluator density cutoff.
+!> \param gradient_cutoff XC evaluator gradient cutoff.
+!> \param energy AE-minus-compensated-PS XC energy.
+!> \param potential Derivative dE/d(density), separately for each spin.
+!> \param core_kinetic Optional spin-summed frozen-core kinetic density on the UPF mesh, AE then PS.
+!>        Required for tau-dependent XC when either frozen-core density is nonzero.
+!> \param density_components Optional retained occupation of the installed density.
+!> \param potential_components Optional retained atomic covector before Gaussian congruence.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_evaluate(grid, onecenter, functional, density, density_cutoff, gradient_cutoff, energy, potential, &
+                              core_kinetic, density_components, potential_components)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      TYPE(section_vals_type), POINTER                   :: functional
+      REAL(dp), INTENT(IN)                               :: density(:, :, :), density_cutoff, &
+                                                            gradient_cutoff
+      REAL(dp), INTENT(OUT)                              :: energy, potential(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: core_kinetic(:, :)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :)
+      TYPE(twofold_real_type), INTENT(OUT), OPTIONAL     :: potential_components(:, :, :)
+
+      INTEGER                                            :: bounds(2, 3), first, ir, jr, na, nr, nspin, p, pair, q, side, spin
+      LOGICAL                                            :: assertion_valid, lsd, use_laplacian, use_tau
+      REAL(dp)                                           :: batch_energy, sign
+      REAL(dp), ALLOCATABLE                              :: rho(:, :, :), vlaplacian(:, :, :), weights(:, :)
+      REAL(dp), ALLOCATABLE, TARGET                      :: drho(:, :, :, :), laplacian(:, :, :), tau(:, :, :)
+      REAL(dp), POINTER                                  :: gradient(:, :, :), kinetic(:, :), laplacian_shell(:, :), &
+                                                            vtau(:, :, :), vxc(:, :, :), &
+                                                            vxg(:, :, :, :)
+      TYPE(twofold_real_type) :: &
+         coefficient_derivative(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3)), &
+         coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), SIZE(density, 3)), energy_sum, &
+         potential_sum
+      TYPE(xc_derivative_set_type)                       :: derivatives
+      TYPE(xc_rho_cflags_type)                           :: needs
+      TYPE(xc_rho_set_type)                              :: rho_set
+
+      assertion_valid = grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax
+      CPASSERT(assertion_valid)
+      CPASSERT(ALL(SHAPE(potential) == SHAPE(density)))
+      IF (PRESENT(potential_components)) THEN
+         assertion_valid = ALL(SHAPE(potential_components) == SHAPE(density))
+         CPASSERT(assertion_valid)
+      END IF
+      CALL density_coefficients(onecenter, density, coefficients, density_components)
+      nspin = SIZE(density, 3)
+      lsd = nspin == 2
+      na = grid%na
+      needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
+      use_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
+      use_tau = needs%tau .OR. needs%tau_spin
+      IF (use_tau) THEN
+         IF (PRESENT(core_kinetic)) THEN
+            CPASSERT(ALL(SHAPE(core_kinetic) == [grid%nr, 2]))
+            CPASSERT(ALL(ieee_is_finite(core_kinetic)))
+            CPASSERT(ALL(core_kinetic >= 0.0_dp))
+         ELSE IF (.NOT. grid%core_kinetic%available .AND. ANY(grid%core /= 0.0_dp)) THEN
+            CALL cp_abort(__LOCATION__, TRIM(grid%core_kinetic%failure_reason))
+         END IF
+      END IF
+      bounds = 1
+      bounds(2, 1) = na
+      ! Batch radial shells to amortize the functional setup without changing
+      ! their quadrature. Zero-weight padding keeps the final batch rectangular.
+      nr = MIN(grid%nr, MAX(1, 2048/na))
+      bounds(2, 2) = nr
+      ALLOCATE (rho(na, nr, nspin), tau(na, nr, nspin))
+      ALLOCATE (drho(4, na, nr, nspin), weights(na, nr), &
+                vxc(na, nr, nspin), vxg(3, na, nr, nspin), vtau(na, nr, nspin))
+      IF (use_laplacian) ALLOCATE (laplacian(na, nr, nspin), vlaplacian(na, nr, nspin))
+      CALL xc_rho_set_create(rho_set, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
+      CALL xc_rho_set_atom_update(rho_set, needs, nspin, bounds)
+      CALL xc_dset_create(derivatives, local_bounds=bounds)
+      energy = 0.0_dp
+      coefficient_derivative = twofold_real_type()
+      energy_sum = twofold_real_type()
+      DO side = 1, 2
+         sign = REAL(3 - 2*side, dp)
+         DO first = 1, grid%nr, nr
+            rho = 0.0_dp
+            tau = 0.0_dp
+            IF (ALLOCATED(laplacian)) laplacian = 0.0_dp
+            drho = 0.0_dp
+            weights = 0.0_dp
+            DO jr = 1, nr
+               ir = first + jr - 1
+               IF (ir <= grid%nr) THEN
+                  IF (grid%r(ir) > 0.0_dp) THEN
+                     NULLIFY (gradient, kinetic, laplacian_shell)
+                     gradient => drho(1:3, :, jr, :)
+                     IF (use_tau) kinetic => tau(:, jr, :)
+                     IF (ALLOCATED(laplacian)) laplacian_shell => laplacian(:, jr, :)
+                     CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), gradient, kinetic, &
+                                                 laplacian=laplacian_shell)
+                     IF (use_tau) THEN
+                        IF (PRESENT(core_kinetic)) THEN
+                           tau(:, jr, :) = tau(:, jr, :) + core_kinetic(ir, side)/REAL(nspin, dp)
+                        ELSE IF (grid%core_kinetic%available) THEN
+                           tau(:, jr, :) = tau(:, jr, :) + grid%core_kinetic%kinetic(ir, side)/REAL(nspin, dp)
+                        END IF
+                     END IF
+                     drho(4, :, jr, :) = SQRT(SUM(drho(1:3, :, jr, :)**2, DIM=1))
+                     weights(:, jr) = grid%wr(ir)*grid%wa
+                  END IF
+               END IF
+               CALL fill_rho_set(rho_set, lsd, nspin, needs, rho, drho, tau, na, jr, laplacian)
+            END DO
+            CALL xc_dset_zero_all(derivatives)
+            vxc = 0.0_dp
+            vxg = 0.0_dp
+            vtau = 0.0_dp
+            CALL vxc_of_r_new(functional, rho_set, derivatives, 1, needs, weights, lsd, na, nr, &
+                              batch_energy, vxc, vxg, vtau, vlaplacian=vlaplacian)
+            energy_sum = twofold_add(energy_sum, &
+                                     twofold_multiply(twofold_real_type(sign, 0.0_dp), twofold_real_type(batch_energy, 0.0_dp)))
+            CALL accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative, vlaplacian)
+         END DO
+      END DO
+      potential = 0.0_dp
+      energy = twofold_value(energy_sum)
+      DO spin = 1, nspin
+         DO q = 1, onecenter%nproj
+            DO p = 1, onecenter%nproj
+               pair = onecenter%pair_index(p, q)
+               potential_sum = component_dot(coefficient_derivative(pair, :, spin), onecenter%gaunt(p, q, :))
+               potential(p, q, spin) = twofold_value(potential_sum)
+               IF (PRESENT(potential_components)) potential_components(p, q, spin) = potential_sum
+            END DO
+         END DO
+      END DO
+      CALL xc_dset_release(derivatives)
+      CALL xc_rho_set_release(rho_set)
+      DEALLOCATE (vxc, vxg, vtau)
+   END SUBROUTINE paw_xc_evaluate
+
+! **************************************************************************************************
+!> \brief Transpose weighted density, Cartesian-gradient and kinetic covectors to projector coefficients.
+!>        The same fixed quadrature and AE-minus-PS signs apply to first potentials and their responses.
+!> \param grid Prepared PAW radial and angular fields.
+!> \param first First radial shell in this batch.
+!> \param side AE (1) or compensated PS (2).
+!> \param vxc Weighted density covectors.
+!> \param vxg Weighted Cartesian-gradient covectors.
+!> \param vtau Weighted kinetic-density covectors.
+!> \param use_tau Include the independent kinetic-density transpose.
+!> \param coefficient_derivative Accumulated spin-resolved projector-pair/harmonic covectors.
+!> \param vlaplacian Optional weighted density-Laplacian covectors.
+! **************************************************************************************************
+   SUBROUTINE accumulate_xc_shells(grid, first, side, vxc, vxg, vtau, use_tau, coefficient_derivative, vlaplacian)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      INTEGER, INTENT(IN)                                :: first, side
+      REAL(dp), INTENT(IN)                               :: vxc(:, :, :), vxg(:, :, :, :), &
+                                                            vtau(:, :, :)
+      LOGICAL, INTENT(IN)                                :: use_tau
+      TYPE(twofold_real_type), INTENT(INOUT) :: coefficient_derivative(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: vlaplacian(:, :, :)
+
+      INTEGER                                            :: angular, axis, ir, jr, l, lm, spin
+      TYPE(twofold_real_type)                            :: av, lv, radius, rv, sign, term, tv, &
+                                                            weighted(grid%na)
+
+      sign = twofold_real_type(REAL(3 - 2*side, dp), 0.0_dp)
+      DO jr = 1, MIN(SIZE(vxc, 2), grid%nval - first + 1)
+         ir = first + jr - 1
+         IF (grid%r(ir) == 0.0_dp) CYCLE
+         radius = twofold_real_type(grid%r(ir), 0.0_dp)
+         DO spin = 1, SIZE(vxc, 3)
+            DO lm = 1, SIZE(coefficient_derivative, 2)
+               l = INT(SQRT(REAL(lm - 1, dp)))
+               av = original_dot(grid%harmonics(:, lm), vxc(:, jr, spin))
+               rv = twofold_real_type()
+               DO axis = 1, 3
+              av = twofold_add(av, twofold_divide(original_dot(grid%angular_gradient(axis, :, lm), vxg(axis, :, jr, spin)), radius))
+                  DO angular = 1, grid%na
+      CALL twofold_product(grid%directions(axis, angular), vxg(axis, angular, jr, spin), weighted(angular)%hi, weighted(angular)%lo)
+                  END DO
+                  rv = twofold_add(rv, component_dot(weighted, grid%harmonics(:, lm)))
+               END DO
+               tv = twofold_real_type()
+               IF (use_tau) tv = original_dot(grid%harmonics(:, lm), vtau(:, jr, spin))
+               IF (PRESENT(vlaplacian)) lv = original_dot(grid%harmonics(:, lm), vlaplacian(:, jr, spin))
+               DO angular = 1, SIZE(coefficient_derivative, 1)
+                  term = twofold_add(twofold_multiply(av, twofold_real_type(grid%radial(ir, angular, l, side), 0.0_dp)), &
+                                     twofold_multiply(rv, twofold_real_type(grid%radial_gradient(ir, angular, l, side), 0.0_dp)))
+                  IF (use_tau) THEN
+                term = twofold_add(term, twofold_multiply(tv, twofold_real_type(grid%kinetic_radial(ir, angular, l, side), 0.0_dp)))
+                  END IF
+                  IF (PRESENT(vlaplacian)) THEN
+                     term = twofold_add(term, &
+                                        twofold_multiply(lv, twofold_real_type( &
+                                                         grid%radial_laplacian(ir, angular, l, side), 0.0_dp)))
+                  END IF
+    coefficient_derivative(angular, lm, spin) = twofold_add(coefficient_derivative(angular, lm, spin), twofold_multiply(sign, term))
+               END DO
+            END DO
+         END DO
+      END DO
+   END SUBROUTINE accumulate_xc_shells
+
+! **************************************************************************************************
+!> \brief Analytic fixed-geometry PAW XC response to a projector-density direction.
+!>        Both fields and their response retain the original AE and compensated-PS kernels.
+!>        The prescribed frozen core enters only the base fields.
+!> \param grid Prepared PAW radial and angular fields.
+!> \param onecenter Original projector-pair and harmonic mapping.
+!> \param xc_section Original functional and cutoffs.
+!> \param density Physical spin-resolved projector occupation.
+!> \param direction Matching signed projector-occupation response.
+!> \param potential_response Original one-center XC potential response.
+!> \param core_kinetic Optional original spin-summed AE/PS frozen-core kinetic density.
+!> \param density_components Optional retained occupation of the installed density.
+!> \param direction_components Optional matching retained occupation response.
+!> \param potential_components Optional retained covector before Gaussian congruence.
+!> \param comm Optional communicator sharing radial batches and receiving the complete response.
+! **************************************************************************************************
+   SUBROUTINE paw_xc_response(grid, onecenter, xc_section, density, direction, potential_response, core_kinetic, &
+                              density_components, direction_components, potential_components, comm)
+      TYPE(paw_xc_type), INTENT(IN)                      :: grid
+      TYPE(paw_onecenter_type), INTENT(IN)               :: onecenter
+      TYPE(section_vals_type), POINTER                   :: xc_section
+      REAL(dp), INTENT(IN)                               :: density(:, :, :), direction(:, :, :)
+      REAL(dp), INTENT(OUT)                              :: potential_response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: core_kinetic(:, :)
+      TYPE(twofold_real_type), INTENT(IN), OPTIONAL      :: density_components(:, :, :), &
+                                                            direction_components(:, :, :)
+      TYPE(twofold_real_type), INTENT(OUT), OPTIONAL     :: potential_components(:, :, :)
+      TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+
+      INTEGER :: bounds(2, 3), first, first_shell, ir, jr, last_shell, na, nblocks, ncoeff, nr, ns, &
+         p, pair, partition, partitions, q, side, spin
+      LOGICAL                                            :: assertion_valid, lsd, use_laplacian, use_tau
+      REAL(dp)                                           :: density_cutoff, gradient_cutoff
+      REAL(dp), ALLOCATABLE :: delta_drho(:, :, :, :), delta_rho(:, :, :), delta_tau(:, :, :), &
+         drho(:, :, :, :), partials(:, :), rho(:, :, :), tau(:, :, :), vlaplacian(:, :, :), weights(:, :)
+      REAL(dp), ALLOCATABLE, TARGET :: laplacian(:, :, :), delta_laplacian(:, :, :)
+      REAL(dp), POINTER :: laplacian_shell(:, :), delta_laplacian_shell(:, :)
+      REAL(dp), CONTIGUOUS, POINTER                      :: vn(:, :, :), vt(:, :, :)
+      REAL(dp), POINTER                                  :: vg(:, :, :, :)
+      TYPE(section_vals_type), POINTER                   :: functional
+      TYPE(twofold_real_type)                            :: potential_sum
+      TYPE(twofold_real_type), ALLOCATABLE :: coefficient_response(:, :, :), &
+         coefficients(:, :, :), direction_coefficients(:, :, :), partial_response(:, :, :)
+      TYPE(xc_derivative_set_type)                       :: derivatives
+      TYPE(xc_rho_cflags_type)                           :: needs
+      TYPE(xc_rho_set_type)                              :: base, delta
+
+      assertion_valid = grid%npair == onecenter%npair .AND. grid%lmax == onecenter%lmax
+      CPASSERT(assertion_valid)
+      CPASSERT(ALL(SHAPE(direction) == SHAPE(density)))
+      assertion_valid = ALL(SHAPE(potential_response) == SHAPE(density))
+      CPASSERT(assertion_valid)
+      IF (PRESENT(potential_components)) THEN
+         assertion_valid = ALL(SHAPE(potential_components) == SHAPE(density))
+         CPASSERT(assertion_valid)
+      END IF
+      ns = SIZE(density, 3); lsd = ns == 2; na = grid%na
+      CPASSERT(ns == 1 .OR. ns == 2)
+      functional => section_vals_get_subs_vals(xc_section, 'XC_FUNCTIONAL')
+      needs = xc_functionals_get_needs(functional, lsd=lsd, calc_potential=.TRUE.)
+      use_laplacian = needs%laplace_rho .OR. needs%laplace_rho_spin
+      IF (use_laplacian) THEN
+         CPASSERT(ALLOCATED(grid%radial_laplacian))
+      END IF
+      use_tau = needs%tau .OR. needs%tau_spin
+      IF (use_tau) THEN
+         IF (PRESENT(core_kinetic)) THEN
+            CPASSERT(ALL(SHAPE(core_kinetic) == [grid%nr, 2]))
+            CPASSERT(ALL(ieee_is_finite(core_kinetic)))
+            CPASSERT(ALL(core_kinetic >= 0.0_dp))
+         ELSE IF (.NOT. grid%core_kinetic%available .AND. ANY(grid%core /= 0.0_dp)) THEN
+            CALL cp_abort(__LOCATION__, TRIM(grid%core_kinetic%failure_reason))
+         END IF
+      END IF
+      ALLOCATE (coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), ns), &
+                direction_coefficients(onecenter%npair, SIZE(onecenter%gaunt, 3), ns), &
+                coefficient_response(onecenter%npair, SIZE(onecenter%gaunt, 3), ns))
+      CALL density_coefficients(onecenter, density, coefficients, density_components)
+      CALL density_coefficients(onecenter, direction, direction_coefficients, direction_components)
+      density_cutoff = section_get_rval(xc_section, 'DENSITY_CUTOFF')
+      gradient_cutoff = section_get_rval(xc_section, 'GRADIENT_CUTOFF')
+      nr = MIN(grid%nr, MAX(1, 2048/na)); bounds = 1; bounds(2, 1) = na; bounds(2, 2) = nr
+      nblocks = 1 + (grid%nval - 1)/nr
+      partition = 0
+      partitions = 1
+      IF (PRESENT(comm)) THEN
+         partitions = MIN(comm%num_pe, nblocks)
+         partition = MIN(comm%mepos, partitions)
+      END IF
+      first_shell = 1 + (partition*nblocks/partitions)*nr
+      last_shell = MIN(grid%nval, ((partition + 1)*nblocks/partitions)*nr)
+      ALLOCATE (rho(na, nr, ns), drho(4, na, nr, ns), tau(na, nr, ns), delta_rho(na, nr, ns), &
+                delta_drho(4, na, nr, ns), delta_tau(na, nr, ns), weights(na, nr), vn(na, nr, ns), &
+                vg(3, na, nr, ns), vt(na, nr, ns))
+      IF (use_laplacian) ALLOCATE (laplacian(na, nr, ns), delta_laplacian(na, nr, ns), vlaplacian(na, nr, ns))
+      NULLIFY (laplacian_shell, delta_laplacian_shell)
+      CALL xc_rho_set_create(base, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
+      CALL xc_rho_set_atom_update(base, needs, ns, bounds)
+      CALL xc_rho_set_create(delta, bounds, rho_cutoff=density_cutoff, drho_cutoff=gradient_cutoff, tau_cutoff=0.0_dp)
+      CALL xc_rho_set_atom_update(delta, needs, ns, bounds)
+      CALL xc_dset_create(derivatives, local_bounds=bounds)
+      coefficient_response = twofold_real_type()
+      DO side = 1, 2
+         ! The orbital density direction and its transpose have valence support.
+         ! Whole batches outside that support contribute no projector response.
+         DO first = first_shell, last_shell, nr
+            rho = 0.0_dp; drho = 0.0_dp; tau = 0.0_dp; weights = 0.0_dp
+            delta_rho = 0.0_dp; delta_drho = 0.0_dp; delta_tau = 0.0_dp
+            IF (use_laplacian) THEN
+               laplacian = 0.0_dp
+               delta_laplacian = 0.0_dp
+            END IF
+            DO jr = 1, nr
+               ir = first + jr - 1
+               IF (ir <= grid%nr) THEN
+                  IF (grid%r(ir) > 0.0_dp) THEN
+                     IF (use_laplacian) THEN
+                        laplacian_shell => laplacian(:, jr, :)
+                        delta_laplacian_shell => delta_laplacian(:, jr, :)
+                     END IF
+                     IF (use_tau) THEN
+                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :), &
+                                                    tau(:, jr, :), laplacian=laplacian_shell)
+                        CALL collocate_coefficients(grid, direction_coefficients, ir, side, delta_rho(:, jr, :), &
+                                                    delta_drho(1:3, :, jr, :), delta_tau(:, jr, :), include_core=.FALSE., &
+                                                    laplacian=delta_laplacian_shell)
+                        IF (PRESENT(core_kinetic)) THEN
+                           tau(:, jr, :) = tau(:, jr, :) + core_kinetic(ir, side)/REAL(ns, dp)
+                        ELSE IF (grid%core_kinetic%available) THEN
+                           tau(:, jr, :) = tau(:, jr, :) + grid%core_kinetic%kinetic(ir, side)/REAL(ns, dp)
+                        END IF
+                     ELSE
+                        CALL collocate_coefficients(grid, coefficients, ir, side, rho(:, jr, :), drho(1:3, :, jr, :), &
+                                                    laplacian=laplacian_shell)
+                        CALL collocate_coefficients(grid, direction_coefficients, ir, side, delta_rho(:, jr, :), &
+                                                    delta_drho(1:3, :, jr, :), include_core=.FALSE., &
+                                                    laplacian=delta_laplacian_shell)
+                     END IF
+                     drho(4, :, jr, :) = SQRT(SUM(drho(1:3, :, jr, :)**2, DIM=1))
+                     delta_drho(4, :, jr, :) = SQRT(SUM(delta_drho(1:3, :, jr, :)**2, DIM=1))
+                     weights(:, jr) = grid%wr(ir)*grid%wa
+                  END IF
+               END IF
+               CALL fill_rho_set(base, lsd, ns, needs, rho, drho, tau, na, jr, laplacian)
+               CALL fill_rho_set(delta, lsd, ns, needs, delta_rho, delta_drho, delta_tau, na, jr, delta_laplacian)
+            END DO
+            vn = 0.0_dp; vg = 0.0_dp; vt = 0.0_dp
+            CALL xc_2nd_deriv_of_r(base, delta, xc_section, derivatives, weights, vn, vg, vt, vlaplacian=vlaplacian)
+            CALL accumulate_xc_shells(grid, first, side, vn, vg, vt, use_tau, coefficient_response, vlaplacian)
+         END DO
+      END DO
+      IF (PRESENT(comm)) THEN
+         IF (comm%num_pe > 1) THEN
+            ncoeff = SIZE(coefficient_response)
+            ALLOCATE (partials(2*ncoeff, partitions), SOURCE=0.0_dp)
+            IF (partition < partitions) THEN
+               partials(:ncoeff, partition + 1) = RESHAPE(coefficient_response%hi, [ncoeff])
+               partials(ncoeff + 1:, partition + 1) = RESHAPE(coefficient_response%lo, [ncoeff])
+            END IF
+            ! Exchange disjoint partials, then combine both components in rank order.
+            CALL comm%sum(partials)
+            ALLOCATE (partial_response(SIZE(coefficient_response, 1), SIZE(coefficient_response, 2), ns))
+            coefficient_response = twofold_real_type()
+            DO partition = 1, partitions
+               partial_response%hi = RESHAPE(partials(:ncoeff, partition), SHAPE(partial_response))
+               partial_response%lo = RESHAPE(partials(ncoeff + 1:, partition), SHAPE(partial_response))
+               coefficient_response = twofold_add(coefficient_response, partial_response)
+            END DO
+         END IF
+      END IF
+      potential_response = 0.0_dp
+      DO spin = 1, ns
+         DO q = 1, onecenter%nproj
+            DO p = 1, onecenter%nproj
+               pair = onecenter%pair_index(p, q)
+               potential_sum = component_dot(coefficient_response(pair, :, spin), onecenter%gaunt(p, q, :))
+               potential_response(p, q, spin) = twofold_value(potential_sum)
+               IF (PRESENT(potential_components)) potential_components(p, q, spin) = potential_sum
+            END DO
+         END DO
+      END DO
+      CALL xc_dset_release(derivatives)
+      CALL xc_rho_set_release(base)
+      CALL xc_rho_set_release(delta)
+      DEALLOCATE (vn, vg, vt)
+   END SUBROUTINE paw_xc_response
+
+END MODULE paw_xc

@@ -85,6 +85,8 @@ MODULE lebedev
    TYPE(oh_grid), DIMENSION(nlg), TARGET :: lebedev_grid = oh_grid()
 
    REAL(KIND=dp), PARAMETER :: one = 1.0_dp, rs2 = one/SQRT(2.0_dp), rs3 = one/SQRT(3.0_dp), zero = 0.0_dp
+   REAL(dp), PARAMETER :: cartesian_identity(3, 3) = RESHAPE( &
+      [one, zero, zero, zero, one, zero, zero, zero, one], [3, 3])
    INTEGER  :: nlgp = -1
    LOGICAL  :: init_lebedev_grids_done = .FALSE.
 
@@ -94,8 +96,119 @@ MODULE lebedev
    PUBLIC :: lebedev_grid
 
    PUBLIC :: deallocate_lebedev_grids, get_number_of_lebedev_grid, init_lebedev_grids
+   PUBLIC :: lebedev_average_points, lebedev_rotational_average, lebedev_preserves_average
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Test whether an orthogonal operation permutes the averaged Lebedev rules.
+!> \param rotation Candidate Cartesian operation.
+!> \param group Rotations of the defining reference point group.
+!> \return Whether every rotated rule maps to an equivalent rule with the same weights.
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION lebedev_preserves_average(rotation, group) RESULT(allowed)
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3), group(:, :, :)
+
+      INTEGER                                            :: other, rule
+      REAL(dp)                                           :: mapped(3, 3)
+
+      allowed = .FALSE.
+      IF (MAXVAL(ABS(MATMUL(TRANSPOSE(rotation), rotation) - cartesian_identity)) > 1.e-12_dp) RETURN
+      DO rule = 1, SIZE(group, 3)
+         mapped = MATMUL(rotation, group(:, :, rule))
+         DO other = 1, SIZE(group, 3)
+            IF (cubic_rotation(MATMUL(TRANSPOSE(group(:, :, other)), mapped))) EXIT
+         END DO
+         IF (other > SIZE(group, 3)) RETURN
+      END DO
+      allowed = .TRUE.
+   END FUNCTION lebedev_preserves_average
+
+! **************************************************************************************************
+!> \brief Orthogonal operations with integer entries permute the base Lebedev rule.
+!> \param rotation Orthogonal Cartesian operation.
+!> \return Whether it is a signed permutation.
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION cubic_rotation(rotation) RESULT(cubic)
+      REAL(dp), INTENT(IN)                               :: rotation(3, 3)
+
+      cubic = MAXVAL(ABS(rotation - ANINT(rotation))) <= 1.e-12_dp
+   END FUNCTION cubic_rotation
+
+! **************************************************************************************************
+!> \brief Average a Lebedev rule over a finite Cartesian point group.
+!>        Rotations differing by a signed permutation on the right give identical node sets.
+!>        Evaluate one rule per distinct coset and keep the total weight normalized to one.
+!> \param rule Index of the initialized Lebedev rule.
+!> \param directions New Cartesian unit directions.
+!> \param weights New normalized weights.
+!> \param rotations Optional complete orthogonal group, with identity first.
+! **************************************************************************************************
+   SUBROUTINE lebedev_rotational_average(rule, directions, weights, rotations)
+      INTEGER, INTENT(IN)                                :: rule
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: directions(:, :), weights(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
+
+      CPASSERT(ASSOCIATED(lebedev_grid(rule)%r))
+      CALL lebedev_average_points(lebedev_grid(rule)%r, lebedev_grid(rule)%w, directions, weights, rotations)
+   END SUBROUTINE lebedev_rotational_average
+
+! **************************************************************************************************
+!> \brief Average a borrowed Lebedev rule without changing its total weight.
+!> \param original_directions Cartesian unit directions.
+!> \param original_weights Weights of the original rule.
+!> \param directions New Cartesian unit directions.
+!> \param weights New weights in the original normalization.
+!> \param rotations Optional orthogonal reference group with identity first.
+! **************************************************************************************************
+   SUBROUTINE lebedev_average_points(original_directions, original_weights, directions, weights, rotations)
+      REAL(dp), INTENT(IN)                               :: original_directions(:, :), original_weights(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: directions(:, :), weights(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: rotations(:, :, :)
+
+      REAL(dp), PARAMETER                                :: tolerance = 1.e-12_dp
+
+      INTEGER                                            :: first, last, n, operation, other, unique
+      INTEGER, ALLOCATABLE                               :: representative(:)
+      REAL(dp)                                           :: relative(3, 3)
+
+      CPASSERT(SIZE(original_directions, 1) == 3)
+      CPASSERT(SIZE(original_directions, 2) == SIZE(original_weights))
+      IF (.NOT. PRESENT(rotations)) THEN
+         ALLOCATE (directions, SOURCE=original_directions)
+         ALLOCATE (weights, SOURCE=original_weights)
+         RETURN
+      END IF
+      CPASSERT(SIZE(rotations, 3) > 0)
+      CPASSERT(ALL(SHAPE(rotations(:, :, 1)) == 3))
+      CPASSERT(MAXVAL(ABS(rotations(:, :, 1) - cartesian_identity)) <= tolerance)
+      ALLOCATE (representative(SIZE(rotations, 3)))
+      representative(1) = 1
+      unique = 1
+      DO operation = 2, SIZE(rotations, 3)
+         ASSOCIATE (rotation => rotations(:, :, operation))
+            relative = MATMUL(TRANSPOSE(rotation), rotation) - cartesian_identity
+            CPASSERT(MAXVAL(ABS(relative)) <= tolerance)
+            DO other = 1, unique
+               relative = MATMUL(TRANSPOSE(rotations(:, :, representative(other))), rotation)
+               IF (cubic_rotation(relative)) EXIT
+            END DO
+         END ASSOCIATE
+         IF (other <= unique) CYCLE
+         unique = unique + 1
+         representative(unique) = operation
+      END DO
+      n = SIZE(original_weights)
+      ALLOCATE (directions(3, n*unique), weights(n*unique))
+      directions(:, :n) = original_directions
+      weights(:n) = original_weights/REAL(unique, dp)
+      DO other = 2, unique
+         first = 1 + n*(other - 1)
+         last = n*other
+         directions(:, first:last) = MATMUL(rotations(:, :, representative(other)), original_directions)
+         weights(first:last) = weights(:n)
+      END DO
+   END SUBROUTINE lebedev_average_points
 
 ! **************************************************************************************************
 !> \brief  Get the number of the Lebedev grid, which has the requested
