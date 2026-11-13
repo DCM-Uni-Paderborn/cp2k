@@ -1122,6 +1122,11 @@ CONTAINS
          END DO
          DEALLOCATE (unit)
       END DO
+      ! Integrating the real charge against one defines a Hermitian AO metric.
+      ! The smooth and one-center contributions can cancel large terms.
+      DO k = 1, SIZE(map%weights)
+         map%metric(:, :, k) = 0.5_dp*(map%metric(:, :, k) + CONJG(TRANSPOSE(map%metric(:, :, k))))
+      END DO
       grid_shape = 0
       IF (map%grid%grid_span == FULLSPACE .AND. .NOT. map%grid%spherical) grid_shape = map%grid%npts
       CALL upf_inverse_coulomb_prepare(map%centers, map%cell, map%grid%g, map%grid%vol, map%maps, &
