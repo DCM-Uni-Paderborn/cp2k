@@ -22,7 +22,8 @@ MODULE upf_inverse
    USE upf_radial_fields,               ONLY: upf_radial_fields_evaluate,&
                                               upf_radial_fields_init,&
                                               upf_radial_fields_type
-   USE upf_types,                       ONLY: upf_radial_weights
+   USE upf_types,                       ONLY: upf_partial_waves_type,&
+                                              upf_radial_weights
 #include "../base/base_uses.f90"
 
    IMPLICIT NONE
@@ -54,6 +55,7 @@ MODULE upf_inverse
    PUBLIC :: upf_inverse_kinetic_type, upf_inverse_kinetic_init, upf_inverse_kinetic_evaluate
    PUBLIC :: upf_inverse_atomic_type, upf_inverse_atomic_init, upf_inverse_kinetic_matrix
    PUBLIC :: upf_inverse_atomic_residual
+   PUBLIC :: upf_inverse_atomic_difference_init
 
 CONTAINS
 
@@ -62,37 +64,72 @@ CONTAINS
 !>        Both factors of a nonlocal term use these transformed projectors. Original Q and
 !>        norm data remain independent and are not replaced by a partial-wave identity here.
 !>        The hard reference may be an AE or a harder NC wave, as supplied by its generator.
-!> \param pot Original scalar NC/USPP and compatible projector-indexed hard/soft reference pairs.
+!> \param pot Scalar UPF dataset and compatible projector-indexed hard/soft reference pairs.
 !> \param degree Largest Gaussian Cartesian degree plus derivatives or moments.
 !> \param atomic New owned one-center inverse, hard projectors and kinetic correction.
 !> \param info Zero on success, otherwise the atomic inverse-factorization status.
-!> \param direct Use original projectors and soft orbitals without reconstruction.
+!> \param direct Use the original USPP projectors without requiring reference-wave pairs.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_atomic_init(pot, degree, atomic, info, direct)
-      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
       INTEGER, INTENT(IN)                                :: degree
       TYPE(upf_inverse_atomic_type), INTENT(OUT)         :: atomic
       INTEGER, INTENT(OUT)                               :: info
       LOGICAL, INTENT(IN), OPTIONAL                      :: direct
 
+      CALL prepare_atomic(pot, degree, atomic, info, radial_only=.FALSE., direct=direct)
+   END SUBROUTINE upf_inverse_atomic_init
+
+! **************************************************************************************************
+!> \brief Prepare the local difference integrals without factorizing a local inverse.
+!> \param pot Original scalar USPP or PAW dataset.
+!> \param degree Largest Gaussian Cartesian degree including derivatives.
+!> \param atomic Difference projectors and their radial matrices.
+! **************************************************************************************************
+   SUBROUTINE upf_inverse_atomic_difference_init(pot, degree, atomic)
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
+      INTEGER, INTENT(IN)                                :: degree
+      TYPE(upf_inverse_atomic_type), INTENT(OUT)         :: atomic
+
+      INTEGER                                            :: info
+
+      CALL prepare_atomic(pot, degree, atomic, info, radial_only=.TRUE.)
+      CPASSERT(info == 0)
+   END SUBROUTINE upf_inverse_atomic_difference_init
+
+! **************************************************************************************************
+!> \brief Common radial integrals for the local and coupled representations.
+!> \param pot ...
+!> \param degree ...
+!> \param atomic ...
+!> \param info ...
+!> \param radial_only Skip the local factorization and the associated hard projectors.
+!> \param direct ...
+! **************************************************************************************************
+   SUBROUTINE prepare_atomic(pot, degree, atomic, info, radial_only, direct)
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
+      INTEGER, INTENT(IN)                                :: degree
+      TYPE(upf_inverse_atomic_type), INTENT(OUT)         :: atomic
+      INTEGER, INTENT(OUT)                               :: info
+      LOGICAL, INTENT(IN)                                :: radial_only
+      LOGICAL, INTENT(IN), OPTIONAL                      :: direct
+
       COMPLEX(dp), ALLOCATABLE                           :: coupling(:, :), identity(:, :), &
                                                             rotation(:, :)
-      INTEGER                                            :: i, j, nb, p, q
+      INTEGER                                            :: i, j, nb, np, p, q
       REAL(dp)                                           :: norm_difference
       REAL(dp), ALLOCATABLE                              :: delta_kinetic(:, :), &
                                                             delta_overlap(:, :), &
                                                             radial_kinetic(:, :), &
-                                                            radial_weights(:), weights(:)
+                                                            radial_weights(:)
       TYPE(atom_upfpot_type)                             :: hard, radial
       TYPE(upf_inverse_kinetic_type)                     :: kinetic
+
+      CLASS(upf_partial_waves_type), POINTER             :: waves
 
       nb = pot%number_of_proj
       CPASSERT(nb > 0)
       info = 0
-      IF (pot%is_paw .OR. TRIM(pot%pseudo_type) == "PAW") THEN
-         CPABORT("Atom-local inverse PAW fixed-term accounting is not implemented")
-      END IF
-      CPASSERT(pot%is_ultrasoft)
       IF (PRESENT(direct)) THEN
          IF (direct) THEN
             CALL upf_projector_init(pot, degree, atomic%hard)
@@ -100,60 +137,77 @@ CONTAINS
             RETURN
          END IF
       END IF
+      IF (TRIM(pot%pseudo_type) == "NC" .AND. .NOT. pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
+         CALL upf_projector_init(pot, degree, atomic%hard)
+         CALL compact_projector(atomic%hard)
+         ALLOCATE (atomic%kinetic(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
+         ALLOCATE (atomic%metric(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
+         ALLOCATE (atomic%wave_overlap(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
+         ALLOCATE (atomic%difference_kinetic(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
+         ALLOCATE (atomic%difference_overlap(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
+         radial%number_of_proj = nb
+         ALLOCATE (radial%r, SOURCE=pot%r)
+         ALLOCATE (radial%rab, SOURCE=pot%rab)
+         ALLOCATE (radial%lbeta, SOURCE=pot%lbeta)
+         ALLOCATE (radial%beta(SIZE(pot%r), nb), radial%dion(nb, nb))
+         radial%beta = 0.0_dp
+         radial%dion = 0.0_dp
+         CALL upf_projector_init(radial, degree, atomic%difference)
+         CALL compact_projector(atomic%difference)
+         ALLOCATE (coupling(nb, nb), SOURCE=CMPLX(0.0_dp, 0.0_dp, dp))
+         CALL upf_inverse_init(coupling, atomic%inverse, info)
+         RETURN
+      END IF
+      waves => inverse_reference_waves(pot)
       CALL inverse_radial_data(pot, radial)
       CALL upf_projector_init(radial, degree, atomic%difference)
       CALL compact_projector(atomic%difference)
       CALL upf_inverse_kinetic_init(pot, kinetic)
       CALL upf_inverse_kinetic_matrix(pot, kinetic, radial_kinetic, delta_kinetic, delta_overlap)
       ALLOCATE (radial_weights, SOURCE=upf_radial_weights(pot))
-      ALLOCATE (weights, SOURCE=radial_weights*pot%r**2)
-      ALLOCATE (coupling(nb, nb), identity(nb, nb), rotation(nb, nb))
-      coupling = CMPLX(0.0_dp, 0.0_dp, dp)
-      identity = CMPLX(0.0_dp, 0.0_dp, dp)
-      DO j = 1, nb
-         identity(j, j) = CMPLX(1.0_dp, 0.0_dp, dp)
-         DO i = 1, nb
-            IF (pot%lbeta(i) /= pot%lbeta(j)) CYCLE
-            coupling(i, j) = CMPLX(SUM(weights*pot%beta(:, i)*radial%beta(:, j)), 0.0_dp, dp)
+      IF (.NOT. radial_only) THEN
+         ALLOCATE (coupling(nb, nb), identity(nb, nb), rotation(nb, nb))
+         coupling = inverse_radial_coupling(pot, radial, radial_weights)
+         identity = CMPLX(0.0_dp, 0.0_dp, dp)
+         DO j = 1, nb
+            identity(j, j) = CMPLX(1.0_dp, 0.0_dp, dp)
          END DO
-      END DO
-      CALL upf_inverse_init(coupling, atomic%inverse, info)
-      IF (info /= 0) RETURN
-      CALL upf_inverse_project(atomic%inverse, identity, rotation)
-      ! Bra_i = sum_j K^-1_ij beta_j^*. The stored real ket uses the transpose.
-      hard%number_of_proj = nb
-      hard%has_so = pot%has_so
-      ALLOCATE (hard%r, SOURCE=pot%r)
-      ALLOCATE (hard%rab, SOURCE=pot%rab)
-      ALLOCATE (hard%lbeta, SOURCE=pot%lbeta)
-      ALLOCATE (hard%beta, SOURCE=MATMUL(pot%beta, REAL(TRANSPOSE(rotation), dp)))
-      ALLOCATE (hard%dion, SOURCE=pot%dion - radial_kinetic)
-      CALL upf_projector_init(hard, degree, atomic%hard)
-      CALL compact_projector(atomic%hard)
-      ALLOCATE (atomic%kinetic(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
-      ALLOCATE (atomic%metric(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
-      ALLOCATE (atomic%wave_overlap(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
-      ALLOCATE (atomic%difference_kinetic(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
-      ALLOCATE (atomic%difference_overlap(atomic%hard%nproj, atomic%hard%nproj), SOURCE=0.0_dp)
+         CALL upf_inverse_init(coupling, atomic%inverse, info)
+         IF (info /= 0) RETURN
+         CALL upf_inverse_project(atomic%inverse, identity, rotation)
+         ! Bra_i = sum_j K^-1_ij beta_j^*. The stored real ket uses the transpose.
+         hard%number_of_proj = nb
+         hard%has_so = pot%has_so
+         ALLOCATE (hard%r, SOURCE=pot%r)
+         ALLOCATE (hard%rab, SOURCE=pot%rab)
+         ALLOCATE (hard%lbeta, SOURCE=pot%lbeta)
+         ALLOCATE (hard%beta, SOURCE=MATMUL(pot%beta, REAL(TRANSPOSE(rotation), dp)))
+         ALLOCATE (hard%dion, SOURCE=pot%dion - radial_kinetic)
+         CALL upf_projector_init(hard, degree, atomic%hard)
+         CALL compact_projector(atomic%hard)
+      END IF
+      np = atomic%difference%nproj
+      ALLOCATE (atomic%kinetic(np, np), atomic%metric(np, np), atomic%wave_overlap(np, np), &
+                atomic%difference_kinetic(np, np), atomic%difference_overlap(np, np), SOURCE=0.0_dp)
       CPASSERT(ALLOCATED(pot%qij))
       CPASSERT(ALL(SHAPE(pot%qij) == [nb, nb]))
-      DO q = 1, atomic%hard%nproj
-         j = atomic%hard%radial_index(q)
-         DO p = 1, atomic%hard%nproj
-            IF (atomic%hard%angular_index(p) /= atomic%hard%angular_index(q)) CYCLE
-            i = atomic%hard%radial_index(p)
+      DO q = 1, np
+         j = atomic%difference%radial_index(q)
+         DO p = 1, np
+            IF (atomic%difference%angular_index(p) /= atomic%difference%angular_index(q)) CYCLE
+            i = atomic%difference%radial_index(p)
             atomic%kinetic(p, q) = radial_kinetic(i, j)
             atomic%difference_kinetic(p, q) = delta_kinetic(i, j)
             atomic%difference_overlap(p, q) = delta_overlap(i, j)
             ! The Gaussian norm already contains the hard-wave norm within local closure.
             norm_difference = SUM(radial_weights*( &
-                                  pot%partial_waves%ae_wfc(:, i)*pot%partial_waves%ae_wfc(:, j) - &
-                                  pot%partial_waves%ps_wfc(:, i)*pot%partial_waves%ps_wfc(:, j)))
+                                  waves%ae_wfc(:, i)*waves%ae_wfc(:, j) - &
+                                  waves%ps_wfc(:, i)*waves%ps_wfc(:, j)))
             atomic%metric(p, q) = pot%qij(i, j) - norm_difference
             atomic%wave_overlap(p, q) = norm_difference
          END DO
       END DO
-   END SUBROUTINE upf_inverse_atomic_init
+   END SUBROUTINE prepare_atomic
 
 ! **************************************************************************************************
 !> \brief Drop exactly zero trailing quadrature rows without changing radial weights or support.
@@ -298,20 +352,23 @@ CONTAINS
 !> \param kinetic New radial caches in the original magnetic-projector order.
 ! **************************************************************************************************
    SUBROUTINE upf_inverse_kinetic_init(pot, kinetic)
-      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
       TYPE(upf_inverse_kinetic_type), INTENT(OUT)        :: kinetic
 
       INTEGER                                            :: i
       TYPE(atom_upfpot_type)                             :: radial
 
+      CLASS(upf_partial_waves_type), POINTER             :: waves
+
+      waves => inverse_reference_waves(pot)
       CALL inverse_radial_data(pot, radial)
       CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, kinetic%delta)
       DO i = 1, pot%number_of_proj
          IF (pot%r(1) == 0.0_dp) THEN
-            radial%beta(2:, i) = pot%partial_waves%ps_wfc(2:, i)/pot%r(2:)
+            radial%beta(2:, i) = waves%ps_wfc(2:, i)/pot%r(2:)
             radial%beta(1, i) = 0.0_dp
          ELSE
-            radial%beta(:, i) = pot%partial_waves%ps_wfc(:, i)/pot%r
+            radial%beta(:, i) = waves%ps_wfc(:, i)/pot%r
          END IF
       END DO
       CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, kinetic%pseudo, finite_table=.TRUE.)
@@ -397,16 +454,21 @@ CONTAINS
 !> \param pot Original UPF data, with complete full waves for reconstructing channels.
 !> \param beta Original projector fields, without weights.
 !> \param delta Original reconstruction differences, without weights.
-!> \param direct Use original projectors and soft orbitals without reconstruction.
+!> \param direct Use zero reconstruction while retaining the original projector fields.
+!> \param home_coupling Optional same-center beta-Delta integral in projector/harmonic order.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_fields_init(pot, beta, delta, direct)
+   SUBROUTINE upf_inverse_fields_init(pot, beta, delta, direct, home_coupling)
       TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
       TYPE(upf_radial_fields_type), INTENT(OUT)          :: beta, delta
       LOGICAL, INTENT(IN), OPTIONAL                      :: direct
+      REAL(dp), ALLOCATABLE, INTENT(OUT), OPTIONAL        :: home_coupling(:, :)
 
+      INTEGER                                            :: p, q
+      REAL(dp), ALLOCATABLE                              :: radial_coupling(:, :)
       TYPE(atom_upfpot_type)                             :: radial
 
       CALL upf_radial_fields_init(pot%r, pot%beta, pot%lbeta, beta)
+      IF (PRESENT(home_coupling)) ALLOCATE (home_coupling(beta%nproj, beta%nproj), SOURCE=0.0_dp)
       IF (PRESENT(direct)) THEN
          IF (direct) THEN
             ALLOCATE (radial%beta(SIZE(pot%r), SIZE(pot%lbeta)), SOURCE=0.0_dp)
@@ -422,8 +484,42 @@ CONTAINS
       ELSE
          CALL inverse_radial_data(pot, radial)
          CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, delta)
+         IF (PRESENT(home_coupling)) THEN
+            radial_coupling = inverse_radial_coupling(pot, radial, upf_radial_weights(pot))
+            DO q = 1, delta%nproj
+               DO p = 1, beta%nproj
+                  IF (beta%angular_index(p) /= delta%angular_index(q)) CYCLE
+                  home_coupling(p, q) = radial_coupling(beta%radial_index(p), delta%radial_index(q))
+               END DO
+            END DO
+         END IF
       END IF
    END SUBROUTINE upf_inverse_fields_init
+
+! **************************************************************************************************
+!> \brief Integrate the same-center beta-Delta block on the original radial mesh.
+!> \param pot Original UPF projectors.
+!> \param radial Reconstruction differences on the same mesh.
+!> \param radial_weights Original UPF radial integration weights.
+!> \return Coupling in the original radial channel order.
+! **************************************************************************************************
+   FUNCTION inverse_radial_coupling(pot, radial, radial_weights) RESULT(coupling)
+      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot, radial
+      REAL(dp), INTENT(IN)                               :: radial_weights(:)
+      REAL(dp)                                           :: coupling(pot%number_of_proj, pot%number_of_proj)
+
+      INTEGER                                            :: i, j
+      REAL(dp)                                           :: weights(SIZE(radial_weights))
+
+      weights = radial_weights*pot%r**2
+      coupling = 0.0_dp
+      DO j = 1, pot%number_of_proj
+         DO i = 1, pot%number_of_proj
+            IF (pot%lbeta(i) /= pot%lbeta(j)) CYCLE
+            coupling(i, j) = SUM(weights*pot%beta(:, i)*radial%beta(:, j))
+         END DO
+      END DO
+   END FUNCTION inverse_radial_coupling
 
 ! **************************************************************************************************
 !> \brief Assemble original reconstruction differences for overlap and point-field caches.
@@ -431,32 +527,16 @@ CONTAINS
 !> \param radial Unweighted original differences in the native radial-channel order.
 ! **************************************************************************************************
    SUBROUTINE inverse_radial_data(pot, radial)
-      TYPE(atom_upfpot_type), INTENT(IN)                 :: pot
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
       TYPE(atom_upfpot_type), INTENT(OUT)                :: radial
 
       INTEGER                                            :: i, n, nb
 
-      IF (pot%has_so) THEN
-         CPABORT("Spin-orbit UPF inverse fields are not supported")
-      END IF
-      IF (.NOT. ALLOCATED(pot%partial_waves)) THEN
-         CPABORT("Inverse UPF requires original AE/PS full waves for every projector")
-      END IF
-      CPASSERT(ALLOCATED(pot%r) .AND. ALLOCATED(pot%rab))
-      CPASSERT(ALLOCATED(pot%lbeta))
-      IF (.NOT. (ALLOCATED(pot%partial_waves%ae_wfc) .AND. ALLOCATED(pot%partial_waves%ps_wfc))) THEN
-         CPABORT("Incomplete original AE/PS full waves")
-      END IF
-      CPASSERT(ALLOCATED(pot%partial_waves%angular_momenta))
+      CLASS(upf_partial_waves_type), POINTER             :: waves
+
+      waves => inverse_reference_waves(pot)
       n = SIZE(pot%r)
       nb = pot%number_of_proj
-      CPASSERT(n >= 3 .AND. nb > 0 .AND. ALL(pot%r >= 0.0_dp))
-      CPASSERT(SIZE(pot%rab) == n .AND. SIZE(pot%lbeta) == nb)
-      CPASSERT(ALL(SHAPE(pot%partial_waves%ae_wfc) == [n, nb]))
-      CPASSERT(ALL(SHAPE(pot%partial_waves%ps_wfc) == [n, nb]))
-      CPASSERT(ALL(pot%partial_waves%angular_momenta == pot%lbeta))
-      CPASSERT(ALL(ieee_is_finite(pot%partial_waves%ae_wfc)))
-      CPASSERT(ALL(ieee_is_finite(pot%partial_waves%ps_wfc)))
       radial%number_of_proj = nb
       radial%has_so = pot%has_so
       ALLOCATE (radial%r, SOURCE=pot%r)
@@ -465,7 +545,7 @@ CONTAINS
       ALLOCATE (radial%beta(n, nb), radial%dion(nb, nb))
       radial%dion(:, :) = 0.0_dp
       DO i = 1, nb
-         radial%beta(:, i) = pot%partial_waves%ae_wfc(:, i) - pot%partial_waves%ps_wfc(:, i)
+         radial%beta(:, i) = waves%ae_wfc(:, i) - waves%ps_wfc(:, i)
          IF (pot%r(1) == 0.0_dp) THEN
             radial%beta(2:, i) = radial%beta(2:, i)/pot%r(2:)
             ! Zero quadrature weight at r=0; this storage does not define a field continuation.
@@ -475,6 +555,54 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE inverse_radial_data
+
+! **************************************************************************************************
+!> \brief Select compatible original reference pairs without copying or changing their ownership.
+!>        PAW identity selects the PAW record even when its header also carries an ultrasoft flag.
+!> \param pot Original scalar UPF dataset, retained while the returned pointer is used.
+!> \return Original projector-indexed AE/PS wave record.
+! **************************************************************************************************
+   FUNCTION inverse_reference_waves(pot) RESULT(waves)
+      TYPE(atom_upfpot_type), INTENT(IN), TARGET         :: pot
+
+      CLASS(upf_partial_waves_type), POINTER             :: waves
+
+      CHARACTER(LEN=*), PARAMETER :: missing_uspp_waves = &
+         "USPP inversion and valence kinetic augmentation require "// &
+         "projector-indexed AE/PS pairs in PP_FULL_WFC. Supply a prepared UPF. "// &
+         "For LDA or GGA, USPP_METHOD DIRECT accepts the original UPF."
+      INTEGER                                            :: n, nb
+
+      IF (pot%has_so) THEN
+         CPABORT("Spin-orbit UPF inverse fields are not supported")
+      END IF
+      IF (pot%is_paw .OR. TRIM(pot%pseudo_type) == "PAW") THEN
+         IF (.NOT. ALLOCATED(pot%paw)) THEN
+            CPABORT("PAW requires AE/PS reference-wave pairs for every projector")
+         END IF
+         waves => pot%paw
+      ELSE
+         IF (.NOT. ALLOCATED(pot%partial_waves)) THEN
+            CPABORT(missing_uspp_waves)
+         END IF
+         waves => pot%partial_waves
+      END IF
+      CPASSERT(ALLOCATED(pot%r) .AND. ALLOCATED(pot%rab))
+      CPASSERT(ALLOCATED(pot%lbeta))
+      IF (.NOT. (ALLOCATED(waves%ae_wfc) .AND. ALLOCATED(waves%ps_wfc))) THEN
+         CPABORT("Incomplete original AE/PS full waves")
+      END IF
+      CPASSERT(ALLOCATED(waves%angular_momenta))
+      n = SIZE(pot%r)
+      nb = pot%number_of_proj
+      CPASSERT(n >= 3 .AND. nb > 0 .AND. ALL(pot%r >= 0.0_dp))
+      CPASSERT(SIZE(pot%rab) == n .AND. SIZE(pot%lbeta) == nb)
+      CPASSERT(ALL(SHAPE(waves%ae_wfc) == [n, nb]))
+      CPASSERT(ALL(SHAPE(waves%ps_wfc) == [n, nb]))
+      CPASSERT(ALL(waves%angular_momenta == pot%lbeta))
+      CPASSERT(ALL(ieee_is_finite(waves%ae_wfc)))
+      CPASSERT(ALL(ieee_is_finite(waves%ps_wfc)))
+   END FUNCTION inverse_reference_waves
 
 ! **************************************************************************************************
 !> \brief Factor K with original projector normalization and all supplied intercenter blocks.
