@@ -44,6 +44,15 @@
       &XC_FUNCTIONAL PBE
       &END XC_FUNCTIONAL
     &END XC
+    &PRINT
+      &BAND_STRUCTURE
+        &KPOINT_SET
+          SPECIAL_POINT -1/3 0 0
+          SPECIAL_POINT 1/3 0 0
+          NPOINTS 2
+        &END KPOINT_SET
+      &END BAND_STRUCTURE
+    &END PRINT
   &END DFT
   &PRINT
     &FORCES ON

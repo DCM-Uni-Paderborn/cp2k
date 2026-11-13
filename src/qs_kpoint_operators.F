@@ -274,17 +274,22 @@ CONTAINS
 !> \brief Transfer complete operators between k-point groups on a common communicator.
 !> \param source_mesh ...
 !> \param target_mesh ...
-!> \param source_indices SCF k-point index for each target k point
+!> \param source_indices SCF index for each target k point, negative for time reversal
 !> \param rsmat operator identity shared by both meshes
 !> \param slot ...
+!> \param physical_indices Optional nonzero indices of explicit symmetry partners
+!> \param physical Optional complete operators indexed by physical point and source row
 ! **************************************************************************************************
-   SUBROUTINE kpoint_operator_copy_native(source_mesh, target_mesh, source_indices, rsmat, slot)
+   SUBROUTINE kpoint_operator_copy_native(source_mesh, target_mesh, source_indices, rsmat, slot, &
+                                          physical_indices, physical)
       TYPE(kpoint_type), POINTER                         :: source_mesh, target_mesh
       INTEGER, INTENT(IN)                                :: source_indices(:)
       TYPE(dbcsr_p_type), POINTER                        :: rsmat(:, :)
       INTEGER, INTENT(IN)                                :: slot
+      INTEGER, INTENT(IN), OPTIONAL                      :: physical_indices(:)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: physical(:, :, :, :)
 
-      INTEGER                                            :: dst, ik, row, src
+      INTEGER                                            :: col, dst, ik, local_row, point, row, src
       TYPE(cp_cfm_type)                                  :: destination, source
       TYPE(cp_cfm_type), ALLOCATABLE                     :: matrices(:, :)
       TYPE(cp_fm_struct_type), POINTER                   :: layout
@@ -292,6 +297,11 @@ CONTAINS
       CPASSERT(ASSOCIATED(source_mesh%para_env, target_mesh%para_env))
       CPASSERT(SIZE(source_indices) == target_mesh%nkp)
       CPASSERT(kpoint_operator_native_match(source_mesh, rsmat) == slot)
+      CPASSERT(PRESENT(physical_indices) .EQV. PRESENT(physical))
+      IF (PRESENT(physical_indices)) THEN
+         CPASSERT(SIZE(physical_indices) == SIZE(source_indices))
+         CPASSERT(SIZE(physical, 4) == SIZE(rsmat, 1))
+      END IF
       ALLOCATE (matrices(SIZE(target_mesh%kp_env), SIZE(rsmat, 1)))
       DO row = 1, SIZE(matrices, 2)
          DO dst = 1, SIZE(matrices, 1)
@@ -299,8 +309,24 @@ CONTAINS
             CALL cp_cfm_create(matrices(dst, row), layout)
          END DO
          DO ik = 1, SIZE(source_indices)
-            src = source_indices(ik) - source_mesh%kp_range(1) + 1
+            src = ABS(source_indices(ik)) - source_mesh%kp_range(1) + 1
             dst = ik - target_mesh%kp_range(1) + 1
+            IF (PRESENT(physical_indices)) THEN
+               point = physical_indices(ik)
+               IF (point > 0) THEN
+                  IF (dst > 0 .AND. dst <= SIZE(matrices, 1)) THEN
+                     layout => matrices(dst, row)%matrix_struct
+                     matrices(dst, row)%local_data = z_zero
+                     DO col = 1, SIZE(layout%col_indices)
+                        DO local_row = 1, SIZE(layout%row_indices)
+                           matrices(dst, row)%local_data(local_row, col) = &
+                              physical(layout%row_indices(local_row), layout%col_indices(col), point, row)
+                        END DO
+                     END DO
+                  END IF
+                  CYCLE
+               END IF
+            END IF
             source = cp_cfm_type()
             destination = cp_cfm_type()
             IF (src > 0 .AND. src <= SIZE(source_mesh%kp_env)) THEN
@@ -308,6 +334,9 @@ CONTAINS
             END IF
             IF (dst > 0 .AND. dst <= SIZE(matrices, 1)) destination = matrices(dst, row)
             CALL cp_cfm_copy_general(source, destination, source_mesh%para_env)
+            IF (source_indices(ik) < 0 .AND. ASSOCIATED(destination%local_data)) THEN
+               destination%local_data(:, :) = CONJG(destination%local_data)
+            END IF
          END DO
       END DO
       CALL kpoint_operator_set_native(target_mesh, rsmat, slot, matrices)

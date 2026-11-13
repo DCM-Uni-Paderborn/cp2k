@@ -36,6 +36,7 @@ MODULE qs_band_structure
                                               kpoint_create,&
                                               kpoint_env_type,&
                                               kpoint_release,&
+                                              kpoint_star_type,&
                                               kpoint_sym_create,&
                                               kpoint_type
    USE machine,                         ONLY: m_walltime
@@ -50,6 +51,7 @@ MODULE qs_band_structure
    USE qs_kpoint_operators,             ONLY: kpoint_operator_copy_native,&
                                               kpoint_slot_ks,&
                                               kpoint_slot_s
+   USE qs_ks_types,                     ONLY: get_ks_env
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               set_mo_set
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
@@ -57,6 +59,7 @@ MODULE qs_band_structure
                                               do_general_diag_kp
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE scf_control_types,               ONLY: scf_control_type
    USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
@@ -327,8 +330,9 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(3), INTENT(IN), OPTIONAL  :: kp_shift
       LOGICAL, INTENT(IN), OPTIONAL                      :: gamma_centered
 
-      INTEGER                                            :: ik
-      INTEGER, ALLOCATABLE                               :: source_indices(:)
+      COMPLEX(dp), POINTER                               :: physical_metric(:, :, :, :)
+      INTEGER                                            :: ik, nao, nphysical
+      INTEGER, ALLOCATABLE                               :: physical_indices(:), source_indices(:)
       LOGICAL                                            :: diis_step, original_upf
       REAL(dp), POINTER                                  :: potential(:, :)
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -339,6 +343,7 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(qs_upf_inverse_scf_type), POINTER             :: upf
       TYPE(scf_control_type), POINTER                    :: scf_control
 
       CALL calculate_kpoints_for_bs(kpoint, scheme, group_size_ext, mp_grid, kpgeneral, &
@@ -349,7 +354,8 @@ CONTAINS
                       scf_env=scf_env, scf_control=scf_control, kpoints=scf_kpoints)
       IF (original_upf) THEN
          CPASSERT(ASSOCIATED(scf_kpoints))
-         CALL match_scf_kpoints(scf_kpoints, kpoint, source_indices)
+         CALL get_ks_env(qs_env%ks_env, upf_inverse=upf)
+         CALL match_scf_kpoints(scf_kpoints, kpoint, upf%bloch%star, source_indices, physical_indices)
       END IF
 
       CALL get_qs_env(qs_env=qs_env, para_env=para_env, blacs_env=blacs_env)
@@ -362,8 +368,13 @@ CONTAINS
       CALL kpoint_init_cell_index(kpoint, sab_nl, para_env, dft_control%nimages)
 
       IF (original_upf) THEN
-         CALL kpoint_operator_copy_native(scf_kpoints, kpoint, source_indices, matrix_s, kpoint_slot_s)
-         CALL kpoint_operator_copy_native(scf_kpoints, kpoint, source_indices, matrix_ks, kpoint_slot_ks)
+         nao = SIZE(upf%metric_k, 1)
+         nphysical = SIZE(upf%metric_k, 3)
+         physical_metric(1:nao, 1:nao, 1:nphysical, 1:1) => upf%metric_k
+         CALL kpoint_operator_copy_native(scf_kpoints, kpoint, source_indices, matrix_s, kpoint_slot_s, &
+                                          physical_indices, physical_metric)
+         CALL kpoint_operator_copy_native(scf_kpoints, kpoint, source_indices, matrix_ks, kpoint_slot_ks, &
+                                          physical_indices, upf%ks_k)
       END IF
       NULLIFY (potential)
       IF (ASSOCIATED(scf_kpoints)) THEN
@@ -384,32 +395,63 @@ CONTAINS
    END SUBROUTINE calculate_kp_orbitals
 
 ! **************************************************************************************************
-!> \brief Map requested k points to the SCF representatives with complete native operators.
+!> \brief Match SCF representatives and physical symmetry partners.
 !> \param scf ...
 !> \param output ...
-!> \param indices ...
+!> \param star Explicit k points of the reduced SCF calculation.
+!> \param indices SCF occupation indices, signed for time-reversed operators.
+!> \param physical_indices Index of an explicit symmetry partner, zero for a representative.
 ! **************************************************************************************************
-   SUBROUTINE match_scf_kpoints(scf, output, indices)
+   SUBROUTINE match_scf_kpoints(scf, output, star, indices, physical_indices)
       TYPE(kpoint_type), INTENT(IN)                      :: scf, output
-      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: indices(:)
-
-      REAL(dp), PARAMETER :: tolerance = 128.0_dp*EPSILON(1.0_dp)
+      TYPE(kpoint_star_type), INTENT(IN)                 :: star
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: indices(:), physical_indices(:)
 
       INTEGER                                            :: ik, j
-      REAL(dp)                                           :: difference(3)
 
-      ALLOCATE (indices(output%nkp))
+      ALLOCATE (indices(output%nkp), physical_indices(output%nkp), SOURCE=0)
       DO ik = 1, output%nkp
          DO j = 1, scf%nkp
-            difference = output%xkp(:, ik) - scf%xkp(:, j)
-            IF (MAXVAL(ABS(difference - ANINT(difference))) <= tolerance) EXIT
+            IF (same_band_point(output%xkp(:, ik), scf%xkp(:, j))) THEN
+               indices(ik) = j
+               EXIT
+            END IF
          END DO
-         IF (j > scf%nkp) THEN
-            CPABORT("USPP or PAW post-SCF k points must belong to the SCF mesh.")
+         IF (indices(ik) /= 0) CYCLE
+         DO j = 1, SIZE(star%vectors, 2)
+            IF (same_band_point(output%xkp(:, ik), star%vectors(:, j))) THEN
+               indices(ik) = star%representative(j)
+               physical_indices(ik) = j
+               EXIT
+            END IF
+         END DO
+         IF (indices(ik) /= 0) CYCLE
+         IF (scf%inversion_symmetry_only .AND. .NOT. scf%full_grid) THEN
+            DO j = 1, scf%nkp
+               IF (same_band_point(output%xkp(:, ik), -scf%xkp(:, j))) THEN
+                  indices(ik) = -j
+                  EXIT
+               END IF
+            END DO
          END IF
-         indices(ik) = j
+         IF (indices(ik) == 0) CPABORT("USPP or PAW post-SCF k points must belong to the SCF mesh.")
       END DO
    END SUBROUTINE match_scf_kpoints
+
+! **************************************************************************************************
+!> \brief Compare reduced coordinates modulo reciprocal lattice vectors.
+!> \param left ...
+!> \param right ...
+!> \return ...
+! **************************************************************************************************
+   PURE LOGICAL FUNCTION same_band_point(left, right) RESULT(same)
+      REAL(dp), INTENT(IN)                               :: left(3), right(3)
+
+      REAL(dp)                                           :: difference(3)
+
+      difference = left - right
+      same = MAXVAL(ABS(difference - ANINT(difference))) <= 128.0_dp*EPSILON(1.0_dp)
+   END FUNCTION same_band_point
 
 ! **************************************************************************************************
 !> \brief Preserve SCF occupations and chemical potentials when sampling its eigenstates.
@@ -429,7 +471,7 @@ CONTAINS
          CALL get_mo_set(output%kp_env(1)%kpoint_env%mos(ispin), nmo=nmo)
          ALLOCATE (values(1 + nmo))
          DO ik = 1, SIZE(indices)
-            src = indices(ik) - scf%kp_range(1) + 1
+            src = ABS(indices(ik)) - scf%kp_range(1) + 1
             dst = ik - output%kp_range(1) + 1
             values = 0.0_dp
             IF (src > 0 .AND. src <= SIZE(scf%kp_env) .AND. scf%para_env_kp%is_source()) THEN
