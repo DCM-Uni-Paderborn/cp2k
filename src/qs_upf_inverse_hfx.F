@@ -1813,7 +1813,7 @@ CONTAINS
                                                                              transition_augmentation, pot%r, radial_weights, &
                                                                              lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
                                                                              coefficient_images, coupled_coefficients, &
-                                                                             local, gl_lattice, gr_lattice, local_atoms, &
+                                                                             local, gl_lattice, gr_lattice, .TRUE., local_atoms, &
                                                                              local_cell, local_auxiliary, qentry, &
                                                                              lattice_potentials, cached_fields=field_entry)
                                        atom_geometry(:, :) = atom_geometry + local_atoms
@@ -1828,7 +1828,7 @@ CONTAINS
                                                                              transition_augmentation, pot%r, radial_weights, &
                                                                              lebedev_grid(rule)%r, fourpi*lebedev_grid(rule)%w, &
                                                                              coefficient_images, coupled_coefficients, &
-                                                                             local, gl_lattice, gr_lattice, &
+                                                                             local, gl_lattice, gr_lattice, .FALSE., &
                                                                              augmentation_integrals=qentry)
                                     END IF
                                  ELSE IF (full_geometry) THEN
@@ -2833,7 +2833,7 @@ CONTAINS
       CALL lattice_center_adjoint_validated(frame, center, left_range, right_range, ao_image, center_image, &
                                             fields, auxiliary_center, augmentation, r, radial_weights, &
                                             directions, angular_weights, coefficient_images, coupled_coefficients, &
-                                            covector, left_coefficients_covector, right_coefficients_covector, &
+                                            covector, left_coefficients_covector, right_coefficients_covector, .FALSE., &
                                             atom_geometry, cell_geometry, auxiliary_geometry)
    END SUBROUTINE qs_upf_inverse_hfx_lattice_center_adjoint
 
@@ -2858,6 +2858,9 @@ CONTAINS
 !> \param covector ...
 !> \param left_coefficients_covector ...
 !> \param right_coefficients_covector ...
+!> \param combine_identical_blocks Allow the field derivatives of an identical AO block and image
+!>        to be returned together in the left coefficient output. The caller adds both outputs
+!>        to the same coefficient slice in this case.
 !> \param atom_geometry ...
 !> \param cell_geometry ...
 !> \param auxiliary_geometry ...
@@ -2869,8 +2872,9 @@ CONTAINS
                                                fields, auxiliary_center, augmentation, r, radial_weights, &
                                                directions, angular_weights, coefficient_images, &
                                                coupled_coefficients, covector, left_coefficients_covector, &
-                                               right_coefficients_covector, atom_geometry, cell_geometry, &
-                                               auxiliary_geometry, augmentation_integrals, projection_cache, cached_fields)
+                                               right_coefficients_covector, combine_identical_blocks, atom_geometry, &
+                                               cell_geometry, auxiliary_geometry, augmentation_integrals, &
+                                               projection_cache, cached_fields)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center, left_range(2), right_range(2), &
                                                             ao_image(3), center_image(3)
@@ -2884,6 +2888,7 @@ CONTAINS
       COMPLEX(dp), INTENT(IN)                            :: covector(:, :, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL :: left_coefficients_covector(:, :, :), &
          right_coefficients_covector(:, :, :)
+      LOGICAL, INTENT(IN)                                :: combine_identical_blocks
       REAL(dp), INTENT(OUT), OPTIONAL                    :: atom_geometry(:, :), &
                                                             cell_geometry(3, 3), &
                                                             auxiliary_geometry(3)
@@ -2905,7 +2910,7 @@ CONTAINS
                                                             left_image, nang, nl, np, nr, &
                                                             right_image, zero(3, 1)
       INTEGER(int_8)                                     :: field_words
-      LOGICAL :: cache_ready, cached_potentials, geometry, left_term, left_zero, q_geometry, &
+      LOGICAL :: cache_ready, cached_potentials, combined_field_adjoint, geometry, left_term, left_zero, q_geometry, &
          right_term, right_zero, same_ao_block, store_fields, zero_potential
       REAL(dp)                                           :: local_cell(3, 3), position(3), &
                                                             potential_geometry(3), radius, &
@@ -2958,6 +2963,7 @@ CONTAINS
       CPASSERT(MAXVAL(ABS(SUM(directions**2, DIM=1) - 1.0_dp)) <= 1.0e-12_dp)
       same_ao_block = ALL(left_range == right_range) .AND. ALL(ao_image == 0)
       geometry = PRESENT(atom_geometry) .OR. PRESENT(cell_geometry) .OR. PRESENT(auxiliary_geometry)
+      combined_field_adjoint = geometry .AND. same_ao_block .AND. combine_identical_blocks
       IF (geometry) THEN
          IF (.NOT. (PRESENT(atom_geometry) .AND. PRESENT(cell_geometry) .AND. PRESENT(auxiliary_geometry))) THEN
             CPABORT("All coupled center geometry outputs are required")
@@ -3024,7 +3030,7 @@ CONTAINS
             ALLOCATE (lattice_gl(SIZE(coupled_coefficients, 1), nl, SIZE(coefficient_images, 2)), &
                       lattice_gr(SIZE(coupled_coefficients, 1), nr, SIZE(coefficient_images, 2)))
             IF (geometry) THEN
-               IF (.NOT. same_ao_block) left_geometry_coefficients => lattice_gl
+               IF (.NOT. same_ao_block .OR. combined_field_adjoint) left_geometry_coefficients => lattice_gl
             END IF
          END IF
          IF (geometry) ALLOCATE (potential_gradient(3, fields%nfunction, nang), potential_covector(nang))
@@ -3160,8 +3166,8 @@ CONTAINS
             IF (frame%atom_local) THEN
                CALL field_product(delta, gcl, gl, .TRUE., .TRUE., .FALSE., -1.0_dp)
                CALL field_product(delta, gcr, gr, .TRUE., .TRUE., .FALSE., -1.0_dp)
-            ELSE IF (.NOT. geometry .OR. same_ao_block) THEN
-               ! An identical block retains both coefficient covectors even when its geometry is combined.
+            ELSE IF (.NOT. geometry .OR. (same_ao_block .AND. .NOT. combined_field_adjoint)) THEN
+               ! Keep the two coefficient covectors separate when requested by the caller.
                IF (left_term) THEN
                   CALL qs_upf_inverse_lattice_field_adjoint(frame, points, [0, 0, 0], coefficient_images, gcl, lattice_gl)
                   left_coefficients_covector(:, :, :) = left_coefficients_covector + lattice_gl
