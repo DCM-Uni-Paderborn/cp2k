@@ -644,9 +644,9 @@ CONTAINS
       TYPE(atom_upfpot_type)                             :: pot
       LOGICAL, INTENT(IN)                                :: readaug
 
-      CHARACTER(LEN=default_string_length)               :: line, string
-      INTEGER                                            :: i1, i2, ibeta, icount, la, m, mc, ms, &
-                                                            nbeta
+      CHARACTER(LEN=default_string_length)               :: line, string, tag
+      INTEGER                                            :: i1, i2, ibeta, icount, ios, la, m, mc, ms, &
+                                                            nbeta, tag_end, tag_index
       LOGICAL                                            :: at_end, read_dij
 
       m = pot%mesh_size
@@ -661,18 +661,30 @@ CONTAINS
       ibeta = 0
       read_dij = .FALSE.
       DO
-         CALL parser_get_next_line(parser, 1, at_end)
+         CALL upf_next_line(parser, at_end)
          CPASSERT(.NOT. at_end)
          CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-         IF (string(1:8) == "<PP_BETA") THEN
+         IF (string(1:9) == "<PP_BETA." .OR. string == "<PP_BETA" .OR. string == "<PP_BETA>") THEN
+            tag = string
+            tag_end = LEN_TRIM(tag)
+            IF (tag(tag_end:tag_end) == ">") tag_end = tag_end - 1
+            tag_index = 0
+            IF (tag(9:9) == ".") THEN
+               READ (tag(10:tag_end), *, IOSTAT=ios) tag_index
+               IF (ios /= 0) CPABORT("Invalid UPF PP_BETA tag index")
+               IF (tag_index < 1 .OR. tag_index > nbeta) THEN
+                  CPABORT("UPF PP_BETA tag index is out of range")
+               END IF
+            END IF
             ms = m
             ibeta = ibeta + 1
             i1 = ibeta
+            IF (tag_index > 0) i1 = tag_index
             la = 0
             CPASSERT(ibeta <= nbeta)
-            DO
+            DO WHILE (tag /= "<PP_BETA>")
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                END IF
                CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -683,7 +695,7 @@ CONTAINS
                   CPASSERT(line == "REAL")
                CASE ("SIZE")
                   CALL parser_get_object(parser, ms)
-                  CPASSERT(ms <= m)
+                  IF (ms < 1 .OR. ms > m) CPABORT("Invalid UPF PP_BETA array size")
                CASE ("COLUMNS")
                   CALL parser_get_object(parser, mc)
                CASE ("INDEX")
@@ -711,26 +723,30 @@ CONTAINS
             END DO
             IF (i1 < 1 .OR. i1 > nbeta) CPABORT("UPF PP_BETA index is out of range")
             IF (pot%lbeta(i1) >= 0) CPABORT("Duplicate UPF PP_BETA index")
+            IF (tag_index > 0 .AND. i1 /= tag_index) THEN
+               CPABORT("UPF PP_BETA tag and index disagree")
+            END IF
             CPASSERT(la >= 0)
             pot%lbeta(i1) = la
             icount = 1
             DO WHILE (icount <= ms)
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                ELSE
                   CALL parser_get_object(parser, pot%beta(icount, i1))
                   icount = icount + 1
                END IF
             END DO
-         ELSE IF (string(1:7) == "<PP_DIJ") THEN
+            CALL upf_nonlocal_array_end(parser, tag(2:tag_end))
+         ELSE IF (string == "<PP_DIJ" .OR. string == "<PP_DIJ>") THEN
             IF (read_dij) CPABORT("Duplicate UPF PP_DIJ matrix")
             read_dij = .TRUE.
             ms = nbeta*nbeta
             IF (string /= "<PP_DIJ>") THEN
                DO
                   IF (parser_test_next_token(parser) == "EOL") THEN
-                     CALL parser_get_next_line(parser, 1, at_end)
+                     CALL upf_next_line(parser, at_end)
                      CPASSERT(.NOT. at_end)
                   END IF
                   CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
@@ -752,7 +768,7 @@ CONTAINS
             icount = 1
             DO WHILE (icount <= ms)
                IF (parser_test_next_token(parser) == "EOL") THEN
-                  CALL parser_get_next_line(parser, 1, at_end)
+                  CALL upf_next_line(parser, at_end)
                   CPASSERT(.NOT. at_end)
                ELSE
                   i1 = (icount - 1)/nbeta + 1
@@ -761,6 +777,7 @@ CONTAINS
                   icount = icount + 1
                END IF
             END DO
+            CALL upf_nonlocal_array_end(parser, "PP_DIJ")
          ELSE IF (string(1:16) == "<PP_AUGMENTATION") THEN
             IF (readaug) CALL upf_augmentation_section(parser, pot)
          ELSE IF (string(1:14) == "</PP_NONLOCAL>") THEN
@@ -781,6 +798,26 @@ CONTAINS
       pot%dion = 0.5_dp*pot%dion
 
    END SUBROUTINE upf_nonlocal_section
+
+! **************************************************************************************************
+!> \brief Verify that a nonlocal operator array ends immediately after its declared values.
+!> \param parser UPF token stream.
+!> \param name XML tag without brackets.
+! **************************************************************************************************
+   SUBROUTINE upf_nonlocal_array_end(parser, name)
+      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
+      CHARACTER(LEN=*), INTENT(IN)                       :: name
+
+      CHARACTER(LEN=default_string_length)               :: tag
+      LOGICAL                                            :: at_end
+
+      DO WHILE (parser_test_next_token(parser) == "EOL")
+         CALL upf_next_line(parser, at_end)
+         IF (at_end) CPABORT("Missing UPF closing tag for "//name)
+      END DO
+      CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
+      IF (tag /= "</"//name//">") CPABORT("Expected UPF closing tag for "//name)
+   END SUBROUTINE upf_nonlocal_array_end
 
 ! **************************************************************************************************
 !> \brief Read angular-momentum-resolved USPP augmentation in its tabulated convention.
