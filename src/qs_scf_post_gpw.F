@@ -1304,7 +1304,7 @@ CONTAINS
       NULLIFY (ks_rmpv, matrix_s, scf_control, dft_control, admm_env, para_env, blacs_env, mos)
       CALL get_qs_env(qs_env, &
                       matrix_ks=ks_rmpv, &
-                      matrix_s=matrix_s, &
+                      matrix_metric=matrix_s, &
                       scf_control=scf_control, &
                       dft_control=dft_control, &
                       admm_env=admm_env, &
