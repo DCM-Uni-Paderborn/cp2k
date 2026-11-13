@@ -1826,7 +1826,7 @@ CONTAINS
                                                             basis_set_type
       INTEGER :: handle, i, i_rep, iounit, ipaodesc, ipaopot, ipos, j, jj, k_rep, l, m, &
          n_potential_files, n_rep, nb_rep, nexp, ngauss, nlcc, nloc, nnl, norbitals, npaodesc, &
-         npaopot, nppnl, nspin, nu, plus_u_method_id, z
+         npaopot, nppnl, nspin, nu, plus_u_method_id, upf_z, z
       INTEGER, DIMENSION(:), POINTER                     :: add_el, elec_conf, orbitals
       LOGICAL :: check, ecp_semi_local, explicit, explicit_basis, explicit_J, explicit_kgpot, &
          explicit_potential, explicit_U, explicit_u_m_j, l_explicit, n_explicit, nobasis, &
@@ -2875,6 +2875,13 @@ CONTAINS
                   CALL get_potential(qs_kind%sgp_potential, description=description)
                   description(4) = "UPF "//TRIM(upf_file_name)
                   CALL atom_read_upf(upfpot, upf_file_name, read_augmentation=.TRUE., read_paw=.TRUE.)
+                  element_symbol = ADJUSTL(upfpot%symbol)
+                  CALL get_ptable_info(element_symbol, ielement=upf_z)
+                  IF (upf_z /= z) THEN
+                     CALL cp_abort(__LOCATION__, &
+                                   "UPF element <"//TRIM(element_symbol)//"> does not match KIND <"// &
+                             TRIM(qs_kind%name)//"> with element <"//TRIM(qs_kind%element_symbol)//">")
+                  END IF
                   IF (TRIM(upfpot%pseudo_type) == "NC" .OR. upfpot%is_ultrasoft .OR. upfpot%is_paw) THEN
                      ALLOCATE (qs_kind%sgp_potential%upf_data, SOURCE=upfpot)
                   END IF
