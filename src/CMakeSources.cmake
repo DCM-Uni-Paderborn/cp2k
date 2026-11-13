@@ -51,6 +51,9 @@ list(
   atoms_input.F
   atom_types.F
   pseudopotentials/upf_types.F
+  pseudopotentials/paw_core_kinetic.F
+  pseudopotentials/paw_onecenter.F
+  pseudopotentials/paw_types.F
   aobasis/gaussian_basis_fields.F
   pseudopotentials/upf_core.F
   pseudopotentials/upf_inverse.F
@@ -1067,6 +1070,7 @@ list(
   common/list_routinereport.F
   common/list_routinestat.F
   common/list_timerenv.F
+  common/compensated_arithmetic.F
   common/mathconstants.F
   common/mathlib.F
   common/memory_utilities.F
