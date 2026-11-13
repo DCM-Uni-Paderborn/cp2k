@@ -291,7 +291,6 @@ CONTAINS
          CPASSERT(ALLOCATED(pot%paw%occupations) .AND. ALLOCATED(pot%paw%rho_core))
          CPASSERT(ALLOCATED(pot%paw%vlocal) .AND. ALLOCATED(pot%paw%multipoles))
          CPASSERT(ALL(pot%paw%angular_momenta == pot%lbeta))
-         CPASSERT(ALL(ieee_is_finite(pot%qij)) .AND. ALL(ieee_is_finite(pot%qijl)))
       END IF
 
       IF (ALLOCATED(pot%partial_waves)) THEN
@@ -738,7 +737,7 @@ CONTAINS
                   icount = icount + 1
                END IF
             END DO
-            CALL upf_nonlocal_array_end(parser, tag(2:tag_end))
+            CALL upf_array_end(parser, tag(2:tag_end))
          ELSE IF (string == "<PP_DIJ" .OR. string == "<PP_DIJ>") THEN
             IF (read_dij) CPABORT("Duplicate UPF PP_DIJ matrix")
             read_dij = .TRUE.
@@ -777,7 +776,7 @@ CONTAINS
                   icount = icount + 1
                END IF
             END DO
-            CALL upf_nonlocal_array_end(parser, "PP_DIJ")
+            CALL upf_array_end(parser, "PP_DIJ")
          ELSE IF (string(1:16) == "<PP_AUGMENTATION") THEN
             IF (readaug) CALL upf_augmentation_section(parser, pot)
          ELSE IF (string(1:14) == "</PP_NONLOCAL>") THEN
@@ -800,11 +799,11 @@ CONTAINS
    END SUBROUTINE upf_nonlocal_section
 
 ! **************************************************************************************************
-!> \brief Verify that a nonlocal operator array ends immediately after its declared values.
+!> \brief Verify that a UPF array ends immediately after its declared values.
 !> \param parser UPF token stream.
 !> \param name XML tag without brackets.
 ! **************************************************************************************************
-   SUBROUTINE upf_nonlocal_array_end(parser, name)
+   SUBROUTINE upf_array_end(parser, name)
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
       CHARACTER(LEN=*), INTENT(IN)                       :: name
 
@@ -817,7 +816,7 @@ CONTAINS
       END DO
       CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
       IF (tag /= "</"//name//">") CPABORT("Expected UPF closing tag for "//name)
-   END SUBROUTINE upf_nonlocal_array_end
+   END SUBROUTINE upf_array_end
 
 ! **************************************************************************************************
 !> \brief Read angular-momentum-resolved USPP augmentation in its tabulated convention.
@@ -832,7 +831,7 @@ CONTAINS
       TYPE(atom_upfpot_type), INTENT(INOUT)              :: pot
 
       CHARACTER(LEN=default_string_length)               :: string, tag, value
-      INTEGER                                            :: i, iraug, j, k, l, lmax, m, nb, nc, nqf, &
+      INTEGER                                            :: i, ios, iraug, j, k, l, last, lmax, m, nb, nc, nqf, &
                                                             nqlc, pair, size_data, tag_i, tag_j, &
                                                             tag_l
       LOGICAL                                            :: at_end, is_null, q_with_l, read_q, &
@@ -911,7 +910,6 @@ CONTAINS
          CPASSERT(.NOT. at_end)
          CALL parser_get_object(parser, tag, lower_to_upper=.TRUE.)
          IF (tag == "</PP_AUGMENTATION>") EXIT
-         IF (tag(1:2) == "</") CYCLE
          IF (tag == "<PP_MULTIPOLES" .OR. tag == "<PP_MULTIPOLES>") THEN
             CPASSERT(ALLOCATED(pot%paw))
             CPASSERT(.NOT. ALLOCATED(pot%paw%multipoles))
@@ -921,7 +919,7 @@ CONTAINS
             DEALLOCATE (multipoles)
             CYCLE
          END IF
-         IF (.NOT. (tag(1:8) == "<PP_QIJL" .OR. tag == "<PP_Q" .OR. tag == "<PP_Q>")) THEN
+         IF (.NOT. (tag(1:9) == "<PP_QIJL." .OR. tag == "<PP_Q" .OR. tag == "<PP_Q>")) THEN
             CPABORT("Unexpected UPF augmentation tag "//TRIM(tag)//" in "//TRIM(pot%filename))
          END IF
          i = -1
@@ -967,18 +965,21 @@ CONTAINS
                END SELECT
             END DO
          END IF
-         IF (tag(1:8) == "<PP_QIJL") THEN
+         IF (tag(1:9) == "<PP_QIJL.") THEN
             CPASSERT(i >= 1 .AND. i <= j .AND. j <= nb)
             CPASSERT(pair == j*(j - 1)/2 + i)
             CPASSERT(l >= ABS(pot%lbeta(i) - pot%lbeta(j)))
             CPASSERT(l <= pot%lbeta(i) + pot%lbeta(j))
             CPASSERT(MODULO(pot%lbeta(i) + pot%lbeta(j) - l, 2) == 0)
             ! Cross-check the tag suffix as well as the explicit attributes.
-            string = tag(10:)
+            last = LEN_TRIM(tag)
+            IF (tag(last:last) == ">") last = last - 1
+            string = tag(10:last)
             DO k = 1, LEN_TRIM(string)
                IF (string(k:k) == ".") string(k:k) = " "
             END DO
-            READ (string, *) tag_i, tag_j, tag_l
+            READ (string, *, IOSTAT=ios) tag_i, tag_j, tag_l
+            IF (ios /= 0) CPABORT("Invalid UPF PP_QIJL tag indices")
             CPASSERT(tag_i == i .AND. tag_j == j .AND. tag_l == l)
             CPASSERT(.NOT. present_channel(pair, l))
             present_channel(pair, l) = .TRUE.
@@ -994,6 +995,10 @@ CONTAINS
                END DO
                CALL parser_get_object(parser, pot%qijl(k, pair, l))
             END DO
+            CALL upf_array_end(parser, tag(2:last))
+            IF (.NOT. ALL(ieee_is_finite(pot%qijl(:, pair, l)))) THEN
+               CPABORT("Non-finite values in UPF PP_QIJL")
+            END IF
          ELSE
             CPASSERT(.NOT. read_q .AND. .NOT. self_closing .AND. .NOT. is_null)
             CPASSERT(size_data == nb*nb)
@@ -1006,6 +1011,8 @@ CONTAINS
                   CALL parser_get_object(parser, pot%qij(i, j))
                END DO
             END DO
+            CALL upf_array_end(parser, "PP_Q")
+            IF (.NOT. ALL(ieee_is_finite(pot%qij))) CPABORT("Non-finite values in UPF PP_Q")
             read_q = .TRUE.
          END IF
       END DO
