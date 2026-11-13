@@ -26,8 +26,10 @@ MODULE kpoint_types
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
                                               cp_print_key_unit_nr
+   USE cp_parser_methods,               ONLY: read_float_object
    USE cryssym,                         ONLY: crys_sym_grid_type
    USE input_cp2k_kpoints,              ONLY: lattice_fft_auto,&
+                                              lattice_fft_off,&
                                               use_complex_wfn,&
                                               use_k290_kpoint_backend,&
                                               use_k290_kpoint_symmetry,&
@@ -35,10 +37,12 @@ MODULE kpoint_types
                                               use_spglib_kpoint_backend,&
                                               use_spglib_kpoint_symmetry
    USE input_section_types,             ONLY: section_vals_get,&
+                                              section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: default_string_length,&
-                                              dp
+                                              dp,&
+                                              max_line_length
    USE local_gemm_api,                  ONLY: local_gemm_ctxt_type
    USE mathconstants,                   ONLY: twopi
    USE message_passing,                 ONLY: mp_para_env_release,&
@@ -71,6 +75,7 @@ MODULE kpoint_types
    PUBLIC :: kpoint_type
    PUBLIC :: kpoint_create, kpoint_release, kpoint_reset_initialization, get_kpoint_info, set_kpoint_info
    PUBLIC :: read_kpoint_section, write_kpoint_info
+   PUBLIC :: read_band_kpoint_set, kpoint_add_band_samples
    PUBLIC :: kpoint_clear_scf_smat
    PUBLIC :: kpoint_native_operator_type, kpoint_native_operator_clear
    PUBLIC :: kpoint_native_density_clear
@@ -1078,6 +1083,170 @@ CONTAINS
       END IF
 
    END SUBROUTINE read_kpoint_section
+
+! **************************************************************************************************
+!> \brief Read and interpolate one band line in fractional reciprocal coordinates.
+!> \param kpset Band input subsection.
+!> \param i_rep Input line index.
+!> \param cell Simulation cell including the original input orientation.
+!> \param kspecial Endpoints of the line segments.
+!> \param spname Optional labels from the input, or a default label.
+!> \param kpgeneral All points of the line, including both endpoints.
+! **************************************************************************************************
+   SUBROUTINE read_band_kpoint_set(kpset, i_rep, cell, kspecial, spname, kpgeneral)
+      TYPE(section_vals_type), POINTER                   :: kpset
+      INTEGER, INTENT(IN)                                :: i_rep
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: kspecial(:, :)
+      CHARACTER(LEN=default_string_length), &
+         ALLOCATABLE, INTENT(OUT)                        :: spname(:)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: kpgeneral(:, :)
+
+      CHARACTER(LEN=default_string_length)               :: ustr
+      CHARACTER(LEN=default_string_length), POINTER      :: strptr(:)
+      CHARACTER(LEN=max_line_length)                     :: error_message
+      INTEGER                                            :: i, ik, ikk, ip, n_ptr, npline, npoints
+      REAL(dp)                                           :: cart_hmat(3, 3), kpptr(3)
+
+      cart_hmat(:, :) = cell%hmat(:, :)
+      IF (cell%input_cell_canonicalized) cart_hmat(:, :) = cell%input_hmat(:, :)
+      CALL section_vals_val_get(kpset, "NPOINTS", i_rep_section=i_rep, i_val=npline)
+      CALL section_vals_val_get(kpset, "UNITS", i_rep_section=i_rep, c_val=ustr)
+      CALL uppercase(ustr)
+      CALL section_vals_val_get(kpset, "SPECIAL_POINT", i_rep_section=i_rep, n_rep_val=n_ptr)
+      IF (n_ptr < 1 .OR. npline < 0) CPABORT("Invalid band structure k-point set.")
+      ALLOCATE (kspecial(3, n_ptr))
+      ALLOCATE (spname(n_ptr))
+      DO ip = 1, n_ptr
+         CALL section_vals_val_get(kpset, "SPECIAL_POINT", i_rep_section=i_rep, i_rep_val=ip, c_vals=strptr)
+         IF (SIZE(strptr(:), 1) == 4) THEN
+            spname(ip) = strptr(1)
+            DO i = 1, 3
+               CALL read_float_object(strptr(i + 1), kpptr(i), error_message)
+               IF (LEN_TRIM(error_message) > 0) CPABORT(TRIM(error_message))
+            END DO
+         ELSE IF (SIZE(strptr(:), 1) == 3) THEN
+            spname(ip) = "not specified"
+            DO i = 1, 3
+               CALL read_float_object(strptr(i), kpptr(i), error_message)
+               IF (LEN_TRIM(error_message) > 0) CPABORT(TRIM(error_message))
+            END DO
+         ELSE
+            CPABORT("Input SPECIAL_POINT invalid")
+         END IF
+         SELECT CASE (ustr)
+         CASE ("B_VECTOR")
+            kspecial(1:3, ip) = kpptr(1:3)
+         CASE ("CART_ANGSTROM")
+            kspecial(1:3, ip) = (kpptr(1)*cart_hmat(1, 1:3) + &
+                                 kpptr(2)*cart_hmat(2, 1:3) + &
+                                 kpptr(3)*cart_hmat(3, 1:3))/twopi*angstrom
+         CASE ("CART_BOHR")
+            kspecial(1:3, ip) = (kpptr(1)*cart_hmat(1, 1:3) + &
+                                 kpptr(2)*cart_hmat(2, 1:3) + &
+                                 kpptr(3)*cart_hmat(3, 1:3))/twopi
+         CASE DEFAULT
+            CPABORT("Unknown unit <"//TRIM(ustr)//"> specified for k-point definition")
+         END SELECT
+      END DO
+      npoints = (n_ptr - 1)*npline + 1
+      CPASSERT(npoints >= 1)
+
+      ALLOCATE (kpgeneral(3, npoints))
+      kpgeneral(1:3, 1) = kspecial(1:3, 1)
+      ikk = 1
+      DO ik = 2, n_ptr
+         DO ip = 1, npline
+            ikk = ikk + 1
+            kpgeneral(1:3, ikk) = kspecial(1:3, ik - 1) + &
+                                  REAL(ip, KIND=dp)/REAL(npline, KIND=dp)* &
+                                  (kspecial(1:3, ik) - kspecial(1:3, ik - 1))
+         END DO
+      END DO
+   END SUBROUTINE read_band_kpoint_set
+
+! **************************************************************************************************
+!> \brief Append missing band points to an initialized unreduced mesh with zero SCF weight.
+!> \param kpoints Mesh before allocation of per-k-point operators and orbitals.
+!> \param bands Input band structure section.
+!> \param cell Current cell.
+!> \param nadded Number of distinct additional points.
+! **************************************************************************************************
+   SUBROUTINE kpoint_add_band_samples(kpoints, bands, cell, nadded)
+      TYPE(kpoint_type), INTENT(INOUT)                   :: kpoints
+      TYPE(section_vals_type), POINTER                   :: bands
+      TYPE(cell_type), INTENT(IN)                        :: cell
+      INTEGER, INTENT(OUT)                               :: nadded
+
+      REAL(dp), PARAMETER :: tolerance = 128.0_dp*EPSILON(1.0_dp)
+
+      CHARACTER(LEN=default_string_length), ALLOCATABLE  :: names(:)
+      INTEGER                                            :: ik, irep, nold, nrep, nused
+      REAL(dp)                                           :: diff(3)
+      REAL(dp), ALLOCATABLE                              :: line(:, :), points(:, :), special(:, :)
+      TYPE(kpoint_sym_p_type), POINTER                   :: symmetry(:)
+      TYPE(section_vals_type), POINTER                   :: sets
+
+      CPASSERT(.NOT. ASSOCIATED(kpoints%kp_env))
+      sets => section_vals_get_subs_vals(bands, "KPOINT_SET")
+      CALL section_vals_get(sets, n_repetition=nrep)
+      nold = kpoints%nkp
+      nused = MAX(1, nold)
+      ALLOCATE (points(3, nused), SOURCE=0.0_dp)
+      IF (nold > 0) points(:, :) = kpoints%xkp
+      DO irep = 1, nrep
+         CALL read_band_kpoint_set(sets, irep, cell, special, names, line)
+         BLOCK
+            REAL(dp), ALLOCATABLE :: work(:, :)
+            INTEGER :: j
+
+            ALLOCATE (work(3, nused + SIZE(line, 2)))
+            work(:, 1:nused) = points(:, 1:nused)
+            DO ik = 1, SIZE(line, 2)
+               DO j = 1, nused
+                  diff = line(:, ik) - work(:, j)
+                  IF (MAXVAL(ABS(diff - ANINT(diff))) <= tolerance) EXIT
+               END DO
+               IF (j <= nused) CYCLE
+               nused = nused + 1
+               work(:, nused) = line(:, ik)
+            END DO
+            CALL MOVE_ALLOC(work, points)
+         END BLOCK
+      END DO
+      nadded = nused - MAX(1, nold)
+      IF (nold > 0 .AND. nadded == 0) RETURN
+      IF (nrep == 0) RETURN
+
+      ! The integration points and weights keep their order. Only the appended points are probes.
+      BLOCK
+         REAL(dp), POINTER :: weights(:)
+
+         ALLOCATE (weights(nused), SOURCE=0.0_dp)
+         IF (nold > 0) THEN
+            weights(1:nold) = kpoints%wkp
+            DEALLOCATE (kpoints%xkp, kpoints%wkp)
+         ELSE
+            weights(1) = 1.0_dp
+         END IF
+         kpoints%wkp => weights
+      END BLOCK
+      ALLOCATE (kpoints%xkp(3, nused), SOURCE=points(:, 1:nused))
+      ALLOCATE (symmetry(nused))
+      IF (nold > 0) THEN
+         symmetry(1:nold) = kpoints%kp_sym
+         DEALLOCATE (kpoints%kp_sym)
+      END IF
+      DO ik = nold + 1, nused
+         CALL kpoint_sym_create(symmetry(ik)%kpoint_sym)
+      END DO
+      kpoints%kp_sym => symmetry
+      kpoints%nkp = nused
+      IF (nold <= 1) kpoints%kp_scheme = "GENERAL"
+      kpoints%full_grid = .TRUE.
+      kpoints%use_real_wfn = .FALSE.
+      kpoints%lattice_fft = lattice_fft_off
+   END SUBROUTINE kpoint_add_band_samples
 
 ! **************************************************************************************************
 !> \brief Resolve legacy and backend k-point symmetry settings

@@ -2627,6 +2627,14 @@ CONTAINS
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
+      CALL keyword_create(keyword, __LOCATION__, name="SAMPLE_IN_SCF", &
+                          description="For original USPP or PAW, include missing band points with zero "// &
+                          "integration weight in a single-point semilocal diagonalization calculation. "// &
+                          "Use Gamma or an unreduced SCF mesh. The restart mesh includes the additional points.", &
+                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
       NULLIFY (subsection)
       CALL create_kpoint_set_section(subsection)
       CALL section_add_subsection(section, subsection)

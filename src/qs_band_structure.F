@@ -19,15 +19,13 @@ MODULE qs_band_structure
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_log_handling,                 ONLY: cp_logger_get_default_io_unit
-   USE cp_parser_methods,               ONLY: read_float_object
    USE dft_plus_u,                      ONLY: lowdin_kp_prepare
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: default_string_length,&
-                                              dp,&
-                                              max_line_length
+                                              dp
    USE kpoint_methods,                  ONLY: kpoint_env_initialize,&
                                               kpoint_init_cell_index,&
                                               kpoint_initialize_mo_set,&
@@ -38,12 +36,11 @@ MODULE qs_band_structure
                                               kpoint_release,&
                                               kpoint_star_type,&
                                               kpoint_sym_create,&
-                                              kpoint_type
+                                              kpoint_type,&
+                                              read_band_kpoint_set
    USE machine,                         ONLY: m_walltime
-   USE mathconstants,                   ONLY: twopi
    USE message_passing,                 ONLY: mp_para_env_type
-   USE physcon,                         ONLY: angstrom,&
-                                              evolt
+   USE physcon,                         ONLY: evolt
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_env_release,&
                                               qs_environment_type
@@ -61,7 +58,6 @@ MODULE qs_band_structure
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
    USE scf_control_types,               ONLY: scf_control_type
-   USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -117,22 +113,18 @@ CONTAINS
    SUBROUTINE do_calculate_band_structure(qs_env)
       TYPE(qs_environment_type), POINTER                 :: qs_env
 
-      CHARACTER(LEN=default_string_length)               :: filename, ustr
-      CHARACTER(LEN=default_string_length), &
-         DIMENSION(:), POINTER                           :: spname, strptr
-      CHARACTER(LEN=max_line_length)                     :: error_message
-      INTEGER                                            :: bs_data_unit, i, i_rep, ik, ikk, ikpgr, &
-                                                            imo, ip, ispin, n_ptr, n_rep, nadd, &
-                                                            nkp, nmo, npline, npoints, nspins, &
-                                                            unit_nr
+      CHARACTER(LEN=default_string_length)               :: filename
+      CHARACTER(LEN=default_string_length), ALLOCATABLE  :: spname(:)
+      INTEGER                                            :: bs_data_unit, i_rep, ik, ikpgr, imo, ip, &
+                                                            ispin, n_ptr, n_rep, nadd, nkp, nmo, &
+                                                            npoints, nspins, unit_nr
       INTEGER, DIMENSION(2)                              :: kp_range
       LOGICAL                                            :: explicit, io_default, my_kpgrp
+      REAL(dp), ALLOCATABLE                              :: kpgeneral(:, :), kspecial(:, :)
+      REAL(dp), POINTER                                  :: xkp(:, :)
       REAL(KIND=dp)                                      :: t1, t2
-      REAL(KIND=dp), DIMENSION(3)                        :: kpptr
-      REAL(KIND=dp), DIMENSION(3, 3)                     :: cart_hmat
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues, eigval, occnum, &
                                                             occupation_numbers, wkp
-      REAL(kind=dp), DIMENSION(:, :), POINTER            :: kpgeneral, kspecial, xkp
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
@@ -148,8 +140,6 @@ CONTAINS
          unit_nr = cp_logger_get_default_io_unit()
          CALL get_qs_env(qs_env=qs_env, para_env=para_env)
          CALL get_qs_env(qs_env, cell=cell)
-         cart_hmat(:, :) = cell%hmat(:, :)
-         IF (cell%input_cell_canonicalized) cart_hmat(:, :) = cell%input_hmat(:, :)
          kpset => section_vals_get_subs_vals(bs_input, "KPOINT_SET")
          CALL section_vals_get(kpset, n_repetition=n_rep)
          IF (unit_nr > 0) THEN
@@ -174,59 +164,9 @@ CONTAINS
          END IF
          DO i_rep = 1, n_rep
             t1 = m_walltime()
-            CALL section_vals_val_get(kpset, "NPOINTS", i_rep_section=i_rep, i_val=npline)
-            CALL section_vals_val_get(kpset, "UNITS", i_rep_section=i_rep, c_val=ustr)
-            CALL uppercase(ustr)
-            CALL section_vals_val_get(kpset, "SPECIAL_POINT", i_rep_section=i_rep, n_rep_val=n_ptr)
-            ALLOCATE (kspecial(3, n_ptr))
-            ALLOCATE (spname(n_ptr))
-            DO ip = 1, n_ptr
-               CALL section_vals_val_get(kpset, "SPECIAL_POINT", i_rep_section=i_rep, i_rep_val=ip, c_vals=strptr)
-               IF (SIZE(strptr(:), 1) == 4) THEN
-                  spname(ip) = strptr(1)
-                  DO i = 1, 3
-                     CALL read_float_object(strptr(i + 1), kpptr(i), error_message)
-                     IF (LEN_TRIM(error_message) > 0) CPABORT(TRIM(error_message))
-                  END DO
-               ELSE IF (SIZE(strptr(:), 1) == 3) THEN
-                  spname(ip) = "not specified"
-                  DO i = 1, 3
-                     CALL read_float_object(strptr(i), kpptr(i), error_message)
-                     IF (LEN_TRIM(error_message) > 0) CPABORT(TRIM(error_message))
-                  END DO
-               ELSE
-                  CPABORT("Input SPECIAL_POINT invalid")
-               END IF
-               SELECT CASE (ustr)
-               CASE ("B_VECTOR")
-                  kspecial(1:3, ip) = kpptr(1:3)
-               CASE ("CART_ANGSTROM")
-                  kspecial(1:3, ip) = (kpptr(1)*cart_hmat(1, 1:3) + &
-                                       kpptr(2)*cart_hmat(2, 1:3) + &
-                                       kpptr(3)*cart_hmat(3, 1:3))/twopi*angstrom
-               CASE ("CART_BOHR")
-                  kspecial(1:3, ip) = (kpptr(1)*cart_hmat(1, 1:3) + &
-                                       kpptr(2)*cart_hmat(2, 1:3) + &
-                                       kpptr(3)*cart_hmat(3, 1:3))/twopi
-               CASE DEFAULT
-                  CPABORT("Unknown unit <"//TRIM(ustr)//"> specified for k-point definition")
-               END SELECT
-            END DO
-            npoints = (n_ptr - 1)*npline + 1
-            CPASSERT(npoints >= 1)
-
-            ! Initialize environment and calculate MOs
-            ALLOCATE (kpgeneral(3, npoints))
-            kpgeneral(1:3, 1) = kspecial(1:3, 1)
-            ikk = 1
-            DO ik = 2, n_ptr
-               DO ip = 1, npline
-                  ikk = ikk + 1
-                  kpgeneral(1:3, ikk) = kspecial(1:3, ik - 1) + &
-                                        REAL(ip, KIND=dp)/REAL(npline, KIND=dp)* &
-                                        (kspecial(1:3, ik) - kspecial(1:3, ik - 1))
-               END DO
-            END DO
+            CALL read_band_kpoint_set(kpset, i_rep, cell, kspecial, spname, kpgeneral)
+            n_ptr = SIZE(kspecial, 2)
+            npoints = SIZE(kpgeneral, 2)
             NULLIFY (kpoint)
             CALL calculate_kp_orbitals(qs_env, kpoint, "GENERAL", nadd, kpgeneral=kpgeneral)
             DEALLOCATE (kpgeneral)

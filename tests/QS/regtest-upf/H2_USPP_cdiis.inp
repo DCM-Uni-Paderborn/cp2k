@@ -47,6 +47,16 @@
       &XC_FUNCTIONAL PBE
       &END XC_FUNCTIONAL
     &END XC
+    &PRINT
+      &BAND_STRUCTURE
+        SAMPLE_IN_SCF
+        &KPOINT_SET
+          SPECIAL_POINT 0.17 0.09 -0.03
+          SPECIAL_POINT 0.40 0.04 0.09
+          NPOINTS 1
+        &END KPOINT_SET
+      &END BAND_STRUCTURE
+    &END PRINT
   &END DFT
   &PRINT
     &FORCES ON

@@ -40,12 +40,14 @@
 "H2_inverse_GPW_restart.inp"       = [
   {matcher = "M011", tol = 1e-10, ref = -1.648324960331968},
 ]
-# CDIIS convergence must satisfy the unchanged-H density map.
+# CDIIS checks the unchanged-H density map and a band point with zero SCF weight.
 "H2_USPP_cdiis.inp"                = [
   {matcher = "M011", tol = 1e-10, ref = -1.97634651379787},
   {matcher = "Atomic_force_1_z", tol = 1e-7, ref = 0.119011922},
   {matcher = "M031", tol = 1e-7, ref = 145554.889981},
   {matcher = "SCF_raw_map_delta", tol = 1e-12, ref = 0.0},
+  {matcher = "Kpoint_count", tol = 0, ref = 3},
+  {matcher = "Band_first_eigenvalue", tol = 1e-8, ref = -3.73611858},
 ]
 # Native time reversal retains the density, geometry derivatives and partner band energies.
 "H2_inverse_GPW_time_reversal.inp" = [

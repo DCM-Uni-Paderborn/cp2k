@@ -115,6 +115,7 @@ MODULE qs_environment
                                               kpoint_initialize,&
                                               kpoint_initialize_mos
    USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_add_band_samples,&
                                               kpoint_create,&
                                               kpoint_reset_initialization,&
                                               kpoint_type,&
@@ -178,9 +179,9 @@ MODULE qs_environment
                                               write_ppl_radii,&
                                               write_ppnl_radii
    USE qs_kind_types,                   ONLY: &
-        check_qs_kind_set, get_qs_kind, get_qs_kind_set, init_cneo_basis_set, init_gapw_basis_set, &
-        init_gapw_nlcc, init_qs_kind_set, qs_kind_type, set_qs_kind, write_gto_basis_sets, &
-        write_qs_kind_set
+        check_qs_kind_set, get_qs_kind, get_qs_kind_set, has_uspp, init_cneo_basis_set, &
+        init_gapw_basis_set, init_gapw_nlcc, init_qs_kind_set, qs_kind_type, set_qs_kind, &
+        write_gto_basis_sets, write_qs_kind_set
    USE qs_ks_types,                     ONLY: qs_ks_env_create,&
                                               qs_ks_env_type,&
                                               set_ks_env
@@ -216,7 +217,8 @@ MODULE qs_environment
    USE semi_empirical_types,            ONLY: se_taper_create,&
                                               se_taper_type
    USE semi_empirical_utils,            ONLY: se_cutoff_compatible
-   USE skala_gpw_functional,            ONLY: xc_section_uses_native_skala_evaluator,&
+   USE skala_gpw_functional,            ONLY: xc_section_uses_gauxc_model,&
+                                              xc_section_uses_native_skala_evaluator,&
                                               xc_section_uses_skala_model
    USE tblite_interface,                ONLY: tb_get_basis,&
                                               tb_init_geometry,&
@@ -378,15 +380,17 @@ CONTAINS
       INTEGER, INTENT(IN), OPTIONAL                      :: multip, charge
 
       CHARACTER(LEN=default_string_length)               :: basis_type
-      INTEGER                                            :: ikind, method_id, nelectron_total, &
-                                                            nkind, nkp_grid(3), tddfpt_kernel
+      INTEGER                                            :: band_samples, ikind, method_id, &
+                                                            nelectron_total, nkind, nkp_grid(3), &
+                                                            tddfpt_kernel
       LOGICAL :: dftb_kpoint_sym_restricted, do_active_space, do_admm_rpa, do_bse, do_debug_fdiff, &
          do_debug_forces, do_debug_stress_tensor, do_dftb_scc, do_dftb_scc_high_l, do_ec_hfx, &
          do_et, do_exx, do_gw, do_hfx, do_kpoints, do_linear_response, do_mp2, do_ri_mp2, &
          do_ri_rpa, do_ri_sos_mp2, do_tddfpt, do_tddfpt_unsupported_kpoints, do_wfc_low_scaling, &
          do_wfc_low_scaling_kpoints, do_xtb_tblite, final_kpoint_reinit, is_identical, is_semi, &
          kpoint_explicit, kpoint_verbose, mp2_present, my_qmmm, ot_energies, owned_kpoints, &
-         qmmm_decoupl, same_except_frac, use_real_wfn, use_ref_cell
+         qmmm_decoupl, same_except_frac, sample_bands, use_ot, use_real_wfn
+      LOGICAL :: use_ref_cell
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rtmat
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: my_cell, my_cell_ref
@@ -405,9 +409,9 @@ CONTAINS
       TYPE(qs_wf_history_type), POINTER                  :: wf_history
       TYPE(rel_control_type), POINTER                    :: rel_control
       TYPE(scf_control_type), POINTER                    :: scf_control
-      TYPE(section_vals_type), POINTER :: active_space_section, dft_section, ec_hfx_section, &
-         ec_section, et_coupling_section, gw_section, hfx_section, kpoint_section, mp2_section, &
-         rpa_hfx_section, tddfpt_section, transport_section
+      TYPE(section_vals_type), POINTER :: active_space_section, bands_section, dft_section, &
+         ec_hfx_section, ec_section, et_coupling_section, gw_section, hfx_section, kpoint_section, &
+         mp2_section, rpa_hfx_section, tddfpt_section, transport_section, xc_section
 
       NULLIFY (my_cell, my_cell_ref, atomic_kind_set, particle_set, &
                qs_kind_set, kpoint_section, dft_section, ec_section, &
@@ -599,6 +603,29 @@ CONTAINS
                                                           do_wfc_low_scaling, do_wfc_low_scaling_kpoints, &
                                                           do_xtb_tblite, .FALSE.)
          CALL kpoint_initialize(kpoints, particle_set, my_cell)
+      END IF
+
+      IF (owned_kpoints) THEN
+         bands_section => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%BAND_STRUCTURE")
+         CALL section_vals_val_get(bands_section, "SAMPLE_IN_SCF", l_val=sample_bands)
+         IF (sample_bands) THEN
+            IF (.NOT. has_uspp(qs_kind_set)) CPABORT("SAMPLE_IN_SCF requires original USPP or PAW.")
+            CALL section_vals_val_get(qs_env%input, "DFT%SCF%OT%_SECTION_PARAMETERS_", l_val=use_ot)
+            xc_section => section_vals_get_subs_vals(qs_env%input, "DFT%XC")
+            IF (.NOT. qs_env%single_point_run .OR. my_qmmm .OR. use_ot .OR. do_hfx .OR. mp2_present .OR. &
+                xc_section_uses_skala_model(xc_section) .OR. xc_section_uses_gauxc_model(xc_section) .OR. &
+                ANY(my_cell%perd /= 1)) THEN
+               CALL cp_abort(__LOCATION__, "SAMPLE_IN_SCF requires a periodic single-point calculation "// &
+                             "with semilocal XC and SCF diagonalization.")
+            END IF
+            IF (.NOT. kpoints%full_grid .AND. kpoints%kp_scheme /= "NONE" .AND. kpoints%kp_scheme /= "GAMMA") THEN
+               CPABORT("SAMPLE_IN_SCF requires Gamma or FULL_GRID.")
+            END IF
+            CALL kpoint_add_band_samples(kpoints, bands_section, my_cell, band_samples)
+            IF (band_samples > 0) THEN
+               CALL cp_warn(__LOCATION__, "Band sampling adds zero-weight k points to the SCF and restart mesh.")
+            END IF
+         END IF
       END IF
 
       CALL qs_init_subsys(qs_env, para_env, subsys, my_cell, my_cell_ref, use_ref_cell, &
@@ -1121,10 +1148,10 @@ CONTAINS
       LOGICAL :: all_potential_present, be_silent, cneo_potential_present, do_kpoints, do_ri_hfx, &
          do_ri_mp2, do_ri_rpa, do_ri_sos_mp2, do_rpa_ri_exx, do_wfc_im_time, e1terms, &
          has_angular_reference, has_unit_metric, lribas, mp2_present, orb_gradient, paw_atom
+      REAL(dp), POINTER                                  :: angular_reference(:)
       REAL(KIND=dp)                                      :: alpha, ccore, ewald_rcut, fxx, maxocc, &
                                                             rc, rcut, total_zeff_corr, &
                                                             verlet_skin, zeff_correction
-      REAL(dp), POINTER                                  :: angular_reference(:)
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dft_control_type), POINTER                    :: dft_control
