@@ -16,8 +16,8 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from xml.parsers import expat
 
-from add_upf_core_tau import integer, reference_orbitals, weights
-from add_upf_full_waves import compare, flag, normalized, values
+from add_upf_core_tau import reference_orbitals, weights
+from add_upf_full_waves import compare, flag, integer, normalized, values
 
 
 def core_span(data):

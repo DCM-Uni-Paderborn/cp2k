@@ -30,6 +30,13 @@ def real(text):
     return value
 
 
+def integer(value):
+    number = real(value)
+    if not number.is_integer():
+        raise ValueError("Noninteger UPF attribute")
+    return int(number)
+
+
 def values(node):
     if list(node):
         return []
@@ -219,7 +226,7 @@ def enrich(original_data, generated_data, replay_tolerance=0.0):
             wave = wave_nodes[f"PP_{kind}WFC.{i}"]
             if (
                 int(wave.get("index", str(i))) != i
-                or int(wave.attrib["l"]) != angular
+                or integer(wave.attrib["l"]) != angular
                 or angular < 0
             ):
                 raise ValueError(f"Different full-wave channel for projector {i}")

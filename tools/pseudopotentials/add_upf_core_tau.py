@@ -22,7 +22,7 @@ import re
 import struct
 import xml.etree.ElementTree as ET
 
-from add_upf_full_waves import flag, real, top_level_spans, values
+from add_upf_full_waves import flag, integer, real, top_level_spans, values
 
 ELEMENTS = (
     "H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn "
@@ -88,13 +88,6 @@ def weights(rab):
         w[-2] += 0.5
         w[-1] += 0.5
     return [a * b for a, b in zip(w, rab)]
-
-
-def integer(value):
-    v = real(value)
-    if v != int(v):
-        raise ValueError("Noninteger orbital quantum number or core electron count")
-    return int(v)
 
 
 def resample(r, u, target):
