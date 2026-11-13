@@ -3899,6 +3899,10 @@ CONTAINS
             ncore(0, 1) = 2
             ncore(0, 2) = 2
             ncore(1, 1) = 6
+         CASE (12)
+            ! [Ne] 3s2 core with 3p in the valence.
+            ncore(0, 1:3) = 2
+            ncore(1, 1) = 6
          CASE (18)
             ncore(0, 1) = 2
             ncore(0, 2) = 2
@@ -3911,6 +3915,11 @@ CONTAINS
             ncore(0, 3) = 2
             ncore(1, 1) = 6
             ncore(1, 2) = 6
+            ncore(2, 1) = 10
+         CASE (30)
+            ! [Ar] 3d10 4s2 core with 4p in the valence.
+            ncore(0, 1:4) = 2
+            ncore(1, 1:2) = 6
             ncore(2, 1) = 10
          CASE (36)
             ncore(0, 1) = 2
@@ -3953,6 +3962,12 @@ CONTAINS
             ncore(1, 3) = 6
             ncore(2, 1) = 10
             ncore(2, 2) = 10
+            ncore(3, 1) = 14
+         CASE (62)
+            ! [Kr] 4d10 4f14 5s2 core with 5p in the valence.
+            ncore(0, 1:5) = 2
+            ncore(1, 1:3) = 6
+            ncore(2, 1:2) = 10
             ncore(3, 1) = 14
          CASE (68)
             ncore(0, 1) = 2

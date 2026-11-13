@@ -17,7 +17,7 @@ PROGRAM atom_upf_unittest
    USE atom_types,                      ONLY: &
         CGTO_BASIS, atom_basis_gridrep, atom_basis_type, atom_integrals, atom_potential_type, &
         init_atom_basis, init_atom_basis_default_pp, init_atom_potential, release_atom_basis, &
-        release_atom_potential, sgp_pseudo, upf_pseudo
+        lmat, release_atom_potential, sgp_pseudo, upf_pseudo
    USE atom_upf,                        ONLY: atom_read_upf,&
                                               atom_release_upf,&
                                               atom_upfpot_type
@@ -61,6 +61,7 @@ PROGRAM atom_upf_unittest
                                               create_grid_atom,&
                                               deallocate_grid_atom,&
                                               grid_atom_type
+   USE qs_kind_types,                   ONLY: set_pseudo_state
    USE upf_types,                       ONLY: upf_has_complete_partial_waves,&
                                               upf_nlcc_kinetic
 
@@ -79,6 +80,7 @@ PROGRAM atom_upf_unittest
    CALL check_projector_addition_theorem()
    CALL check_atomic_potential()
    CALL check_upf_units()
+   CALL check_upf_core_occupations()
    CALL check_nlcc_fit()
    CALL check_basis_origin()
    CALL check_basis_derivatives()
@@ -145,6 +147,28 @@ PROGRAM atom_upf_unittest
    CALL cp2k_finalize()
 
 CONTAINS
+
+   SUBROUTINE check_upf_core_occupations()
+      INTEGER, PARAMETER :: elements(3) = [31, 46, 78]
+      INTEGER, PARAMETER :: expected_core(0:3, 3) = RESHAPE([6, 6, 0, 0, 8, 12, 10, 0, 10, 18, 20, 14], [4, 3])
+      INTEGER, PARAMETER :: expected_valence(0:3, 3) = RESHAPE([2, 7, 10, 0, 0, 6, 10, 0, 1, 6, 9, 0], [4, 3])
+      INTEGER :: core(0:lmat, 10), i, total(0:lmat, 10), valence(0:lmat, 10)
+      INTEGER, TARGET :: configuration(0:3)
+      INTEGER, POINTER :: occupation(:)
+
+      occupation => configuration
+      DO i = 1, SIZE(elements)
+         configuration = expected_valence(:, i)
+         core = 0
+         total = 0
+         valence = 0
+         CALL set_pseudo_state(occupation, elements(i), valence, core, total)
+         IF (ANY(SUM(core(0:3, :), DIM=2) /= expected_core(:, i))) ERROR STOP "Incorrect UPF frozen occupations"
+         IF (ANY(SUM(valence(0:3, :), DIM=2) /= configuration) .OR. ANY(valence < 0)) THEN
+            ERROR STOP "Incorrect UPF atomic valence occupations"
+         END IF
+      END DO
+   END SUBROUTINE check_upf_core_occupations
 
 ! **************************************************************************************************
 !> \brief ...
