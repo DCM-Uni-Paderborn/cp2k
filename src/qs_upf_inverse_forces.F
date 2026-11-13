@@ -76,7 +76,7 @@ CONTAINS
       INTEGER                                            :: atom, axis, index, kind, nk, nspin, &
                                                             other, spin, timing_handle
       INTEGER, ALLOCATABLE                               :: atom_of_kind(:), kind_of(:)
-      LOGICAL                                            :: complete_coulomb
+      LOGICAL                                            :: analytical_stress, complete_coulomb
       REAL(dp) :: cell_response(3, 3), coulomb_cell_gradient(3, 3), coulomb_source_virial(3, 3), &
          external_energy, external_response, field_measure, metric_cell_gradient(3, 3), native_virial(3, 3), &
          metric_response, response, source_virial(3, 3), strain(3, 3), work_virial(3, 3), &
@@ -102,6 +102,7 @@ CONTAINS
                       particle_set=atoms, atomic_kind_set=atomic_kinds, para_env=para_env)
       CALL get_ks_env(ks_env, upf_inverse=state)
       CPASSERT(ASSOCIATED(state) .AND. ASSOCIATED(force))
+      analytical_stress = virial%pv_availability .AND. .NOT. virial%pv_numer
       complete_coulomb = ASSOCIATED(state%coulomb)
       CALL get_atomic_kind_set(atomic_kinds, atom_of_kind=atom_of_kind, kind_of=kind_of)
       nspin = SIZE(potential)
@@ -139,6 +140,7 @@ CONTAINS
          ALLOCATE (coulomb_atom_gradient(3, SIZE(atoms)), coulomb_source_forces(3, SIZE(atoms)))
          CALL qs_upf_inverse_coulomb_pair_geometry(qs_env, state, state%coulomb, total_density, &
                                                    coulomb_atom_gradient, coulomb_cell_gradient, &
+                                                   analytical_stress .AND. ANY(cell%perd /= 0), &
                                                    coulomb_source_forces, coulomb_source_virial)
          ALLOCATE (source_forces(3, SIZE(atoms)))
          source_forces = 0.0_dp
@@ -209,7 +211,7 @@ CONTAINS
             END IF
          END DO
       END DO
-      IF (virial%pv_availability .AND. .NOT. virial%pv_numer) THEN
+      IF (analytical_stress) THEN
          IF (ANY(cell%perd == 0) .AND. .NOT. complete_coulomb) THEN
             CALL get_qs_env(qs_env, pw_env=pw_env)
             CALL pw_env_get(pw_env, poisson_env=poisson)

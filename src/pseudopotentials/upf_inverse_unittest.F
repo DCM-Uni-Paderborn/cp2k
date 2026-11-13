@@ -3314,6 +3314,10 @@ CONTAINS
          CALL upf_inverse_coulomb_pair_geometry(centers, map, parallel_center_gradient, parallel_cell_gradient, comm)
          CALL check(MAXVAL(ABS(parallel_center_gradient - center_gradient)), "Distributed pair position covector", 3.e-12_dp)
          CALL check(MAXVAL(ABS(parallel_cell_gradient - cell_gradient)), "Distributed pair cell covector", 3.e-12_dp)
+         CALL upf_inverse_coulomb_pair_geometry(centers, map, parallel_center_gradient, parallel_cell_gradient, &
+                                                comm, cell_derivative=.FALSE.)
+         CALL check(MAXVAL(ABS(parallel_center_gradient - center_gradient)), "Pair position covector without stress", 3.e-12_dp)
+         CALL check(MAXVAL(ABS(parallel_cell_gradient)), "Omitted pair cell covector", TINY(1.0_dp))
          CALL check(MAXVAL(ABS(SUM(center_gradient, DIM=2))), "Residual-pair translation covector", 3.e-12_dp)
          IF (boundary == 1) CALL check(MAXVAL(ABS(cell_gradient)), "Isolated residual-pair cell covector", 3.e-12_dp)
          CALL upf_inverse_coulomb_density(centers, cell, g, volume, density_g, map, density_response, &
@@ -3545,6 +3549,9 @@ CONTAINS
       CALL check(ABS(cached_energy - energy), "Reflected self-image energy", 3.e-13_dp)
       CALL check(MAXVAL(ABS(cached_potential(1)%values - potential(1)%values)), "Reflected self-image potential", 3.e-13_dp)
       CALL check(ABS(cell_gradient(1, 2) - response), "Reflected self-image shear response", 3.e-12_dp)
+      CALL upf_inverse_coulomb_pair_geometry(center, map, center_gradient, cell_gradient, comm, cell_derivative=.FALSE.)
+      CALL check(MAXVAL(ABS(center_gradient)), "Self-image position covector without stress", TINY(1.0_dp))
+      CALL check(MAXVAL(ABS(cell_gradient)), "Omitted self-image shear response", TINY(1.0_dp))
    END SUBROUTINE check_cartesian_self_images
 ! **************************************************************************************************
 !> \brief Translated shell theorem, overlap, reciprocity and joint geometry response.

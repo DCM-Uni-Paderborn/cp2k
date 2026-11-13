@@ -241,20 +241,22 @@ CONTAINS
 !> \param cell_gradient Derivative with respect to lattice vectors at fixed center positions.
 !> \param comm Optional process group sharing the same replicated centers and map.
 !>        Distributes Cartesian pair/image derivatives and reduces only the resulting covectors.
+!> \param cell_derivative Whether to compute the cell gradient. Defaults to true.
 ! **************************************************************************************************
-   SUBROUTINE upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient, comm)
+   SUBROUTINE upf_inverse_coulomb_pair_geometry(centers, map, center_gradient, cell_gradient, comm, cell_derivative)
       TYPE(upf_inverse_coulomb_center_type), INTENT(IN)  :: centers(:)
       TYPE(upf_inverse_coulomb_map_type), INTENT(IN)     :: map
       REAL(dp), INTENT(OUT)                              :: center_gradient(:, :), &
                                                             cell_gradient(3, 3)
       TYPE(mp_comm_type), INTENT(IN), OPTIONAL           :: comm
+      LOGICAL, INTENT(IN), OPTIONAL                      :: cell_derivative
 
       INTEGER                                            :: a, axis, b, channel, column, h, i, &
                                                             image(3), info, j, k, limits(2, 3), &
                                                             mask, nr, nrank, owner, pair_parity, &
                                                             rank
       INTEGER, ALLOCATABLE                               :: parity(:, :)
-      LOGICAL                                            :: cartesian, reflection_axes(3)
+      LOGICAL                                            :: cartesian, do_cell, reflection_axes(3)
       REAL(dp)                                           :: center_value, delta(3), displacement(3), &
                                                             image_center(3), inverse_cell(3, 3), multiplicity, &
                                                             radius, separation(3), value, values(3)
@@ -266,6 +268,9 @@ CONTAINS
       CPASSERT(ALL(SHAPE(center_gradient) == [3, SIZE(centers)]))
       center_gradient = 0.0_dp
       cell_gradient = 0.0_dp
+      do_cell = .TRUE.
+      IF (PRESENT(cell_derivative)) do_cell = cell_derivative
+      IF (.NOT. do_cell .AND. SIZE(centers) <= 1) RETURN
       rank = 0
       nrank = 1
       IF (PRESENT(comm)) THEN
@@ -290,6 +295,8 @@ CONTAINS
       END DO
       DO a = 1, SIZE(centers)
          DO b = a, SIZE(centers)
+            ! Moving a center and its own images together leaves their separation fixed.
+            IF (a == b .AND. .NOT. do_cell) CYCLE
             separation = centers(a)%position - centers(b)%position
             CALL pair_reflection_center(map%cell, separation, map%periodicity, cartesian, reflection_axes, image_center)
             IF (ANY(reflection_axes)) parity = image_pair_parity(centers(a), centers(b))
@@ -335,10 +342,12 @@ CONTAINS
                                  value = DOT_PRODUCT(work(a)%q(:, channel), &
                                                      MATMUL(dkernel(:, channel, :, h), work(b)%q(:, h)))
                                  IF (IAND(pair_parity, mask) == 0) center_value = center_value + value
-                                 DO column = 1, 3
-                                    IF (IAND(IEOR(pair_parity, reflection_bits(column)), mask) /= 0) CYCLE
-                                    values(column) = values(column) + value
-                                 END DO
+                                 IF (do_cell) THEN
+                                    DO column = 1, 3
+                                       IF (IAND(IEOR(pair_parity, reflection_bits(column)), mask) /= 0) CYCLE
+                                       values(column) = values(column) + value
+                                    END DO
+                                 END IF
                               END DO
                            END DO
                            IF (a /= b) THEN
@@ -346,8 +355,8 @@ CONTAINS
                               center_gradient(axis, b) = center_gradient(axis, b) - multiplicity*center_value
                            END IF
                            ! Reflected image indices are centered on the relative fractional coordinate.
-                           cell_gradient(axis, :) = cell_gradient(axis, :) - multiplicity* &
-                              (image_center*center_value + (REAL(image, dp) - image_center)*values)
+                           IF (do_cell) cell_gradient(axis, :) = cell_gradient(axis, :) - multiplicity* &
+                                                               (image_center*center_value + (REAL(image, dp) - image_center)*values)
                            CYCLE
                         END IF
                         value = 0.0_dp
@@ -361,7 +370,7 @@ CONTAINS
                            center_gradient(axis, a) = center_gradient(axis, a) + value
                            center_gradient(axis, b) = center_gradient(axis, b) - value
                         END IF
-                        cell_gradient(axis, :) = cell_gradient(axis, :) - value*REAL(image, dp)
+                        IF (do_cell) cell_gradient(axis, :) = cell_gradient(axis, :) - value*REAL(image, dp)
                      END DO
                   END DO
                END DO
@@ -371,7 +380,7 @@ CONTAINS
       END DO
       IF (PRESENT(comm)) THEN
          CALL comm%sum(center_gradient)
-         CALL comm%sum(cell_gradient)
+         IF (do_cell) CALL comm%sum(cell_gradient)
       END IF
    END SUBROUTINE upf_inverse_coulomb_pair_geometry
 

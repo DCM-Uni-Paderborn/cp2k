@@ -1506,16 +1506,18 @@ CONTAINS
 !> \param matrix Accepted spin-summed Hermitian matrices in global k order.
 !> \param atom_gradient Covector for physical Cartesian atom positions.
 !> \param cell_gradient Covector for lattice vectors at fixed atom positions.
+!> \param cell_derivative Whether the residual-pair cell gradient is needed.
 !> \param source_forces Optional negative Cartesian gradients of the smooth sources at these occupations.
 !> \param source_virial Corresponding smooth-source virial.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_coulomb_pair_geometry(qs_env, state, map, matrix, atom_gradient, cell_gradient, &
-                                                   source_forces, source_virial)
+                                                   cell_derivative, source_forces, source_virial)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(qs_upf_inverse_scf_type), INTENT(IN), TARGET  :: state
       TYPE(qs_upf_inverse_coulomb_type), INTENT(INOUT)   :: map
       COMPLEX(dp), INTENT(IN)                            :: matrix(:, :, :)
       REAL(dp), INTENT(OUT)                              :: atom_gradient(:, :), cell_gradient(3, 3)
+      LOGICAL, INTENT(IN)                                :: cell_derivative
       REAL(dp), INTENT(OUT), OPTIONAL                    :: source_forces(:, :), source_virial(3, 3)
 
       INTEGER                                            :: a
@@ -1533,7 +1535,7 @@ CONTAINS
       CALL get_qs_env(qs_env, para_env=para_env)
       ALLOCATE (center_gradient(3, SIZE(map%centers)))
       CALL upf_inverse_coulomb_pair_geometry(map%centers, map%maps, center_gradient, cell_gradient, &
-                                             comm=para_env%mp_comm_type)
+                                             comm=para_env%mp_comm_type, cell_derivative=cell_derivative)
       atom_gradient = 0.0_dp
       DO a = 1, SIZE(map%centers)
          atom_gradient(:, map%center_atoms(a)) = atom_gradient(:, map%center_atoms(a)) + center_gradient(:, a)
