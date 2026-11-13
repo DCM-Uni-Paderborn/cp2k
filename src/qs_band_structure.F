@@ -53,6 +53,7 @@ MODULE qs_band_structure
                                               do_general_diag_kp
    USE qs_scf_types,                    ONLY: qs_scf_env_type
    USE scf_control_types,               ONLY: scf_control_type
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
    USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
 
@@ -82,6 +83,9 @@ CONTAINS
       bs_input => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%BAND_STRUCTURE")
       CALL section_vals_get(bs_input, explicit=explicit)
       IF (explicit) THEN
+         IF (qs_upf_inverse_scf_active(qs_env%ks_env)) THEN
+            CPABORT("Band structure is not implemented for original USPP or PAW.")
+         END IF
          CALL get_qs_env(qs_env, do_kpoints=do_kpoints)
          IF (do_kpoints) THEN
             CALL do_calculate_band_structure(qs_env)
@@ -331,6 +335,11 @@ CONTAINS
          POINTER                                         :: sab_nl
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
+
+      ! Original UPF Hamiltonians and metrics are registered only on the SCF k-point mesh.
+      IF (qs_upf_inverse_scf_active(qs_env%ks_env)) THEN
+         CPABORT("A separate post-SCF k-point mesh is not implemented for original USPP or PAW.")
+      END IF
 
       CALL calculate_kpoints_for_bs(kpoint, scheme, group_size_ext, mp_grid, kpgeneral, &
                                     kp_shift, gamma_centered)
