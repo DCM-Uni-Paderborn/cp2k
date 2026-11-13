@@ -66,6 +66,7 @@ list(
   qs_upf_inverse_core.F
   qs_upf_inverse_forces.F
   qs_upf_inverse_grid.F
+  qs_upf_inverse_paw.F
   qs_upf_inverse_scf.F
   qs_upf_inverse_types.F
   qs_uspp_methods.F
