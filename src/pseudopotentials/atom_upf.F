@@ -208,12 +208,11 @@ CONTAINS
                   CALL upf_mesh_option(parser, pot)
                END IF
                CALL upf_mesh_section(parser, pot)
-            ELSE IF (nametag(2:8) == "PP_NLCC") THEN
-               IF (nametag(9:9) == ">") THEN
-                  CALL upf_nlcc_section(parser, pot, .FALSE.)
-               ELSE
-                  CALL upf_nlcc_section(parser, pot, .TRUE.)
-               END IF
+            ELSE IF (nametag == "<PP_NLCC" .OR. nametag == "<PP_NLCC>") THEN
+               IF (ALLOCATED(pot%rho_nlcc)) CPABORT("Duplicate UPF PP_NLCC array")
+               CPASSERT(pot%mesh_size > 0)
+               ALLOCATE (pot%rho_nlcc(pot%mesh_size))
+               CALL upf_real_array(parser, nametag, pot%rho_nlcc, allow_short=.TRUE.)
             ELSE IF (nametag(2:10) == "PP_TAUMOD") THEN
                CPASSERT(pot%mesh_size > 0 .AND. .NOT. ALLOCATED(pot%tau_nlcc))
                ALLOCATE (pot%tau_nlcc(pot%mesh_size))
@@ -222,12 +221,12 @@ CONTAINS
                CPASSERT(pot%mesh_size > 0 .AND. .NOT. ALLOCATED(pot%tau_atom))
                ALLOCATE (pot%tau_atom(pot%mesh_size))
                CALL upf_real_array(parser, nametag, pot%tau_atom, convention=pot%tau_atom_convention)
-            ELSE IF (nametag(2:9) == "PP_LOCAL") THEN
-               IF (nametag(10:10) == ">") THEN
-                  CALL upf_local_section(parser, pot, .FALSE.)
-               ELSE
-                  CALL upf_local_section(parser, pot, .TRUE.)
-               END IF
+            ELSE IF (nametag == "<PP_LOCAL" .OR. nametag == "<PP_LOCAL>") THEN
+               IF (ALLOCATED(pot%vlocal)) CPABORT("Duplicate UPF PP_LOCAL array")
+               CPASSERT(pot%mesh_size > 0)
+               ALLOCATE (pot%vlocal(pot%mesh_size))
+               CALL upf_real_array(parser, nametag, pot%vlocal, allow_short=.TRUE.)
+               pot%vlocal = 0.5_dp*pot%vlocal ! Ry to Hartree
             ELSE IF (nametag(2:12) == "PP_NONLOCAL") THEN
                CPASSERT(nametag(13:13) == ">")
                CALL upf_nonlocal_section(parser, pot, readaug .AND. (.NOT. pot%is_paw .OR. readpaw))
@@ -506,131 +505,6 @@ CONTAINS
       IF (ANY(pot%rab <= 0.0_dp)) CPABORT("UPF radial mesh spacing must be positive")
 
    END SUBROUTINE upf_mesh_section
-
-! **************************************************************************************************
-!> \brief ...
-!> \param parser ...
-!> \param pot ...
-!> \param options ...
-! **************************************************************************************************
-   SUBROUTINE upf_nlcc_section(parser, pot, options)
-      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
-      TYPE(atom_upfpot_type)                             :: pot
-      LOGICAL, INTENT(IN)                                :: options
-
-      CHARACTER(LEN=default_string_length)               :: line, string
-      INTEGER                                            :: icount, m, mc, ms
-      LOGICAL                                            :: at_end
-
-      m = pot%mesh_size
-      ms = m
-      mc = 1
-      IF (options) THEN
-         DO
-            IF (parser_test_next_token(parser) == "EOL") THEN
-               CALL parser_get_next_line(parser, 1, at_end)
-               CPASSERT(.NOT. at_end)
-            END IF
-            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-            IF (string == ">") EXIT
-            SELECT CASE (string)
-            CASE ("TYPE")
-               CALL parser_get_object(parser, line, lower_to_upper=.TRUE.)
-               CPASSERT(line == "REAL")
-            CASE ("SIZE")
-               CALL parser_get_object(parser, ms)
-               CPASSERT(ms <= m)
-            CASE ("COLUMNS")
-               CALL parser_get_object(parser, mc)
-            CASE DEFAULT
-               CPABORT("Unknown UPF PP_NLCC option <"//TRIM(string)//"> found")
-            END SELECT
-         END DO
-      END IF
-
-      ALLOCATE (pot%rho_nlcc(m))
-      pot%rho_nlcc = 0.0_dp
-      icount = 1
-      DO WHILE (icount <= ms)
-         IF (parser_test_next_token(parser) == "EOL") THEN
-            CALL parser_get_next_line(parser, 1, at_end)
-            CPASSERT(.NOT. at_end)
-         ELSE
-            CALL parser_get_object(parser, pot%rho_nlcc(icount))
-            icount = icount + 1
-         END IF
-      END DO
-
-      CALL parser_get_next_line(parser, 1, at_end)
-      CPASSERT(.NOT. at_end)
-      CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-      CPASSERT(string == "</PP_NLCC>")
-
-   END SUBROUTINE upf_nlcc_section
-
-! **************************************************************************************************
-!> \brief ...
-!> \param parser ...
-!> \param pot ...
-!> \param options ...
-! **************************************************************************************************
-   SUBROUTINE upf_local_section(parser, pot, options)
-      TYPE(cp_parser_type), INTENT(INOUT)                :: parser
-      TYPE(atom_upfpot_type)                             :: pot
-      LOGICAL, INTENT(IN)                                :: options
-
-      CHARACTER(LEN=default_string_length)               :: line, string
-      INTEGER                                            :: icount, m, mc, ms
-      LOGICAL                                            :: at_end
-
-      m = pot%mesh_size
-      ms = m
-      mc = 1
-      IF (options) THEN
-         DO
-            IF (parser_test_next_token(parser) == "EOL") THEN
-               CALL parser_get_next_line(parser, 1, at_end)
-               CPASSERT(.NOT. at_end)
-            END IF
-            CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-            IF (string == ">") EXIT
-            SELECT CASE (string)
-            CASE ("TYPE")
-               CALL parser_get_object(parser, line, lower_to_upper=.TRUE.)
-               CPASSERT(line == "REAL")
-            CASE ("SIZE")
-               CALL parser_get_object(parser, ms)
-               CPASSERT(ms <= m)
-            CASE ("COLUMNS")
-               CALL parser_get_object(parser, mc)
-            CASE DEFAULT
-               CPABORT("Unknown UPF PP_LOCAL option <"//TRIM(string)//"> found")
-            END SELECT
-         END DO
-      END IF
-
-      ALLOCATE (pot%vlocal(m))
-      pot%vlocal = 0.0_dp
-      icount = 1
-      DO WHILE (icount <= ms)
-         IF (parser_test_next_token(parser) == "EOL") THEN
-            CALL parser_get_next_line(parser, 1, at_end)
-            CPASSERT(.NOT. at_end)
-         ELSE
-            CALL parser_get_object(parser, pot%vlocal(icount))
-            icount = icount + 1
-         END IF
-      END DO
-
-      ! Ry -> Hartree
-      pot%vlocal = 0.5_dp*pot%vlocal
-
-      CALL parser_get_next_line(parser, 1, at_end)
-      CPASSERT(.NOT. at_end)
-      CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-      CPASSERT(string == "</PP_LOCAL>")
-
-   END SUBROUTINE upf_local_section
 
 ! **************************************************************************************************
 !> \brief ...
@@ -1321,7 +1195,9 @@ CONTAINS
 !> \param convention Optional explicit normalization metadata.
 !> \param principal_quantum_number Original integral principal quantum number, if supplied.
 ! **************************************************************************************************
-   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum, convention, principal_quantum_number)
+!> \param allow_short Accept a declared shorter radial array and pad it with zeros.
+   SUBROUTINE upf_real_array(parser, tag, values, index_value, angular_momentum, convention, &
+                             principal_quantum_number, allow_short)
       TYPE(cp_parser_type), INTENT(INOUT)                :: parser
       CHARACTER(LEN=*), INTENT(IN)                       :: tag
       REAL(dp), INTENT(OUT)                              :: values(:)
@@ -1329,11 +1205,15 @@ CONTAINS
       CHARACTER(LEN=*), INTENT(OUT), OPTIONAL            :: convention
       INTEGER, INTENT(OUT), OPTIONAL                     :: principal_quantum_number
 
+      LOGICAL, INTENT(IN), OPTIONAL                      :: allow_short
+
       CHARACTER(LEN=default_string_length)               :: name, string, value
       INTEGER                                            :: i, last, n
-      LOGICAL                                            :: at_end
+      LOGICAL                                            :: at_end, pad
       REAL(dp)                                           :: quantum_number
 
+      pad = .FALSE.
+      IF (PRESENT(allow_short)) pad = allow_short
       n = SIZE(values)
       last = LEN_TRIM(tag)
       IF (PRESENT(index_value)) index_value = -1
@@ -1357,7 +1237,10 @@ CONTAINS
                CPASSERT(value == "REAL")
             CASE ("SIZE")
                CALL parser_get_object(parser, n)
-               CPASSERT(n == SIZE(values))
+               IF (n < 0 .OR. n > SIZE(values)) THEN
+                  CPABORT("Invalid UPF array size for "//TRIM(name))
+               END IF
+               CPASSERT(pad .OR. n == SIZE(values))
             CASE ("COLUMNS")
                CALL parser_get_object(parser, value)
             CASE ("CONVENTION")
@@ -1397,11 +1280,9 @@ CONTAINS
          END DO
          CALL parser_get_object(parser, values(i))
       END DO
-      CPASSERT(ALL(ieee_is_finite(values)))
-      CALL upf_next_line(parser, at_end)
-      CPASSERT(.NOT. at_end)
-      CALL parser_get_object(parser, string, lower_to_upper=.TRUE.)
-      CPASSERT(string == "</"//TRIM(name)//">")
+      values(n + 1:) = 0.0_dp
+      IF (.NOT. ALL(ieee_is_finite(values))) CPABORT("Non-finite values in UPF "//TRIM(name))
+      CALL upf_array_end(parser, TRIM(name))
    END SUBROUTINE upf_real_array
 
 ! **************************************************************************************************
