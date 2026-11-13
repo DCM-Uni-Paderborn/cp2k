@@ -222,7 +222,8 @@ MODULE qs_scf_post_gpw
    USE qs_spectral_localizer,           ONLY: qs_scf_post_localizer
    USE qs_subsys_types,                 ONLY: qs_subsys_get,&
                                               qs_subsys_type
-   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_density
+   USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_density,&
+                                              qs_upf_inverse_electronic_density
    USE qs_wannier90,                    ONLY: wannier90_interface
    USE s_square_methods,                ONLY: compute_s_square,&
                                               compute_s_square_kp
@@ -2889,15 +2890,27 @@ CONTAINS
                                               e_density_section%absolute_section_key)
 
          END IF
-         IF (dft_control%qs_control%gapw .AND. print_density /= "SOFT_DENSITY") THEN
-            IF (print_density == "TOTAL_HARD_APPROX") THEN
-               CALL get_qs_env(qs_env, rho0_mpole=rho0_mpole)
-               CALL qs_upf_inverse_coulomb_density(qs_env, physical_density, monopole_exponent=rho0_mpole%zet0_h)
-            ELSE
-               CALL qs_upf_inverse_coulomb_density(qs_env, physical_density)
-            END IF
+         IF (print_density == "TOTAL_DENSITY" .AND. .NOT. xrd_interface) THEN
+            BLOCK
+               LOGICAL :: original_upf
+               TYPE(pw_c1d_gs_type), ALLOCATABLE :: density_g(:)
+
+               CALL qs_upf_inverse_electronic_density(qs_env, density_g, original_upf)
+               IF (original_upf) THEN
+                  ALLOCATE (physical_density(SIZE(density_g)))
+                  DO ispin = 1, SIZE(density_g)
+                     CALL physical_density(ispin)%create(density_g(ispin)%pw_grid)
+                     CALL pw_transfer(density_g(ispin), physical_density(ispin))
+                     CALL density_g(ispin)%release()
+                  END DO
+               END IF
+            END BLOCK
+         ELSE IF (dft_control%qs_control%gapw .AND. print_density == "TOTAL_HARD_APPROX") THEN
+            CALL get_qs_env(qs_env, rho0_mpole=rho0_mpole)
+            CALL qs_upf_inverse_coulomb_density(qs_env, physical_density, monopole_exponent=rho0_mpole%zet0_h)
          END IF
-         IF (dft_control%qs_control%gapw .AND. print_density == "TOTAL_DENSITY") THEN
+         IF (print_density == "TOTAL_DENSITY" .AND. &
+             (dft_control%qs_control%gapw .OR. ALLOCATED(physical_density))) THEN
             ! Native GAPW atom coefficients already contain the Bloch density image sum.
             ! Print total electronic density
             CALL get_qs_env(qs_env=qs_env, &

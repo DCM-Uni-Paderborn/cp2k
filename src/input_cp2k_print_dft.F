@@ -2772,16 +2772,17 @@ CONTAINS
                           "density accurately. This avoids potential artefacts originating from the hard density. "// &
                           "If the TOTAL_DENSITY keyword is used the hard density will be computed more accurately "// &
                           "but may introduce non-physical features. The SOFT_DENSITY keyword will lead to only the "// &
-                          "soft density being printed. In GPW these options have no effect and the cube file will "// &
-                          "only contain the valence electron density. In all-electron GAPW, hard+soft contains "// &
+                          "soft density being printed. With original UPF data, TOTAL_DENSITY includes USPP "// &
+                          "augmentation and reconstructs PAW valence and frozen-core density in GPW, GAPW_XC, and GAPW. "// &
+                          "For other GPW calculations the cube contains the valence electron density. "// &
+                          "In all-electron GAPW, hard+soft contains "// &
                           "all electrons. The soft part is not a valence-only density and need not integrate "// &
                           "to the chemical valence electron count. Use CHARGEMOL for a Gaussian-orbital export "// &
                           "that avoids representing core peaks on a regular grid.", &
                           usage="DENSITY_INCLUDE TOTAL_HARD_APPROX", &
                           enum_c_vals=s2a("TOTAL_HARD_APPROX", "TOTAL_DENSITY", "SOFT_DENSITY"), &
                           enum_desc=s2a("Print (hard+soft) density where the hard components shape is approximated", &
-                                        "Print (hard+soft) density. Only has an effect "// &
-                                        "if PAW atoms are present. NOTE: The total "// &
+                                        "Print the complete electronic density. The total "// &
                                         "in real space might exhibit unphysical features "// &
                                         "like spikes due to the finite and thus "// &
                                         "truncated g vector", &
