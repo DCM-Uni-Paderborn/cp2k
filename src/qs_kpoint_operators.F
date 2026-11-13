@@ -27,7 +27,8 @@
 ! **************************************************************************************************
 MODULE qs_kpoint_operators
    USE cp_cfm_basic_linalg,             ONLY: cp_cfm_scale_and_add_fm
-   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+   USE cp_cfm_types,                    ONLY: cp_cfm_copy_general,&
+                                              cp_cfm_create,&
                                               cp_cfm_release,&
                                               cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: &
@@ -95,6 +96,7 @@ MODULE qs_kpoint_operators
    PUBLIC :: kpoint_operator_store, kpoint_operator_get_local, kpoint_operator_get_all
    PUBLIC :: kpoint_operator_set_native, kpoint_operator_clear_native
    PUBLIC :: kpoint_operator_has_native
+   PUBLIC :: kpoint_operator_copy_native
 
    INTEGER, PARAMETER, PUBLIC :: kpoint_slot_ks = 1, &
                                  kpoint_slot_s = 2, &
@@ -267,6 +269,54 @@ CONTAINS
       END DO
       IF (slot == kpoint_slot_s) CALL kpoint_clear_scf_smat(kpoints)
    END SUBROUTINE kpoint_operator_set_native
+
+! **************************************************************************************************
+!> \brief Transfer complete operators between k-point groups on a common communicator.
+!> \param source_mesh ...
+!> \param target_mesh ...
+!> \param source_indices SCF k-point index for each target k point
+!> \param rsmat operator identity shared by both meshes
+!> \param slot ...
+! **************************************************************************************************
+   SUBROUTINE kpoint_operator_copy_native(source_mesh, target_mesh, source_indices, rsmat, slot)
+      TYPE(kpoint_type), POINTER                         :: source_mesh, target_mesh
+      INTEGER, INTENT(IN)                                :: source_indices(:)
+      TYPE(dbcsr_p_type), POINTER                        :: rsmat(:, :)
+      INTEGER, INTENT(IN)                                :: slot
+
+      INTEGER                                            :: dst, ik, row, src
+      TYPE(cp_cfm_type)                                  :: destination, source
+      TYPE(cp_cfm_type), ALLOCATABLE                     :: matrices(:, :)
+      TYPE(cp_fm_struct_type), POINTER                   :: layout
+
+      CPASSERT(ASSOCIATED(source_mesh%para_env, target_mesh%para_env))
+      CPASSERT(SIZE(source_indices) == target_mesh%nkp)
+      CPASSERT(kpoint_operator_native_match(source_mesh, rsmat) == slot)
+      ALLOCATE (matrices(SIZE(target_mesh%kp_env), SIZE(rsmat, 1)))
+      DO row = 1, SIZE(matrices, 2)
+         DO dst = 1, SIZE(matrices, 1)
+            layout => target_mesh%kp_env(dst)%kpoint_env%pmat(1, row)%matrix_struct
+            CALL cp_cfm_create(matrices(dst, row), layout)
+         END DO
+         DO ik = 1, SIZE(source_indices)
+            src = source_indices(ik) - source_mesh%kp_range(1) + 1
+            dst = ik - target_mesh%kp_range(1) + 1
+            source = cp_cfm_type()
+            destination = cp_cfm_type()
+            IF (src > 0 .AND. src <= SIZE(source_mesh%kp_env)) THEN
+               source = source_mesh%native_operators(slot)%matrices(src, row)
+            END IF
+            IF (dst > 0 .AND. dst <= SIZE(matrices, 1)) destination = matrices(dst, row)
+            CALL cp_cfm_copy_general(source, destination, source_mesh%para_env)
+         END DO
+      END DO
+      CALL kpoint_operator_set_native(target_mesh, rsmat, slot, matrices)
+      DO row = 1, SIZE(matrices, 2)
+         DO dst = 1, SIZE(matrices, 1)
+            CALL cp_cfm_release(matrices(dst, row))
+         END DO
+      END DO
+   END SUBROUTINE kpoint_operator_copy_native
 
 ! **************************************************************************************************
 !> \brief Remove explicitly registered operators when the representation is detached.

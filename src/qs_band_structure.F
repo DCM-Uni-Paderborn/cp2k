@@ -47,13 +47,17 @@ MODULE qs_band_structure
                                               qs_env_release,&
                                               qs_environment_type
    USE qs_gamma2kp,                     ONLY: create_kp_from_gamma
-   USE qs_mo_types,                     ONLY: get_mo_set
+   USE qs_kpoint_operators,             ONLY: kpoint_operator_copy_native,&
+                                              kpoint_slot_ks,&
+                                              kpoint_slot_s
+   USE qs_mo_types,                     ONLY: get_mo_set,&
+                                              set_mo_set
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
    USE qs_scf_diagonalization,          ONLY: diag_kp_smat,&
                                               do_general_diag_kp
    USE qs_scf_types,                    ONLY: qs_scf_env_type
-   USE scf_control_types,               ONLY: scf_control_type
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active
+   USE scf_control_types,               ONLY: scf_control_type
    USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
 
@@ -83,15 +87,15 @@ CONTAINS
       bs_input => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%BAND_STRUCTURE")
       CALL section_vals_get(bs_input, explicit=explicit)
       IF (explicit) THEN
-         IF (qs_upf_inverse_scf_active(qs_env%ks_env)) THEN
-            CPABORT("Band structure is not implemented for original USPP or PAW.")
-         END IF
          CALL get_qs_env(qs_env, do_kpoints=do_kpoints)
          IF (do_kpoints) THEN
             CALL do_calculate_band_structure(qs_env)
          ELSE
             BLOCK
                TYPE(qs_environment_type), POINTER :: qs_env_kp
+               IF (qs_upf_inverse_scf_active(qs_env%ks_env)) THEN
+                  CPABORT("Band structure requires SCF k points for original USPP or PAW.")
+               END IF
                CALL create_kp_from_gamma(qs_env, qs_env_kp)
                CALL do_calculate_band_structure(qs_env_kp)
                CALL qs_env_release(qs_env_kp)
@@ -324,7 +328,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: gamma_centered
 
       INTEGER                                            :: ik
-      LOGICAL                                            :: diis_step
+      INTEGER, ALLOCATABLE                               :: source_indices(:)
+      LOGICAL                                            :: diis_step, original_upf
       REAL(dp), POINTER                                  :: potential(:, :)
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks, matrix_s
@@ -336,13 +341,16 @@ CONTAINS
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(scf_control_type), POINTER                    :: scf_control
 
-      ! Original UPF Hamiltonians and metrics are registered only on the SCF k-point mesh.
-      IF (qs_upf_inverse_scf_active(qs_env%ks_env)) THEN
-         CPABORT("A separate post-SCF k-point mesh is not implemented for original USPP or PAW.")
-      END IF
-
       CALL calculate_kpoints_for_bs(kpoint, scheme, group_size_ext, mp_grid, kpgeneral, &
                                     kp_shift, gamma_centered)
+
+      original_upf = qs_upf_inverse_scf_active(qs_env%ks_env)
+      CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, matrix_metric_kp=matrix_s, &
+                      scf_env=scf_env, scf_control=scf_control, kpoints=scf_kpoints)
+      IF (original_upf) THEN
+         CPASSERT(ASSOCIATED(scf_kpoints))
+         CALL match_scf_kpoints(scf_kpoints, kpoint, source_indices)
+      END IF
 
       CALL get_qs_env(qs_env=qs_env, para_env=para_env, blacs_env=blacs_env)
       CALL kpoint_env_initialize(kpoint, para_env, blacs_env)
@@ -353,8 +361,10 @@ CONTAINS
       CALL get_qs_env(qs_env, sab_kp=sab_nl, dft_control=dft_control)
       CALL kpoint_init_cell_index(kpoint, sab_nl, para_env, dft_control%nimages)
 
-      CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, matrix_s_kp=matrix_s, &
-                      scf_env=scf_env, scf_control=scf_control, kpoints=scf_kpoints)
+      IF (original_upf) THEN
+         CALL kpoint_operator_copy_native(scf_kpoints, kpoint, source_indices, matrix_s, kpoint_slot_s)
+         CALL kpoint_operator_copy_native(scf_kpoints, kpoint, source_indices, matrix_ks, kpoint_slot_ks)
+      END IF
       NULLIFY (potential)
       IF (ASSOCIATED(scf_kpoints)) THEN
          IF (ALLOCATED(scf_kpoints%lowdin_v)) THEN
@@ -369,8 +379,75 @@ CONTAINS
       END IF
       CALL do_general_diag_kp(matrix_ks, matrix_s, kpoint, scf_env, scf_control, .FALSE., diis_step, &
                               potential=potential)
+      IF (original_upf) CALL copy_scf_occupations(scf_kpoints, kpoint, source_indices)
 
    END SUBROUTINE calculate_kp_orbitals
+
+! **************************************************************************************************
+!> \brief Map requested k points to the SCF representatives with complete native operators.
+!> \param scf ...
+!> \param output ...
+!> \param indices ...
+! **************************************************************************************************
+   SUBROUTINE match_scf_kpoints(scf, output, indices)
+      TYPE(kpoint_type), INTENT(IN)                      :: scf, output
+      INTEGER, ALLOCATABLE, INTENT(OUT)                  :: indices(:)
+
+      REAL(dp), PARAMETER :: tolerance = 128.0_dp*EPSILON(1.0_dp)
+
+      INTEGER                                            :: ik, j
+      REAL(dp)                                           :: difference(3)
+
+      ALLOCATE (indices(output%nkp))
+      DO ik = 1, output%nkp
+         DO j = 1, scf%nkp
+            difference = output%xkp(:, ik) - scf%xkp(:, j)
+            IF (MAXVAL(ABS(difference - ANINT(difference))) <= tolerance) EXIT
+         END DO
+         IF (j > scf%nkp) THEN
+            CPABORT("USPP or PAW post-SCF k points must belong to the SCF mesh.")
+         END IF
+         indices(ik) = j
+      END DO
+   END SUBROUTINE match_scf_kpoints
+
+! **************************************************************************************************
+!> \brief Preserve SCF occupations and chemical potentials when sampling its eigenstates.
+!> \param scf ...
+!> \param output ...
+!> \param indices ...
+! **************************************************************************************************
+   SUBROUTINE copy_scf_occupations(scf, output, indices)
+      TYPE(kpoint_type), INTENT(IN)                      :: scf, output
+      INTEGER, INTENT(IN)                                :: indices(:)
+
+      INTEGER                                            :: dst, ik, ispin, nmo, src
+      REAL(dp), ALLOCATABLE                              :: values(:)
+      TYPE(kpoint_env_type), POINTER                     :: kp
+
+      DO ispin = 1, SIZE(output%kp_env(1)%kpoint_env%mos)
+         CALL get_mo_set(output%kp_env(1)%kpoint_env%mos(ispin), nmo=nmo)
+         ALLOCATE (values(1 + nmo))
+         DO ik = 1, SIZE(indices)
+            src = indices(ik) - scf%kp_range(1) + 1
+            dst = ik - output%kp_range(1) + 1
+            values = 0.0_dp
+            IF (src > 0 .AND. src <= SIZE(scf%kp_env) .AND. scf%para_env_kp%is_source()) THEN
+               kp => scf%kp_env(src)%kpoint_env
+               nmo = MIN(SIZE(values) - 1, kp%mos(ispin)%nmo)
+               values(1:nmo) = kp%mos(ispin)%occupation_numbers(1:nmo)
+               values(SIZE(values)) = kp%mos(ispin)%mu
+            END IF
+            CALL scf%para_env%sum(values)
+            IF (dst > 0 .AND. dst <= SIZE(output%kp_env)) THEN
+               kp => output%kp_env(dst)%kpoint_env
+               kp%mos(ispin)%occupation_numbers(:) = values(1:SIZE(values) - 1)
+               CALL set_mo_set(kp%mos(ispin), mu=values(SIZE(values)))
+            END IF
+         END DO
+         DEALLOCATE (values)
+      END DO
+   END SUBROUTINE copy_scf_occupations
 
 ! **************************************************************************************************
 !> \brief ...
