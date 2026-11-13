@@ -965,7 +965,8 @@ CONTAINS
                   IF (ikp > kplocal) CYCLE
                   CALL qs_diis_b_calc_err_kp(kpoints%scf_diis_buffer, ib, kp%mos, cksmat, csmat, &
                                              ispin, ikp, cmos, real_wfn=use_real_wfn, &
-                                             local=.FALSE., gemm_ctx=workspace(1)%gemm_ctx)
+                                             local=.FALSE., gemm_ctx=workspace(1)%gemm_ctx, &
+                                             zero_weight=kp%wkp == 0.0_dp)
 
                END DO !ispin
             END DO !ikp
@@ -974,7 +975,7 @@ CONTAINS
 
          ALLOCATE (coeffs(nb))
          CALL qs_diis_b_step_kp(kpoints%scf_diis_buffer, coeffs, ib, nb, scf_env%iter_delta, diis_error, &
-                                cdiis_step, scf_control%eps_diis, nspin, nkp, kplocal, &
+                                cdiis_step, scf_control%eps_diis, nspin, COUNT(kpoints%wkp /= 0.0_dp), kplocal, &
                                 MERGE(2, scf_control%nmixing, use_adiis), &
                                 scf_section, kpoints%para_env_inter_kp)
          diis_weight = 1.0_dp
@@ -1247,7 +1248,8 @@ CONTAINS
                END IF
                IF (store_error) THEN
                   CALL qs_diis_b_calc_err_kp(kpoints%scf_diis_buffer, ib, kp%mos, work%cksmat, work%csmat, &
-                                             ispin, ikp, work%cmos, local=.TRUE., gemm_ctx=work%gemm_ctx)
+                                             ispin, ikp, work%cmos, local=.TRUE., gemm_ctx=work%gemm_ctx, &
+                                             zero_weight=kp%wkp == 0.0_dp)
                ELSE
                   CALL kp_solve_complex(kp%mos(ispin), work, scf_env, scf_control, use_adiis, .TRUE.)
                END IF

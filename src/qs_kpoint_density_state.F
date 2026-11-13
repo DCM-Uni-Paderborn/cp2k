@@ -304,7 +304,7 @@ CONTAINS
    END SUBROUTINE kpoint_density_state_capture
 
 ! **************************************************************************************************
-!> \brief Maximum complex AO density change, reduced over the world once without k weights.
+!> \brief Maximum complex AO density change over positive-weight k points.
 !> \param kpoints ...
 !> \param delta ...
 ! **************************************************************************************************
@@ -318,6 +318,7 @@ CONTAINS
       delta = 0.0_dp
       DO spin = 1, SIZE(kpoints%native_trial, 2)
          DO ik = 1, SIZE(kpoints%native_trial, 1)
+            IF (kpoints%wkp(kpoints%kp_range(1) + ik - 1) == 0.0_dp) CYCLE
             delta = MAX(delta, MAXVAL(ABS(kpoints%native_trial(ik, spin)%local_data - &
                                           kpoints%native_density(ik, spin)%local_data)))
          END DO
@@ -326,7 +327,7 @@ CONTAINS
    END SUBROUTINE kpoint_density_state_delta
 
 ! **************************************************************************************************
-!> \brief Accept a convex direct density step. The raw trial remains available for finalization.
+!> \brief Mix active densities and take the latest trial at each zero-weight point.
 !> \param kpoints ...
 !> \param alpha ...
 ! **************************************************************************************************
@@ -340,7 +341,7 @@ CONTAINS
       CPASSERT(alpha >= 0.0_dp .AND. alpha <= 1.0_dp)
       DO spin = 1, SIZE(kpoints%native_trial, 2)
          DO ik = 1, SIZE(kpoints%native_trial, 1)
-            IF (alpha == 1.0_dp) THEN
+            IF (alpha == 1.0_dp .OR. kpoints%wkp(kpoints%kp_range(1) + ik - 1) == 0.0_dp) THEN
                kpoints%native_density(ik, spin)%local_data(:, :) = kpoints%native_trial(ik, spin)%local_data
             ELSE
                kpoints%native_density(ik, spin)%local_data(:, :) = &

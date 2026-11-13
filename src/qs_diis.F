@@ -23,6 +23,7 @@ MODULE qs_diis
                                               cp_cfm_trace
    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
                                               cp_cfm_get_info,&
+                                              cp_cfm_set_all,&
                                               cp_cfm_to_cfm,&
                                               cp_cfm_type
    USE cp_dbcsr_api,                    ONLY: &
@@ -1017,10 +1018,12 @@ CONTAINS
 !> \param real_wfn ...
 !> \param local use local GEMM on a one-rank k-point group
 !> \param gemm_ctx private local GEMM context, unused for distributed groups
+!> \param zero_weight Exclude sampling-only points from the DIIS residual.
 !> \note We assume that we always have an overlap matrix.
 !> TODO: do we need to pass the kp weight for the back Fourier transform?
 ! **************************************************************************************************
-   SUBROUTINE qs_diis_b_calc_err_kp(diis_buffer, ib, mos, kc, sc, ispin, ikp, cmos, real_wfn, local, gemm_ctx)
+   SUBROUTINE qs_diis_b_calc_err_kp(diis_buffer, ib, mos, kc, sc, ispin, ikp, cmos, real_wfn, local, gemm_ctx, &
+                                    zero_weight)
       TYPE(qs_diis_buffer_type_kp), POINTER              :: diis_buffer
       INTEGER, INTENT(IN)                                :: ib
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
@@ -1029,6 +1032,7 @@ CONTAINS
       TYPE(cp_cfm_type), INTENT(INOUT)                   :: cmos
       LOGICAL, INTENT(IN), OPTIONAL                      :: real_wfn, local
       TYPE(local_gemm_ctxt_type), INTENT(INOUT)          :: gemm_ctx
+      LOGICAL, INTENT(IN)                                :: zero_weight
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'qs_diis_b_calc_err_kp'
 
@@ -1052,16 +1056,6 @@ CONTAINS
          CALL timestop(handle)
          RETURN
       END IF
-      CALL get_mo_set(mos(ispin), nao=nao, homo=homo, maxocc=maxocc)
-
-      IF (my_real_wfn) THEN
-         CALL get_mo_set(mos(ispin), mo_coeff=rmos)
-         CALL cp_cfm_scale_and_add_fm(CMPLX(0.0_dp, KIND=dp), cmos, &
-                                      CMPLX(1.0_dp, KIND=dp), rmos)
-      ELSE
-         CALL cp_cfm_to_cfm(mos(ispin)%cmo_coeff, cmos)
-      END IF
-
       new_errors => diis_buffer%error(ib, ispin, ikp)
       parameters => diis_buffer%param(ib, ispin, ikp)
       smat => diis_buffer%smat(ikp)
@@ -1069,6 +1063,20 @@ CONTAINS
       !copy the KS and overlap matrices to the DIIS buffer
       CALL cp_cfm_to_cfm(kc, parameters)
       CALL cp_cfm_to_cfm(sc, smat)
+
+      IF (zero_weight) THEN
+         CALL cp_cfm_set_all(new_errors, (0.0_dp, 0.0_dp))
+         CALL timestop(handle)
+         RETURN
+      END IF
+      CALL get_mo_set(mos(ispin), nao=nao, homo=homo, maxocc=maxocc)
+      IF (my_real_wfn) THEN
+         CALL get_mo_set(mos(ispin), mo_coeff=rmos)
+         CALL cp_cfm_scale_and_add_fm(CMPLX(0.0_dp, KIND=dp), cmos, &
+                                      CMPLX(1.0_dp, KIND=dp), rmos)
+      ELSE
+         CALL cp_cfm_to_cfm(mos(ispin)%cmo_coeff, cmos)
+      END IF
 
       ! KC <- K*C; SC <- S*C. Retain the existing factor of two in SC.
       ! new_errors <- KC*(SC)^H - SC*(KC)^H.
@@ -1117,14 +1125,14 @@ CONTAINS
 !> \param diis_step ...
 !> \param eps_diis ...
 !> \param nspin ...
-!> \param nkp ...
+!> \param nactive Number of k points with nonzero integration weight.
 !> \param nkp_local ...
 !> \param nmixing ...
 !> \param scf_section ...
 !> \param para_env_inter_kp communicator connecting the k-point groups
 ! **************************************************************************************************
    SUBROUTINE qs_diis_b_step_kp(diis_buffer, coeffs, ib, nb, delta, error_max, diis_step, eps_diis, &
-                                nspin, nkp, nkp_local, nmixing, scf_section, para_env_inter_kp)
+                                nspin, nactive, nkp_local, nmixing, scf_section, para_env_inter_kp)
 
       TYPE(qs_diis_buffer_type_kp), POINTER              :: diis_buffer
       COMPLEX(KIND=dp), DIMENSION(:), INTENT(INOUT)      :: coeffs
@@ -1133,7 +1141,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(OUT)                         :: error_max
       LOGICAL, INTENT(OUT)                               :: diis_step
       REAL(KIND=dp), INTENT(IN)                          :: eps_diis
-      INTEGER, INTENT(IN)                                :: nspin, nkp, nkp_local
+      INTEGER, INTENT(IN)                                :: nspin, nactive, nkp_local
       INTEGER, INTENT(IN), OPTIONAL                      :: nmixing
       TYPE(section_vals_type), POINTER                   :: scf_section
       TYPE(mp_para_env_type), POINTER                    :: para_env_inter_kp
@@ -1169,6 +1177,7 @@ CONTAINS
          RETURN
       END IF
 
+      CPASSERT(nactive > 0)
       ! Check, if a DIIS step is appropriate
       diis_step = ((diis_buffer%ncall >= my_nmixing) .AND. (delta < eps_diis))
 
@@ -1182,7 +1191,7 @@ CONTAINS
                new_errors => diis_buffer%error(ib, ispin, ikp)
                CALL cp_cfm_trace(diis_buffer%error(jb, ispin, ikp), new_errors, tmp, &
                                  conjugate_a=.TRUE., local=.TRUE.)
-               b(jb, ib) = b(jb, ib) + 1.0_dp/REAL(nkp, dp)*tmp
+               b(jb, ib) = b(jb, ib) + 1.0_dp/REAL(nactive, dp)*tmp
             END DO
          END DO
       END DO
