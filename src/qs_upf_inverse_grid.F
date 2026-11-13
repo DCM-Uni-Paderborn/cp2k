@@ -135,7 +135,7 @@ CONTAINS
    END SUBROUTINE qs_upf_inverse_grid_prepare
 
 ! **************************************************************************************************
-!> \brief Keep the real soft fields for repeated electronic operations on a skew Gamma grid.
+!> \brief Keep the real soft fields for repeated electronic operations on a Gamma grid.
 !>        The full complex cache may exceed its budget even when these fields fit on their own.
 !> \param frame Prepared grid and inverse coefficients at the current geometry.
 ! **************************************************************************************************
@@ -143,15 +143,9 @@ CONTAINS
       TYPE(qs_upf_inverse_grid_type), INTENT(INOUT)       :: frame
 
       COMPLEX(dp), ALLOCATABLE                           :: gradient(:, :, :), soft(:, :)
-      INTEGER                                            :: axis, block, first, last, m, nao, npoint, status
-      REAL(dp)                                           :: skew(3, 3)
+      INTEGER                                            :: block, first, last, m, nao, npoint, status
 
       IF (frame%ao%fields_stored .OR. ANY(frame%ao%reduced_k /= 0.0_dp)) RETURN
-      skew = frame%ao%cell
-      DO axis = 1, 3
-         skew(axis, axis) = 0.0_dp
-      END DO
-      IF (ALL(skew == 0.0_dp)) RETURN
       nao = SIZE(frame%ao%coefficients, 2)
       npoint = SIZE(frame%ao%weights)
       IF (npoint == 0 .OR. 32_int_8*nao*npoint > max_point_field_bytes) RETURN
