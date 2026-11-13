@@ -546,6 +546,7 @@ CONTAINS
                                                             mu_max, mu_min, N_now, N_trial, &
                                                             res_best, res_now, res_trial, step, &
                                                             step_try, u, x
+      LOGICAL                                            :: integration_points(SIZE(wk))
 
       nmo = SIZE(e, 1)
       nkp = SIZE(e, 2)
@@ -568,17 +569,20 @@ CONTAINS
          de = 10.0_dp*sigma
       END SELECT
       de = MAX(de, 0.5_dp)
+      ! Only integration points constrain the chemical potential.
+      integration_points = wk /= 0.0_dp
+      IF (.NOT. ANY(integration_points)) integration_points = .TRUE.
+      mu_min = MINVAL(MINVAL(e, DIM=1), MASK=integration_points) - de
       ! Keep the empty endpoint exact instead of bisecting to the lowest eigenvalue.
       IF (nel == 0.0_dp) THEN
          f = 0.0_dp
          kTS = 0.0_dp
-         mu = MINVAL(e) - de
+         mu = mu_min
          RETURN
       END IF
 
       ! Bisection with bisect_method
-      mu_min = MINVAL(e) - de
-      mu_max = MAXVAL(e) + de
+      mu_max = MAXVAL(MAXVAL(e, DIM=1), MASK=integration_points) + de
       mu_best = (mu_max + mu_min)/2.0_dp
       res_best = HUGE(1.0_dp)
       iter = 0
@@ -703,6 +707,7 @@ CONTAINS
                                                             iter, nkp, nmo
       REAL(KIND=dp) :: de, dNdmu, expu2, expx2, kTSa, kTSb, mu_best, mu_max, mu_min, N_now, &
          N_trial, na, nb, res_best, res_now, res_trial, step, step_try, u, x
+      LOGICAL                                            :: integration_points(SIZE(wk))
 
       CPASSERT(SIZE(f, 3) == 2 .AND. SIZE(e, 3) == 2)
 
@@ -725,17 +730,20 @@ CONTAINS
          de = 10.0_dp*sigma
       END SELECT
       de = MAX(de, 0.5_dp)
+      ! Both spin channels use the same integration mesh.
+      integration_points = wk /= 0.0_dp
+      IF (.NOT. ANY(integration_points)) integration_points = .TRUE.
+      mu_min = MINVAL(MINVAL(MINVAL(e, DIM=1), DIM=2), MASK=integration_points) - de
       ! Keep the empty endpoint exact instead of bisecting to the lowest eigenvalue.
       IF (nel == 0.0_dp) THEN
          f = 0.0_dp
          kTS = 0.0_dp
-         mu = MINVAL(e) - de
+         mu = mu_min
          RETURN
       END IF
 
       ! Bisection with bisect_method
-      mu_min = MINVAL(e) - de
-      mu_max = MAXVAL(e) + de
+      mu_max = MAXVAL(MAXVAL(MAXVAL(e, DIM=1), DIM=2), MASK=integration_points) + de
       mu_best = (mu_max + mu_min)/2.0_dp
       res_best = HUGE(1.0_dp)
       iter = 0

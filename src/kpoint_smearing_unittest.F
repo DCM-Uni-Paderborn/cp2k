@@ -78,6 +78,7 @@ PROGRAM kpoint_smearing_unittest
    CALL test_fixed_spin_populations()
    CALL test_empty_spin()
    CALL test_particle_count_precision()
+   CALL test_zero_weight_fermi_level()
    CALL remove_all_references()
 
 CONTAINS
@@ -111,6 +112,43 @@ CONTAINS
          END IF
       END DO
    END SUBROUTINE test_particle_count_precision
+
+! **************************************************************************************************
+!> \brief Band points sample occupations at the integration mesh's chemical potential.
+! **************************************************************************************************
+   SUBROUTINE test_zero_weight_fermi_level()
+      REAL(dp), PARAMETER :: tolerance = 8.0_dp*EPSILON(1.0_dp), &
+         weights(3) = [0.37_dp, 0.63_dp, 0.0_dp]
+
+      INTEGER                                            :: i, method
+      REAL(dp)                                           :: energies(3, 3, 2), kts, kts_ref, mu, &
+                                                            mu_ref, occ(3, 3, 2), ref(3, 2, 2), &
+                                                            sigma
+
+      energies(:, 1, 1) = [-0.3_dp, 0.1_dp, 0.5_dp]
+      energies(:, 2, 1) = [-0.2_dp, 0.2_dp, 0.6_dp]
+      energies(:, 3, 1) = [-100.0_dp, 0.0_dp, 500.0_dp]
+      energies(:, :, 2) = energies(:, :, 1) + 0.071_dp
+      DO i = 1, 2
+         sigma = MERGE(0.0_dp, 0.1_dp, i == 1)
+         method = MERGE(smear_gaussian, smear_fermi_dirac, i == 1)
+         CALL Smearkp(ref(:, :, 1), mu_ref, kts_ref, energies(:, :2, 1), 2.0_dp, weights(:2), sigma, 2.0_dp, method)
+         CALL Smearkp(occ(:, :, 1), mu, kts, energies(:, :, 1), 2.0_dp, weights, sigma, 2.0_dp, method)
+         IF (ABS(mu - mu_ref) > tolerance .OR. ABS(kts - kts_ref) > tolerance .OR. &
+             MAXVAL(ABS(occ(:, :2, 1) - ref(:, :, 1))) > tolerance) THEN
+            ERROR STOP "A zero-weight band point changed the single-channel Fermi solution"
+         END IF
+         IF (occ(1, 3, 1) /= 2.0_dp .OR. ABS(occ(3, 3, 1)) > tolerance) THEN
+            ERROR STOP "The zero-weight band point did not sample the Fermi occupations"
+         END IF
+         CALL Smearkp2(ref, mu_ref, kts_ref, energies(:, :2, :), 2.0_dp, weights(:2), sigma, method)
+         CALL Smearkp2(occ, mu, kts, energies, 2.0_dp, weights, sigma, method)
+         IF (ABS(mu - mu_ref) > tolerance .OR. ABS(kts - kts_ref) > tolerance .OR. &
+             MAXVAL(ABS(occ(:, :2, :) - ref)) > tolerance) THEN
+            ERROR STOP "A zero-weight band point changed the shared-spin Fermi solution"
+         END IF
+      END DO
+   END SUBROUTINE test_zero_weight_fermi_level
 
 ! **************************************************************************************************
 !> \brief An empty spin channel must remain empty at every k point.
