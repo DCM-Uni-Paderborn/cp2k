@@ -192,10 +192,6 @@ CONTAINS
                IF (.NOT. (nametag(11:11) == ">")) THEN
                   CALL upf_header_option(parser, pot)
                END IF
-               IF (readaug .AND. pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. pot%has_wfc) THEN
-                  CPASSERT(.NOT. ALLOCATED(pot%partial_waves))
-                  ALLOCATE (pot%partial_waves)
-               END IF
                IF (readpaw .AND. pot%is_paw) THEN
                   IF (pot%has_so) THEN
                      CPABORT("Native PAW import requires scalar-relativistic data")
@@ -234,8 +230,11 @@ CONTAINS
                CALL upf_semilocal_section(parser, pot)
             ELSE IF (nametag(2:9) == "PP_PSWFC") THEN
                ! skip section for now
-            ELSE IF (nametag(2:12) == "PP_FULL_WFC") THEN
-               IF (ALLOCATED(pot%partial_waves)) THEN
+            ELSE IF (nametag == "<PP_FULL_WFC" .OR. nametag == "<PP_FULL_WFC>") THEN
+               IF (readaug .AND. pot%is_ultrasoft .AND. .NOT. pot%is_paw) THEN
+                  ! A supplemented UPF may retain the original header's HAS_WFC value.
+                  CPASSERT(.NOT. ALLOCATED(pot%partial_waves))
+                  ALLOCATE (pot%partial_waves)
                   CALL upf_full_wfc_section(parser, pot%partial_waves, nametag, pot%mesh_size, pot%number_of_proj)
                END IF
                IF (ALLOCATED(pot%paw)) THEN
@@ -292,6 +291,10 @@ CONTAINS
          CPASSERT(ALL(pot%paw%angular_momenta == pot%lbeta))
       END IF
 
+      IF (readaug .AND. pot%is_ultrasoft .AND. .NOT. pot%is_paw .AND. pot%has_wfc .AND. &
+          .NOT. ALLOCATED(pot%partial_waves)) THEN
+         CPABORT("UPF declares full partial waves but has no PP_FULL_WFC block")
+      END IF
       IF (ALLOCATED(pot%partial_waves)) THEN
          CPASSERT(ALLOCATED(pot%partial_waves%ae_wfc))
          CPASSERT(ALLOCATED(pot%partial_waves%ps_wfc))

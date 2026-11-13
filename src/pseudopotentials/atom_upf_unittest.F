@@ -269,13 +269,14 @@ CONTAINS
 
       CHARACTER(LEN=5)                                   :: has_wfc
       INTEGER                                            :: unit, variant
+      LOGICAL                                            :: has_pairs
       TYPE(atom_upfpot_type)                             :: potential
       TYPE(cp_logger_type), POINTER                      :: logger
 
       logger => cp_get_default_logger()
-      DO variant = 1, 2
-         has_wfc = 'false'
-         IF (variant == 1) has_wfc = 'true'
+      DO variant = 1, 3
+         has_wfc = MERGE('true ', 'false', variant == 1)
+         has_pairs = variant /= 2
          IF (logger%para_env%is_source()) THEN
             OPEN (NEWUNIT=unit, FILE=fixture, STATUS='REPLACE', ACTION='WRITE')
             WRITE (unit, '(A)') &
@@ -302,7 +303,7 @@ CONTAINS
                '<PP_QIJL.2.2.2 first_index="2" second_index="2" composite_index="3" angular_momentum="2">', &
                '0 0 0', '</PP_QIJL.2.2.2>', '</PP_AUGMENTATION>', '</PP_NONLOCAL>', &
                '<PP_PSWFC>', '<PP_CHI.1 l="0">', '999 999 999', '</PP_CHI.1>', '</PP_PSWFC>'
-            IF (variant == 1) THEN
+            IF (has_pairs) THEN
                ! Reordered, deliberately unnormalized waves distinguish every index and side.
                WRITE (unit, '(A)') &
                   '<PP_FULL_WFC number_of_wfc="2">', &
@@ -315,14 +316,14 @@ CONTAINS
             CLOSE (unit)
          END IF
          CALL logger%para_env%sync()
-         IF (variant == 1) THEN
+         IF (variant == 3) THEN
             CALL atom_read_upf(potential, fixture, read_header=.TRUE.)
             IF (ALLOCATED(potential%partial_waves)) ERROR STOP 'USPP full waves imported without augmentation request'
             CALL atom_release_upf(potential)
          END IF
          CALL atom_read_upf(potential, fixture, read_augmentation=.TRUE.)
          IF (potential%is_paw) ERROR STOP 'USPP full waves were classified as PAW'
-         IF (variant == 1) THEN
+         IF (has_pairs) THEN
             IF (.NOT. ALLOCATED(potential%partial_waves)) ERROR STOP 'Missing optional USPP full waves'
             ASSOCIATE (waves => potential%partial_waves)
                IF (ANY(SHAPE(waves%ae_wfc) /= [3, 2])) ERROR STOP 'USPP full-wave count differs from beta count'
