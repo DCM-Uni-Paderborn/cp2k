@@ -1114,13 +1114,13 @@ CONTAINS
          CPASSERT(ALL(SHAPE(atom_response) == SHAPE(frame%positions)))
          CPASSERT(ALL(SHAPE(coefficients_response) == SHAPE(frame%coefficients)))
       END IF
-      ALLOCATE (chi(npoint, nao), delta(npoint, nproj))
-      IF (calculate_gradient) ALLOCATE (gc(npoint, nao, 3), gd(npoint, nproj, 3))
-      IF (PRESENT(laplacian) .OR. PRESENT(laplacian_response)) ALLOCATE (lc(npoint, nao), ld(npoint, nproj))
-      IF (PRESENT(laplacian_response)) ALLOCATE (dlc(npoint, nao), dld(npoint, nproj))
+      ALLOCATE (chi(npoint, nao))
+      IF (calculate_gradient) ALLOCATE (gc(npoint, nao, 3))
+      IF (PRESENT(laplacian) .OR. PRESENT(laplacian_response)) ALLOCATE (lc(npoint, nao))
+      IF (PRESENT(laplacian_response)) ALLOCATE (dlc(npoint, nao))
       IF (calculate_response) THEN
-         ALLOCATE (dchi(npoint, nao), ddelta(npoint, nproj))
-         IF (PRESENT(gradient_response)) ALLOCATE (dgc(npoint, nao, 3), dgd(npoint, nproj, 3))
+         ALLOCATE (dchi(npoint, nao))
+         IF (PRESENT(gradient_response)) ALLOCATE (dgc(npoint, nao, 3))
       END IF
       NULLIFY (field_gradient, field_laplacian, field_laplacian_response)
       DO atom = 1, SIZE(frame%bases)
@@ -1164,6 +1164,25 @@ CONTAINS
          CPASSERT(PRESENT(gradient_response))
          CPASSERT(ALL(SHAPE(gaussian_gradient_response) == [npoint, nao, 3]))
          gaussian_gradient_response = dgc
+      END IF
+      IF (frame%direct) THEN
+         ! The direct representation has identically zero reference-wave differences.
+         ! The projectors still enter the operator and charge through their separate contractions.
+         soft = chi
+         IF (PRESENT(gradient)) gradient = gc
+         IF (PRESENT(soft_response)) soft_response = dchi
+         IF (PRESENT(gradient_response)) gradient_response = dgc
+         IF (PRESENT(laplacian)) laplacian = lc
+         IF (PRESENT(laplacian_response)) laplacian_response = dlc
+         RETURN
+      END IF
+      ALLOCATE (delta(npoint, nproj))
+      IF (calculate_gradient) ALLOCATE (gd(npoint, nproj, 3))
+      IF (ALLOCATED(lc)) ALLOCATE (ld(npoint, nproj))
+      IF (ALLOCATED(dlc)) ALLOCATE (dld(npoint, nproj))
+      IF (calculate_response) THEN
+         ALLOCATE (ddelta(npoint, nproj))
+         IF (PRESENT(gradient_response)) ALLOCATE (dgd(npoint, nproj, 3))
       END IF
       NULLIFY (field_gradient, field_laplacian, field_laplacian_response)
       DO center = 1, SIZE(frame%center_atoms)
