@@ -56,7 +56,7 @@ MODULE upf_inverse_coulomb
       INTEGER :: max_degree
       INTEGER, ALLOCATABLE :: first_term(:), powers(:, :)
       REAL(dp), ALLOCATABLE :: coefficients(:)
-      REAL(dp), ALLOCATABLE :: values(:), response(:), gradient(:, :)
+      REAL(dp), ALLOCATABLE :: values(:), response(:)
       REAL(dp), ALLOCATABLE :: sampled_values(:, :), sampled_response(:, :)
    END TYPE harmonic_work_type
 
@@ -1539,18 +1539,15 @@ CONTAINS
                sample = (iq - 1)*nphi + iphi
                u = mu*ez + sine*azimuth_directions(:, iphi)
                x = d + a*u
-               CALL solid_fields(u, work_a, derive)
-               CALL solid_fields(x, work_b, derive)
                IF (derive) THEN
                   du = dmu*ez + mu*dez - mu*dmu/sine*azimuth_directions(:, iphi) + &
                        sine*azimuth_response(:, iphi)
                   dx = dd + da*u + a*du
-                  DO channel = 1, SIZE(la)
-                     work_a%response(channel) = DOT_PRODUCT(du, work_a%gradient(:, channel))
-                  END DO
-                  DO channel = 1, SIZE(lb)
-                     work_b%response(channel) = DOT_PRODUCT(dx, work_b%gradient(:, channel))
-                  END DO
+                  CALL solid_fields(u, work_a, du)
+                  CALL solid_fields(x, work_b, dx)
+               ELSE
+                  CALL solid_fields(u, work_a)
+                  CALL solid_fields(x, work_b)
                END IF
                work_a%sampled_values(:, sample) = work_a%values
                IF (derive) work_a%sampled_response(:, sample) = work_a%response
@@ -1602,7 +1599,7 @@ CONTAINS
 
       work%max_degree = MAXVAL(ls)
       ALLOCATE (work%first_term(SIZE(ls) + 1), work%values(SIZE(ls)), work%sampled_values(SIZE(ls), sample_count))
-      IF (derive) ALLOCATE (work%response(SIZE(ls)), work%gradient(3, SIZE(ls)), &
+      IF (derive) ALLOCATE (work%response(SIZE(ls)), &
                             work%sampled_response(SIZE(ls), sample_count))
       work%first_term(1) = 1
       DO channel = 1, SIZE(ls)
@@ -1627,29 +1624,37 @@ CONTAINS
    END SUBROUTINE prepare_harmonic_work
 
 ! **************************************************************************************************
-!> \brief Native regular solid harmonics and Cartesian gradients, including their origin limits.
+!> \brief Native regular solid harmonics and their directional derivatives.
 !> \param x ...
 !> \param work Prepared Cartesian terms and output fields.
-!> \param derive Evaluate Cartesian gradients.
+!> \param direction Optional Cartesian direction for the derivative.
 ! **************************************************************************************************
-   SUBROUTINE solid_fields(x, work, derive)
+   SUBROUTINE solid_fields(x, work, direction)
       REAL(dp), INTENT(IN)                               :: x(3)
       TYPE(harmonic_work_type), INTENT(INOUT)            :: work
-      LOGICAL, INTENT(IN)                                :: derive
+      REAL(dp), INTENT(IN), OPTIONAL                     :: direction(3)
 
       INTEGER                                            :: axis, channel, i, power, px, py, pz
-      REAL(dp)                                           :: dx, dy, dz, factor, value, xp, xpowers(0:20, 3), yp, zp
+      REAL(dp)                                           :: derivative, dpowers(0:20, 3), factor, value, &
+                                                            xp, xpowers(0:20, 3), yp, zp
       xpowers(0, :) = 1.0_dp
       DO axis = 1, 3
          DO power = 1, work%max_degree
             xpowers(power, axis) = x(axis)*xpowers(power - 1, axis)
          END DO
       END DO
+      IF (PRESENT(direction)) THEN
+         ! Differentiate each coordinate power once, including at zero coordinates.
+         dpowers(0, :) = 0.0_dp
+         DO axis = 1, 3
+            DO power = 1, work%max_degree
+               dpowers(power, axis) = power*direction(axis)*xpowers(power - 1, axis)
+            END DO
+         END DO
+      END IF
       DO channel = 1, SIZE(work%values)
          value = 0.0_dp
-         dx = 0.0_dp
-         dy = 0.0_dp
-         dz = 0.0_dp
+         derivative = 0.0_dp
          DO i = work%first_term(channel), work%first_term(channel + 1) - 1
             px = work%powers(1, i)
             py = work%powers(2, i)
@@ -1659,13 +1664,12 @@ CONTAINS
             zp = xpowers(pz, 3)
             factor = work%coefficients(i)
             value = value + factor*xp*yp*zp
-            IF (.NOT. derive) CYCLE
-            IF (px > 0) dx = dx + factor*px*xpowers(px - 1, 1)*yp*zp
-            IF (py > 0) dy = dy + factor*py*xp*xpowers(py - 1, 2)*zp
-            IF (pz > 0) dz = dz + factor*pz*xp*yp*xpowers(pz - 1, 3)
+            IF (PRESENT(direction)) THEN
+               derivative = derivative + factor*(dpowers(px, 1)*yp*zp + xp*dpowers(py, 2)*zp + xp*yp*dpowers(pz, 3))
+            END IF
          END DO
          work%values(channel) = value
-         IF (derive) work%gradient(:, channel) = [dx, dy, dz]
+         IF (PRESENT(direction)) work%response(channel) = derivative
       END DO
    END SUBROUTINE solid_fields
 
