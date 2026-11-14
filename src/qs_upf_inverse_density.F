@@ -35,8 +35,7 @@ MODULE qs_upf_inverse_density
    USE upf_inverse_quadrature,          ONLY: upf_inverse_cross_density,&
                                               upf_inverse_pair,&
                                               upf_inverse_pair_response,&
-                                              upf_inverse_projector_density,&
-                                              upf_inverse_semilocal_pair
+                                              upf_inverse_projector_density
    USE uspp_augmentation,               ONLY: uspp_augmentation_collocate_atom,&
                                               uspp_augmentation_integrate_atom
 #include "./base/base_uses.f90"
@@ -92,14 +91,13 @@ CONTAINS
       CPASSERT(grid%nr > 0 .AND. grid%ng_sphere > 0)
       npoint = INT(grid%nr, int_8)*grid%ng_sphere
       nao = SIZE(frame%coefficients, 2)
-      bytes = 16_int_8*(8_int_8*npoint*nao + SIZE(frame%coefficients, KIND=int_8)) + &
+      bytes = 16_int_8*(2_int_8*npoint*nao + SIZE(frame%coefficients, KIND=int_8)) + &
               8_int_8*(3_int_8*npoint + SIZE(frame%positions, KIND=int_8) + 12_int_8) + &
               INT(STORAGE_SIZE(0)/8, int_8)*SIZE(frame%images, KIND=int_8)
       IF (bytes > remaining_bytes) RETURN
       np = SIZE(points, 2)
-      ALLOCATE (cache%left(np, nao), cache%right(np, nao), &
-                cache%left_gradient(np, nao, 3), cache%right_gradient(np, nao, 3))
-      CALL center_fields(frame, center, points, cache%left, cache%right, cache%left_gradient, cache%right_gradient)
+      ALLOCATE (cache%left(np, nao), cache%right(np, nao))
+      CALL center_fields(frame, center, points, cache%left, cache%right)
       cache%center = center
       cache%cell = frame%cell
       cache%reduced_k = frame%reduced_k
@@ -884,24 +882,21 @@ CONTAINS
       TYPE(qs_upf_inverse_density_cache_type), &
          INTENT(IN), OPTIONAL                            :: cache
 
-      COMPLEX(dp), ALLOCATABLE                           :: d(:, :), e(:, :), gd(:, :, :), &
-                                                            ge(:, :, :), qoperator(:, :)
+      COMPLEX(dp), ALLOCATABLE                           :: d(:, :), e(:, :), qoperator(:, :)
       INTEGER                                            :: atom, first, kind, last, n, np
-      REAL(dp), ALLOCATABLE                              :: q(:, :), zero(:), zeros(:, :)
+      REAL(dp), ALLOCATABLE                              :: q(:, :), zeros(:, :)
 
       CALL check_center(frame, augmentation, center, points)
       np = SIZE(points, 2)
       n = SIZE(frame%coefficients, 2)
       CPASSERT(SIZE(weights) == np .AND. SIZE(potential) == np)
       CPASSERT(ALL(SHAPE(ao_operator) == [n, n]))
-      ALLOCATE (zero(np), zeros(np, 3))
-      zero = 0.0_dp
-      zeros = 0.0_dp
       ao_operator = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (.NOT. frame%direct) THEN
-         ALLOCATE (d(np, n), e(np, n), gd(np, n, 3), ge(np, n, 3))
-         CALL center_fields(frame, center, points, d, e, gd, ge, cache=cache)
-         CALL upf_inverse_semilocal_pair(d, e, gd, ge, weights, potential, zeros, zero, ao_operator)
+         ALLOCATE (d(np, n), e(np, n))
+         CALL center_fields(frame, center, points, d, e, cache=cache)
+         e = SPREAD(potential, 2, n)*e
+         CALL upf_inverse_pair(d, e, weights, ao_operator)
          ao_operator = 0.5_dp*(ao_operator + CONJG(TRANSPOSE(ao_operator)))
       END IF
       atom = frame%center_atoms(center)
@@ -910,9 +905,10 @@ CONTAINS
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          ALLOCATE (q(last - first + 1, last - first + 1), qoperator(last - first + 1, last - first + 1))
+         ALLOCATE (zeros(3, np), SOURCE=0.0_dp)
          CALL uspp_augmentation_integrate_atom(augmentation%kinds(kind), &
                                                points - SPREAD(frame%positions(:, atom), 2, np), &
-                                               weights, potential, TRANSPOSE(zeros), q)
+                                               weights, potential, zeros, q)
          qoperator(:, :) = CMPLX(q, 0.0_dp, dp)
          ao_operator = ao_operator + MATMUL(CONJG(TRANSPOSE(frame%coefficients(first:last, :))), &
                                             MATMUL(qoperator, frame%coefficients(first:last, :)))
@@ -1212,8 +1208,6 @@ CONTAINS
 !> \param points ...
 !> \param d ...
 !> \param e ...
-!> \param gd Optional spatial gradient of the home-center difference.
-!> \param ge Matching spatial gradient of s+chi.
 !> \param dd ...
 !> \param de ...
 !> \param point_response ...
@@ -1223,13 +1217,13 @@ CONTAINS
 !> \param coefficients_response ...
 !> \param cache Optional immutable point fields. Geometry responses bypass this cache.
 ! **************************************************************************************************
-   SUBROUTINE center_fields(frame, center, points, d, e, gd, ge, dd, de, &
+   SUBROUTINE center_fields(frame, center, points, d, e, dd, de, &
                             point_response, atom_response, cell_response, reduced_k_response, coefficients_response, cache)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       INTEGER, INTENT(IN)                                :: center
       REAL(dp), INTENT(IN)                               :: points(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: d(:, :), e(:, :)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dd(:, :), de(:, :), gd(:, :, :), ge(:, :, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: dd(:, :), de(:, :)
       REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
                                                             atom_response(:, :), &
                                                             cell_response(3, 3), &
@@ -1238,12 +1232,11 @@ CONTAINS
       TYPE(qs_upf_inverse_density_cache_type), &
          INTENT(IN), OPTIONAL                            :: cache
 
-      COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), gc(:, :, :)
+      COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :)
       INTEGER                                            :: n, np
 
       n = SIZE(frame%coefficients, 2)
       np = SIZE(points, 2)
-      CPASSERT(PRESENT(gd) .EQV. PRESENT(ge))
       IF (PRESENT(cache)) THEN
          IF (ALLOCATED(cache%left) .AND. &
              .NOT. (PRESENT(dd) .OR. PRESENT(de) .OR. PRESENT(point_response) .OR. &
@@ -1262,27 +1255,21 @@ CONTAINS
             CPASSERT(ALL(cache%coefficients == frame%coefficients))
             d = cache%left
             e = cache%right
-            IF (PRESENT(gd)) THEN
-               gd = cache%left_gradient
-               ge = cache%right_gradient
-            END IF
             RETURN
          END IF
       END IF
       ALLOCATE (chi(np, n))
-      IF (PRESENT(ge)) ALLOCATE (gc(np, n, 3))
       IF (PRESENT(de)) ALLOCATE (dchi(np, n))
-      CALL qs_upf_inverse_center_fields(frame, center, points, d, gd, dd, point_response=point_response, &
+      CALL qs_upf_inverse_center_fields(frame, center, points, d, difference_response=dd, point_response=point_response, &
                                         atom_response=atom_response, cell_response=cell_response, &
                                         reduced_k_response=reduced_k_response, coefficients_response=coefficients_response, &
                                         image_shift=[0, 0, 0])
       ! Reuse the original Gaussian fields and their joint response before inverse reconstruction.
-      CALL qs_upf_inverse_evaluate(frame, points, e, ge, de, point_response=point_response, &
+      CALL qs_upf_inverse_evaluate(frame, points, e, soft_response=de, point_response=point_response, &
                                    atom_response=atom_response, cell_response=cell_response, &
                                    reduced_k_response=reduced_k_response, coefficients_response=coefficients_response, &
-                                   gaussian=chi, gaussian_gradient=gc, gaussian_response=dchi)
+                                   gaussian=chi, gaussian_response=dchi)
       e = e + chi
-      IF (PRESENT(ge)) ge = ge + gc
       IF (PRESENT(de)) de = de + dchi
    END SUBROUTINE center_fields
 

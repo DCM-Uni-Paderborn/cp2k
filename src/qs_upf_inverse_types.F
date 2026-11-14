@@ -155,8 +155,7 @@ MODULE qs_upf_inverse_types
       REAL(dp) :: cell(3, 3) = 0.0_dp, reduced_k(3) = 0.0_dp
       INTEGER, ALLOCATABLE :: images(:, :)
       REAL(dp), ALLOCATABLE :: points(:, :), positions(:, :)
-      COMPLEX(dp), ALLOCATABLE :: coefficients(:, :), left(:, :), right(:, :), &
-                                  left_gradient(:, :, :), right_gradient(:, :, :)
+      COMPLEX(dp), ALLOCATABLE :: coefficients(:, :), left(:, :), right(:, :)
    END TYPE qs_upf_inverse_density_cache_type
 
    TYPE qs_upf_inverse_coulomb_type
