@@ -33,10 +33,13 @@ MODULE qs_gspace_mixing
                                               pulay_mixing_nr
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type
+   USE qs_ks_types,                     ONLY: get_ks_env,&
+                                              qs_ks_env_type
    USE qs_mixing_utils,                 ONLY: mixing_density
    USE qs_rho_atom_types,               ONLY: rho_atom_type
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
+   USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -79,17 +82,19 @@ CONTAINS
       COMPLEX(KIND=dp)                                   :: tmp
       INTEGER                                            :: handle, iatom, ig, ispin, natom, ng, &
                                                             nspin
-      LOGICAL                                            :: gapw
+      LOGICAL                                            :: complete_upf_density, gapw
       REAL(KIND=dp), DIMENSION(:), POINTER               :: tot_rho_r
       TYPE(cp_1d_z_p_type), ALLOCATABLE                  :: density(:)
       TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_ks_env_type), POINTER                       :: ks_env
+      TYPE(qs_upf_inverse_scf_type), POINTER              :: inverse
       TYPE(pw_c1d_gs_type), DIMENSION(:), POINTER        :: rho_g
       TYPE(pw_r3d_rs_type), DIMENSION(:), POINTER        :: rho_r
       TYPE(rho_atom_type), DIMENSION(:), POINTER         :: rho_atom
 
       CALL timeset(routineN, handle)
 
-      CALL get_qs_env(qs_env, dft_control=dft_control)
+      CALL get_qs_env(qs_env, dft_control=dft_control, ks_env=ks_env)
       IF (.NOT. (dft_control%qs_control%dftb .OR. dft_control%qs_control%xtb .OR. &
                  dft_control%qs_control%semi_empirical)) THEN
 
@@ -195,9 +200,15 @@ CONTAINS
             CALL timestop(handle)
             RETURN
          END IF
+         complete_upf_density = .FALSE.
+         IF (gapw .AND. ASSOCIATED(ks_env)) THEN
+            CALL get_ks_env(ks_env, upf_inverse=inverse)
+            IF (ASSOCIATED(inverse)) complete_upf_density = ASSOCIATED(inverse%coulomb)
+         END IF
          DO ispin = 1, nspin
             CALL pw_transfer(rho_g(ispin), rho_r(ispin))
-            tot_rho_r(ispin) = pw_integrate_function(rho_r(ispin), isign=-1)
+            ! The complete UPF charge already includes the atomic contributions.
+            IF (.NOT. complete_upf_density) tot_rho_r(ispin) = pw_integrate_function(rho_r(ispin), isign=-1)
          END DO
       END IF
 
