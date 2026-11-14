@@ -3583,6 +3583,7 @@ CONTAINS
       INTEGER                                            :: i, j, side
       REAL(dp) :: a(2), b(2), d(3), da(2), db(2), dd(3), distance, exact, kernel(2, 4, 2, 4), &
          response(2, 4, 2, 4), reverse(2, 4, 2, 4), samples(2, 4, 2, 4, 2), shift
+      REAL(dp) :: zonal(2, 1, 2, 1), zonal_response(2, 1, 2, 1)
 
       a = [0.7_dp, 1.3_dp]
       b = [0.5_dp, 1.1_dp]
@@ -3656,6 +3657,13 @@ CONTAINS
       CALL upf_inverse_coulomb_pair_kernel(a, ls, indices, b, ls, indices, d, kernel)
       CALL check(ABS(kernel(1, 2, 1, 2) - 4.0_dp*pi/3.0_dp*b(1)/a(1)**2), "Concentric dipole shells")
       CALL check(ABS(kernel(1, 2, 1, 3)), "Concentric harmonic orthogonality")
+      ! The collinear l=6, m=0 pair has the binomial factor 12 choose 6.
+      d = [0.0_dp, 0.0_dp, 3.0_dp]
+      CALL upf_inverse_coulomb_pair_kernel(a, [6], [43], b, [6], [43], d, zonal, zonal_response, &
+                                           0.0_dp*a, 0.0_dp*b, [0.0_dp, 0.0_dp, 1.0_dp])
+      exact = 4.0_dp*pi*924.0_dp/13.0_dp*(a(2)*b(2))**6/d(3)**13
+      CALL check(ABS(zonal(2, 1, 2, 1) - exact), "Separated l=6 zonal shells")
+      CALL check(ABS(zonal_response(2, 1, 2, 1) + 13.0_dp*exact/d(3)), "Separated l=6 zonal shell response")
    END SUBROUTINE check_pair_coulomb
 ! **************************************************************************************************
 !> \brief Original core normalization, finite endpoint and joint phase/lattice/volume derivative.

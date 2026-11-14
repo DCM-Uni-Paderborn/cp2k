@@ -1170,8 +1170,8 @@ CONTAINS
       CALL polar_rule(nodes, weights)
       ALLOCATE (contained_a(SIZE(radii_a)), contained_b(SIZE(radii_b)))
       ! Separated harmonic shells have an exact point-multipole interaction.
-      ! Higher orders retain the general angular rule, without discarding any channel.
-      separated = MAXVAL(l_a) + MAXVAL(l_b) <= 8 .AND. distance > MINVAL(radii_a) + MINVAL(radii_b)
+      ! Include pairs of g and i harmonics arising from d and f orbital products.
+      separated = MAXVAL(l_a) + MAXVAL(l_b) <= 12 .AND. distance > MINVAL(radii_a) + MINVAL(radii_b)
       IF (separated) THEN
          ALLOCATE (point(SIZE(l_a), SIZE(l_b)))
          IF (PRESENT(response)) THEN
