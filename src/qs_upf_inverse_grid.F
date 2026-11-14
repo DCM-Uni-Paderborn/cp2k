@@ -771,9 +771,9 @@ CONTAINS
          soft(:, :), soft_response(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: owned_dw(:, :)
       COMPLEX(dp), POINTER                               :: dw(:, :)
-      INTEGER                                            :: axis, block, hi, info, lo, m, n, nao, &
+      INTEGER                                            :: atom, axis, block, first, hi, info, last, lo, m, n, nao, &
                                                             nproj, timing_handle
-      LOGICAL                                            :: use_gradients, use_metric, use_orbitals
+      LOGICAL                                            :: cached_atomic_response, use_gradients, use_metric, use_orbitals
       REAL(dp)                                           :: cell_inverse(3, 3), strain(3, 3), &
                                                             volume_response
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:), dvg(:, :), &
@@ -824,16 +824,35 @@ CONTAINS
       IF (use_orbitals) THEN
          use_gradients = ANY(dg /= 0.0_dp) .OR. ANY(dt /= 0.0_dp) .OR. &
                          ANY(dvg /= 0.0_dp) .OR. ANY(dvt /= 0.0_dp)
+         ! For direct Gaussian orbitals at fixed grid and Bloch vector, moving an
+         ! atom differentiates only its basis functions, with the opposite sign
+         ! to their spatial gradient. Kinetic and gradient terms need Hessians.
+         cached_atomic_response = frame%ao%direct .AND. frame%ao%fields_stored .AND. .NOT. use_gradients .AND. &
+                                  ALL(cell_response == 0.0_dp) .AND. ALL(reduced_k_response == 0.0_dp)
          ALLOCATE (soft_response(block, nao), soft(block, nao), partial(nao, nao))
          IF (use_gradients) ALLOCATE (gradient_response(block, nao, 3), gradient(block, nao, 3))
          DO lo = 1, n, block
             hi = MIN(n, lo + block - 1)
             m = hi - lo + 1
             IF (.NOT. use_gradients) THEN
-               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), &
-                                            soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
-                                            atom_response=atom_response, cell_response=cell_response, &
-                                            reduced_k_response=reduced_k_response, coefficients_response=dw)
+               IF (cached_atomic_response) THEN
+                  soft(:m, :) = frame%ao%soft(lo:hi, :)
+                  soft_response(:m, :) = CMPLX(0.0_dp, 0.0_dp, dp)
+                  DO atom = 1, SIZE(frame%ao%ao_first)
+                     first = frame%ao%ao_first(atom)
+                     last = frame%ao%ao_last(atom)
+                     DO axis = 1, 3
+                        IF (atom_response(axis, atom) == 0.0_dp) CYCLE
+                        soft_response(:m, first:last) = soft_response(:m, first:last) - &
+                           atom_response(axis, atom)*frame%ao%soft_gradient(lo:hi, first:last, axis)
+                     END DO
+                  END DO
+               ELSE
+                  CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), &
+                                               soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
+                                               atom_response=atom_response, cell_response=cell_response, &
+                                               reduced_k_response=reduced_k_response, coefficients_response=dw)
+               END IF
                ! Differentiate the product of the quadrature measure and the scalar potential.
                CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi)*dn(lo:hi), &
                                               soft_response(:m, :), soft_response(:m, :), &
