@@ -53,6 +53,7 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_atom_grid_response
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_collocate,&
                                               qs_upf_inverse_augmentation_fourier_integrate,&
+                                              qs_upf_inverse_augmentation_has_support,&
                                               qs_upf_inverse_augmentation_same_geometry
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_geometry,&
@@ -1308,8 +1309,9 @@ CONTAINS
                                                             m, np, point, spin
       INTEGER, ALLOCATABLE                               :: nct(:)
       LOGICAL                                            :: reconstruct_core
-      REAL(dp)                                           :: displacement(3), motion(3), rho, &
-                                                            rho_gradient(3), rho_hessian(3, 3), &
+      REAL(dp)                                           :: atom_lower(3), atom_upper(3), displacement(3), &
+                                                            image_shift(3), lower(3), motion(3), &
+                                                            radius, rho, rho_gradient(3), rho_hessian(3, 3), upper(3), &
                                                             tau, tau_gradient(3)
       REAL(dp), ALLOCATABLE :: coefficients(:, :), native_density(:), native_gradient(:, :), &
          native_hessian(:, :, :), native_points(:, :), widths(:)
@@ -1321,6 +1323,8 @@ CONTAINS
 
       CALL get_ks_env(ks_env, particle_set=atoms, cell=cell, qs_kind_set=kinds)
       np = SIZE(density, 1)
+      lower = MINVAL(state%atom_grid%points, DIM=2)
+      upper = MAXVAL(state%atom_grid%points, DIM=2)
       density = 0.0_dp
       gradient = 0.0_dp
       IF (PRESENT(kinetic)) THEN
@@ -1392,12 +1396,17 @@ CONTAINS
          ELSE IF (state%core_cache(ikind)%nproj == 0 .AND. .NOT. reconstruct_core) THEN
             CYCLE
          ELSE IF (reconstruct_core) THEN
+            IF (.NOT. state%paw(ikind)%xcgrid%has_ae_core) CYCLE
+            radius = state%paw(ikind)%xcgrid%r(state%paw(ikind)%xcgrid%core_support_index)
+            atom_lower = lower - atoms(atom)%r
+            atom_upper = upper - atoms(atom)%r
             value = CMPLX(0.0_dp, 0.0_dp, dp)
             spatial = CMPLX(0.0_dp, 0.0_dp, dp)
             DO image = 1, SIZE(state%core_images, 2)
+               image_shift = MATMUL(cell%hmat, REAL(state%core_images(:, image), dp))
+               IF (.NOT. qs_upf_inverse_augmentation_has_support(image_shift, radius, atom_lower, atom_upper)) CYCLE
                DO point = 1, np
-                  displacement = state%atom_grid%points(:, point) - atoms(atom)%r - &
-                                 MATMUL(cell%hmat, REAL(state%core_images(:, image), dp))
+                  displacement = state%atom_grid%points(:, point) - atoms(atom)%r - image_shift
                   CALL paw_xc_ae_core_cartesian(state%paw(ikind)%xcgrid, displacement, rho, rho_gradient, rho_hessian)
                   IF (PRESENT(point_response)) THEN
                      CPASSERT(PRESENT(atom_response) .AND. PRESENT(cell_response))
@@ -1434,11 +1443,18 @@ CONTAINS
          reconstruct_core = ALLOCATED(state%paw_reconstruction) .AND. state%paw(ikind)%active
          IF (state%core_kinetic_cache(ikind)%nproj == 0 .AND. .NOT. reconstruct_core) CYCLE
          IF (state%paw(ikind)%active) THEN
+            ASSOCIATE (core => state%paw(ikind)%xcgrid%core_kinetic)
+               IF (.NOT. ALLOCATED(core%wave)) CYCLE
+               radius = MERGE(core%ae_support_radius, core%support_radius, reconstruct_core)
+            END ASSOCIATE
+            atom_lower = lower - atoms(atom)%r
+            atom_upper = upper - atoms(atom)%r
             value = CMPLX(0.0_dp, 0.0_dp, dp)
             DO image = 1, SIZE(state%core_images, 2)
+               image_shift = MATMUL(cell%hmat, REAL(state%core_images(:, image), dp))
+               IF (.NOT. qs_upf_inverse_augmentation_has_support(image_shift, radius, atom_lower, atom_upper)) CYCLE
                DO point = 1, np
-                  displacement = state%atom_grid%points(:, point) - atoms(atom)%r - &
-                                 MATMUL(cell%hmat, REAL(state%core_images(:, image), dp))
+                  displacement = state%atom_grid%points(:, point) - atoms(atom)%r - image_shift
                   IF (reconstruct_core) THEN
                      CALL paw_core_kinetic_ae_cartesian(state%paw(ikind)%xcgrid%core_kinetic, displacement, tau, tau_gradient)
                   ELSE
