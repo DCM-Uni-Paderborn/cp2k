@@ -1155,7 +1155,7 @@ CONTAINS
 !> \param image A single unphased ket image for the equivalent real-space convolution.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_centered_pairs(frame, coupling, overlaps, coupling_response, overlaps_response, &
-                                           atom_response, cell_response, reduced_k_response, image)
+                                            atom_response, cell_response, reduced_k_response, image)
       TYPE(qs_upf_inverse_type), INTENT(IN), TARGET      :: frame
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: coupling(:, :), overlaps(:, :), &
                                                             coupling_response(:, :), overlaps_response(:, :)
@@ -1165,14 +1165,15 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: beta(:, :), delta(:, :), ddelta(:, :), &
                                                             pair_b(:, :), pair_k(:, :)
       INTEGER                                            :: atom, basis_atom, center, first, im, ir, kind, last, &
-                                                            na, nao, ni, nproj, other, p, q
+                                                            na, nao, ni, nproj, other, other_atom, p, q
       INTEGER, TARGET                                    :: single_image(3, 1)
-      INTEGER, ALLOCATABLE, TARGET                       :: translated_images(:, :)
+      INTEGER, ALLOCATABLE                              :: image_counts(:)
+      INTEGER, ALLOCATABLE, TARGET                       :: supported_images(:, :, :)
       INTEGER, POINTER                                   :: images(:, :), ket_images(:, :)
       LOGICAL                                            :: derivative, includes_home, shared_response, values
       REAL(dp), ALLOCATABLE                              :: angular_weights(:), directions(:, :), motion(:, :), &
-                                                            points(:, :), radial_beta(:), weights(:)
-      REAL(dp)                                           :: wavevector(3)
+                                                            points(:, :), radial_beta(:), translations(:, :), weights(:)
+      REAL(dp)                                           :: bra_radius, distance(3), ket_radius, wavevector(3)
       TYPE(grid_atom_type), POINTER                      :: grid
 
       values = PRESENT(coupling)
@@ -1184,14 +1185,13 @@ CONTAINS
          images => single_image
          wavevector = 0.0_dp
       END IF
-      ALLOCATE (translated_images(3, SIZE(images, 2)))
-      ni = 0
+      ALLOCATE (image_counts(SIZE(frame%center_atoms)), &
+                supported_images(3, SIZE(images, 2), SIZE(frame%center_atoms)), &
+                translations(3, SIZE(images, 2)))
       DO im = 1, SIZE(images, 2)
-         IF (ALL(images(:, im) == 0)) CYCLE
-         ni = ni + 1
-         translated_images(:, ni) = images(:, im)
+         translations(:, im) = MATMUL(frame%cell, REAL(images(:, im), dp))
       END DO
-      includes_home = ni < SIZE(images, 2)
+      includes_home = ANY(ALL(images == 0, DIM=1))
       IF (values) THEN
          coupling = CMPLX(0.0_dp, 0.0_dp, dp)
          overlaps = CMPLX(0.0_dp, 0.0_dp, dp)
@@ -1229,8 +1229,8 @@ CONTAINS
             ASSOCIATE (basis => frame%bases(basis_atom)%gto_basis_set, raw => frame%defining_atom_grids(kind)%projectors)
                IF (derivative) THEN
                   CALL upf_projector_gaussian_overlap(basis, raw, frame%positions(:, atom), frame%positions(:, basis_atom), &
-                       frame%cell, images, wavevector, pair_b(:, p:q), overlaps_response(first:last, p:q), &
-                       atom_response(:, atom), atom_response(:, basis_atom), cell_response, reduced_k_response)
+                                               frame%cell, images, wavevector, pair_b(:, p:q), overlaps_response(first:last, p:q), &
+                                            atom_response(:, atom), atom_response(:, basis_atom), cell_response, reduced_k_response)
                ELSE
                   CALL upf_projector_gaussian_overlap(basis, raw, frame%positions(:, atom), frame%positions(:, basis_atom), &
                                                       frame%cell, images, wavevector, pair_b(:, p:q))
@@ -1243,29 +1243,54 @@ CONTAINS
          IF (values .AND. includes_home) THEN
             coupling(first:last, first:last) = frame%defining_atom_grids(kind)%home_coupling
          END IF
-         DO ir = 1, grid%nr
-            IF (grid%rad(ir) >= frame%beta_cache(kind)%radius) CYCLE
+         bra_radius = frame%beta_cache(kind)%radius
+         image_counts = 0
+         DO other = 1, SIZE(frame%center_atoms)
+            other_atom = frame%center_atoms(other)
+            ket_radius = frame%delta_cache(frame%center_kinds(other))%radius
+            IF (ket_radius <= 0.0_dp) CYCLE
+            IF (.NOT. values .AND. derivative .AND. .NOT. shared_response) THEN
+               IF (ALL(atom_response(:, other_atom) == atom_response(:, atom))) CYCLE
+            END IF
+            ni = 0
+            DO im = 1, SIZE(images, 2)
+               IF (other == center .AND. ALL(images(:, im) == 0)) CYCLE
+               ! Disjoint compact radial supports contribute neither a value nor a first derivative.
+               distance = frame%positions(:, atom) - (frame%positions(:, other_atom) + translations(:, im))
+               IF (SUM(distance**2) > (bra_radius + ket_radius)**2) CYCLE
+               ni = ni + 1
+               supported_images(:, ni, other) = images(:, im)
+            END DO
+            image_counts(other) = ni
+         END DO
+         DO ir = 1, MERGE(grid%nr, 0, ANY(image_counts > 0))
+            IF (grid%rad(ir) >= bra_radius) CYCLE
             CALL centered_shell(frame, center, grid%rad(ir), directions, points, beta, radial_beta)
             weights(:) = grid%wr(ir)*angular_weights
             DO other = 1, SIZE(frame%center_atoms)
                p = frame%projector_first(other)
                q = frame%projector_last(other)
-               ket_images => images
-               IF (other == center) ket_images => translated_images(:, :ni)
+               ni = image_counts(other)
+               IF (ni == 0) THEN
+                  IF (values) delta(:, p:q) = CMPLX(0.0_dp, 0.0_dp, dp)
+                  IF (derivative) ddelta(:, p:q) = CMPLX(0.0_dp, 0.0_dp, dp)
+                  CYCLE
+               END IF
+               ket_images => supported_images(:, :ni, other)
                ASSOCIATE (field => frame%delta_cache(frame%center_kinds(other)), other_atom => frame%center_atoms(other))
                   IF (derivative) THEN
                      IF (shared_response .OR. ANY(atom_response(:, other_atom) /= atom_response(:, atom))) THEN
                         CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
-                               ket_images, wavevector, delta(:, p:q), response=ddelta(:, p:q), &
-                               points_response=motion, center_response=atom_response(:, other_atom), &
-                               cell_response=cell_response, reduced_k_response=reduced_k_response)
+                                                        ket_images, wavevector, delta(:, p:q), response=ddelta(:, p:q), &
+                                                        points_response=motion, center_response=atom_response(:, other_atom), &
+                                                        cell_response=cell_response, reduced_k_response=reduced_k_response)
                         CYCLE
                      END IF
                      ddelta(:, p:q) = CMPLX(0.0_dp, 0.0_dp, dp)
                   END IF
                   IF (values) THEN
                      CALL upf_radial_fields_periodic(field, points, frame%positions(:, other_atom), frame%cell, &
-                               ket_images, wavevector, delta(:, p:q))
+                                                     ket_images, wavevector, delta(:, p:q))
                   END IF
                END ASSOCIATE
             END DO
