@@ -137,6 +137,7 @@ MODULE qs_skala_scf
    PUBLIC :: qs_skala_scf_admissibility, qs_skala_scf_classify
    PUBLIC :: qs_skala_scf_release_cusp
    PUBLIC :: qs_skala_scf_accept
+   PUBLIC :: qs_skala_scf_write_restart
    PUBLIC :: qs_skala_scf_align_preconditioner
    PUBLIC :: qs_skala_scf_coordinate_scales, qs_skala_scf_fermi_target
    PUBLIC :: qs_skala_scf_density_response, qs_skala_scf_operator_response
@@ -4019,7 +4020,7 @@ CONTAINS
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
          IF (moved .AND. context%restart_offset >= 0) THEN
-            CALL write_native_restart(context%state, context%restart_offset + iteration)
+            CALL qs_skala_scf_write_restart(context%state, context%restart_offset + iteration)
          END IF
          IF (context%iteration_unit < 0) RETURN
          IF (context%state%para_env%mepos /= 0) RETURN
@@ -4042,7 +4043,7 @@ CONTAINS
 !> \param state The accepted trial, with its matching orbitals and density already installed.
 !> \param iteration SCF print iteration of this accepted step.
 ! **************************************************************************************************
-   SUBROUTINE write_native_restart(state, iteration)
+   SUBROUTINE qs_skala_scf_write_restart(state, iteration)
       TYPE(qs_skala_scf_type), INTENT(IN)                :: state
       INTEGER, INTENT(IN)                                :: iteration
 
@@ -4073,7 +4074,7 @@ CONTAINS
          END IF
       END IF
       CALL cp_iterate(logger%iter_info, last=saved_last, iter_nr=saved_iteration)
-   END SUBROUTINE write_native_restart
+   END SUBROUTINE qs_skala_scf_write_restart
 
 ! **************************************************************************************************
 !> \brief Poll normal CP2K stop files, external communication and the target runtime.

@@ -258,7 +258,7 @@ MODULE qs_scf
         qs_skala_scf_create_symmetric, qs_skala_scf_crossing_type, qs_skala_scf_evaluate, &
         qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_release_cusp, &
         qs_skala_scf_restore_restart, qs_skala_scf_retained_symmetry, qs_skala_scf_selected, qs_skala_scf_size, &
-        qs_skala_scf_stationarity, qs_skala_scf_type
+        qs_skala_scf_stationarity, qs_skala_scf_type, qs_skala_scf_write_restart
    USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_active,&
                                               qs_upf_inverse_scf_core
    USE qs_upf_inverse_types,            ONLY: qs_upf_inverse_scf_type
@@ -1450,6 +1450,8 @@ CONTAINS
             DEALLOCATE (admissible, release_side, reached)
             CALL qs_skala_scf_selected(state, points, domains, spins, descriptors, targets, tolerances, valid)
             CPASSERT(valid)
+            ! A verified boundary step bypasses the regular minimizer restart callback.
+            CALL qs_skala_scf_write_restart(state, restart_offset + iterations)
             IF (ALLOCATED(coordinate_bound)) DEALLOCATE (coordinate_bound)
             IF (remaining <= 0) EXIT
             CYCLE
@@ -1462,6 +1464,7 @@ CONTAINS
                ! A normal release is an accepted orbital step within the original SCF budget.
                iterations = iterations + 1
                remaining = remaining - 1
+               CALL qs_skala_scf_write_restart(state, restart_offset + iterations)
                CALL qs_skala_scf_release(state)
                CALL create_search_state(state, qs_env, valid, thermal=scf_control%smear%do_smear)
                IF (.NOT. valid) CPABORT("Could not rebuild the released inverse orbital state.")
