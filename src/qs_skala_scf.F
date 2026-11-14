@@ -805,7 +805,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Sample the original physical fields without evaluating the learned XC model.
-!>        The partial energy and KS operator are invalid. A later energy callback rebuilds both.
+!>        A new traversal invalidates the energy and KS operator. Reusing the samples
+!>        at an identical trial leaves the operator state unchanged.
 !> \param state ...
 !> \param coordinate ...
 ! **************************************************************************************************
@@ -815,13 +816,7 @@ CONTAINS
 
       ! Constraint restoration can query the same installed fields more than once.
       ! Reuse only this complete collection at the identical coordinate and density stamp.
-      IF (native_samples_match(state, coordinate)) THEN
-         ! Preserve the field-only callback contract even when no traversal is needed.
-         ! Selected derivative weights can change without changing these raw fields.
-         state%operator_current = .FALSE.
-         CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
-         RETURN
-      END IF
+      IF (native_samples_match(state, coordinate)) RETURN
       IF (.NOT. at_native_coordinate(state, coordinate)) THEN
          CALL install_native_trial(state, coordinate)
       END IF
@@ -2660,8 +2655,8 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief Evaluate several actual physical constraints and their joint native orbital Jacobian.
 !>        Reuse a complete physical-field collection only at the same coordinates and native
-!>        density stamp. The energy and KS require reevaluation afterwards, including when
-!>        raw fields are reused, because selected derivative weights can change independently.
+!>        density stamp. Changes to the selected derivative weights invalidate the KS operator
+!>        independently of the retained physical samples.
 !>        Density and kinetic constraints retain distinct physical units. Point Jacobians are
 !>        evaluated at the current state, without interpolation or reuse from another trial.
 !> \param state ...
@@ -3114,6 +3109,8 @@ CONTAINS
                                          descriptors=descriptors, kinetic_probe=kinetic_probe, &
                                          kinetic_tolerance=kinetic_tolerance, domains=domains, &
                                          atomic_sizes=atomic_sizes, targets=targets, paw_sizes=paw_sizes)
+      state%operator_current = .FALSE.
+      CALL qs_ks_did_change(state%ks_env, rho_changed=.TRUE.)
    END SUBROUTINE qs_skala_scf_select
 
 ! **************************************************************************************************
@@ -3182,8 +3179,8 @@ CONTAINS
 !> \param negative_changes Negative-minus-positive changes, one column per registered sample.
 !> \param physical_jacobian Optional physical sample covectors, one constraint per row.
 !> \param hold_orbitals Keep the evaluated native MOs and density fixed while selecting KS limits.
-!> \param restore_operator Rebuild KS with the original weights, default true. Otherwise mark it
-!>        invalid until the caller evaluates the restored selection.
+!> \param restore_operator Rebuild KS if needed for the original weights, default true.
+!>        If false, retain an already matching operator and defer any required rebuild.
 !> \param assemble_jumps Compose qualified jumps from primitive covectors, default true.
 !>        False retains the complete KS reference evaluation for every negative limit.
 !> \param windows_valid Whether the full evaluation satisfies every original physical window.
@@ -3296,7 +3293,7 @@ CONTAINS
       END IF
       ! The positive limit or the last explicit negative limit may already use the original weights.
       IF (last_limit > 0) weights(last_limit) = 1.0_dp
-      IF (restore .AND. ALL(weights == original_weights)) RETURN
+      IF (ALL(weights == original_weights)) RETURN
       CALL skala_density_constraints_update_weights(state%constraints, original_weights)
       IF (restore) THEN
          CALL evaluate_limiting_state(state, coordinate, energy, physical, fixed_orbitals)
@@ -3344,17 +3341,19 @@ CONTAINS
 !> \param state Evaluated native orbital state.
 !> \param coordinate Current orbital coordinates, unchanged when holding native orbitals.
 !> \param energy Complete native energy.
-!> \param physical_gradient Complete native KS covector in the normalized physical tangent.
+!> \param physical_gradient Optional native KS covector in the normalized physical tangent.
 !> \param hold_orbitals Reevaluate KS without changing MOs or rebuilding the density.
+!> \param gradient Optional native KS covector in orbital coordinates.
 ! **************************************************************************************************
-   SUBROUTINE evaluate_limiting_state(state, coordinate, energy, physical_gradient, hold_orbitals)
+   SUBROUTINE evaluate_limiting_state(state, coordinate, energy, physical_gradient, hold_orbitals, gradient)
       TYPE(qs_skala_scf_type), INTENT(INOUT)             :: state
       REAL(dp), INTENT(IN)                               :: coordinate(:)
-      REAL(dp), INTENT(OUT)                              :: energy, physical_gradient(:)
+      REAL(dp), INTENT(OUT)                              :: energy
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: physical_gradient(:), gradient(:)
       LOGICAL, INTENT(IN)                                :: hold_orbitals
 
       IF (.NOT. hold_orbitals) THEN
-         CALL qs_skala_scf_evaluate(state, coordinate, energy, physical_gradient=physical_gradient)
+         CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical_gradient)
          RETURN
       END IF
       CPASSERT(state%evaluated)
@@ -3366,7 +3365,7 @@ CONTAINS
       CALL retain_native_samples(state)
       energy = state%energy%total
       state%operator_current = .TRUE.
-      CALL native_orbital_covectors(state, physical_gradient=physical_gradient)
+      CALL native_orbital_covectors(state, gradient, physical_gradient)
    END SUBROUTINE evaluate_limiting_state
 
 ! **************************************************************************************************
@@ -3927,8 +3926,11 @@ CONTAINS
       SELECT TYPE (context)
       TYPE IS (physical_constraints_context)
          IF (SIZE(context%points, 2) > 0 .AND. at_native_coordinate(context%state, coordinate)) THEN
-            CALL evaluate_limiting_state(context%state, coordinate, energy, gradient, .TRUE.)
-            CALL native_orbital_covectors(context%state, gradient=gradient)
+            IF (context%state%operator_current .AND. native_samples_match(context%state, coordinate)) THEN
+               CALL native_orbital_covectors(context%state, gradient=gradient)
+            ELSE
+               CALL evaluate_limiting_state(context%state, coordinate, energy, hold_orbitals=.TRUE., gradient=gradient)
+            END IF
          ELSE
             CALL qs_skala_scf_evaluate(context%state, coordinate, energy, gradient, &
                                        sample_inputs=SIZE(context%points, 2) > 0, &
@@ -4154,7 +4156,7 @@ CONTAINS
       TYPE IS (physical_constraints_context)
          IF (context%admit_crossings) THEN
             ! Equal endpoints only ask whether an existing normal remains admissible.
-            ! The following constraint restoration or the stationarity exit rebuilds KS.
+            ! The next gradient reuses the operator if the original weights are still current.
             different_endpoints = ANY(first /= last)
             ! Rebase the accepted feasible point before large Cayley coordinates
             ! compress the orbital tangent.
