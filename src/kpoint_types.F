@@ -285,6 +285,8 @@ MODULE kpoint_types
       ! Complete accepted/trial Bloch densities on native group layouts. Explicitly activated.
       TYPE(cp_cfm_type), ALLOCATABLE :: native_density(:, :), native_trial(:, :)
       LOGICAL :: native_trial_valid = .FALSE., native_density_seeded = .FALSE.
+      ! The initial restart request is consumed once, including across changes of mesh.
+      LOGICAL :: native_restart_attempted = .FALSE.
       INTEGER :: native_density_representation = 0
       ! Selected AO indices, accepted density/potential, and a separate cached trial density.
       INTEGER, ALLOCATABLE :: lowdin_orbitals(:)

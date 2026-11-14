@@ -1412,12 +1412,14 @@ CONTAINS
                   kpoints%native_density_seeded = .TRUE.
                END IF
             END IF
-            IF (.NOT. kpoints%native_density_seeded .AND. scf_control%density_guess == restart_guess) THEN
+            IF (.NOT. kpoints%native_density_seeded .AND. .NOT. kpoints%native_restart_attempted .AND. &
+                scf_control%density_guess == restart_guess) THEN
                CALL get_qs_env(qs_env, particle_set=restart_particles)
                CALL qs_rho_get(rho, rho_ao_kp=rho_ao_kp)
                CALL read_kpoints_restart(rho_ao_kp, kpoints, scf_env%scf_work1, SIZE(restart_particles), &
                                          para_env, 0, section_vals_get_subs_vals(qs_env%input, "DFT"), &
                                          natom_mismatch, allow_missing=.TRUE.)
+               kpoints%native_restart_attempted = .TRUE.
             END IF
             CALL kpoint_density_state_restore(kpoints)
             CALL qs_rho_update_rho(rho, qs_env=qs_env)
