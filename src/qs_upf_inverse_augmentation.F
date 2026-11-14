@@ -570,7 +570,7 @@ CONTAINS
 
       INTEGER                                            :: atom, axis, center, first, ikind, info, &
                                                             last, second
-      LOGICAL                                            :: active, active_gradient(3), active_response
+      LOGICAL                                            :: active, active_gradient(3), active_response, cell_moves
       REAL(dp)                                           :: cell_inverse(3, 3), displacement(3), &
                                                             strain(3, 3), volume_response
       REAL(dp), ALLOCATABLE :: derivative(:, :, :), g_response(:, :), matrix(:, :), &
@@ -586,12 +586,13 @@ CONTAINS
       CALL invmat(cell_inverse, info)
       CPASSERT(info == 0)
       strain = MATMUL(cell_response, cell_inverse)
+      cell_moves = ANY(strain /= 0.0_dp)
       volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
       CALL potential_g%create(vdensity%pw_grid)
       CALL response_g%create(vdensity%pw_grid)
       CALL fourier_potential(vdensity, vgradient, potential_g, active, active_gradient)
       CALL fourier_potential(vdensity_response, vgradient_response, response_g, active_response)
-      IF (ANY(active_gradient) .AND. ANY(strain /= 0.0_dp)) THEN
+      IF (ANY(active_gradient) .AND. cell_moves) THEN
          g_response = -MATMUL(TRANSPOSE(strain), vdensity%pw_grid%g)
          CALL derivative_g%create(vdensity%pw_grid)
          CALL work_r%create(vdensity%pw_grid)
@@ -625,19 +626,17 @@ CONTAINS
          IF (augmentation%kinds(ikind)%nproj == 0) CYCLE
          first = frame%projector_first(center)
          last = frame%projector_last(center)
+         displacement = atom_response(:, atom) - MATMUL(strain, frame%positions(:, atom))
          ALLOCATE (matrix(last - first + 1, last - first + 1), &
-                   potential_matrix(last - first + 1, last - first + 1), &
-                   derivative(last - first + 1, last - first + 1, 3), &
-                   strain_matrix(last - first + 1, last - first + 1, 3, 3))
+                   potential_matrix(last - first + 1, last - first + 1))
          CALL uspp_augmentation_prepare_fourier(augmentation%kinds(ikind), vdensity%pw_grid%g)
+         matrix = 0.0_dp
          IF (active) THEN
+            IF (ANY(displacement /= 0.0_dp)) ALLOCATE (derivative(last - first + 1, last - first + 1, 3))
+            IF (cell_moves) ALLOCATE (strain_matrix(last - first + 1, last - first + 1, 3, 3))
             CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
                                              frame%positions(:, atom), potential_g%array, multiplicity, &
                                              matrix, derivative, strain_matrix)
-         ELSE
-            matrix = 0.0_dp
-            derivative = 0.0_dp
-            strain_matrix = 0.0_dp
          END IF
          IF (PRESENT(projector_operator)) projector_operator(first:last, first:last) = matrix
          potential_matrix = 0.0_dp
@@ -645,16 +644,19 @@ CONTAINS
             CALL augmentation_grid_integrate(augmentation%kinds(ikind), vdensity%pw_grid, &
                                              frame%positions(:, atom), response_g%array, multiplicity, potential_matrix)
          END IF
-         displacement = atom_response(:, atom) - MATMUL(strain, frame%positions(:, atom))
          matrix(:, :) = volume_response*matrix + potential_matrix
          DO axis = 1, 3
-            matrix(:, :) = matrix + displacement(axis)*derivative(:, :, axis)
-            DO second = 1, 3
-               matrix(:, :) = matrix + strain(axis, second)*strain_matrix(:, :, axis, second)
-            END DO
+            IF (ALLOCATED(derivative)) matrix(:, :) = matrix + displacement(axis)*derivative(:, :, axis)
+            IF (ALLOCATED(strain_matrix)) THEN
+               DO second = 1, 3
+                  matrix(:, :) = matrix + strain(axis, second)*strain_matrix(:, :, axis, second)
+               END DO
+            END IF
          END DO
          response(first:last, first:last) = matrix
-         DEALLOCATE (matrix, potential_matrix, derivative, strain_matrix)
+         IF (ALLOCATED(derivative)) DEALLOCATE (derivative)
+         IF (ALLOCATED(strain_matrix)) DEALLOCATE (strain_matrix)
+         DEALLOCATE (matrix, potential_matrix)
       END DO
       IF (vdensity%pw_grid%para%mode /= PW_MODE_LOCAL) THEN
          CALL frame%point_comm%sum(response)
