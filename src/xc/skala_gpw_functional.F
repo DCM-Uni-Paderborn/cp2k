@@ -590,8 +590,8 @@ CONTAINS
          native_grid_atom_chunk_routing = .FALSE.
          native_grid_atom_chunks = .FALSE.
       END IF
-      IF (use_density_constraints .AND. .NOT. my_just_energy) THEN
-         ! Both limiting covectors refer to the complete original feature dictionary.
+      IF (use_density_constraints) THEN
+         ! Compare trial energies and limiting covectors with the same feature dictionary.
          native_grid_atom_chunk_routing = .FALSE.
          native_grid_atom_chunks = .FALSE.
       END IF
