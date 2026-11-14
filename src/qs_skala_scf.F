@@ -2489,7 +2489,7 @@ CONTAINS
       root(:) = first
       count = 0
       IF (m == 0) THEN
-         CALL qs_skala_scf_evaluate(state, first, energy, gradient)
+         CALL qs_skala_scf_evaluate(state, first, energy, physical_gradient=gradient, reuse_fields=.TRUE.)
          IF (PRESENT(evaluations)) evaluations = 1
          RETURN
       END IF
@@ -3564,7 +3564,7 @@ CONTAINS
             IF (SIZE(rows) == 0) CALL sample_native_constraints(state, trial)
             CALL qs_skala_scf_values(state, domains, points, spins, descriptors, values)
             IF (ALL(REAL(sides, dp)*(values - targets) > tolerances .OR. .NOT. drop)) THEN
-               CALL qs_skala_scf_evaluate(state, trial, trial_energy)
+               CALL qs_skala_scf_evaluate(state, trial, trial_energy, reuse_fields=.TRUE.)
                roundoff = 64.0_dp*EPSILON(0.0_dp)*MAX(ABS(energy), ABS(trial_energy), TINY(0.0_dp))
                IF (trial_energy < energy - roundoff) THEN
                   coordinate(:) = trial
@@ -4400,16 +4400,11 @@ CONTAINS
       CLASS(*), INTENT(INOUT) :: context
       LOGICAL, INTENT(OUT) :: smooth, interrupted
 
-      LOGICAL :: crossed, leave_trial
+      LOGICAL :: crossed
 
-      leave_trial = .FALSE.
-      SELECT TYPE (context)
-      TYPE IS (physical_constraints_context)
-         ! Unconstrained curvature immediately consumes the trial gradient on a smooth segment.
-         leave_trial = SIZE(context%points, 2) == 0
-      END SELECT
+      ! On a smooth segment the gradient callback immediately consumes the restored endpoint.
       CALL check_native_segment(first, last, curve, context, interrupted, crossed, restore_operator=.FALSE., &
-                                classify_candidates=.FALSE., leave_trial=leave_trial)
+                                classify_candidates=.FALSE., leave_trial=.TRUE.)
       smooth = .NOT. crossed
       IF (crossed) THEN
          ! Reject this Hessian probe without turning it into an accepted orbital event.
