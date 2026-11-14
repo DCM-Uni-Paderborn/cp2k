@@ -1268,7 +1268,8 @@ CONTAINS
                                                           state%vgradient(:, :, spin), qoperator(:, :, spin), points, &
                                                           integration_weights, comm, vlaplacian=laplace_covector)
                CALL qs_upf_inverse_augmentation_response(frame, augmentation, state%vdensity(:, spin), &
-                                        state%vgradient(:, :, spin), point_response, atom_response, cell_response, zero, zero, zeros, &
+                                                         state%vgradient(:, :, spin), point_response, atom_response, &
+                                                         cell_response, zero, zero, zeros, &
                                                          dqoperator(:, :, spin), points, integration_weights, comm, &
                                                          vlaplacian=laplace_covector)
             END IF
