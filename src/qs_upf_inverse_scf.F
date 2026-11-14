@@ -1241,8 +1241,6 @@ CONTAINS
          core(:, :, ik) = matrix
          IF (grid_metric) metric(:, :, ik) = metric_part
       END DO
-      CALL local_r%release()
-      CALL local_response%release()
       IF (ASSOCIATED(state%bloch%kpoints)) THEN
          IF (ALLOCATED(state%gaussian_kinetic)) THEN
             ! The defining coefficient responses above require collective grid operations.
@@ -1311,8 +1309,9 @@ CONTAINS
             END IF
          END IF
          IF (state%native_gaussian) THEN
-            CALL native_grid_response(ks_env, state, density, energy_weighted, vdensity(axis), vgradient(:, axis), vtau(axis), &
-                                      atom_response, strain, relative_motion, native_response, native_metric)
+            CALL native_grid_response(ks_env, state, density, energy_weighted, local_r, local_response, &
+                                      vdensity(axis), vgradient(:, axis), vtau(axis), strain, relative_motion, &
+                                      native_response, native_metric)
             response = response + native_response
             metric_response = metric_response + native_metric
          END IF
@@ -1347,6 +1346,8 @@ CONTAINS
             END DO
          END BLOCK
       END DO
+      CALL local_r%release()
+      CALL local_response%release()
       IF (ALLOCATED(state%paw_potential)) THEN
          CPASSERT(state%paw_density_evaluation == state%density_evaluations)
          NULLIFY (orbital_factors)
@@ -1389,48 +1390,40 @@ CONTAINS
 !> \param state Prepared DIRECT state with separate Gaussian and original augmentation maps.
 !> \param density Accepted spin occupations, without k-point weights.
 !> \param weighted Matching energy-weighted occupations, without k-point weights.
+!> \param ionic_local Local UPF potential shared across spin channels.
+!> \param ionic_response Derivative of the local UPF potential on the moving grid.
 !> \param vdensity Folded density potential, including the spectral gradient adjoint.
 !> \param vgradient Must be zero because native integration consumes the folded scalar potential.
 !> \param vtau Potential conjugate to Gaussian kinetic density.
-!> \param atom_response Cartesian displacements of the original atoms.
 !> \param strain Physical deformation gradient of the cell.
 !> \param relative_motion Atomic displacement relative to the moving fractional grid.
 !> \param response Gaussian local and XC response, without the metric constraint.
 !> \param metric_response Signed Gaussian normalization response.
 ! **************************************************************************************************
-   SUBROUTINE native_grid_response(ks_env, state, density, weighted, vdensity, vgradient, vtau, &
-                                   atom_response, strain, relative_motion, response, metric_response)
+   SUBROUTINE native_grid_response(ks_env, state, density, weighted, ionic_local, ionic_response, &
+                                   vdensity, vgradient, vtau, strain, relative_motion, response, metric_response)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
       COMPLEX(dp), INTENT(IN)                            :: density(:, :, :), weighted(:, :, :)
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: ionic_local, ionic_response
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
-      REAL(dp), INTENT(IN)                               :: atom_response(:, :), strain(3, 3), &
-                                                            relative_motion(:, :)
+      REAL(dp), INTENT(IN)                               :: strain(3, 3), relative_motion(:, :)
       REAL(dp), INTENT(OUT)                              :: response, metric_response
 
       COMPLEX(dp), ALLOCATABLE                           :: operators(:, :, :)
       INTEGER                                            :: active_tau, axis, ik
       REAL(dp)                                           :: energy, trace_strain, virial(3, 3)
       REAL(dp), ALLOCATABLE                              :: forces(:, :)
-      TYPE(pw_grid_type), POINTER                        :: grid
-      TYPE(pw_r3d_rs_type)                               :: explicit_response, potential
+      TYPE(pw_r3d_rs_type)                               :: potential
 
       CPASSERT(state%native_gaussian)
       DO axis = 1, 3
          CPASSERT(ALL(vgradient(axis)%array == 0.0_dp))
       END DO
-      grid => vdensity%pw_grid
-      CALL potential%create(grid)
-      CALL explicit_response%create(grid)
-      ! Positions belong to the original AO ordering, including translated Bloch atoms.
-      IF (ASSOCIATED(state%bloch%kpoints)) THEN
-         CALL local_potential(ks_env, grid, state%bloch%frames(1)%ao%positions, potential, explicit_response, &
-                              atom_response, strain)
-      ELSE
-         CALL local_potential(ks_env, grid, state%frame%ao%positions, potential, explicit_response, atom_response, strain)
-      END IF
-      potential%array = potential%array + vdensity%array
-      ALLOCATE (forces(3, SIZE(atom_response, 2)))
+      CPASSERT(ASSOCIATED(ionic_local%pw_grid, vdensity%pw_grid))
+      CALL potential%create(vdensity%pw_grid)
+      potential%array = ionic_local%array + vdensity%array
+      ALLOCATE (forces(3, SIZE(relative_motion, 2)))
       ALLOCATE (operators, MOLD=state%gaussian_kinetic)
       trace_strain = strain(1, 1) + strain(2, 2) + strain(3, 3)
       CALL qs_upf_inverse_background_geometry(state%gaussian, matrix=density, potential=potential, &
@@ -1441,7 +1434,7 @@ CONTAINS
          energy = energy + state%gaussian%weights(ik)*REAL(SUM(density(:, :, ik)*CONJG(operators(:, :, ik))), dp)
       END DO
       response = -SUM(forces*relative_motion) - SUM(virial*strain) + trace_strain*energy
-      CALL qs_upf_inverse_background_integrate(state%gaussian, potential=explicit_response, &
+      CALL qs_upf_inverse_background_integrate(state%gaussian, potential=ionic_response, &
                                                ao_operators=operators, ks_env=ks_env)
       DO ik = 1, SIZE(state%gaussian%weights)
          response = response + state%gaussian%weights(ik)*REAL(SUM(density(:, :, ik)*CONJG(operators(:, :, ik))), dp)
@@ -1468,7 +1461,6 @@ CONTAINS
       END DO
       metric_response = SUM(forces*relative_motion) + SUM(virial*strain) - trace_strain*energy
       CALL potential%release()
-      CALL explicit_response%release()
    END SUBROUTINE native_grid_response
 
 ! **************************************************************************************************
