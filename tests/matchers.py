@@ -378,6 +378,9 @@ registry["M027"] = GenericMatcher(r"Total electronic charge (R-space):", col=5)
 registry["Total_charge_gspace"] = GenericMatcher(
     r"Total charge density g-space grids:", col=6
 )
+registry["Total_gapw_source_charge"] = GenericMatcher(
+    r"Total charge of the complete source:", col=7
+)
 registry["M028"] = GenericMatcher(r"Total spin density (R-space)           :", col=6)
 registry["M029"] = GenericMatcher(r"Heat of formation [kcal/mol]:", col=5)
 

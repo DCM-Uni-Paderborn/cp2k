@@ -83,3 +83,8 @@
 "H4_USPP_OT.inp"                   = [
   {matcher = "Atomic_force_1_x", tol = 1e-7, ref = 0.151570983},
 ]
+
+# The complete charge includes the atom-centered density during grid mixing.
+"H2_USPP_GAPW_Broyden.inp" = [
+  {matcher = "Total_gapw_source_charge", tol = 1e-9, ref = 0.0},
+]
