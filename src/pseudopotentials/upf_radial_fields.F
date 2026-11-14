@@ -143,13 +143,17 @@ CONTAINS
       TYPE(upf_radial_fields_type), INTENT(IN)           :: fields
       REAL(dp), INTENT(IN)                               :: displacement(3)
       REAL(dp), INTENT(OUT)                              :: value(:)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :), hessian(:, :, :)
-      REAL(dp), INTENT(OUT), OPTIONAL                    :: laplacian(:), laplacian_gradient(:, :)
+      REAL(dp), INTENT(OUT), OPTIONAL                    :: gradient(:, :), hessian(:, :, :), &
+                                                            laplacian(:), laplacian_gradient(:, :)
 
       INTEGER                                            :: a, axis, axis2, hi, i, l, lo, m, mid, p, &
-                                                            powers(3), reduced(3)
+                                                            powers(3), previous_channel, reduced(3)
+      LOGICAL                                            :: need_angular_gradient, need_laplacian, &
+                                                            need_radial_gradient, &
+                                                            need_radial_hessian
       REAL(dp)                                           :: angular, da(3), dda(3, 3), factor, h, &
-                                                            radial, radial_laplacian, rd, rdd, rddd, s, t, term
+                                                            radial, radial_laplacian, rd, rdd, &
+                                                            rddd, s, t, term
 
       CPASSERT(ALLOCATED(fields%x) .AND. SIZE(value) == fields%nproj)
       value = 0.0_dp
@@ -187,17 +191,29 @@ CONTAINS
       END DO
       h = fields%x(hi) - fields%x(lo)
       t = (s - fields%x(lo))/h
+      need_laplacian = PRESENT(laplacian) .OR. PRESENT(laplacian_gradient)
+      need_angular_gradient = PRESENT(gradient) .OR. PRESENT(hessian) .OR. PRESENT(laplacian_gradient)
+      need_radial_hessian = PRESENT(hessian) .OR. need_laplacian
+      need_radial_gradient = PRESENT(gradient) .OR. need_radial_hessian
+      previous_channel = 0
       DO p = 1, fields%nproj
          i = fields%radial_index(p)
          IF (lo >= fields%radial_end(i)) CYCLE
          l = fields%lbeta(i)
          m = fields%angular_index(p) - l*l
-         ASSOCIATE (c => fields%coefficients(:, lo, i))
-            radial = c(1) + t*(c(2) + t*(c(3) + t*(c(4) + t*(c(5) + t*c(6)))))
-            rd = (c(2) + t*(2.0_dp*c(3) + t*(3.0_dp*c(4) + t*(4.0_dp*c(5) + t*5.0_dp*c(6)))))/h
-            rdd = (2.0_dp*c(3) + t*(6.0_dp*c(4) + t*(12.0_dp*c(5) + t*20.0_dp*c(6))))/h**2
-            IF (PRESENT(laplacian_gradient)) rddd = (6.0_dp*c(4) + t*(24.0_dp*c(5) + t*60.0_dp*c(6)))/h**3
-         END ASSOCIATE
+         ! The magnetic components of each radial channel are contiguous.
+         IF (i /= previous_channel) THEN
+            ASSOCIATE (c => fields%coefficients(:, lo, i))
+               radial = c(1) + t*(c(2) + t*(c(3) + t*(c(4) + t*(c(5) + t*c(6)))))
+               IF (need_radial_gradient) &
+                  rd = (c(2) + t*(2.0_dp*c(3) + t*(3.0_dp*c(4) + t*(4.0_dp*c(5) + t*5.0_dp*c(6)))))/h
+               IF (need_radial_hessian) &
+                  rdd = (2.0_dp*c(3) + t*(6.0_dp*c(4) + t*(12.0_dp*c(5) + t*20.0_dp*c(6))))/h**2
+               IF (PRESENT(laplacian_gradient)) rddd = (6.0_dp*c(4) + t*(24.0_dp*c(5) + t*60.0_dp*c(6)))/h**3
+            END ASSOCIATE
+            IF (need_laplacian) radial_laplacian = 4.0_dp*s*rdd + REAL(4*l + 6, dp)*rd
+            previous_channel = i
+         END IF
          angular = 0.0_dp
          da = 0.0_dp
          dda = 0.0_dp
@@ -205,12 +221,14 @@ CONTAINS
             powers = indco(:, ncoset(l - 1) + a)
             factor = orbtramat(l)%slm(m, a)
             angular = angular + factor*PRODUCT(displacement**powers)
+            IF (.NOT. need_angular_gradient) CYCLE
             DO axis = 1, 3
                IF (powers(axis) == 0) CYCLE
                reduced = powers
                reduced(axis) = reduced(axis) - 1
                term = factor*REAL(powers(axis), dp)
                da(axis) = da(axis) + term*PRODUCT(displacement**reduced)
+               IF (.NOT. PRESENT(hessian)) CYCLE
                DO axis2 = 1, 3
                   IF (reduced(axis2) == 0) CYCLE
                   reduced(axis2) = reduced(axis2) - 1
@@ -232,14 +250,12 @@ CONTAINS
                hessian(axis2, axis2, p) = hessian(axis2, axis2, p) + 2.0_dp*rd*angular
             END DO
          END IF
-         IF (PRESENT(laplacian) .OR. PRESENT(laplacian_gradient)) THEN
-            ! For a homogeneous harmonic H_l and s=r**2, Laplacian(f(s) H_l)
-            ! is [4*s*f'' + (4*l+6)*f'] H_l, including at the origin.
-            radial_laplacian = 4.0_dp*s*rdd + REAL(4*l + 6, dp)*rd
+         IF (need_laplacian) THEN
+            ! Laplacian(f(s) H_l) = [4*s*f'' + (4*l+6)*f'] H_l, including at the origin.
             IF (PRESENT(laplacian)) laplacian(p) = radial_laplacian*angular
             IF (PRESENT(laplacian_gradient)) THEN
                laplacian_gradient(:, p) = radial_laplacian*da + &
-                  2.0_dp*displacement*(4.0_dp*s*rddd + REAL(4*l + 10, dp)*rdd)*angular
+                                          2.0_dp*displacement*(4.0_dp*s*rddd + REAL(4*l + 10, dp)*rdd)*angular
             END IF
          END IF
       END DO
@@ -282,18 +298,20 @@ CONTAINS
                                                             center_response(3), &
                                                             cell_response(3, 3), &
                                                             reduced_k_response(3)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cell_gradient(:, :, :, :)
-      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: laplacian(:, :), laplacian_response(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: cell_gradient(:, :, :, :), &
+                                                            laplacian(:, :), &
+                                                            laplacian_response(:, :)
 
       COMPLEX(dp)                                        :: dphase, phase
       INTEGER                                            :: axis, column, image, point
       LOGICAL                                            :: screen_images
-      REAL(dp)                                           :: bounds(3, 2), displacement(3), dr(3), dshift(3), &
-                                                            radius_squared, shift(3), v(fields%nproj), &
-                                                            hh(3, 3, fields%nproj), &
+      REAL(dp)                                           :: bounds(3, 2), displacement(3), dr(3), &
+                                                            dshift(3), radius_squared, shift(3)
+      REAL(dp), POINTER                                  :: lap_derivative(:, :), lap_field(:)
+      REAL(dp), TARGET                                   :: lap_gradient(3, fields%nproj), &
+                                                            lap(fields%nproj)
+      REAL(dp)                                           :: v(fields%nproj), hh(3, 3, fields%nproj), &
                                                             g(3, fields%nproj)
-      REAL(dp), TARGET                                   :: lap(fields%nproj), lap_gradient(3, fields%nproj)
-      REAL(dp), POINTER                                  :: lap_field(:), lap_derivative(:, :)
 
       CPASSERT(SIZE(points, 1) == 3 .AND. SIZE(images, 1) == 3)
       CPASSERT(ALL(SHAPE(value) == [SIZE(points, 2), fields%nproj]))
