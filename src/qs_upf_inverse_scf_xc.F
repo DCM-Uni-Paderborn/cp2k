@@ -121,6 +121,7 @@ CONTAINS
       TYPE(qs_upf_inverse_scf_type), INTENT(INOUT)       :: state
 
       CHARACTER(LEN=256)                                 :: core_reason
+      CHARACTER(LEN=:), ALLOCATABLE                      :: message
       INTEGER                                            :: ikind
       LOGICAL                                            :: core_available
       REAL(dp), ALLOCATABLE                              :: core_tau(:)
@@ -143,11 +144,17 @@ CONTAINS
          IF (.NOT. kinetic) CYCLE
          IF (state%paw(ikind)%active) THEN
             IF (.NOT. state%paw(ikind)%xcgrid%core_kinetic%available) THEN
-               CPABORT(TRIM(state%paw(ikind)%xcgrid%core_kinetic%failure_reason))
+               message = "PAW kind "//TRIM(kinds(ikind)%name)//" requires a valid frozen-core kinetic density. "// &
+                         TRIM(state%paw(ikind)%xcgrid%core_kinetic%failure_reason)//". "// &
+                         "Supply compatible occupied core orbitals. For SSSP, see fetch_sssp.py --paw-core."
+               CPABORT(message)
             END IF
          ELSE IF (upf_uses_model_core_tau(kinds(ikind)%sgp_potential%upf_data)) THEN
             CALL upf_nlcc_kinetic(kinds(ikind)%sgp_potential%upf_data, core_tau, core_available, core_reason)
-            IF (.NOT. core_available) CPABORT(TRIM(core_reason))
+            IF (.NOT. core_available) THEN
+               message = "UPF kind "//TRIM(kinds(ikind)%name)//": "//TRIM(core_reason)
+               CPABORT(message)
+            END IF
          END IF
       END DO
       CALL deallocate_lebedev_grids()
