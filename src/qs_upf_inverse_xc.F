@@ -40,7 +40,8 @@ MODULE qs_upf_inverse_xc
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_collocate,&
                                               qs_upf_inverse_augmentation_integrate,&
                                               qs_upf_inverse_augmentation_point,&
-                                              qs_upf_inverse_augmentation_response
+                                              qs_upf_inverse_augmentation_response,&
+                                              qs_upf_inverse_augmentation_same_geometry
    USE qs_upf_inverse_density,          ONLY: qs_upf_inverse_kinetic_collocate,&
                                               qs_upf_inverse_kinetic_operator
    USE qs_upf_inverse_paw,              ONLY: qs_upf_inverse_paw_collocate,&
@@ -1132,12 +1133,12 @@ CONTAINS
       REAL(dp), INTENT(IN), OPTIONAL                     :: background_weights_response(:), &
                                                             background_laplacian_response(:, :), core_laplacian_response(:, :)
 
-      COMPLEX(dp), ALLOCATABLE :: dgradient(:, :, :), dqoperator(:, :), dsoft(:, :), &
-         gradient(:, :, :), matrix(:, :), qoperator(:, :), soft(:, :)
+      COMPLEX(dp), ALLOCATABLE :: dgradient(:, :, :), dqoperator(:, :, :), dsoft(:, :), &
+         gradient(:, :, :), matrix(:, :), qoperator(:, :, :), soft(:, :)
       COMPLEX(dp), ALLOCATABLE, TARGET                   :: laplacian(:, :), dlaplacian(:, :)
       COMPLEX(dp), POINTER                               :: block_laplacian(:, :), block_dlaplacian(:, :)
-      INTEGER                                            :: block, hi, ik, lo, m, nao, np, nproj, &
-                                                            spin
+      INTEGER                                            :: block, hi, ik, lo, m, nao, np, nproj, ns, &
+                                                            share_augmentation, spin
       REAL(dp)                                           :: kinetic_response, local_response
       REAL(dp), ALLOCATABLE :: background_integration_weights(:), dtau(:), integration_weights(:), &
          reconstruction_density(:), reconstruction_gradient(:, :), &
@@ -1148,6 +1149,7 @@ CONTAINS
 
       np = SIZE(points, 2)
       nao = SIZE(matrices, 1)
+      ns = SIZE(matrices, 4)
       CPASSERT(ALL(SHAPE(point_response) == SHAPE(points)))
       CPASSERT(SIZE(weights_response) == np .AND. SIZE(weights) == np)
       CPASSERT(ALL(SHAPE(background_response) == SHAPE(state%vdensity)))
@@ -1216,10 +1218,19 @@ CONTAINS
          END DO
       END IF
       CALL comm%sum(response)
+      share_augmentation = 1
+      IF (SIZE(frames) > 1) THEN
+         DO ik = 2, SIZE(frames)
+            IF (qs_upf_inverse_augmentation_same_geometry(frames(1)%frame, frames(ik)%frame)) CYCLE
+            share_augmentation = 0
+            EXIT
+         END DO
+         CALL comm%min(share_augmentation)
+      END IF
       DO ik = 1, SIZE(frames)
          frame => frames(ik)%frame
          nproj = SIZE(frame%coefficients, 1)
-         ALLOCATE (qoperator(nproj, nproj), dqoperator(nproj, nproj))
+         IF (.NOT. ALLOCATED(qoperator)) ALLOCATE (qoperator(nproj, nproj, ns), dqoperator(nproj, nproj, ns))
          local_response = 0.0_dp
          DO lo = 1, np, block
             hi = MIN(np, lo + block - 1)
@@ -1248,18 +1259,23 @@ CONTAINS
          END DO
          CALL comm%sum(local_response)
          response = response + local_response
-         DO spin = 1, SIZE(matrices, 4)
-            IF (ALLOCATED(laplacian)) laplace_covector => state%vlaplacian(:, spin)
-            CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, state%vdensity(:, spin), &
-                                                       state%vgradient(:, :, spin), qoperator, points, &
-                                                       integration_weights, comm, vlaplacian=laplace_covector)
-            CALL qs_upf_inverse_augmentation_response(frame, augmentation, state%vdensity(:, spin), &
-                                     state%vgradient(:, :, spin), point_response, atom_response, cell_response, zero, zero, zeros, &
-                                                      dqoperator, points, integration_weights, comm, vlaplacian=laplace_covector)
+         DO spin = 1, ns
+            ! Q and its geometry response are real-space projector blocks.
+            ! The k-dependent coefficients enter only in the AO contraction below.
+            IF (ik == 1 .OR. share_augmentation == 0) THEN
+               IF (ALLOCATED(laplacian)) laplace_covector => state%vlaplacian(:, spin)
+               CALL qs_upf_inverse_augmentation_integrate(frame, augmentation, state%vdensity(:, spin), &
+                                                          state%vgradient(:, :, spin), qoperator(:, :, spin), points, &
+                                                          integration_weights, comm, vlaplacian=laplace_covector)
+               CALL qs_upf_inverse_augmentation_response(frame, augmentation, state%vdensity(:, spin), &
+                                        state%vgradient(:, :, spin), point_response, atom_response, cell_response, zero, zero, zeros, &
+                                                         dqoperator(:, :, spin), points, integration_weights, comm, &
+                                                         vlaplacian=laplace_covector)
+            END IF
             matrix(:, :) = &
-               MATMUL(CONJG(TRANSPOSE(coefficients_response(:, :, ik))), MATMUL(qoperator, frame%coefficients)) + &
-               MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(dqoperator, frame%coefficients)) + &
-               MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(qoperator, coefficients_response(:, :, ik)))
+               MATMUL(CONJG(TRANSPOSE(coefficients_response(:, :, ik))), MATMUL(qoperator(:, :, spin), frame%coefficients)) + &
+               MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(dqoperator(:, :, spin), frame%coefficients)) + &
+               MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(qoperator(:, :, spin), coefficients_response(:, :, ik)))
             response = response + kweights(ik)*REAL(SUM(matrices(:, :, ik, spin)*TRANSPOSE(matrix)), dp)
             IF (state%paw_reconstruction) THEN
                CALL qs_upf_inverse_paw_collocate(frame, paw_reconstruction, augmentation, points, matrices(:, :, ik, spin), &
@@ -1286,7 +1302,7 @@ CONTAINS
                END IF
             END IF
          END DO
-         DEALLOCATE (qoperator, dqoperator)
+         IF (share_augmentation == 0) DEALLOCATE (qoperator, dqoperator)
       END DO
    END SUBROUTINE qs_upf_inverse_xc_response
 

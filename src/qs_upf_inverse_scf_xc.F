@@ -52,7 +52,8 @@ MODULE qs_upf_inverse_scf_xc
                                               qs_upf_inverse_atom_grid_ref_type,&
                                               qs_upf_inverse_atom_grid_response
    USE qs_upf_inverse_augmentation,     ONLY: qs_upf_inverse_augmentation_fourier_collocate,&
-                                              qs_upf_inverse_augmentation_fourier_integrate
+                                              qs_upf_inverse_augmentation_fourier_integrate,&
+                                              qs_upf_inverse_augmentation_same_geometry
    USE qs_upf_inverse_background,       ONLY: qs_upf_inverse_background_collocate,&
                                               qs_upf_inverse_background_geometry,&
                                               qs_upf_inverse_background_integrate,&
@@ -574,7 +575,7 @@ CONTAINS
       IF (shared_augmentation) THEN
          DO ik = 2, nk
             frame => source_frame(state, ik)
-            IF (.NOT. same_augmentation_geometry(reference%ao, frame%ao)) THEN
+            IF (.NOT. qs_upf_inverse_augmentation_same_geometry(reference%ao, frame%ao)) THEN
                shared_augmentation = .FALSE.
                EXIT
             END IF
@@ -1467,28 +1468,5 @@ CONTAINS
          END DO
       END DO
    END SUBROUTINE core_fields
-
-! **************************************************************************************************
-!> \brief Whether two Bloch frames have the same original-Q geometry and projector ordering.
-!> \param first First Bloch frame.
-!> \param second Other Bloch frame.
-!> \return True for identical augmentation geometry, projector order and point ownership.
-! **************************************************************************************************
-   FUNCTION same_augmentation_geometry(first, second) RESULT(same)
-      TYPE(qs_upf_inverse_type), INTENT(IN)              :: first, second
-      LOGICAL                                            :: same
-
-      same = .FALSE.
-      IF (SIZE(first%coefficients, 1) /= SIZE(second%coefficients, 1)) RETURN
-      IF (SIZE(first%center_atoms) /= SIZE(second%center_atoms)) RETURN
-      IF (ANY(SHAPE(first%positions) /= SHAPE(second%positions))) RETURN
-      IF (ANY(first%center_atoms /= second%center_atoms)) RETURN
-      IF (ANY(first%center_kinds /= second%center_kinds)) RETURN
-      IF (ANY(first%projector_first /= second%projector_first)) RETURN
-      IF (ANY(first%projector_last /= second%projector_last)) RETURN
-      IF (ANY(first%positions /= second%positions) .OR. ANY(first%cell /= second%cell)) RETURN
-      IF (first%point_comm%get_handle() /= second%point_comm%get_handle()) RETURN
-      same = .TRUE.
-   END FUNCTION same_augmentation_geometry
 
 END MODULE qs_upf_inverse_scf_xc

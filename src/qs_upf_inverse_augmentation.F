@@ -48,8 +48,34 @@ MODULE qs_upf_inverse_augmentation
    PUBLIC :: qs_upf_inverse_augmentation_fourier_collocate, qs_upf_inverse_augmentation_fourier_integrate
    PUBLIC :: qs_upf_inverse_augmentation_fourier_response
    PUBLIC :: qs_upf_inverse_augmentation_has_support
+   PUBLIC :: qs_upf_inverse_augmentation_same_geometry
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Check whether two frames can share the original-Q projector operator.
+!> \param first First Bloch frame.
+!> \param second Other Bloch frame.
+!> \return Whether the physical geometry, image list and projector order match.
+! **************************************************************************************************
+   FUNCTION qs_upf_inverse_augmentation_same_geometry(first, second) RESULT(same)
+      TYPE(qs_upf_inverse_type), INTENT(IN)              :: first, second
+      LOGICAL                                            :: same
+
+      same = .FALSE.
+      IF (SIZE(first%coefficients, 1) /= SIZE(second%coefficients, 1)) RETURN
+      IF (SIZE(first%center_atoms) /= SIZE(second%center_atoms)) RETURN
+      IF (ANY(SHAPE(first%positions) /= SHAPE(second%positions))) RETURN
+      IF (ANY(SHAPE(first%images) /= SHAPE(second%images))) RETURN
+      IF (ANY(first%center_atoms /= second%center_atoms)) RETURN
+      IF (ANY(first%center_kinds /= second%center_kinds)) RETURN
+      IF (ANY(first%projector_first /= second%projector_first)) RETURN
+      IF (ANY(first%projector_last /= second%projector_last)) RETURN
+      IF (ANY(first%positions /= second%positions) .OR. ANY(first%cell /= second%cell)) RETURN
+      IF (ANY(first%images /= second%images)) RETURN
+      IF (first%point_comm%get_handle() /= second%point_comm%get_handle()) RETURN
+      same = .TRUE.
+   END FUNCTION qs_upf_inverse_augmentation_same_geometry
 
 ! **************************************************************************************************
 !> \brief Own original Q caches in the native magnetic-projector order, without changing QS state.
