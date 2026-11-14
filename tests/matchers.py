@@ -118,6 +118,9 @@ registry["E_total"] = GenericMatcher(r"Total energy:", col=3)
 registry["Hirshfeld_total_charge"] = GenericMatcher(
     r"^  Total Charge ", col=3, regex=True
 )
+registry["Hirshfeld_atom_2_reference"] = GenericMatcher(
+    r"^ {6}2 {7}[A-Z][a-z]? +\d+ +([-+]?\d+\.\d{3})(?: |$)", col=4, regex=True
+)
 registry["OT_SCF_convergence"] = GenericMatcher(
     r"^\s*\d+\s+OT\s+\S+\s+\S+\s+\S+\s+([-+0-9.EeDd]+)", col=1, regex=True
 )

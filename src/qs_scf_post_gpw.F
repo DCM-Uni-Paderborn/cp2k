@@ -116,6 +116,7 @@ MODULE qs_scf_post_gpw
    USE nlo,                             ONLY: run_nlo
    USE orbital_pointers,                ONLY: indso
    USE particle_list_types,             ONLY: particle_list_type
+   USE particle_methods,                ONLY: get_particle_set
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: a_bohr,&
                                               angstrom,&
@@ -165,7 +166,9 @@ MODULE qs_scf_post_gpw
    USE qs_grid_atom,                    ONLY: grid_atom_type
    USE qs_integral_utils,               ONLY: basis_set_list_setup
    USE qs_kind_types,                   ONLY: get_qs_kind,&
+                                              get_qs_kind_set,&
                                               qs_kind_type
+   USE qs_kpoint_density_state,         ONLY: kpoint_density_state_active
    USE qs_ks_methods,                   ONLY: calc_rho_tot_gspace,&
                                               qs_ks_update_qs_env
    USE qs_ks_types,                     ONLY: qs_ks_did_change
@@ -224,6 +227,7 @@ MODULE qs_scf_post_gpw
                                               qs_subsys_type
    USE qs_upf_inverse_coulomb,          ONLY: qs_upf_inverse_coulomb_density,&
                                               qs_upf_inverse_electronic_density
+   USE qs_upf_inverse_scf,              ONLY: qs_upf_inverse_scf_mulliken
    USE qs_wannier90,                    ONLY: wannier90_interface
    USE s_square_methods,                ONLY: compute_s_square,&
                                               compute_s_square_kp
@@ -3774,11 +3778,13 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: input_section
       INTEGER, INTENT(IN)                                :: unit_nr
 
-      INTEGER                                            :: i, iat, ikind, natom, nkind, nspin, &
+      INTEGER                                            :: i, iat, ikind, nao, natom, nkind, nspin, &
                                                             radius_type, refc, shapef
+      INTEGER, ALLOCATABLE                               :: first_ao(:), last_ao(:)
       INTEGER, DIMENSION(:), POINTER                     :: atom_list
       LOGICAL                                            :: do_radius, do_sc, paw_atom
       REAL(KIND=dp)                                      :: zeff
+      REAL(KIND=dp), ALLOCATABLE                          :: populations(:, :)
       REAL(KIND=dp), DIMENSION(:), POINTER               :: radii
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: charges
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -3786,6 +3792,7 @@ CONTAINS
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_p, matrix_s
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(hirshfeld_type), POINTER                      :: hirshfeld_env
+      TYPE(kpoint_type), POINTER                         :: kpoints
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(mpole_rho_atom), DIMENSION(:), POINTER        :: mp_rho
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
@@ -3840,8 +3847,21 @@ CONTAINS
             END DO
          END DO
       CASE (ref_charge_mulliken)
-         CALL get_qs_env(qs_env, matrix_s_kp=matrix_s, para_env=para_env)
-         CALL mulliken_charges(matrix_p, matrix_s, para_env, charges)
+         CALL get_qs_env(qs_env, kpoints=kpoints, para_env=para_env)
+         IF (kpoint_density_state_active(kpoints)) THEN
+            CALL get_qs_env(qs_env, particle_set=particle_set)
+            CALL get_qs_kind_set(qs_kind_set, nsgf=nao)
+            ALLOCATE (populations(nao, nspin), first_ao(natom), last_ao(natom))
+            CALL get_particle_set(particle_set, qs_kind_set, first_sgf=first_ao, last_sgf=last_ao)
+            CALL qs_upf_inverse_scf_mulliken(qs_env%ks_env, populations)
+            DO iat = 1, natom
+               charges(iat, :) = SUM(populations(first_ao(iat):last_ao(iat), :), DIM=1)
+            END DO
+            CALL para_env%sum(charges)
+         ELSE
+            CALL get_qs_env(qs_env, matrix_metric_kp=matrix_s)
+            CALL mulliken_charges(matrix_p, matrix_s, para_env, charges)
+         END IF
          DO iat = 1, natom
             hirshfeld_env%charges(iat) = SUM(charges(iat, :))
          END DO

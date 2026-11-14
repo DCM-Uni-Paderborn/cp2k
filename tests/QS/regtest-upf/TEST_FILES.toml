@@ -30,11 +30,12 @@
   {matcher = "Hirshfeld_total_charge", tol = 1e-3, ref = 0.0},
   {matcher = "E_gap_DFT", tol = 2e-6, ref = 14.717314},
 ]
-# Complete complex Bloch density, native OT, and band output in reversed k-point order.
+# Complex Bloch density, native OT, Mulliken-based Hirshfeld charges, and reversed band point order.
 "H2_inverse_GPW_kpoints.inp"       = [
   {matcher = "M011", tol = 1e-10, ref = -1.648324960331969},
   {matcher = "Atomic_force_1_z", tol = 1e-7, ref = -0.0106974588},
   {matcher = "M031", tol = 1e-7, ref = 314025.484139},
+  {matcher = "Hirshfeld_atom_2_reference", tol = 5e-4, ref = 0.935},
   {matcher = "Band_first_eigenvalue", tol = 1e-8, ref = -10.52305448},
 ]
 # Native complex operators and density restart preserve the OT state in one diagonalization step.
