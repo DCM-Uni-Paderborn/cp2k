@@ -398,6 +398,13 @@ CONTAINS
       nh = degree + projectors%lmax
       nr = SIZE(projectors%r)
       nb = SIZE(projectors%weighted_beta, 2)
+      ! Preserve the original quadrature and avoid evaluating Bessel functions on zero-weight tails.
+      DO WHILE (nr > 0)
+         IF (ANY(projectors%weighted_beta(nr, :) /= 0.0_dp)) EXIT
+         nr = nr - 1
+      END DO
+      integrals = 0.0_dp
+      IF (nr == 0) RETURN
       ALLOCATE (harmonics((nh + 1)**2), monomials(ncoset(nh)))
       distance = NORM2(rac)
       direction = [0.0_dp, 0.0_dp, 1.0_dp]
@@ -434,10 +441,9 @@ CONTAINS
       ALLOCATE (radial(0:degree, nb, 0:nh), radial_work(nr), radial_power(nr), envelope(nr))
       ALLOCATE (centered(nc, projectors%nproj), cartesian(nc, projectors%nproj))
       ALLOCATE (coeff(0:degree, 3), next_coeff(0:degree))
-      integrals = 0.0_dp
       DO ip = 1, SIZE(zeta)
          alpha = zeta(ip)
-         envelope(:) = EXP(-alpha*(projectors%r - distance)**2)
+         envelope(:) = EXP(-alpha*(projectors%r(:nr) - distance)**2)
          ! The scaled Bessel factor cannot recover an envelope that underflowed to zero.
          IF (ALL(envelope == 0.0_dp)) CYCLE
          DO lambda = 0, nh
@@ -450,9 +456,9 @@ CONTAINS
             radial_power(:) = radial_work
             DO k = 0, degree
                DO j = 1, nb
-                  radial(k, j, lambda) = DOT_PRODUCT(radial_power, projectors%weighted_beta(:, j))
+                  radial(k, j, lambda) = DOT_PRODUCT(radial_power, projectors%weighted_beta(:nr, j))
                END DO
-               radial_power(:) = radial_power*projectors%r
+               radial_power(:) = radial_power*projectors%r(:nr)
             END DO
          END DO
          centered = 0.0_dp
