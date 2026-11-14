@@ -1224,6 +1224,10 @@ CONTAINS
          END IF
          ! B uses the original radial weights and the analytic Gaussian angular integrals.
          DO basis_atom = 1, SIZE(frame%bases)
+            ! A common translation leaves the overlap unchanged at fixed cell and reduced k.
+            IF (.NOT. values .AND. derivative .AND. .NOT. shared_response) THEN
+               IF (ALL(atom_response(:, basis_atom) == atom_response(:, atom))) CYCLE
+            END IF
             p = frame%ao_first(basis_atom)
             q = frame%ao_last(basis_atom)
             ASSOCIATE (basis => frame%bases(basis_atom)%gto_basis_set, raw => frame%defining_atom_grids(kind)%projectors)
