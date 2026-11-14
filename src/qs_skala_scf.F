@@ -2802,7 +2802,12 @@ CONTAINS
          CALL qs_skala_scf_classify(state, trial, context%points, context%domains, context%spins, context%descriptors, &
                                     context%targets, admissible, sides, valid, retain=.TRUE., restore_operator=.FALSE.)
          IF (valid .AND. ALL(admissible)) THEN
-            CALL qs_skala_scf_evaluate(state, trial, energy, gradient, physical, reuse_fields=.TRUE.)
+            IF (state%operator_current) THEN
+               energy = state%energy%total
+               CALL native_orbital_covectors(state, gradient, physical)
+            ELSE
+               CALL qs_skala_scf_evaluate(state, trial, energy, gradient, physical, reuse_fields=.TRUE.)
+            END IF
             trial_energy = sum_ks_energies(state%energy, .TRUE.)
             CALL qs_skala_scf_values(state, context%domains, context%points, context%spins, context%descriptors, values)
             restored = ALL(ABS(values - context%targets) <= tolerances) .AND. &
@@ -3701,6 +3706,13 @@ CONTAINS
       selected = .FALSE.
       selected(:old) = .TRUE.
       IF (valid .AND. keep .AND. ALL(admissible)) selected(old + 1:) = .TRUE.
+      IF (ALL(selected)) THEN
+         ! The retained selection is already registered with the requested weights.
+         IF (restore .AND. .NOT. state%operator_current) THEN
+            CALL evaluate_limiting_state(state, coordinate, energy, positive, .TRUE.)
+         END IF
+         RETURN
+      END IF
       ALLOCATE (rows, SOURCE=PACK([(i, i=1, total)], selected))
       IF (SIZE(rows) > 0) THEN
          CALL qs_skala_scf_select(state, all_points(:, rows), all_domains(rows), all_spins(rows), &
