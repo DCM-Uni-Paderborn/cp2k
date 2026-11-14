@@ -255,7 +255,7 @@ MODULE qs_scf
         scf_env_release_ot_operators, smeagol_method_nr, special_diag_method_nr
    USE qs_skala_scf,                    ONLY: &
         qs_skala_scf_accept, qs_skala_scf_align_preconditioner, qs_skala_scf_balance, qs_skala_scf_classify, qs_skala_scf_create, &
-        qs_skala_scf_create_symmetric, qs_skala_scf_crossing_type, qs_skala_scf_evaluate, &
+        qs_skala_scf_create_symmetric, qs_skala_scf_crossing_type, qs_skala_scf_evaluate, qs_skala_scf_fermi_target, &
         qs_skala_scf_inspect, qs_skala_scf_release, qs_skala_scf_release_cusp, &
         qs_skala_scf_restore_restart, qs_skala_scf_retained_symmetry, qs_skala_scf_selected, qs_skala_scf_size, &
         qs_skala_scf_stationarity, qs_skala_scf_type, qs_skala_scf_write_restart
@@ -1594,7 +1594,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Try one full-space Fermi update with a fixed Hamiltonian.
-!>        Commit it only if the rebuilt free energy and physical residual both improve.
+!>        Require a nonincreasing free energy and progress in the gradient or Fermi density.
+!>        A Fermi-density improvement without gradient progress requires a resolved energy decrease.
 !> \param qs_env ...
 !> \param scf_env ...
 !> \param scf_control ...
@@ -1620,8 +1621,10 @@ CONTAINS
       LOGICAL, INTENT(OUT)                               :: attempted
 
       INTEGER                                            :: incomplete, local, nspin, spin
-      LOGICAL                                            :: accepted, diis_step, valid
-      REAL(dp)                                           :: old_energy, old_residual
+      LOGICAL                                            :: accepted, diis_step, old_fermi_valid, valid
+      REAL(dp)                                           :: energy_roundoff, fermi_error, old_energy, &
+                                                            old_fermi_error, old_residual, omitted_charge
+      REAL(dp), ALLOCATABLE                              :: chemical_potentials(:)
       TYPE(dbcsr_p_type), POINTER                        :: matrix_ks(:, :), matrix_metric(:, :)
       TYPE(mo_set_type), ALLOCATABLE                     :: saved(:, :)
       TYPE(mo_set_type), POINTER                         :: mos(:)
@@ -1640,6 +1643,7 @@ CONTAINS
       CPASSERT(ALL(coordinate == 0.0_dp))
       old_energy = energy
       old_residual = NORM2(physical)
+      CALL qs_skala_scf_fermi_target(state, old_fermi_error, omitted_charge, chemical_potentials, old_fermi_valid)
       ALLOCATE (saved(SIZE(kpoints%kp_env), nspin))
       DO local = 1, SIZE(kpoints%kp_env)
          mos => kpoints%kp_env(local)%kpoint_env%mos
@@ -1657,6 +1661,13 @@ CONTAINS
       IF (valid) THEN
          CALL qs_skala_scf_evaluate(state, coordinate, energy, gradient, physical)
          accepted = energy <= old_energy .AND. NORM2(physical) < old_residual
+         energy_roundoff = 64.0_dp*EPSILON(1.0_dp)*MAX(ABS(energy), ABS(old_energy))
+         IF (.NOT. accepted .AND. old_fermi_valid .AND. energy < old_energy - energy_roundoff) THEN
+            ! Fully occupied or empty auxiliary bands can suppress the chart gradient even
+            ! when the density differs substantially from the physical Fermi map.
+            CALL qs_skala_scf_fermi_target(state, fermi_error, omitted_charge, chemical_potentials, valid)
+            accepted = valid .AND. fermi_error < old_fermi_error
+         END IF
       END IF
 
       DO local = 1, SIZE(kpoints%kp_env)
