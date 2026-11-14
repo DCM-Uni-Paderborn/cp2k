@@ -16,7 +16,8 @@ MODULE qs_gspace_mixing
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: z_one,&
                                               z_zero
-   USE mathlib,                         ONLY: invert_matrix
+   USE mathlib,                         ONLY: get_pseudo_inverse_svd,&
+                                              invert_matrix
    USE message_passing,                 ONLY: mp_para_env_type
    USE pw_methods,                      ONLY: pw_integrate_function,&
                                               pw_transfer
@@ -958,11 +959,11 @@ CONTAINS
       COMPLEX(dp)                                        :: cc_mix
       COMPLEX(dp), ALLOCATABLE, DIMENSION(:)             :: res_rho
       INTEGER                                            :: handle, i, iatom, ib, ig, ispin, j, jb, &
-                                                            kb, n1, n2, natom, nb, nbuffer, ng, &
+                                                            n1, n2, natom, nb, nbuffer, ng, &
                                                             nspin
       LOGICAL                                            :: can_update, gapw, only_kerker
       REAL(dp) :: alpha_eff, broy_w0, broy_wmax, broy_wmin, broy_wref, dcpc_h_res, dcpc_s_res, &
-         delta_norm, f_mix, inv_err, res_norm, valh, vals
+         delta_norm, f_mix, res_norm, valh, vals
       REAL(dp), ALLOCATABLE, DIMENSION(:)                :: c, g
       REAL(dp), ALLOCATABLE, DIMENSION(:, :)             :: a, b
       REAL(dp), DIMENSION(2)                             :: norms
@@ -1151,16 +1152,14 @@ CONTAINS
                CALL para_env%sum(a)
                CALL para_env%sum(c)
 
+               ! Absorb the dynamic weights into the solution. This avoids
+               ! scaling both sides of the Gram matrix by large weights.
                DO jb = 1, nb
-                  c(jb) = mixing_store%weight(jb, ispin)*c(jb)
-                  DO kb = 1, nb
-                     a(kb, jb) = mixing_store%weight(kb, ispin)*mixing_store%weight(jb, ispin)*a(kb, jb)
-                  END DO
-                  a(jb, jb) = broy_w0*broy_w0 + a(jb, jb)
+                  a(jb, jb) = a(jb, jb) + (broy_w0/mixing_store%weight(jb, ispin))**2
                END DO
-               CALL invert_matrix(a, b, inv_err)
-
-               CALL dgemv('T', nb, nb, 1.0_dp, B, nb, C, 1, 0.0_dp, G, 1)
+               ! Dependent secants can remain after equilibration.
+               CALL get_pseudo_inverse_svd(a, b, 1.e-12_dp)
+               g(:) = MATMUL(b, c)
             ELSE
                g = 0.0_dp
 !$OMP PARALLEL DO DEFAULT(NONE) SCHEDULE(STATIC) PRIVATE(ig) SHARED(ng, ib, ispin, mixing_store)
@@ -1176,7 +1175,7 @@ CONTAINS
             DO ig = 1, ng
                cc_mix = z_zero
                DO jb = 1, nb
-                  cc_mix = cc_mix - mixing_store%weight(jb, ispin)*G(jb)*mixing_store%drho_buffer(jb, ispin)%cc(ig)
+                  cc_mix = cc_mix - g(jb)*mixing_store%drho_buffer(jb, ispin)%cc(ig)
                END DO
                f_mix = alpha_eff*kerker_eff(ig)
 
@@ -1198,9 +1197,9 @@ CONTAINS
                               valh = 0.0_dp
                               vals = 0.0_dp
                               DO jb = 1, nb
-                                 valh = valh - mixing_store%weight(jb, ispin)*G(jb)* &
+                                 valh = valh - g(jb)* &
                                         mixing_store%dcpc_h_in(jb, iatom, ispin)%r_coef(j, i)
-                                 vals = vals - mixing_store%weight(jb, ispin)*G(jb)* &
+                                 vals = vals - g(jb)* &
                                         mixing_store%dcpc_s_in(jb, iatom, ispin)%r_coef(j, i)
                               END DO
                               IF (res_norm > 1.E-14_dp) THEN
