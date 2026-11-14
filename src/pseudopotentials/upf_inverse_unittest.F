@@ -3464,6 +3464,26 @@ CONTAINS
          CALL check(MAXVAL(ABS((density_samples(:, 2) - density_samples(:, 1))/(2.0_dp*step) - density_response)), &
                     "Complete signed density joint geometry response", 3.e-10_dp)
       END DO
+      ! Isolate two nonintersecting residuals. The cached map omits their cross blocks.
+      changed = centers
+      changed(2)%position(1) = 3.0_dp
+      periodicity = 0
+      CALL upf_inverse_coulomb_prepare(changed, cell, g, volume, map, periodicity, comm=comm)
+      CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background, kw, energy, potential, adjoint, &
+                                        response=response, center_response=derivative, cell_response=dcell, &
+                                        gvecs_response=dg, volume_response=dvolume, background_response=db, &
+                                        poisson_weights_response=dkw, periodicity=periodicity)
+      CALL upf_inverse_coulomb_periodic(changed, cell, g, volume, background, kw, cached_energy, &
+                                        cached_potential, cached_adjoint, response=cached_response, &
+                                        center_response=derivative, cell_response=dcell, gvecs_response=dg, &
+                                        volume_response=dvolume, background_response=db, &
+                                        poisson_weights_response=dkw, map=map)
+      CALL check(ABS(cached_energy - energy), "Coulomb energy with disjoint residuals", 3.e-12_dp)
+      CALL check(ABS(cached_response - response), "Coulomb response with disjoint residuals", 3.e-12_dp)
+      DO a = 1, SIZE(changed)
+         CALL check(MAXVAL(ABS(cached_potential(a)%values - potential(a)%values)), &
+                    "Coulomb adjoint with disjoint residuals", 3.e-12_dp)
+      END DO
       ! The nonzero Fourier rows are the two Nyquist representatives along the first axis.
       changed = centers
       DO a = 1, SIZE(centers)

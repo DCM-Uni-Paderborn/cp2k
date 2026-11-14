@@ -115,7 +115,7 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: parity(:, :)
       INTEGER                                            :: miller(3)
       LOGICAL, ALLOCATABLE                               :: aliased(:)
-      LOGICAL                                            :: cartesian, has_images, reflection_axes(3)
+      LOGICAL                                            :: cartesian, reflection_axes(3)
       REAL(dp)                                           :: displacement(3), image_center(3), inverse_cell(3, 3), &
                                                             multiplicity, radius, separation(3)
       REAL(dp), ALLOCATABLE                              :: kernel(:, :, :, :)
@@ -158,13 +158,8 @@ CONTAINS
             separation = centers(a)%position - centers(b)%position
             CALL pair_reflection_center(cell, separation, map%periodicity, cartesian, reflection_axes, image_center)
             IF (ANY(reflection_axes)) parity = image_pair_parity(centers(a), centers(b))
-            ALLOCATE (kernel(SIZE(centers(a)%radii), SIZE(centers(a)%l), &
-                             SIZE(centers(b)%radii), SIZE(centers(b)%l)))
-            ALLOCATE (map%pairs(a, b)%values, MOLD=kernel)
-            map%pairs(a, b)%values = 0.0_dp
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
             CALL residual_image_limits(inverse_cell, separation, radius, map%periodicity, limits)
-            has_images = .FALSE.
             DO k = limits(1, 3), limits(2, 3)
                DO j = limits(1, 2), limits(2, 2)
                   DO i = limits(1, 1), limits(2, 1)
@@ -176,7 +171,13 @@ CONTAINS
                      END IF
                      displacement = separation - MATMUL(cell, REAL(image, dp))
                      IF (SUM(displacement**2) >= radius**2) CYCLE
-                     has_images = .TRUE.
+                     ! Every rank needs the block for reduction, but only intersecting shells need storage.
+                     IF (.NOT. ALLOCATED(kernel)) THEN
+                        ALLOCATE (kernel(SIZE(centers(a)%radii), SIZE(centers(a)%l), &
+                                         SIZE(centers(b)%radii), SIZE(centers(b)%l)))
+                        ALLOCATE (map%pairs(a, b)%values, MOLD=kernel)
+                        map%pairs(a, b)%values = 0.0_dp
+                     END IF
                      owner = MOD(owner + 1, nrank)
                      IF (owner /= rank) CYCLE
                      CALL upf_inverse_coulomb_pair_kernel(centers(a)%radii, centers(a)%l, centers(a)%indices, &
@@ -216,7 +217,8 @@ CONTAINS
                   END DO
                END DO
             END DO
-            IF (nrank > 1 .AND. has_images) CALL comm%sum(map%pairs(a, b)%values)
+            IF (.NOT. ALLOCATED(kernel)) CYCLE
+            IF (nrank > 1) CALL comm%sum(map%pairs(a, b)%values)
             IF (a /= b) THEN
                ALLOCATE (map%pairs(b, a)%values(SIZE(kernel, 3), SIZE(kernel, 4), SIZE(kernel, 1), SIZE(kernel, 2)))
                DO h = 1, SIZE(kernel, 2)
@@ -295,6 +297,7 @@ CONTAINS
       END DO
       DO a = 1, SIZE(centers)
          DO b = a, SIZE(centers)
+            IF (.NOT. ALLOCATED(map%pairs(a, b)%values)) CYCLE
             ! Moving a center and its own images together leaves their separation fixed.
             IF (a == b .AND. .NOT. do_cell) CYCLE
             separation = centers(a)%position - centers(b)%position
@@ -809,6 +812,7 @@ CONTAINS
          na = SIZE(centers(a)%radii)
          DO b = 1, SIZE(centers)
             IF (PRESENT(map)) THEN
+               IF (.NOT. ALLOCATED(map%pairs(a, b)%values)) CYCLE
                ! The immutable map also supplies the primal and density response during motion.
                ! Only the explicit shell-kernel derivative needs to be integrated again.
                DO channel = 1, SIZE(centers(a)%l)
