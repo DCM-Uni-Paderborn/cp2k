@@ -42,6 +42,10 @@
 "H2_inverse_GPW_restart.inp"       = [
   {matcher = "M011", tol = 1e-10, ref = -1.648324960331968},
 ]
+# A symmetry-breaking MD step must not reload the startup k-point density after rebuilding the mesh.
+"H2_USPP_MD_restart.inp"           = [
+  {matcher = "M011", tol = 1e-10, ref = -1.493657065708353},
+]
 # CDIIS checks the unchanged-H density map and a band point with zero SCF weight.
 "H2_USPP_cdiis.inp"                = [
   {matcher = "M011", tol = 1e-10, ref = -1.97634651379787},
