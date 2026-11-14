@@ -704,7 +704,7 @@ CONTAINS
       TYPE(cp_fm_type), DIMENSION(:), OPTIONAL, POINTER  :: rt_mos
       LOGICAL, INTENT(OUT), OPTIONAL                     :: natom_mismatch
 
-      INTEGER :: homo, homo_read, i, iatom, ikind, imat, irow, iset, iset_read, ishell, &
+      INTEGER :: homo, homo_read, i, iatom, ikind, imat, io_status, irow, iset, iset_read, ishell, &
          ishell_read, iso, ispin, lfomo_read, lmax, lshell, my_mult, nao, nao_read, natom_read, &
          nelectron, nelectron_read, nmo, nmo_read, nnshell, nset, nset_max, nshell_max, nspin, &
          nspin_read, offset_read
@@ -726,7 +726,10 @@ CONTAINS
       IF (PRESENT(multiplicity)) my_mult = multiplicity
 
       IF (para_env%is_source()) THEN
-         READ (rst_unit) natom_read, nspin_read, nao_read, nset_max, nshell_max
+         READ (rst_unit, IOSTAT=io_status) natom_read, nspin_read, nao_read, nset_max, nshell_max
+         IF (io_status /= 0) THEN
+            CPABORT("Invalid orbital restart header. Use .wfn without k-point sampling.")
+         END IF
          IF (PRESENT(rt_mos)) THEN
             IF (nspin_read /= nspin) THEN
                CPABORT("To change nspin is not possible. ")
