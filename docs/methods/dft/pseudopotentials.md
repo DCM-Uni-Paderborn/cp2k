@@ -118,6 +118,37 @@ Choose a writable external destination. Downloads do not run automatically. See 
 [download and preparation instructions](https://github.com/cp2k/cp2k/blob/master/tools/pseudopotentials/README.md).
 SSSP plane-wave cutoffs are not Gaussian-basis or Quickstep multigrid recommendations.
 
+For a scalar UPF, set `POTENTIAL UPF` and put the file path in the corresponding `&KIND`.
+For an installed SSSP selection, resolve the `file` field in `selection.json` relative to that
+index. Choose `GPW`, `GAPW_XC`, or `GAPW` with `&QS / METHOD`. For example, with a prepared H
+USPP from PBEsol Precision, the relevant sections are
+
+```text
+&FORCE_EVAL
+  &DFT
+    BASIS_SET_FILE_NAME BASIS_MOLOPT_UZH_2026.2
+    &QS
+      METHOD GPW
+      USPP_METHOD INVERSE
+    &END QS
+  &END DFT
+  &SUBSYS
+    &KIND H
+      BASIS_SET DZVP-MOLOPT-PBE-GTH-q1
+      POTENTIAL UPF
+      POTENTIAL_FILE_NAME /path/to/H.us.pbesol.z_1.ld1.psl.v1.0.0-high.upf
+    &END KIND
+  &END SUBSYS
+&END FORCE_EVAL
+```
+
+Set the exchange–correlation functional separately in `&XC`. `USPP_METHOD` selects the orbital
+representation for both USPP and PAW. `DIRECT` expands soft orbitals. Its USPP LDA/GGA path
+needs only the original UPF operator tables. `INVERSE` and `INVERSE_1C` need projector-indexed
+reference waves. Use `INVERSE` when reconstruction regions overlap. PAW retains its one-center
+corrections in all three representations. For kinetic-density functionals, follow the linked
+preparation instructions for the USPP valence and core data and the additional NC and PAW core data.
+
 ## Consistency Checks
 
 Useful checks when setting up a calculation are:
