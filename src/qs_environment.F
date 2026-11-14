@@ -940,7 +940,7 @@ CONTAINS
 
       CALL get_kpoint_info(kpoints, symmetry=kpoint_symmetry, full_grid=full_grid, &
                            inversion_symmetry_only=inversion_symmetry_only)
-      IF (.NOT. (kpoint_symmetry .AND. .NOT. full_grid .AND. .NOT. inversion_symmetry_only)) RETURN
+      IF (.NOT. (kpoint_symmetry .AND. .NOT. full_grid)) RETURN
 
       reason = unsupported_atomic_kpoint_symmetry_reason(method_id, do_gw, &
                                                          do_tddfpt, do_active_space, do_linear_response, &
@@ -950,6 +950,8 @@ CONTAINS
                                                          do_dftb_scc_high_l)
       IF (LEN_TRIM(reason) == 0) RETURN
 
+      kpoints%restrict_atomic_symmetry = .TRUE.
+      IF (inversion_symmetry_only) RETURN
       CALL cp_warn(__LOCATION__, &
                    "Atomic k-point symmetry is currently not implemented for "//TRIM(reason)// &
                    "; restricting to inversion/time-reversal symmetry.")

@@ -626,9 +626,10 @@ CONTAINS
       use_full_grid = input_full_grid
       use_inversion_symmetry_only = (input_inversion_symmetry_only .OR. debug_inversion_only) .AND. &
                                     (.NOT. use_full_grid)
-      ! Preserve restrictions selected during initial setup. The explicit DEBUG expert option
-      ! remains available for symmetry diagnostics on otherwise unsupported cell matrices.
-      IF (inversion_symmetry_only .AND. .NOT. force_full_debug_symmetry .AND. .NOT. use_full_grid) THEN
+      ! Retain method restrictions and preserve the DEBUG finite-difference symmetry.
+      ! Reevaluate geometry-dependent fallbacks during moving runs.
+      IF ((kpoints%restrict_atomic_symmetry .OR. (run_type_id == debug_run .AND. inversion_symmetry_only)) .AND. &
+          .NOT. force_full_debug_symmetry .AND. .NOT. use_full_grid) THEN
          use_inversion_symmetry_only = .TRUE.
       END IF
       non_lower_triangular_cell = (ABS(cell%hmat(2, 1)) > eps_cell) .OR. &
@@ -645,7 +646,9 @@ CONTAINS
          CALL qs_basis_rotation(force_env%qs_env, kpoints)
          RETURN
       END IF
-      IF (moving_geometry .AND. .NOT. dynamic_symmetry) RETURN
+      IF (moving_geometry .AND. .NOT. dynamic_symmetry .AND. &
+          (full_grid .EQV. use_full_grid) .AND. &
+          (inversion_symmetry_only .EQV. use_inversion_symmetry_only)) RETURN
       ! The new geometry can restore symmetry absent from the previous k-point mesh.
       CALL set_kpoint_info(kpoints, full_grid=use_full_grid, &
                            inversion_symmetry_only=use_inversion_symmetry_only)

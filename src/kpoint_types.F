@@ -232,6 +232,7 @@ MODULE kpoint_types
       LOGICAL                                 :: full_grid = .FALSE.
       INTEGER                                 :: lattice_fft = lattice_fft_auto
       LOGICAL                                 :: inversion_symmetry_only = .FALSE.
+      LOGICAL                                 :: restrict_atomic_symmetry = .FALSE.
       LOGICAL                                 :: cartesian_half_turns = .FALSE.
       LOGICAL                                 :: proper_rotations_only = .FALSE.
       TYPE(crys_sym_grid_type), ALLOCATABLE     :: integration_grids(:)
