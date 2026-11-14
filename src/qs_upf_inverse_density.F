@@ -624,6 +624,9 @@ CONTAINS
          CALL qs_upf_inverse_density_integrate(frame, augmentation, center, points, weights, values, ao_operator, cache=cache)
       END IF
       ao_operator = ao_operator + gaussian
+      ! The signed center density is real. Its Gaussian and UPF adjoints
+      ! can cancel large terms in the two independently assembled triangles.
+      ao_operator = 0.5_dp*(ao_operator + CONJG(TRANSPOSE(ao_operator)))
    END SUBROUTINE qs_upf_inverse_density_gapw_integrate
 
 ! **************************************************************************************************

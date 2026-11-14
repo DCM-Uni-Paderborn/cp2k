@@ -309,7 +309,7 @@ CONTAINS
 !> \param template Native AO block layout/distribution; its values and sparsity are not copied.
 !> \param operator_real New owned real symmetric matrix; release it after use.
 !> \param operator_imag New owned imaginary antisymmetric matrix; release it after use.
-!> \param projector_operator Optional explicitly supplied remaining projector operator.
+!> \param projector_operator Optional Hermitian projector operator.
 !>        Missing charge or kinetic augmentation must not be inferred from the other kernel.
 !> \param augmentation Optional original charge/gradient adjoint on the same native point rows.
 !> \param fourier_charge Select the native Fourier adjoint of the same density map; default is false.
@@ -344,7 +344,7 @@ CONTAINS
 !> \param vgradient ...
 !> \param vtau ...
 !> \param h New replicated Hermitian operator, without occupation or k weights.
-!> \param projector_operator ...
+!> \param projector_operator Optional Hermitian projector operator.
 !> \param augmentation ...
 !> \param fourier_charge ...
 !> \param kinetic Optional independent valence kinetic augmentation; omitted for the bare soft kinetic operator.
@@ -429,6 +429,9 @@ CONTAINS
                                          residual, frame%ao%point_comm)
          h(:, :) = h + residual
       END IF
+      ! The variational adjoint acts on Hermitian density matrices. Independent
+      ! contractions of its two triangles can lose symmetry when terms cancel.
+      h(:, :) = 0.5_dp*(h + CONJG(TRANSPOSE(h)))
    END SUBROUTINE qs_upf_inverse_grid_integrate_dense
 
 ! **************************************************************************************************
@@ -895,7 +898,9 @@ CONTAINS
          metric_response(:, :) = metric_response + MATMUL(CONJG(TRANSPOSE(dw)), &
                                                           MATMUL(projector_metric, frame%ao%coefficients)) + &
                                  MATMUL(CONJG(TRANSPOSE(frame%ao%coefficients)), MATMUL(projector_metric, dw))
+         metric_response(:, :) = 0.5_dp*(metric_response + CONJG(TRANSPOSE(metric_response)))
       END IF
+      operator_response(:, :) = 0.5_dp*(operator_response + CONJG(TRANSPOSE(operator_response)))
       IF (PRESENT(saved_coefficients_response)) THEN
          IF (ALLOCATED(owned_dw)) THEN
             CALL MOVE_ALLOC(owned_dw, saved_coefficients_response)

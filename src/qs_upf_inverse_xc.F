@@ -834,6 +834,9 @@ CONTAINS
                   operators(:, :, ik, spin) = operators(:, :, ik, spin) + kinetic_operator
                END IF
             END IF
+            ! The atom-grid XC adjoint maps real potentials to a Hermitian AO operator.
+            operators(:, :, ik, spin) = 0.5_dp*(operators(:, :, ik, spin) + &
+                                                CONJG(TRANSPOSE(operators(:, :, ik, spin))))
          END DO
          DEALLOCATE (qoperator, kinetic_operator)
       END DO
