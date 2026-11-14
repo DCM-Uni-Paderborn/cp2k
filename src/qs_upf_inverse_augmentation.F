@@ -786,7 +786,7 @@ CONTAINS
 
       INTEGER                                            :: atom, axis, center, first, ikind, image, &
                                                             last, n, point
-      REAL(dp)                                           :: dr(3), position(3), r(3), radius2, weight
+      REAL(dp)                                           :: dr(3), lower(3), position(3), r(3), radius, radius2, upper(3), weight
       REAL(dp), ALLOCATABLE                              :: dq(:, :, :), dterm(:, :), &
                                                             hq(:, :, :, :), laplace_q(:, :), laplace_q_gradient(:, :, :), &
                                                             q(:, :), term(:, :)
@@ -810,6 +810,13 @@ CONTAINS
          CPASSERT(SIZE(vlaplacian_response) == SIZE(vdensity))
       END IF
       response = CMPLX(0.0_dp, 0.0_dp, dp)
+      IF (PRESENT(points)) THEN
+         lower = MINVAL(points, DIM=2)
+         upper = MAXVAL(points, DIM=2)
+      ELSE
+         lower = MINVAL(frame%points, DIM=2)
+         upper = MAXVAL(frame%points, DIM=2)
+      END IF
       DO center = 1, SIZE(frame%center_atoms)
          atom = frame%center_atoms(center)
          ikind = frame%center_kinds(center)
@@ -817,12 +824,14 @@ CONTAINS
          first = frame%projector_first(center)
          last = frame%projector_last(center)
          n = last - first + 1
-         radius2 = augmentation%kinds(ikind)%realspace_radius**2
+         radius = augmentation%kinds(ikind)%realspace_radius
+         radius2 = radius**2
          ALLOCATE (q(n, n), dq(n, n, 3), hq(n, n, 3, 3), term(n, n), dterm(n, n))
          IF (PRESENT(vlaplacian) .OR. PRESENT(vlaplacian_response)) ALLOCATE (laplace_q(n, n))
          IF (PRESENT(vlaplacian)) ALLOCATE (laplace_q_gradient(n, n, 3))
          DO image = 1, SIZE(frame%images, 2)
             position = frame%positions(:, atom) + MATMUL(frame%cell, REAL(frame%images(:, image), dp))
+            IF (.NOT. qs_upf_inverse_augmentation_has_support(position, radius, lower, upper)) CYCLE
             DO point = 1, SIZE(vdensity)
                IF (PRESENT(points)) THEN
                   r = points(:, point) - position
