@@ -149,6 +149,9 @@ reference waves. Use `INVERSE` when reconstruction regions overlap. PAW retains 
 corrections in all three representations. For kinetic-density functionals, follow the linked
 preparation instructions for the USPP valence and core data and the additional NC and PAW core data.
 
+For norm-conserving UPFs with `GAPW_XC` or `GAPW`, set `FORCE_PAW TRUE` in `&QS` to evaluate
+the local Gaussian density terms even for soft basis sets. The UPF remains norm-conserving.
+
 ## Consistency Checks
 
 Useful checks when setting up a calculation are:
