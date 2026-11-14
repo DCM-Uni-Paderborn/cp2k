@@ -238,10 +238,10 @@ CONTAINS
       REAL(dp), INTENT(OUT)                              :: value, gradient(3)
 
       INTEGER                                            :: d, j
-      REAL(dp)                                           :: distance, dh(3), f(3), h(3), z
+      REAL(dp)                                           :: dh(3), distance, f(3), h(3), z
 
       IF (layout%cutoff_radius > 0.0_dp) THEN
-         distance = NORM2(x)
+         distance = SQRT(DOT_PRODUCT(x, x))
          z = 2.0_dp*distance/layout%cutoff_radius - 1.0_dp
          value = 0.0_dp
          gradient = 0.0_dp
@@ -316,7 +316,7 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: logarithmic
 
       INTEGER                                            :: k
-      REAL(dp)                                           :: c, dc(3), ds, mu, ri, rj, s
+      REAL(dp)                                           :: c, dc(3), ds, mu, ri, rj, s, y(3)
 
       CALL compact_window(layout, x, c, dc)
       zero = c <= 0.0_dp
@@ -324,9 +324,10 @@ CONTAINS
       IF (zero) RETURN
       q = c
       IF (logarithmic) q = LOG(c)
-      ri = NORM2(x)
+      ri = SQRT(DOT_PRODUCT(x, x))
       DO k = 1, layout%active_neighbors(atom)
-         rj = NORM2(x - layout%offset(:, k, atom))
+         y = x - layout%offset(:, k, atom)
+         rj = SQRT(DOT_PRODUCT(y, y))
          mu = (ri - rj)*layout%inverse_distance(k, atom)
          CALL pair_switch(mu, s, ds)
          s = (1.0_dp - layout%cutoff(k, atom)) + layout%cutoff(k, atom)*s
@@ -360,55 +361,53 @@ CONTAINS
       REAL(dp), INTENT(INOUT)                            :: datom(:, :), moment(3, 3)
 
       INTEGER                                            :: b, d, k
-      REAL(dp)                                           :: c, dc(3), ds, e(3), factor, gi(3), &
-                                                            gj(3), mu, neighbor(3), pair, ri, rj, &
-                                                            s, u(3), v(3), x(3), y(3)
+      LOGICAL                                            :: radial_window
+      REAL(dp) :: c, center_adjoint(3), cutoff_adjoint(3), dc(3), ds, e(3), factor, gradient_a(3), &
+         gradient_b(3), mu, pair, ri, rj, s, u(3), v(3), x(3), y(3)
 
       x = point - center
       CALL compact_window(layout, x, c, dc)
       IF (c <= 0.0_dp .OR. coefficient == 0.0_dp) RETURN
-      gi = -coefficient*dc/c
-      datom(:, atom) = datom(:, atom) + gi
-      IF (layout%cutoff_radius > 0.0_dp) THEN
-         DO d = 1, 3
-            moment(:, d) = moment(:, d) + gi*center(d)
-         END DO
+      gradient_a = -coefficient*dc/c
+      center_adjoint = 0.0_dp
+      radial_window = layout%cutoff_radius > 0.0_dp
+      IF (radial_window) THEN
+         center_adjoint = gradient_a
       ELSE
          ! Include the explicit inverse-cell response of the fractional window.
          DO d = 1, 3
-            moment(:, d) = moment(:, d) + gi*point(d)
+            moment(:, d) = moment(:, d) + gradient_a*point(d)
          END DO
       END IF
-      ri = NORM2(x)
+      ri = SQRT(DOT_PRODUCT(x, x))
       u = x/MAX(ri, 1.e-30_dp)
       DO k = 1, layout%active_neighbors(atom)
          b = layout%owner(k, atom)
          y = x - layout%offset(:, k, atom)
-         rj = NORM2(y)
+         rj = SQRT(DOT_PRODUCT(y, y))
          v = y/MAX(rj, 1.e-30_dp)
          mu = (ri - rj)*layout%inverse_distance(k, atom)
          CALL pair_switch(mu, s, ds)
          pair = (1.0_dp - layout%cutoff(k, atom)) + layout%cutoff(k, atom)*s
          IF (pair <= 0.0_dp) CYCLE
-         gi = coefficient*(s - 1.0_dp)/pair*layout%cutoff_gradient(:, k, atom)
-         datom(:, atom) = datom(:, atom) - gi
-         datom(:, b) = datom(:, b) + gi
-         ! Only the fractional taper cancels its center moment under affine strain.
-         IF (layout%cutoff_radius > 0.0_dp) THEN
-            DO d = 1, 3
-               moment(:, d) = moment(:, d) + gi*layout%offset(d, k, atom)
-            END DO
-         END IF
+         IF (ds == 0.0_dp .AND. (s == 1.0_dp .OR. ALL(layout%cutoff_gradient(:, k, atom) == 0.0_dp))) CYCLE
+         cutoff_adjoint = coefficient*(s - 1.0_dp)/pair*layout%cutoff_gradient(:, k, atom)
          factor = coefficient*layout%cutoff(k, atom)*ds/pair*layout%inverse_distance(k, atom)
          e = -layout%offset(:, k, atom)*layout%inverse_distance(k, atom)
-         gi = factor*(-u - mu*e)
-         gj = factor*(v + mu*e)
-         datom(:, atom) = datom(:, atom) + gi
-         datom(:, b) = datom(:, b) + gj
-         neighbor = center + layout%offset(:, k, atom)
+         gradient_a = gradient_a + factor*(-u - mu*e) - cutoff_adjoint
+         gradient_b = factor*(v + mu*e)
+         datom(:, b) = datom(:, b) + gradient_b + cutoff_adjoint
+         ! Use the same image center for the sum of both center gradients.
+         center_adjoint = center_adjoint + factor*(v - u)
+         ! Only the fractional taper cancels its center moment under affine strain.
+         IF (radial_window) gradient_b = gradient_b + cutoff_adjoint
          DO d = 1, 3
-            moment(:, d) = moment(:, d) + gi*center(d) + gj*neighbor(d)
+            moment(:, d) = moment(:, d) + gradient_b*layout%offset(d, k, atom)
          END DO
+      END DO
+      datom(:, atom) = datom(:, atom) + gradient_a
+      DO d = 1, 3
+         moment(:, d) = moment(:, d) + center_adjoint*center(d)
       END DO
    END SUBROUTINE seed_reverse
 END MODULE skala_periodic_partition
