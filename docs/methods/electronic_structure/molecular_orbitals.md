@@ -224,10 +224,10 @@ them.
 
 The two AO export modes target different post-processing workflows:
 
-- `AO_EXPORT_TYPE GTO_BASIS` writes a compact GTO basis definition. The post-processing code
-  reconstructs the overlap matrix, including its k-point dependence.
-- `AO_EXPORT_TYPE OVERLAP_MATRIX` writes the explicit overlap matrix $S(k)$ for each k-point. This
-  produces larger files but avoids reconstructing the AO overlap externally.
+- `AO_EXPORT_TYPE GTO_BASIS` writes a compact GTO basis definition from which post-processing
+  code can reconstruct the Gaussian overlap $S(k)$.
+- `AO_EXPORT_TYPE OVERLAP_MATRIX` writes the orbital normalization metric for each k-point.
+  Use this mode for ultrasoft and PAW potentials to include the augmentation in that metric.
 
 A `.mokp` file contains:
 

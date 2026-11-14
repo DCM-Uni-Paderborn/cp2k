@@ -55,6 +55,7 @@ MODULE kpoint_mo_dump
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               get_qs_kind_set,&
                                               qs_kind_type
+   USE qs_kpoint_operators,             ONLY: kpoint_slot_s
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
    USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
@@ -79,7 +80,7 @@ CONTAINS
 !>  The output file contains, for each k-point:
 !>    - Eigenvalues and occupations
 !>    - MO coefficient matrix C(k) (real and imaginary parts)
-!>    - Overlap matrix S(k)  (if AO_EXPORT_TYPE = OVERLAP_MATRIX)
+!>    - Orbital normalization metric (if AO_EXPORT_TYPE = OVERLAP_MATRIX)
 !>  Plus a header with cell, atom info, and either GTO basis set definition
 !>  (AO_EXPORT_TYPE = GTO_BASIS) or AO metadata list (AO_EXPORT_TYPE = OVERLAP_MATRIX).
 !>
@@ -102,7 +103,7 @@ CONTAINS
 
       CHARACTER(LEN=2)                                   :: element_symbol
       CHARACTER(LEN=20)                                  :: fmtstr_gto, fmtstr_sparse, fmtstr_vec
-      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: C_buf
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: C_buf, metric
       INTEGER :: ao_export_type, atom_shell_index, handle, i, iao, iatom, ikind, ikp, ikp_loc, &
          imo, ipgf, iset, isgf_global, ishell, ispin, iw, j, lshell, m_ao, n, nao, natom, ndigits, &
          nkp, nmo, nset_atom, nspins, output_unit, unit_choice, z_nuc
@@ -111,7 +112,7 @@ CONTAINS
       INTEGER, DIMENSION(:), POINTER                     :: npgf_set, nshell_set
       INTEGER, DIMENSION(:, :), POINTER                  :: first_sgf_set, l_set, last_sgf_set
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: use_real_wfn, write_overlap
+      LOGICAL                                            :: native_metric, use_real_wfn, write_overlap
       REAL(KIND=dp)                                      :: expzet, prefac, scale_factor, thresh, &
                                                             zeff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eval_buf, occ_buf
@@ -198,6 +199,7 @@ CONTAINS
       ndigits = MIN(MAX(3, ndigits), 30)
       CALL section_vals_val_get(print_section, "AO_EXPORT_TYPE", i_val=ao_export_type)
       write_overlap = (ao_export_type == mokp_ao_overlap_matrix)
+      native_metric = ALLOCATED(kpoints%native_operators(kpoint_slot_s)%matrices)
 
       ! Build format strings controlled by NDIGITS
       WRITE (UNIT=fmtstr_sparse, FMT='("(2I6,1X,ES",I0,".",I0,")")') ndigits + 10, ndigits
@@ -219,9 +221,12 @@ CONTAINS
       IF (.NOT. use_real_wfn) ALLOCATE (C_buf(nao, nmo))
       ALLOCATE (eval_buf(nmo), occ_buf(nmo))
 
-      ! S(k) infrastructure: only needed in MATRIX mode
+      ! Only the Gaussian overlap needs the real-space transformation.
       IF (write_overlap) THEN
          ALLOCATE (Sre_buf(nao, nao), Sim_buf(nao, nao))
+      END IF
+      IF (write_overlap .AND. native_metric) ALLOCATE (metric(nao, nao))
+      IF (write_overlap .AND. .NOT. native_metric) THEN
 
          ALLOCATE (rmatrix, cmatrix, tmpmat)
          CALL dbcsr_create(rmatrix, template=matrix_s(1, 1)%matrix, &
@@ -264,6 +269,8 @@ CONTAINS
             WRITE (iw, '(A)') "# AO_EXPORT_TYPE = OVERLAP_MATRIX"
          ELSE
             WRITE (iw, '(A)') "# AO_EXPORT_TYPE = GTO_BASIS"
+            IF (native_metric) WRITE (iw, '(A)') &
+               "# Use AO_EXPORT_TYPE OVERLAP_MATRIX to export the orbital normalization metric."
          END IF
          WRITE (iw, '(A,ES12.5)') "# SPARSE_THRESHOLD =", thresh
          IF (unit_choice == 2) THEN
@@ -445,30 +452,38 @@ CONTAINS
          END DO ! ispin
 
          ! ==============================================================
-         ! B) Overlap matrix S(k) — only in MATRIX mode
+         ! B) Orbital normalization metric
          ! ==============================================================
          IF (write_overlap) THEN
 
-            CALL dbcsr_set(rmatrix, 0.0_dp)
-            IF (use_real_wfn) THEN
-               CALL rskp_transform(rmatrix=rmatrix, rsmat=matrix_s, ispin=1, &
-                                   xkp=xkp(1:3, ikp), cell_to_index=cell_to_index, &
-                                   sab_nl=sab_nl)
-               CALL dbcsr_desymmetrize(rmatrix, tmpmat)
-               CALL copy_dbcsr_to_fm(tmpmat, fm_S_global)
-               CALL cp_fm_get_submatrix(fm_S_global, Sre_buf)
-               Sim_buf(:, :) = 0.0_dp
+            IF (native_metric) THEN
+               metric = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+               IF (ikp >= kp_range(1) .AND. ikp <= kp_range(2)) THEN
+                  ikp_loc = ikp - kp_range(1) + 1
+                  CALL cp_cfm_get_submatrix(kpoints%native_operators(kpoint_slot_s)%matrices(ikp_loc, 1), metric)
+               END IF
+               CALL para_env_inter_kp%sum(metric)
+               Sre_buf(:, :) = REAL(metric, KIND=dp)
+               Sim_buf(:, :) = AIMAG(metric)
             ELSE
-               CALL dbcsr_set(cmatrix, 0.0_dp)
-               CALL rskp_transform(rmatrix=rmatrix, cmatrix=cmatrix, rsmat=matrix_s, &
-                                   ispin=1, xkp=xkp(1:3, ikp), &
-                                   cell_to_index=cell_to_index, sab_nl=sab_nl)
+               CALL dbcsr_set(rmatrix, 0.0_dp)
+               IF (use_real_wfn) THEN
+                  CALL rskp_transform(rmatrix=rmatrix, rsmat=matrix_s, ispin=1, &
+                                      xkp=xkp(1:3, ikp), cell_to_index=cell_to_index, &
+                                      sab_nl=sab_nl)
+                  Sim_buf(:, :) = 0.0_dp
+               ELSE
+                  CALL dbcsr_set(cmatrix, 0.0_dp)
+                  CALL rskp_transform(rmatrix=rmatrix, cmatrix=cmatrix, rsmat=matrix_s, &
+                                      ispin=1, xkp=xkp(1:3, ikp), &
+                                      cell_to_index=cell_to_index, sab_nl=sab_nl)
+                  CALL dbcsr_desymmetrize(cmatrix, tmpmat)
+                  CALL copy_dbcsr_to_fm(tmpmat, fm_S_global)
+                  CALL cp_fm_get_submatrix(fm_S_global, Sim_buf)
+               END IF
                CALL dbcsr_desymmetrize(rmatrix, tmpmat)
                CALL copy_dbcsr_to_fm(tmpmat, fm_S_global)
                CALL cp_fm_get_submatrix(fm_S_global, Sre_buf)
-               CALL dbcsr_desymmetrize(cmatrix, tmpmat)
-               CALL copy_dbcsr_to_fm(tmpmat, fm_S_global)
-               CALL cp_fm_get_submatrix(fm_S_global, Sim_buf)
             END IF
 
             IF (iw > 0) THEN
@@ -514,7 +529,7 @@ CONTAINS
       END IF
 
       ! Release work arrays
-      IF (write_overlap) THEN
+      IF (write_overlap .AND. .NOT. native_metric) THEN
          CALL cp_fm_release(fm_S_global)
          CALL dbcsr_deallocate_matrix(rmatrix)
          CALL dbcsr_deallocate_matrix(cmatrix)

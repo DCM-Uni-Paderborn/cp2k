@@ -709,12 +709,13 @@ CONTAINS
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="AO_EXPORT_TYPE", &
                           description="How AO information is provided for interpreting MO coefficients. "// &
-                          "GTO_BASIS writes basis set exponents/coefficients (compact, post-processing reconstructs S(k)). "// &
-                          "OVERLAP_MATRIX writes S(k) directly (larger file, ready to use).", &
+                          "GTO_BASIS writes Gaussian exponents and contraction coefficients. "// &
+                          "OVERLAP_MATRIX writes the orbital normalization metric for each k-point. "// &
+                          "Use OVERLAP_MATRIX to include the augmentation metric for ultrasoft and PAW potentials.", &
                           default_i_val=mokp_ao_gto_basis, &
                           enum_c_vals=s2a("GTO_BASIS", "OVERLAP_MATRIX"), &
                           enum_desc=s2a("Write GTO basis set definition (MOLDEN denormalization convention)", &
-                                        "Write explicit overlap matrices S(k) for all k-points"), &
+                                        "Write the explicit orbital normalization metric for each k-point"), &
                           enum_i_vals=[mokp_ao_gto_basis, mokp_ao_overlap_matrix])
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
