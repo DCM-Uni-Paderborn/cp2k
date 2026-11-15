@@ -1,4 +1,5 @@
 import math
+import re
 import traceback
 from typing import Any, Dict
 
@@ -30,6 +31,62 @@ class MatcherRegistry(Dict[str, Matcher]):
 
 # ======================================================================================
 registry = MatcherRegistry()
+
+
+class RestrictedFCIDUMPReferenceMatcher(Matcher):
+    """Compare a canonical high-spin reference determinant with the SCF energy."""
+
+    def run(self, output: str, **kwargs: Any) -> MatchResult:
+        headers = list(
+            re.finditer(
+                r"^&FCI\s+NORB=\s*(\d+),NELEC=\s*(\d+),MS2=\s*(\d+),[^/]*?/",
+                output,
+                re.M,
+            )
+        )
+        if not headers or re.search(r"UHF=\s*1", headers[-1].group()):
+            return MatchResult("WRONG RESULT", "No restricted FCIDUMP found.\n", None)
+        norb, nelec, ms2 = map(int, headers[-1].groups())
+        na, nb = (nelec + ms2) // 2, (nelec - ms2) // 2
+        if not 0 <= nb <= na <= norb or na + nb != nelec:
+            return MatchResult("WRONG RESULT", "Invalid FCIDUMP occupations.\n", None)
+
+        # CP2K writes one record per integral permutation class.
+        energy = 0.0
+        for line in output[headers[-1].end() :].strip().splitlines():
+            value, *indices = line.split()
+            i, j, k, l = map(int, indices)
+            integral = float(value.replace("D", "E"))
+            if i == j == k == l == 0:
+                energy += integral
+                break
+            if k == l == 0 and i == j:
+                energy += ((i <= na) + (i <= nb)) * integral
+            elif i == j and k == l:
+                if i == k:
+                    energy += (i <= nb) * integral
+                else:
+                    energy += (
+                        ((i <= na) + (i <= nb)) * ((k <= na) + (k <= nb)) * integral
+                    )
+            elif (i, j) == (k, l):
+                energy -= ((max(i, j) <= na) + (max(i, j) <= nb)) * integral
+        else:
+            return MatchResult("WRONG RESULT", "Missing FCIDUMP constant.\n", None)
+
+        scf = GenericMatcher("ENERGY| Total FORCE_EVAL", col=9).run(
+            output, tol=math.inf, ref=0.0
+        )
+        if scf.value is None:
+            return scf
+        delta = energy - scf.value
+        if not math.isfinite(delta) or abs(delta) > kwargs["tol"]:
+            return MatchResult(
+                "WRONG RESULT",
+                f"FCIDUMP reference energy offset: {delta:.3e} Ha.\n",
+                delta,
+            )
+        return MatchResult("OK", None, delta)
 
 
 class GWOrbitalSelfEnergyMatcher(Matcher):
@@ -187,6 +244,12 @@ registry["FIST_periodic_dipole_derivative_x"] = GenericMatcher(
 registry["FIST_atom_1_force_x"] = GenericMatcher(
     r"^\s*FORCES\|\s+1\s+([-+0-9.EeDd]+)", col=1, regex=True, first=True
 )
+registry["QS_atom_2_force_y"] = GenericMatcher(
+    r"^\s*FORCES\|\s+2\s+\S+\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
+registry["QS_atom_1_force_z"] = GenericMatcher(
+    r"^\s*FORCES\|\s+1\s+\S+\s+\S+\s+([-+0-9.EeDd]+)", col=1, regex=True
+)
 registry["N_special_kpoints"] = GenericMatcher(r"Number of Special K-points:", col=5)
 registry["Kpoint_count"] = GenericMatcher(r"BRILLOUIN| List of Kpoints", col=7)
 registry["QS_number_of_molecular_orbitals"] = GenericMatcher(
@@ -299,6 +362,9 @@ registry["WANNIER90_SCF_MO_REUSE"] = TextPresenceMatcher(
 )
 registry["WANNIER90_PROJECTION_MIN_SVALUE"] = GenericMatcher(
     "WANNIER90| Minimum projection singular value", col=6
+)
+registry["WANNIER90_HYBRID_CANDIDATE_COUNT"] = GenericMatcher(
+    "WANNIER90| Exported hybrid projection candidates", col=6
 )
 registry["WANNIER90_FULL_MESH_DIAG"] = TextPresenceMatcher(
     "WANNIER90| Falling back to full-mesh diagonalization for the Wannier90 files."
@@ -512,6 +578,8 @@ registry["AS_embedding_iterations"] = GenericMatcher(
 registry["FCIDUMP_MS2"] = GenericMatcher(
     r"&FCI .*MS2=\s*([-+0-9]+),", col=1, regex=True
 )
+registry["FCIDUMP_reference_energy"] = RestrictedFCIDUMPReferenceMatcher()
+registry["ROKS_FCIDUMP_spin_warning"] = TextPresenceMatcher("ROKS FCIDUMP spin blocks")
 registry["M093"] = GenericMatcher(r"SPGR| SPACE GROUP NUMBER:", col=5)
 registry["M094"] = GenericMatcher(r"KS CSR write|", col=4)
 registry["M095"] = GenericMatcher(r"Fermi energy:", col=3)
@@ -539,6 +607,14 @@ registry["M105"] = GenericMatcher(r"TDDFT+SOC", col=5)
 # G0W0 bandgap of solid
 registry["E_G0W0_direct_gap"] = GenericMatcher(r"G0W0 direct band gap", col=6)
 registry["E_G0W0_indirect_gap"] = GenericMatcher(r"G0W0 indirect band gap", col=6)
+
+# number of G0W0 levels marked not reliable (*) and multi-solution (m), Nevanlinna continuation
+registry["G0W0_levels_unstable"] = GenericMatcher(
+    r"Levels marked * (not reliable)", col=6
+)
+registry["G0W0_levels_multi"] = GenericMatcher(
+    r"Levels marked m (multi-solution)", col=5
+)
 
 # DFT + perturbative SOC bandgap of solid
 registry["E_SCF_SOC_gap"] = GenericMatcher(r"SCF+SOC direct band gap", col=6)
@@ -716,6 +792,11 @@ registry["M_INIT_ENERGY"] = GenericMatcher(
     r"ENERGY| Total FORCE_EVAL", col=9, first=True
 )
 registry["M_CONS_QTY"] = GenericMatcher(r"MD| Conserved quantity", col=5)
+# Instantaneous pressure of the final MD step, printed only when the force
+# environment makes a virial available. It is the quantity in an MD output that
+# the virial moves directly, so it is what pins an analytic virial: an energy
+# matcher still passes when the virial is identically zero.
+registry["M_PRESSURE"] = GenericMatcher(r"MD| Pressure [bar]", col=4)
 
 # REFTRAJ output must retain the frame index read from the trajectory, including
 # in nested print-key filenames.
