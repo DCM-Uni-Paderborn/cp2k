@@ -226,9 +226,15 @@ list(
   grrm_utils.F
   gapw_1c_basis_set.F
   gw_ri_rs_chi_sigma_kernels.F
+  gw_ri_rs_small_cell_full_kp.F
+  gw_ri_rs_small_cell_full_kp_gamma.F
+  gw_ri_rs_small_cell_full_kp_lattice.F
+  gw_ri_rs_small_cell_full_kp_types.F
+  gw_ri_rs_small_cell_full_kp_utils.F
   gw_auto_ri_generate_RI_basis.F
   gw_auto_ri_types.F
   gw_compute_V_and_W.F
+  gw_nevanlinna.F
   gw_utils_dbcsr.F
   gw_utils_fm.F
   gw.F
@@ -244,6 +250,9 @@ list(
   ri_rs_setup.F
   ri_rs_types.F
   ri_rs_utils.F
+  ri_rs_kp_fitting.F
+  ri_rs_kp_integrals.F
+  ri_rs_kp_types.F
   ri_rs_fitting.F
   ri_rs_matrices.F
   post_scf_bandstructure_types.F
@@ -456,6 +465,7 @@ list(
   nnp_environment.F
   nnp_environment_types.F
   nnp_force.F
+  nnp_gpu.F
   nnp_model.F
   nnp_neighbor_interface.F
   local_gemm_api.F
@@ -599,6 +609,11 @@ list(
   qs_efield_local.F
   qs_elec_field.F
   qs_electric_field_gradient.F
+  qs_electrons_charge_mixing.F
+  qs_electrons_ne_electrode.F
+  qs_electrons_types.F
+  qs_electrons_utils.F
+  qs_electrons_workfunction.F
   qs_elf_methods.F
   qs_energy.F
   qs_energy_init.F
@@ -720,7 +735,6 @@ list(
   qs_neighbor_lists.F
   qs_neighbor_list_types.F
   qs_nlcc_methods.F
-  qs_nl_hash_table_types.F
   qs_nonscf.F
   qs_nonscf_utils.F
   qs_o3c_methods.F
@@ -755,6 +769,7 @@ list(
   qs_scf.F
   qs_scf_initialization.F
   qs_scf_lanczos.F
+  qs_scf_lanczos_c.F
   qs_scf_loop_utils.F
   qs_scf_methods.F
   nonlinear_optics/nlo_current_tensor_derivatives.F
@@ -1021,6 +1036,7 @@ list(
   common/cp_units.F
   common/d3_poly.F
   common/distribution_1d_types.F
+  common/double_double.F
   common/eigenvalueproblems.F
   common/fparser.F
   common/gamma.F
@@ -1175,6 +1191,7 @@ list(
   CP2K_SRCS_F
   motion/averages_types.F
   motion/bfgs_optimizer.F
+  motion/cell_manifold_utils.F
   motion/cell_opt.F
   motion/cell_opt_types.F
   motion/cell_opt_utils.F
@@ -1454,6 +1471,7 @@ list(
   xc/skala_gpw_features.F
   xc/skala_gpw_functional.F
   xc/skala_sirius.F
+  xc/skala_periodic_partition.F
   xc/skala_torch_api.F
   xc_pot_saop.F
   xc_write_output.F
@@ -1507,6 +1525,7 @@ list(
 list(
   APPEND
   CP2K_SRCS_C
+  libint_c_api.c
   sockets.c
   base/machine_cpuid.c
   base/openmp_trace.c
@@ -1614,6 +1633,10 @@ set(CP2K_DBM_SRCS_GPU_C dbm/dbm_multiply_opencl.c dbm/dbm_multiply_gpu.c)
 
 set(CP2K_PW_SRCS_GPU pw/gpu/pw_gpu_kernels.cu)
 
+set(CP2K_NNP_SRCS_GPU nnp/gpu/nnp_gpu_acsf.cu nnp/gpu/nnp_gpu_scatter.cu
+                      nnp/gpu/nnp_gpu_walk.cu nnp/gpu/nnp_gpu_nn.cu)
+set(CP2K_NNP_SRCS_GPU_C nnp/gpu/nnp_gpu_state.c)
+
 # Standalone programs and unit tests.
 set(CP2K_PROGS_C
     grid/grid_miniapp.c;grid/grid_unittest.c;dbm/dbm_miniapp.c;start/libcp2k_unittest.c
@@ -1661,4 +1684,5 @@ set(CP2K_PROGS_F
     xc/skala_atom_grid_unittest.F
     xc/skala_grid_unittest.F
     xc/skala_sirius_unittest.F
+    xc/skala_periodic_partition_unittest.F
     gx_ac_unittest.F)

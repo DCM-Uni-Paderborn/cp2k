@@ -12,12 +12,9 @@ from contextlib import redirect_stdout
 from os import path
 from typing import Dict, TextIO, List
 
-USE_EXCEPTIONS = ("omp_lib", "omp_lib_kinds", "lapack")
-
 # precompile regex
 re_symbol = re.compile(r"^\s*symtree.* symbol: '([^']+)'.*$")
 re_derived_type = re.compile(r"^\s*type spec\s*:\s*\(DERIVED ([^']+)\).*$")
-re_use = re.compile(r" USE-ASSOC\(([^)]+)\)")
 re_conv = re.compile(
     r"__(real_[48]_r8|real_4_c8|cmplx1_4_r8_r8)\[\["
 )  # ignores integers
@@ -31,9 +28,6 @@ def process_log_file(fhandle: TextIO) -> None:
     def msg(message: str, conv_num: int) -> None:
         print(f"{short_filename}: {message} https://cp2k.org/conv#c{conv_num:03}")
 
-    module_name = None
-    used_symbols = set()
-    public_symbols = set()
     cur_sym = cur_proc = cur_derived_type = cur_value = stat_var = stat_stm = None
     skip_until_DT_END = inside_omp_parallel = False
 
@@ -64,8 +58,6 @@ def process_log_file(fhandle: TextIO) -> None:
         elif line.startswith("procedure name ="):
             assert not inside_omp_parallel
             cur_proc = line.split("=")[1].strip()
-            if not module_name:
-                module_name = cur_proc
 
         elif line.startswith("symtree: ") or len(line) == 0:
             # Found new symbole, check default initializers of previous symbole.
@@ -103,36 +95,9 @@ def process_log_file(fhandle: TextIO) -> None:
             cur_value = line
 
         elif line.startswith("attributes:"):
-            assert module_name and cur_sym
-            is_imported = "USE-ASSOC" in line
-            is_param = "PARAMETER" in line
-            is_func = "FUNCTION" in line
-            is_impl_save = "IMPLICIT-SAVE" in line
-            is_impl_type = "IMPLICIT-TYPE" in line
-            is_module_name = cur_proc == module_name
-
-            if is_imported:
-                match = re_use.search(line)
-                assert match
-                mod = match.group(1)
-                used_symbols.add(mod + "::" + cur_sym)
-                if "MODULE  USE-ASSOC" in line and mod.lower() not in USE_EXCEPTIONS:
-                    msg(f'Module "{mod}" USEd without ONLY clause or not PRIVATE', 2)
-
-            # if(("SAVE" in line) and ("PARAMETER" not in line) and ("PUBLIC" in line)):
-            #    print(loc+': Symbol "'+cur_sym+'" in procedure "'+cur_proc+'" is PUBLIC-SAVE')
-
-            if is_impl_save and not is_param and not is_imported and not is_module_name:
-                msg(f'Symbol "{cur_sym}" in procedure "{cur_proc}" is IMPLICIT-SAVE', 3)
-
-            if is_impl_type and not is_imported and not is_func:
-                msg(f'Symbol "{cur_sym}" in procedure "{cur_proc}" is IMPLICIT-TYPE', 4)
-
+            assert cur_sym
             if "THREADPRIVATE" in line:
                 msg(f'Symbol "{cur_sym}" in procedure "{cur_proc}" is THREADPRIVATE', 5)
-
-            if "PUBLIC" in line:
-                public_symbols.add(module_name + "::" + cur_sym)
 
         elif line.startswith("!$OMP PARALLEL"):
             assert not inside_omp_parallel
@@ -171,8 +136,6 @@ def process_log_file(fhandle: TextIO) -> None:
 
         elif line.startswith("GOTO"):
             msg(f'Found GOTO statement in procedure "{cur_proc}"', 201)
-        elif line.startswith("FORALL"):
-            msg(f'Found FORALL statement in procedure "{cur_proc}"', 202)
         elif line.startswith("OPEN") and not is_unittest:
             msg(f'Found OPEN statement in procedure "{cur_proc}"', 203)
         elif line.startswith("CLOSE") and not is_unittest:

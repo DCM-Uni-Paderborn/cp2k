@@ -48,9 +48,9 @@ MODULE tblite_types
       INTEGER, ALLOCATABLE                               :: el_num(:)
 
       REAL(KIND=dp)                                      :: accuracy = 1.0_dp
+      ! Local container virial; CP2K assembles and reduces the total virial.
       REAL(KIND=dp), DIMENSION(3, 3)                     :: sigma = -1.0_dp
-      ! tblite contributions are currently replicated on every MPI rank.
-      ! Force/virial assembly accounts for CP2K's subsequent MPI reductions.
+      ! Local atom-resolved container energies, reduced only by tb_get_energy.
       REAL(KIND=dp), ALLOCATABLE                         :: e_hal(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_rep(:)
       REAL(KIND=dp), ALLOCATABLE                         :: e_disp(:)
@@ -80,15 +80,15 @@ MODULE tblite_types
       REAL(KIND=dp)                                      :: mixer_weight_factor = tblite_mixer_weight_factor_default
 
 #if defined(__TBLITE)
-      TYPE(structure_type)                               :: mol = structure_type()
-      TYPE(xtb_calculator)                               :: calc = xtb_calculator()
+      TYPE(structure_type)                               :: mol
+      TYPE(xtb_calculator)                               :: calc
       ! Geometry-dependent caches: Coulomb, dispersion and additional interactions.
       ! Refreshed by tb_init_ham, reused for SCC potentials, energies and gradients.
-      TYPE(container_cache)                              :: cache = container_cache()
-      TYPE(container_cache)                              :: dcache = container_cache()
-      TYPE(container_cache)                              :: icache = container_cache()
-      TYPE(wavefunction_type)                            :: wfn = wavefunction_type()
-      TYPE(potential_type)                               :: pot = potential_type()
+      TYPE(container_cache)                              :: cache
+      TYPE(container_cache)                              :: dcache
+      TYPE(container_cache)                              :: icache
+      TYPE(wavefunction_type)                            :: wfn
+      TYPE(potential_type)                               :: pot
       CLASS(mixer_type), ALLOCATABLE                     :: mixer
       TYPE(param_record), ALLOCATABLE                    :: param
 #endif

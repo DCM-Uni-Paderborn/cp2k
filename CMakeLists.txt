@@ -113,6 +113,7 @@ option(CMAKE_POSITION_INDEPENDENT_CODE "Enable position independent code" ON)
 option(CP2K_ENABLE_CONSISTENCY_CHECKS
        "Check that the list of compiled files and files contained in src match"
        OFF)
+option(CP2K_INSTALL_UNITTESTS "Install unit-test executables" ON)
 
 option(CP2K_USE_EVERYTHING
        "Enable all dependencies. They can be individually turned off again."
@@ -202,6 +203,10 @@ cmake_dependent_option(
 
 cmake_dependent_option(CP2K_ENABLE_LIBXC_GPU "Enable the GPU backend of libxc."
                        ON "CP2K_USE_ACCEL MATCHES \"CUDA\"" OFF)
+
+cmake_dependent_option(
+  CP2K_ENABLE_NNP_GPU "Enable the GPU backend of the NNP force evaluation." ON
+  "CP2K_USE_ACCEL MATCHES \"HIP|CUDA\"" OFF)
 
 cmake_dependent_option(
   CP2K_USE_UNIFIED_MEMORY "Use CPU/GPU unified memory (Mi250x onwards)" OFF
@@ -645,14 +650,25 @@ if(CP2K_USE_ACCEL MATCHES "OPENCL")
   message("\n------------------------------------------------------------")
   message("-                          OPENCL                          -")
   message("------------------------------------------------------------\n")
-  # Hint additional OpenCL locations (Intel oneAPI, CUDA toolkit)
-  if(DEFINED ENV{CMPLR_ROOT})
-    list(APPEND CMAKE_PREFIX_PATH "$ENV{CMPLR_ROOT}")
+  # Hint OpenCL locations (CUDA toolkit, Intel oneAPI) without changing global
+  # search paths; prefixes in OpenCL_ROOT given by the user are searched first.
+  # CUDA's OpenCL loader takes precedence (oneAPI's depends on Intel runtimes).
+  set(_cp2k_opencl_root_save "${OpenCL_ROOT}")
+  set(_cp2k_include_path_save "${CMAKE_INCLUDE_PATH}")
+  find_package(CUDAToolkit QUIET)
+  if(CUDAToolkit_FOUND AND CUDAToolkit_LIBRARY_ROOT)
+    list(APPEND OpenCL_ROOT "${CUDAToolkit_LIBRARY_ROOT}")
   endif()
-  if(DEFINED ENV{CUDA_PATH})
-    list(APPEND CMAKE_PREFIX_PATH "$ENV{CUDA_PATH}")
+  if(DEFINED ENV{CMPLR_ROOT})
+    list(APPEND OpenCL_ROOT "$ENV{CMPLR_ROOT}")
+    # older oneAPI has CL/cl.h only below include/sycl
+    list(APPEND CMAKE_INCLUDE_PATH "$ENV{CMPLR_ROOT}/include/sycl")
   endif()
   find_package(OpenCL REQUIRED)
+  set(OpenCL_ROOT "${_cp2k_opencl_root_save}")
+  set(CMAKE_INCLUDE_PATH "${_cp2k_include_path_save}")
+  unset(_cp2k_opencl_root_save)
+  unset(_cp2k_include_path_save)
   find_package(libxstream REQUIRED)
   message(STATUS "Using LIBXSTREAM for the OpenCL backend")
 
@@ -823,19 +839,25 @@ endif()
 # Libint
 if(CP2K_USE_LIBINT2)
   find_package(Libint2 CONFIG REQUIRED)
-  # Check Fortran interface
-  get_target_property(_libint2_include_dirs Libint2::int2
-                      INTERFACE_INCLUDE_DIRECTORIES)
-  find_file(
-    CP2K_LIBINT2_MOD_FILE
-    NAMES libint_f.mod
-    PATHS ${_libint2_include_dirs} "/usr/lib64/gfortran/modules")
-  if(NOT CP2K_LIBINT2_MOD_FILE)
-    message(
-      FATAL_ERROR "Libint2 was found, but its Fortran interface is missing")
+  # Check Fortran interface; libint exports Fortran target since 2.14
+  if(TARGET Libint2::int_f)
+    set(CP2K_LIBINT2_TARGET Libint2::int_f)
+  else()
+    set(CP2K_LIBINT2_TARGET Libint2::int2)
+    get_target_property(_libint2_include_dirs Libint2::int2
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    find_file(
+      CP2K_LIBINT2_MOD_FILE
+      NAMES libint_f.mod
+      PATHS ${_libint2_include_dirs} "/usr/lib64/gfortran/modules")
+    if(NOT CP2K_LIBINT2_MOD_FILE)
+      message(
+        FATAL_ERROR "Libint2 was found, but its Fortran interface is missing")
+    endif()
+    get_filename_component(_libint2_mod_dir "${CP2K_LIBINT2_MOD_FILE}"
+                           DIRECTORY)
+    include_directories(BEFORE ${_libint2_include_dirs} "${_libint2_mod_dir}")
   endif()
-  get_filename_component(_libint2_mod_dir "${CP2K_LIBINT2_MOD_FILE}" DIRECTORY)
-  include_directories(BEFORE ${_libint2_include_dirs} "${_libint2_mod_dir}")
 endif()
 
 if(CP2K_USE_LIBGINT)
@@ -872,10 +894,9 @@ if(CP2K_USE_SPLA)
 endif()
 
 if(CP2K_USE_DFTD4)
-  find_package(mctc-lib REQUIRED) # workaround: find mctc-lib first
   find_package(dftd4 REQUIRED)
-  if(dftd4_VERSION VERSION_LESS "4.2.0")
-    message(FATAL_ERROR "dftd4 >= 4.2.0 is required; found ${dftd4_VERSION}")
+  if(dftd4_VERSION VERSION_LESS "4.3.0")
+    message(FATAL_ERROR "dftd4 >= 4.3.0 is required; found ${dftd4_VERSION}")
   endif()
 endif()
 
@@ -901,8 +922,8 @@ endif()
 
 if(CP2K_USE_TBLITE)
   find_package(tblite CONFIG REQUIRED)
-  if(tblite_VERSION VERSION_LESS "0.7.0")
-    message(FATAL_ERROR "tblite >= 0.7.0 is required; found ${tblite_VERSION}")
+  if(tblite_VERSION VERSION_LESS "0.8.0")
+    message(FATAL_ERROR "tblite >= 0.8.0 is required; found ${tblite_VERSION}")
   endif()
   add_library(cp2k::tblite INTERFACE IMPORTED)
   target_link_libraries(
@@ -1074,7 +1095,8 @@ if(CP2K_USE_ACCEL MATCHES "CUDA" OR CP2K_USE_ACCEL MATCHES "HIP")
     "      - GRID: ${CP2K_ENABLE_GRID_GPU}\n"
     "      - DBM: ${CP2K_ENABLE_DBM_GPU}\n"
     "      - PW: ${CP2K_ENABLE_PW_GPU}\n"
-    "      - LIBXC: ${CP2K_ENABLE_LIBXC_GPU}\n")
+    "      - LIBXC: ${CP2K_ENABLE_LIBXC_GPU}\n"
+    "      - NNP: ${CP2K_ENABLE_NNP_GPU}\n")
 endif()
 
 if(CP2K_USE_ACCEL MATCHES "OPENCL")
@@ -1393,8 +1415,8 @@ endif()
 
 message(
   "\n"
-  "After building and installing CP2K, run the regtests with:\n"
-  "  ${PROJECT_SOURCE_DIR}/tests/do_regtest.py ${CMAKE_INSTALL_PREFIX}/bin ${__cp2k_ext}\n"
+  "After building CP2K the regtests can be run with the following command:\n"
+  "  ${PROJECT_SOURCE_DIR}/tests/do_regtest.py ${PROJECT_BINARY_DIR}/bin ${__cp2k_ext}\n"
 )
 
 # files needed for cmake

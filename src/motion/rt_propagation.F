@@ -37,13 +37,17 @@ MODULE rt_propagation
                                               cp_print_key_should_output,&
                                               cp_print_key_unit_nr,&
                                               cp_rm_iter_level
-   USE efield_utils,                    ONLY: calculate_ecore_efield
+   USE efield_utils,                    ONLY: calculate_ecore_efield,&
+                                              efield_potential_lengh_gauge
    USE force_env_methods,               ONLY: force_env_calc_energy_force
    USE force_env_types,                 ONLY: force_env_get,&
                                               force_env_type
    USE global_types,                    ONLY: global_environment_type
    USE hfx_admm_utils,                  ONLY: hfx_admm_init
-   USE input_constants,                 ONLY: real_time_propagation,&
+   USE input_constants,                 ONLY: do_admm_basis_projection,&
+                                              do_admm_exch_scaling_none,&
+                                              do_admm_purify_none,&
+                                              real_time_propagation,&
                                               use_restart_wfn,&
                                               use_rt_restart,&
                                               use_scf_wfn
@@ -145,6 +149,23 @@ CONTAINS
       CALL force_env_get(force_env=force_env, qs_env=qs_env, globenv=globenv)
       CALL get_qs_env(qs_env, dft_control=dft_control, energy=energy)
       rtp_control => dft_control%rtp_control
+
+      ! The RTP/EMD ADMM implementation (density fit, KS merge and forces) only supports
+      ! basis projection without purification and without exchange scaling
+      IF (dft_control%do_admm) THEN
+         IF (dft_control%admm_control%purification_method /= do_admm_purify_none) THEN
+            CALL cp_abort(__LOCATION__, "RTP/EMD with ADMM requires ADMM_PURIFICATION_METHOD NONE "// &
+                          "(the default is MO_DIAG). Use e.g. ADMM_TYPE ADMM2.")
+         END IF
+         IF (dft_control%admm_control%method /= do_admm_basis_projection) THEN
+            CALL cp_abort(__LOCATION__, "RTP/EMD with ADMM requires METHOD BASIS_PROJECTION. "// &
+                          "ADMMQ and ADMMS are not implemented for RTP/EMD.")
+         END IF
+         IF (dft_control%admm_control%scaling_model /= do_admm_exch_scaling_none) THEN
+            CALL cp_abort(__LOCATION__, "RTP/EMD with ADMM requires EXCH_SCALING_MODEL NONE. "// &
+                          "ADMMP and ADMMS are not implemented for RTP/EMD.")
+         END IF
+      END IF
 
       ! Takes care that an initial wavefunction/density is available
       ! Can either be by performing an scf loop or reading a restart
@@ -320,8 +341,11 @@ CONTAINS
             CALL calc_update_rho_sparse(qs_env)
          END IF
       END IF
-      ! Modify KS matrix to include the additional terms in the velocity gauge
-      IF (rtp_control%velocity_gauge) THEN
+      ! Modify KS matrix to include the electric field in the length gauge
+      ! or the additional terms in the velocity gauge
+      IF (dft_control%apply_efield_field) THEN
+         CALL efield_potential_lengh_gauge(qs_env)
+      ELSE IF (rtp_control%velocity_gauge) THEN
          ! As matrix_h and matrix_h_im are not updated by qs_ks_update_qs_env()
          ! the non-gauge transformed non-local part has to be subtracted here
          CALL velocity_gauge_ks_matrix(qs_env, subtract_nl_term=.TRUE.)

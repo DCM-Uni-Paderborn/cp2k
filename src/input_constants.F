@@ -60,6 +60,18 @@ MODULE input_constants
                                                do_nnp = 9, &
                                                do_ipi = 10
 
+   ! NNP USE_GPU keyword values. AUTO resolves to ON or OFF once at init, so the
+   ! force evaluation only ever tests use_gpu == nnp_use_gpu_on.
+   INTEGER, PARAMETER, PUBLIC               :: nnp_use_gpu_off = 0, &
+                                               nnp_use_gpu_on = 1, &
+                                               nnp_use_gpu_auto = 2
+
+   ! NNP GPU_PRECISION keyword values. DOUBLE runs the all-FP64 device path;
+   ! MIXED runs the angular symmetry functions in FP32 while radial functions,
+   ! network evaluation and all accumulation stay FP64.
+   INTEGER, PARAMETER, PUBLIC               :: nnp_gpu_prec_double = 0, &
+                                               nnp_gpu_prec_mixed = 1
+
    ! QMMM
    REAL(KIND=dp), PARAMETER, PUBLIC         :: RADIUS_QMMM_DEFAULT = 0.80_dp, & ! Angstrom
                                                ALPHA_IMOMM_DEFAULT = 1.38_dp, &
@@ -1176,11 +1188,15 @@ MODULE input_constants
                                                evGW = 37, &
                                                ri_rs_non_periodic = 38, &
                                                ri_rs_large_cell_Gamma = 39, &
+                                               ri_rs_small_cell_full_kp = 41, &
                                                tensor_static_cohsex = 40
 
    INTEGER, PARAMETER, PUBLIC               :: cohsex_off = 0, &
                                                cohsex_diagonal = 1, &
                                                cohsex_qp_update = 2
+
+   INTEGER, PARAMETER, PUBLIC               :: gw_ac_pade = 1, &
+                                               gw_ac_nevanlinna = 2
 
    ! periodic RESP parameters
    INTEGER, PARAMETER, PUBLIC               :: do_resp_x_dir = 0, &
