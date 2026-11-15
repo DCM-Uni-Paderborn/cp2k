@@ -971,7 +971,9 @@ CONTAINS
       END IF
       DO center = 1, SIZE(frame%center_atoms)
          ikind = frame%center_kinds(center)
-         IF (.NOT. frame%atom_local .AND. frame%delta_cache(ikind)%radius <= 0.0_dp) CYCLE
+         IF (.NOT. frame%atom_local) THEN
+            IF (frame%delta_cache(ikind)%radius <= 0.0_dp) CYCLE
+         END IF
          atom = frame%center_atoms(center)
          p = frame%projector_first(center)
          q = frame%projector_last(center)
