@@ -234,6 +234,7 @@ list(
   gw_auto_ri_generate_RI_basis.F
   gw_auto_ri_types.F
   gw_compute_V_and_W.F
+  gw_nevanlinna.F
   gw_utils_dbcsr.F
   gw_utils_fm.F
   gw.F
@@ -465,6 +466,7 @@ list(
   nnp_environment.F
   nnp_environment_types.F
   nnp_force.F
+  nnp_gpu.F
   nnp_model.F
   nnp_neighbor_interface.F
   local_gemm_api.F
@@ -608,6 +610,11 @@ list(
   qs_efield_local.F
   qs_elec_field.F
   qs_electric_field_gradient.F
+  qs_electrons_charge_mixing.F
+  qs_electrons_ne_electrode.F
+  qs_electrons_types.F
+  qs_electrons_utils.F
+  qs_electrons_workfunction.F
   qs_elf_methods.F
   qs_energy.F
   qs_energy_init.F
@@ -729,7 +736,6 @@ list(
   qs_neighbor_lists.F
   qs_neighbor_list_types.F
   qs_nlcc_methods.F
-  qs_nl_hash_table_types.F
   qs_nonscf.F
   qs_nonscf_utils.F
   qs_o3c_methods.F
@@ -1086,6 +1092,7 @@ list(
   common/cp_units.F
   common/d3_poly.F
   common/distribution_1d_types.F
+  common/double_double.F
   common/eigenvalueproblems.F
   common/fparser.F
   common/gamma.F
@@ -1572,6 +1579,7 @@ list(
 list(
   APPEND
   CP2K_SRCS_C
+  libint_c_api.c
   sockets.c
   base/machine_cpuid.c
   base/openmp_trace.c
@@ -1678,6 +1686,10 @@ set(CP2K_DBM_SRCS_GPU dbm/dbm_multiply_gpu_kernel.cu)
 set(CP2K_DBM_SRCS_GPU_C dbm/dbm_multiply_opencl.c dbm/dbm_multiply_gpu.c)
 
 set(CP2K_PW_SRCS_GPU pw/gpu/pw_gpu_kernels.cu)
+
+set(CP2K_NNP_SRCS_GPU nnp/gpu/nnp_gpu_acsf.cu nnp/gpu/nnp_gpu_scatter.cu
+                      nnp/gpu/nnp_gpu_walk.cu nnp/gpu/nnp_gpu_nn.cu)
+set(CP2K_NNP_SRCS_GPU_C nnp/gpu/nnp_gpu_state.c)
 
 # Standalone programs and unit tests.
 set(CP2K_PROGS_C
