@@ -26,6 +26,7 @@ MODULE f77_interface
    USE cell_methods,                    ONLY: init_cell
    USE cell_types,                      ONLY: cell_type
    USE cp2k_info,                       ONLY: get_runtime_info
+   USE cp_blacs_types,                  ONLY: cp_blacs_exit
    USE cp_dbcsr_api,                    ONLY: dbcsr_finalize_lib,&
                                               dbcsr_init_lib
    USE cp_dlaf_utils_api,               ONLY: cp_dlaf_finalize,&
@@ -106,7 +107,8 @@ MODULE f77_interface
                                               mp_para_env_type,&
                                               mp_query_thread_level,&
                                               mp_world_finalize,&
-                                              mp_world_init
+                                              mp_world_init,&
+                                              mp_world_owns_mpi
    USE metadynamics_types,              ONLY: meta_env_type
    USE metadynamics_utils,              ONLY: metadyn_read
    USE mixed_environment_types,         ONLY: mixed_environment_type
@@ -139,6 +141,7 @@ MODULE f77_interface
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_env_create,&
                                               qs_environment_type
+   USE r12_fundamentals,                ONLY: r12_fundamentals_cleanup
    USE reference_manager,               ONLY: remove_all_references
    USE sirius_interface,                ONLY: cp_sirius_finalize,&
                                               cp_sirius_init,&
@@ -376,6 +379,7 @@ CONTAINS
             CPASSERT(ierr == 0)
          END DO
          DEALLOCATE (f_envs)
+         CALL r12_fundamentals_cleanup()
 
 #if defined(__LIBINT)
          CALL cp_libint_static_cleanup()
@@ -411,6 +415,8 @@ CONTAINS
          CALL string_table_deallocate(0)
          CALL cp_openpmd_output_finalize()
          IF (finalize_mpi) THEN
+            ! Release BLACS resources (e.g. pending send requests) before MPI is finalized
+            IF (mp_world_owns_mpi()) CALL cp_blacs_exit()
             CALL mp_world_finalize()
          END IF
 

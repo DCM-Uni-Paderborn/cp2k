@@ -76,7 +76,8 @@ CONTAINS
                       max_val, potential_parameter, tmp_R_1, &
                       rab2)
 
-      TYPE(four_center_integral_context_type)            :: context
+      TYPE(four_center_integral_context_type), &
+         INTENT(INOUT)                                   :: context
       REAL(dp), INTENT(IN)                               :: ra(3), rb(3)
       REAL(dp), DIMENSION(:), INTENT(IN)                 :: zeta, zetb
       INTEGER, INTENT(IN)                                :: la_min, la_max, lb_min, lb_max, npgfa, &
@@ -123,16 +124,18 @@ CONTAINS
 !> \param basis_parameter ...
 !> \param nkind ...
 !> \param is_assoc_atomic_block ...
+!> \param nspins number of spin channels, used to express bounds in restricted-density units
 !> \par History
 !>     09.2007 created [Manuel Guidon]
 !> \author Manuel Guidon
 !> \note
-!>      - updates for each pair of shells the maximum absolute value of p
+!>      - stores log10(nspins*max(abs(p_alpha),abs(p_beta))) for each shell pair,
+!>        so equivalent restricted and unrestricted closed-shell densities have the same bound
 ! **************************************************************************************************
    SUBROUTINE update_pmax_mat(pmax_set, map_atom_to_kind_atom, set_offset, atomic_block_offset, &
                               pmax_atom, full_density_alpha, full_density_beta, natom, &
                               kind_of, basis_parameter, &
-                              nkind, is_assoc_atomic_block)
+                              nkind, is_assoc_atomic_block, nspins)
 
       TYPE(hfx_p_kind), DIMENSION(:), POINTER            :: pmax_set
       INTEGER, DIMENSION(:), POINTER                     :: map_atom_to_kind_atom
@@ -145,6 +148,7 @@ CONTAINS
       TYPE(hfx_basis_type), DIMENSION(:), POINTER        :: basis_parameter
       INTEGER                                            :: nkind
       INTEGER, DIMENSION(:, :)                           :: is_assoc_atomic_block
+      INTEGER, INTENT(IN)                                :: nspins
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'update_pmax_mat'
 
@@ -195,7 +199,7 @@ CONTAINS
                      IF (pmax_tmp == 0.0_dp) THEN
                         pmax_tmp = log_zero
                      ELSE
-                        pmax_tmp = LOG10(pmax_tmp)
+                        pmax_tmp = LOG10(REAL(nspins, dp)*pmax_tmp)
                      END IF
                      kind_kind_idx = INT(get_1D_idx(jkind, kkind, INT(nkind, int_8)))
                      pmax_set(kind_kind_idx)%p_kind(jset, &
@@ -220,7 +224,7 @@ CONTAINS
                      IF (pmax_tmp == 0.0_dp) THEN
                         pmax_tmp = log_zero
                      ELSE
-                        pmax_tmp = LOG10(pmax_tmp)
+                        pmax_tmp = LOG10(REAL(nspins, dp)*pmax_tmp)
                      END IF
                      kind_kind_idx = INT(get_1D_idx(jkind, kkind, INT(nkind, int_8)))
                      pmax_set(kind_kind_idx)%p_kind(jset, &
@@ -299,7 +303,8 @@ CONTAINS
                                        max_set, max_pgf, n_threads, i_thread)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(hfx_basis_type), DIMENSION(:), POINTER        :: basis_parameter
-      TYPE(four_center_integral_context_type)            :: context
+      TYPE(four_center_integral_context_type), &
+         INTENT(INOUT)                                   :: context
       TYPE(hfx_potential_type)                           :: potential_parameter
       TYPE(hfx_screen_coeff_type), &
          DIMENSION(:, :, :, :), POINTER                  :: coeffs_set

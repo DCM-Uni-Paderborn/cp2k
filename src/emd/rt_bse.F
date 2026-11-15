@@ -51,7 +51,7 @@ MODULE rt_bse
                       dbt_copy_matrix_to_tensor, &
                       dbt_copy_tensor_to_matrix, &
                       dbt_type
-   USE libint_2c_3c, ONLY: libint_potential_type
+   USE integral_library_types, ONLY: coulomb_operator_type
    USE qs_tensors, ONLY: build_2c_integrals, &
                          build_2c_neighbor_lists
    USE qs_neighbor_list_types, ONLY: neighbor_list_set_p_type, &
@@ -173,7 +173,7 @@ CONTAINS
       CALL print_rtbse_header_info(rtbse_env)
 
       ! Initiate iteration level "MD" in order to copy the structure of other RTP codes
-      CALL cp_add_iter_level(logger%iter_info, "MD")
+      CALL cp_add_iter_level(logger, "MD")
       ! Initialize non-trivial values
       !  - calculates the moment operators
       CALL initialize_moments(rtbse_env)
@@ -247,7 +247,7 @@ CONTAINS
       END DO
       ! ********************** End the time loop **********************
 
-      CALL cp_rm_iter_level(logger%iter_info, "MD")
+      CALL cp_rm_iter_level(logger, "MD")
 
       ! Carry out the FT
       CALL print_ft(rtbse_env%rtp_section, &
@@ -1237,7 +1237,7 @@ CONTAINS
       TYPE(rtbse_env_type), POINTER, INTENT(IN)          :: rtbse_env
       TYPE(dbcsr_type)                                   :: v_dbcsr
       TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
-      TYPE(libint_potential_type)                        :: coulomb_op
+      TYPE(coulomb_operator_type)                        :: coulomb_op
       TYPE(cp_fm_type)                                   :: V_fm
       TYPE(cp_fm_type)                                   :: metric_fm
       TYPE(cp_fm_type)                                   :: metric_inv_fm, &

@@ -87,6 +87,7 @@ spack:
     adios2:
       require:
         - "~bzip2"
+        - "~sz3"
         - "~xrootd"
 
     cosma:
@@ -158,20 +159,22 @@ spack:
       require:
         - "~distributed"
         - "~fbgemm"
-        - "~kineto"
+        - spec: "~flash_attention"
+          when: "+cuda"
+        - spec: "~kineto"
+          when: "@:2.10"
+        - spec: "~magma"
+          when: "+cuda"
         - "~mkldnn"
         - "~rocm"
         - "~valgrind"
         - "~xnnpack"
-        - spec: "~flash_attention"
-          when: "+cuda"
-        - spec: "~magma"
-          when: "+cuda"
 
     sirius:
       require:
         - "~apps"
         - "+dftd3"
+        - "+dftd4"
         - "+dlaf"
         - "+elpa"
         - "+fortran"
@@ -183,6 +186,12 @@ spack:
     spla:
       require:
         - "+fortran"
+
+    # SuperLU_DIST 7 (required by PEXSI 2) does not compile with C23 (default since GCC 15)
+    superlu-dist:
+      require:
+        - "cflags=-std=gnu17"
+        - "~cuda"
 
     trexio:
       require:
@@ -200,7 +209,7 @@ spack:
 
   repos:
     builtin:
-      commit: a12bbd69e94b8fce1969a412755959bb37ecab3d # 2026-10-19
+      commit: 9e16dc370fb1ea0fa9971c6c6283b85fa414ec6a # 2026-11-13
 
   specs:
     # Build tools
@@ -209,13 +218,13 @@ spack:
     - "gmake@4.2:"
     - "mpich@5.0.2"
     - "ninja@1.13"
-#   - "openmpi@5.0.10"
+#   - "openmpi@5.0.11"
     - "python@3.11:"
     # CP2K
     - "adios2@2.12.1"
-    - "cosma@2.8.4"
+    - "cosma@2.8.5"
 #   - "cusolvermp@0.7.2.888"
-    - "dbcsr@git.97a623c2b9b89b8781592e546bab90d8f034b947=develop"
+    - "dbcsr@git.8e8c7d469419a587bd4e597c4118557632991d8e=develop"
     - "deepmdkit@3.2.0"
 #   - "dftd4@4.2.0"
     - "dla-future@0.10.0"
@@ -228,15 +237,15 @@ spack:
     - "libfabric@2.6.0"
     - "libfci@0.1.0"
     - "libgint@release_v1"
-    - "libint@2.13.1-cp2k-lmax-5"
+    - "libint@2.14.1-cp2k-lmax-5"
     - "libsmeagol@1.2"
     - "libvdwxc@0.5.0"
     - "libvori@220621"
     - "libwignernj@0.8.0"
     - "libxc@7.1.2"
-    - "libxs@git.930a2c4f5d7d4ee82142302e1a17812557c02dae=main"
-    - "libxsmm@git.3057b239c16994d307589e40e45f40857ad5f5b8=main"
-#   - "libxstream@git.f4511a4b72a8e19e2cd0b5e399679a9c50091a6f=main"
+    - "libxs@git.cc9188afc9422fda96c9fa0199ea89c49fd78995=main"
+    - "libxsmm@git.5fdf801e9c2bf91a929018ade31ebf1c24235f0a=main"
+#   - "libxstream@git.b0481a7f605e216c46b540a09f01ab67680cc150=main"
     - "mimic-mcl@3.0.0"
     - "netlib-scalapack@2.2.3"
     - "openblas@0.3.34"
@@ -244,12 +253,12 @@ spack:
     - "pace@2025.12.4.1"
     - "pexsi@2.0.0"
     - "plumed@2.10.1"
-    - "py-torch@2.14.1"
+    - "py-torch@2.15.0"
     - "sirius@7.12.0"
     - "spfft@1.1.1"
     - "spglib@2.8.0"
     - "spla@1.6.1"
-    - "tblite@0.7.0"
+    - "tblite@0.8.0"
     - "trexio@2.6.1"
 
   view:
