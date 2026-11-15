@@ -157,7 +157,10 @@ CONTAINS
          DO b = a, SIZE(centers)
             separation = centers(a)%position - centers(b)%position
             CALL pair_reflection_center(cell, separation, map%periodicity, cartesian, reflection_axes, image_center)
-            IF (ANY(reflection_axes)) parity(:, :) = image_pair_parity(centers(a), centers(b))
+            IF (ANY(reflection_axes)) THEN
+               IF (ALLOCATED(parity)) DEALLOCATE (parity)
+               ALLOCATE (parity, SOURCE=image_pair_parity(centers(a), centers(b)))
+            END IF
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
             CALL residual_image_limits(inverse_cell, separation, radius, map%periodicity, limits)
             DO k = limits(1, 3), limits(2, 3)
@@ -302,7 +305,10 @@ CONTAINS
             IF (a == b .AND. .NOT. do_cell) CYCLE
             separation = centers(a)%position - centers(b)%position
             CALL pair_reflection_center(map%cell, separation, map%periodicity, cartesian, reflection_axes, image_center)
-            IF (ANY(reflection_axes)) parity(:, :) = image_pair_parity(centers(a), centers(b))
+            IF (ANY(reflection_axes)) THEN
+               IF (ALLOCATED(parity)) DEALLOCATE (parity)
+               ALLOCATE (parity, SOURCE=image_pair_parity(centers(a), centers(b)))
+            END IF
             radius = MAXVAL(centers(a)%radii) + MAXVAL(centers(b)%radii)
             CALL residual_image_limits(inverse_cell, separation, radius, map%periodicity, limits)
             DO k = limits(1, 3), limits(2, 3)
