@@ -170,7 +170,7 @@ CONTAINS
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: ij_list
       TYPE(gto_basis_set_p_type), DIMENSION(:)           :: basis_i, basis_j
-      TYPE(libint_potential_type), INTENT(IN)            :: potential_parameter
+      TYPE(coulomb_operator_type), INTENT(IN)            :: potential_parameter
       CHARACTER(LEN=*), INTENT(IN)                       :: name
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: sym_ij, molecular
@@ -353,7 +353,7 @@ CONTAINS
       TYPE(neighbor_list_3c_type), INTENT(OUT)           :: ijk_list
       TYPE(gto_basis_set_p_type), DIMENSION(:)           :: basis_i, basis_j, basis_k
       TYPE(distribution_3d_type), INTENT(IN)             :: dist_3d
-      TYPE(libint_potential_type), INTENT(IN)            :: potential_parameter
+      TYPE(coulomb_operator_type), INTENT(IN)            :: potential_parameter
       CHARACTER(LEN=*), INTENT(IN)                       :: name
       TYPE(qs_environment_type), POINTER                 :: qs_env
       LOGICAL, INTENT(IN), OPTIONAL                      :: sym_ij, sym_jk, sym_ik, molecular
