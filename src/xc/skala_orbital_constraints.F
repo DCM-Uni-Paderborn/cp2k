@@ -1664,8 +1664,9 @@ CONTAINS
             CYCLE
          END IF
          motion(:) = trial(curve%free) - x(curve%free)
-         IF (coupled_curvature .AND. reversal_descent) THEN
-            ! Carry the scale of the accepted bracket step into the next curvature solve.
+         IF (coupled_curvature .AND. reversal_descent .AND. (m == 0 .OR. newton_used)) THEN
+            ! For a constrained solve, use a bracket along the Newton direction
+            ! to set the radius of the next Newton solve.
             radius = MIN(radius, 2.0_dp*NORM2(motion))
          ELSE IF (coupled_curvature .AND. newton_used) THEN
             ! A shortened step resolves a smaller neighborhood than the original CG sphere.
