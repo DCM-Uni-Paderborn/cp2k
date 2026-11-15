@@ -124,6 +124,9 @@ MODULE qs_skala_scf
    ! Atomic energy unit for temperature-independent frozen-Hamiltonian occupation curvature.
    REAL(dp), PARAMETER :: thermal_energy_unit = 1.0_dp
    REAL(dp), PARAMETER :: native_boundary_tolerance = 1.0e-17_dp
+   ! The signed kinetic density can cancel to adjacent floating-point values
+   ! when the smooth and augmentation contributions are added on the grid.
+   REAL(dp), PARAMETER :: kinetic_boundary_tolerance = 0.125_dp*EPSILON(0.0_dp)
    PUBLIC :: qs_skala_scf_create_symmetric
    PUBLIC :: qs_skala_scf_retained_symmetry
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
@@ -2720,7 +2723,10 @@ CONTAINS
       LOGICAL, INTENT(OUT)                              :: restored
 
       INTEGER, PARAMETER                                :: maximum_candidates = 8
-      REAL(dp), PARAMETER                               :: discovery_window = 4.0_dp*native_boundary_tolerance
+      REAL(dp), PARAMETER                               :: density_window = 4.0_dp*native_boundary_tolerance
+      ! Rebuilding the signed kinetic density from saved orbitals can shift a
+      ! cancellation through zero by a few floating-point roundoff units.
+      REAL(dp), PARAMETER                               :: kinetic_window = MAX(density_window, 16.0_dp*EPSILON(0.0_dp))
       INTEGER                                            :: count, descriptor, domain, level, limit, &
                                                             m, nlevels, offset, row, spin
       INTEGER                                            :: keys(6, maximum_candidates)
@@ -2728,7 +2734,7 @@ CONTAINS
       INTEGER, POINTER                                   :: points(:, :)
       LOGICAL                                            :: available, valid
       LOGICAL, ALLOCATABLE                               :: admissible(:)
-      REAL(dp)                                           :: original_energy, target, trial_energy
+      REAL(dp)                                           :: discovery_window, original_energy, target, trial_energy
       REAL(dp)                                           :: local_targets(maximum_candidates)
       REAL(dp), ALLOCATABLE                              :: floors(:), jacobian(:, :), tolerances(:), trial(:), values(:)
       REAL(dp), POINTER                                  :: density(:, :), fields(:, :), kinetic(:, :)
@@ -2754,6 +2760,7 @@ CONTAINS
          DO descriptor = skala_density_descriptor, skala_kinetic_descriptor
             fields => density
             IF (descriptor == skala_kinetic_descriptor) fields => kinetic
+            discovery_window = MERGE(kinetic_window, density_window, descriptor == skala_kinetic_descriptor)
             nlevels = MERGE(SIZE(floors), 1, descriptor == skala_density_descriptor)
             DO level = 1, nlevels
                target = 0.0_dp
@@ -2791,12 +2798,14 @@ CONTAINS
 
       original_energy = sum_ks_energies(state%energy, .TRUE.)
       ALLOCATE (trial, SOURCE=coordinate)
-      ALLOCATE (tolerances(m), SOURCE=native_boundary_tolerance)
+      ALLOCATE (tolerances, SOURCE=MERGE(kinetic_boundary_tolerance, native_boundary_tolerance, &
+                                        context%descriptors == skala_kinetic_descriptor))
       ALLOCATE (values(m), jacobian(m, SIZE(coordinate)), admissible(m), sides(m))
       CALL skala_constraint_chart_create(evaluate_native_constraints, context, trial, tolerances, chart, valid)
       IF (valid) THEN
          CALL skala_constraint_chart_restore(chart, evaluate_native_constraints, context, trial, values, jacobian, valid)
       END IF
+      ! The wider search window does not relax the physical constraint tolerance.
       ! This recovery is local to the saved orbitals. Finite steps use the normal search.
       IF (valid .AND. NORM2(trial - coordinate) <= SQRT(EPSILON(0.0_dp))) THEN
          CALL qs_skala_scf_classify(state, trial, context%points, context%domains, context%spins, context%descriptors, &
@@ -3662,7 +3671,7 @@ CONTAINS
       probe = 1.0e-14_dp
       tolerance = native_boundary_tolerance
       kinetic_probe = 1.0e-14_dp
-      kinetic_tolerance = native_boundary_tolerance
+      kinetic_tolerance = kinetic_boundary_tolerance
       IF (old > 0) THEN
          CALL skala_density_constraints_get(state%constraints, old_points, old_spins, old_weights, probe, tolerance, &
                                             descriptors=old_descriptors, domains=old_domains, targets=old_targets, &
@@ -4571,7 +4580,7 @@ CONTAINS
       event => context%crossings
       old = skala_density_constraints_count(context%state%constraints)
       tolerance = native_boundary_tolerance
-      kinetic_tolerance = native_boundary_tolerance
+      kinetic_tolerance = kinetic_boundary_tolerance
       IF (old > 0) THEN
          CALL skala_density_constraints_get(context%state%constraints, old_points, old_spins, weights, probe, tolerance, &
                                             descriptors=old_descriptors, domains=old_domains, &
