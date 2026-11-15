@@ -76,6 +76,7 @@ MODULE qs_scf_initialization
    USE kpoint_types,                    ONLY: get_kpoint_info,&
                                               kpoint_clear_scf_smat,&
                                               kpoint_type
+   USE memory_utilities,                ONLY: reallocate
    USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
    USE particle_types,                  ONLY: particle_type
@@ -127,11 +128,11 @@ MODULE qs_scf_initialization
                                               qs_rho_type
    USE qs_scf_diagonalization,          ONLY: diag_kp_smat,&
                                               diag_subspace_allocate
-   USE qs_scf_lanczos,                  ONLY: krylov_space_allocate
+   USE qs_scf_lanczos,                  ONLY: krylov_workspace_allocate
    USE qs_scf_output,                   ONLY: qs_scf_initial_info
    USE qs_scf_types,                    ONLY: &
         block_davidson_diag_method_nr, block_krylov_diag_method_nr, diag_subspace_env_create, &
-        filter_matrix_diag_method_nr, general_diag_method_nr, krylov_space_create, &
+        filter_matrix_diag_method_nr, general_diag_method_nr, krylov_settings_create, &
         ot_diag_method_nr, ot_method_nr, qs_scf_env_type, scf_env_create, smeagol_method_nr, &
         special_diag_method_nr
    USE qs_wf_history_methods,           ONLY: reorthogonalize_vectors,&
@@ -908,7 +909,8 @@ CONTAINS
             IF (diag_type == FM_DIAG_TYPE_CUSOLVER .AND. &
                 direct_generalized_diagonalization .AND. &
                 scf_control%level_shift == 0.0_dp .AND. &
-                scf_env%cholesky_method /= cholesky_off) THEN
+                scf_env%cholesky_method /= cholesky_off .AND. &
+                scf_env%cholesky_method /= cholesky_dbcsr) THEN
                CALL get_mo_set(mos(1), nao=nao)
                IF (nao >= cusolver_n_min) THEN
                   scf_env%needs_ortho = .FALSE.
@@ -929,15 +931,19 @@ CONTAINS
             IF (dft_control%roks) THEN
                CPABORT("ROKS with block PF diagonalization not possible")
             END IF
-            IF (do_kpoints) THEN
-               CPABORT("Block Krylov diagonalization not possible with kpoint calculations")
-            END IF
             scf_env%method = block_krylov_diag_method_nr
-            scf_env%needs_ortho = .TRUE.
-            IF (.NOT. ASSOCIATED(scf_env%krylov_space)) THEN
-               CALL krylov_space_create(scf_env%krylov_space, scf_section)
+            IF (.NOT. ASSOCIATED(scf_env%krylov_settings)) THEN
+               CALL krylov_settings_create(scf_env%krylov_settings, scf_section)
             END IF
-            CALL krylov_space_allocate(scf_env%krylov_space, scf_control, mos)
+            ! the Gamma workspace carries the refinement buffers. The
+            ! k-point world parses the settings only. The complex kernel
+            ! takes a caller-owned workspace. Nothing is allocated from
+            ! the Gamma MOS, and the k-point world never uses
+            ! scf_env%ortho
+            scf_env%needs_ortho = .NOT. do_kpoints
+            IF (.NOT. do_kpoints) THEN
+               CALL krylov_workspace_allocate(scf_env%krylov_space, scf_env%krylov_settings, mos)
+            END IF
             ! Block davidson diagonlization: allocation of additional matrices is needed
          CASE (diag_block_davidson)
             scf_env%method = block_davidson_diag_method_nr
@@ -1042,7 +1048,6 @@ CONTAINS
                                                             s_minus_half_available
       REAL(KIND=dp)                                      :: u_ramping
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct
       TYPE(cp_fm_type)                                   :: evecs, fm_w
@@ -1180,10 +1185,10 @@ CONTAINS
 
             CALL cp_fm_column_scale(scf_env%ortho_red, evals(ndep + 1:))
 
-            ! Copy the linear dependent columns to the MO sets and set their orbital energies
-            ! to a very large value to reduce the probability of occupying them
+            ! Keep the dimensions of the eigenvalue and occupation vectors consistent with nmo
+            ! when reducing the number of MOs due to linear dependence in the basis.
             DO ispin = 1, SIZE(mos)
-               CALL get_mo_set(mos(ispin), nmo=nmo, mo_coeff=mo_coeff, homo=homo, eigenvalues=eigenvalues)
+               CALL get_mo_set(mos(ispin), nmo=nmo, mo_coeff=mo_coeff, homo=homo)
                IF (needed_evals < nmo) THEN
                   IF (needed_evals < homo) THEN
                      CALL cp_abort(__LOCATION__, &
@@ -1195,13 +1200,12 @@ CONTAINS
                                "The numerical rank of the overlap matrix is lower than the number of requested MOs! "// &
                                "Reduce the number of MOs to the number of available MOs. If necessary, "// &
                                "request a lower number of MOs or increase EPS_DEFAULT or EPS_PGF_ORB.")
+                  CALL reallocate(mos(ispin)%eigenvalues, 1, needed_evals)
+                  CALL reallocate(mos(ispin)%occupation_numbers, 1, needed_evals)
                   CALL set_mo_set(mos(ispin), nmo=needed_evals)
                END IF
                ! Copy the last columns to mo_coeff if the container is large enough
                CALL cp_fm_to_fm(evecs, mo_coeff, MIN(ndep, MAX(0, nmo - needed_evals)), 1, needed_evals + 1)
-               ! Set the corresponding eigenvalues to a large value
-               ! This prevents their occupation but still keeps the information on them
-               eigenvalues(needed_evals + 1:MIN(nao, nmo)) = 1.0_dp/scf_control%eps_eigval
             END DO
 
             ! Obtain ortho from (P)DGEMM, skip the linear dependent columns

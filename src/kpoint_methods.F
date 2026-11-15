@@ -41,6 +41,7 @@ MODULE kpoint_methods
    USE cp_dbcsr_contrib,                ONLY: dbcsr_dot
    USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
    USE cp_dbcsr_operations,             ONLY: copy_fm_to_dbcsr
+   USE cp_dbcsr_redistribution,         ONLY: cp_array_to_dbcsr_blocks
    USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
                                               cp_fm_pool_type,&
@@ -77,6 +78,7 @@ MODULE kpoint_methods
                                               k_grid_to_cell_prepare,&
                                               k_grid_to_cell_release,&
                                               k_grid_to_cell_work_type,&
+                                              lattice_fft_num_threads,&
                                               lattice_fft_shape,&
                                               regular_kpoint_grid
    USE kpoint_types,                    ONLY: &
@@ -1291,13 +1293,13 @@ CONTAINS
    END SUBROUTINE rskp_transform
 
 ! **************************************************************************************************
-!> \brief Prepare a batched real-cell to regular reciprocal-grid transform for local DBCSR blocks.
+!> \brief Prepare a batched real-cell transform to a regular grid or subset for local DBCSR blocks.
 !>        The stored blocks remain MPI local.  Irregular or too-large grids return used_fft=.FALSE.
 !> \param grid cached transformed local blocks and their DBCSR coordinates
 !> \param rmatrix allocated output template defining the local block layout
 !> \param rsmat real-space matrix set
 !> \param ispin spin component of rsmat
-!> \param xkp reciprocal grid or symmetry-reduced subset in arbitrary order
+!> \param xkp requested points on a regular reciprocal grid in arbitrary order
 !> \param nkp_grid reciprocal grid dimensions
 !> \param cell_to_index real-cell coordinate mapping
 !> \param sab_nl neighbor list defining the stored block orientation
@@ -1348,17 +1350,26 @@ CONTAINS
 
       nkp = SIZE(xkp, 2)
       nimg = SIZE(rsmat, 2)
-      IF (nkp < 2) THEN
+      memory_limit = 512_int_8*1024_int_8**2
+      IF (PRESENT(max_storage_bytes)) memory_limit = max_storage_bytes
+      IF (nkp < 1 .OR. ANY(nkp_grid <= 0)) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      ! A reduced request still needs scratch for the full FFT mesh.
+      IF (32_int_8*PRODUCT(INT(nkp_grid, int_8)) > memory_limit) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      IF (.NOT. lattice_fft_shape(nkp_grid, nfft, allow_arbitrary=.TRUE.)) THEN
+         CALL timestop(handle)
+         RETURN
+      END IF
+      IF (32_int_8*PRODUCT(INT(nfft, int_8)) > memory_limit) THEN
          CALL timestop(handle)
          RETURN
       END IF
       IF (.NOT. regular_kpoint_grid(xkp, nkp_grid, allow_incomplete=.TRUE.)) THEN
-         CALL timestop(handle)
-         RETURN
-      END IF
-      ! Reject unsupported lengths before packing the matrices. Otherwise the
-      ! mathematical fallback computes a direct sum which this cache discards.
-      IF (.NOT. lattice_fft_shape(nkp_grid, nfft, allow_arbitrary=.TRUE.)) THEN
          CALL timestop(handle)
          RETURN
       END IF
@@ -1421,13 +1432,11 @@ CONTAINS
          RETURN
       END IF
 
-      memory_limit = 512_int_8*1024_int_8**2
-      IF (PRESENT(max_storage_bytes)) memory_limit = max_storage_bytes
-      ! Count the actual padded FFT grid even if only an irreducible subset is
-      ! retained. Keep a conservative work allowance per matrix element.
-      storage_bytes = INT(nvalues, int_8)*(8_int_8*INT(ncell, int_8) + &
-                                           16_int_8*INT(nkp, int_8) + &
-                                           64_int_8*PRODUCT(INT(nfft, int_8)))
+      ! Bound the requested output separately from the full-mesh FFT scratch/maps.
+      storage_bytes = INT(nvalues, int_8)*(8_int_8*INT(ncell, int_8) + 16_int_8*INT(nkp, int_8)) + &
+                      48_int_8*PRODUCT(INT(nfft, int_8))*lattice_fft_num_threads(nfft, nvalues) + &
+                      4_int_8*PRODUCT(INT(nkp_grid, int_8)) + &
+                      12_int_8*nkp + 28_int_8*ncell
       IF (storage_bytes > memory_limit) THEN
          CALL rskp_transform_grid_release(grid)
          CALL timestop(handle)
@@ -2967,7 +2976,8 @@ CONTAINS
 
       INTEGER                                            :: compatible, element, first, handle, i, &
                                                             ic, igroup, ik, ikp, image, ispin, j, &
-                                                            kplocal, nc, ncol, nrow
+                                                            kplocal, last, nc, ncol, nrow
+      INTEGER, ALLOCATABLE                               :: blocks(:, :), factors(:, :)
       INTEGER, DIMENSION(14)                             :: layout, layout_max, layout_min
       INTEGER, DIMENSION(2)                              :: fft_range
       LOGICAL                                            :: found, local, same_layout
@@ -3032,6 +3042,24 @@ CONTAINS
       DO ispin = 1, SIZE(source, 3)
          CALL kp_density_fft(kpoint, source(:, :, ispin), nrow, ncol, SIZE(denmat, 2), &
                              fft_range, fft_density, local)
+         IF (ALLOCATED(fft_density) .AND. kpoint%para_env_kp%num_pe == 1) THEN
+            IF (.NOT. ALLOCATED(blocks)) THEN
+               ! Keep neighbor-list multiplicity and imaginary signs in the k-point layer.
+               ALLOCATE (blocks(3, plan%ngroup), factors(nc, plan%ngroup))
+               DO igroup = 1, plan%ngroup
+                  first = plan%group_start(igroup)
+                  last = plan%group_start(igroup + 1) - 1
+                  blocks(:, igroup) = [plan%row(first), plan%col(first), plan%image(first)]
+                  factors(1, igroup) = last - first + 1
+                  IF (nc == 2) factors(2, igroup) = NINT(SUM(plan%symmetry_sign(first:last)))
+               END DO
+            END IF
+            CALL cp_array_to_dbcsr_blocks(fft_density, fft_range(1), fft_range(2), para_env, &
+                                          denmat(ispin, :), blocks, factors)
+            DEALLOCATE (fft_density)
+            completed = .TRUE.
+            CYCLE
+         END IF
          IF (ispin == 1) THEN
             IF (local .AND. .NOT. ALLOCATED(fft_density) .AND. dense_work > sparse_work) EXIT
             DO ic = 1, nc
@@ -3102,11 +3130,9 @@ CONTAINS
          IF (ALLOCATED(fft_density)) DEALLOCATE (fft_density)
          completed = .TRUE.
       END DO
-      IF (completed) THEN
-         DO ic = 1, nc
-            CALL cp_fm_release(partial(ic))
-         END DO
-      END IF
+      DO ic = 1, nc
+         CALL cp_fm_release(partial(ic))
+      END DO
       CALL timestop(handle)
 
    END SUBROUTINE kpoint_density_transform_regular_grid

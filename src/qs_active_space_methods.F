@@ -2545,14 +2545,20 @@ CONTAINS
       TYPE(section_vals_type), POINTER                   :: as_input
       LOGICAL, INTENT(IN)                                :: restricted
 
+      CHARACTER(LEN=*), PARAMETER :: roks_warning = &
+         "ROKS FCIDUMP spin blocks differ. Check the cell size and the consistency of "// &
+         "the SCF exchange and active-space ERI operators."
+      REAL(KIND=dp), PARAMETER                           :: roks_fock_tol = 1.0E-6_dp
+
       INTEGER                                            :: i, i1, i2, i3, i4, isym, iw, m1, m2, &
                                                             ms2, nmo, norb, nspins
-      REAL(KIND=dp)                                      :: checksum, esub
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: fmat
+      REAL(KIND=dp)                                      :: checksum, esub, spin_difference
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: fmat, fock_diff, pmat
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(eri_fcidump_checksum)                         :: eri_checksum
 
       checksum = 0.0_dp
+      spin_difference = 0.0_dp
 
       logger => cp_get_default_logger()
       iw = cp_print_key_unit_nr(logger, as_input, "FCIDUMP", &
@@ -2586,6 +2592,22 @@ CONTAINS
             nmo = active_space_env%eri%norb
             ALLOCATE (fmat(nmo, nmo))
             CALL replicate_and_symmetrize_matrix(nmo, active_space_env%fock_sub(1), fmat)
+            esub = active_space_env%energy_inactive
+            IF (restricted) THEN
+               ALLOCATE (fock_diff(nmo, nmo), pmat(nmo, nmo))
+               CALL replicate_and_symmetrize_matrix(nmo, active_space_env%fock_sub(2), fock_diff)
+               fock_diff(:, :) = fmat - fock_diff
+               ASSOCIATE (active => active_space_env%active_orbitals(:, 1))
+                  spin_difference = MAXVAL(ABS(fock_diff(active, active)))
+               END ASSOCIATE
+               ! Use one spin-independent operator and preserve the energy at the embedding density.
+               fmat(:, :) = fmat - 0.5_dp*fock_diff
+               CALL replicate_and_symmetrize_matrix(nmo, active_space_env%p_active(1), pmat)
+               esub = esub + 0.5_dp*SUM(fock_diff*pmat)
+               CALL replicate_and_symmetrize_matrix(nmo, active_space_env%p_active(2), pmat)
+               esub = esub - 0.5_dp*SUM(fock_diff*pmat)
+               DEALLOCATE (fock_diff, pmat)
+            END IF
             IF (iw > 0) THEN
                i3 = 0; i4 = 0
                DO m1 = 1, SIZE(active_space_env%active_orbitals, 1)
@@ -2599,7 +2621,6 @@ CONTAINS
             END IF
             DEALLOCATE (fmat)
             ! Print energy
-            esub = active_space_env%energy_inactive
             i1 = 0; i2 = 0; i3 = 0; i4 = 0
             checksum = checksum + ABS(esub)
             IF (iw > 0) WRITE (iw, "(ES23.16,4I4)") esub, i1, i2, i3, i4
@@ -2679,6 +2700,13 @@ CONTAINS
       !>>
       iw = cp_logger_get_default_io_unit(logger)
       IF (iw > 0) WRITE (iw, '(T4,A,T66,F12.8)') "FCIDUMP| Checksum:", eri_checksum%checksum + checksum
+      IF (restricted) THEN
+         IF (iw > 0) WRITE (iw, '(T4,A,1X,ES12.5)') &
+            "FCIDUMP| Max. ROKS spin-block difference [hartree]:", spin_difference
+         IF (spin_difference > roks_fock_tol) THEN
+            CPWARN(roks_warning)
+         END IF
+      END IF
       !<<
 
    END SUBROUTINE fcidump
@@ -2799,17 +2827,21 @@ CONTAINS
             ! In the restricted case, we use the same ERIs for each spin channel
             eri_aa => active_space_env%eri%eri(1)%csr_mat
             CALL build_subspace_spin_fock_matrix(active_space_env%active_orbitals, eri_aa, eri_aa, p_a_mat, p_b_mat, ks_a_ref, &
-                                                 tr_mixed_eri=.FALSE., comm_exchange=active_space_env%eri%comm_exchange)
+                                                 tr_mixed_eri=.FALSE., comm_exchange=active_space_env%eri%comm_exchange, &
+                                                 restricted=restricted)
             CALL build_subspace_spin_fock_matrix(active_space_env%active_orbitals, eri_aa, eri_aa, p_b_mat, p_a_mat, ks_b_ref, &
-                                                 tr_mixed_eri=.TRUE., comm_exchange=active_space_env%eri%comm_exchange)
+                                                 tr_mixed_eri=.TRUE., comm_exchange=active_space_env%eri%comm_exchange, &
+                                                 restricted=restricted)
          ELSE
             eri_aa => active_space_env%eri%eri(1)%csr_mat
             eri_ab => active_space_env%eri%eri(2)%csr_mat
             eri_bb => active_space_env%eri%eri(3)%csr_mat
             CALL build_subspace_spin_fock_matrix(active_space_env%active_orbitals, eri_aa, eri_ab, p_a_mat, p_b_mat, ks_a_ref, &
-                                                 tr_mixed_eri=.FALSE., comm_exchange=active_space_env%eri%comm_exchange)
+                                                 tr_mixed_eri=.FALSE., comm_exchange=active_space_env%eri%comm_exchange, &
+                                                 restricted=restricted)
             CALL build_subspace_spin_fock_matrix(active_space_env%active_orbitals, eri_bb, eri_ab, p_b_mat, p_a_mat, ks_b_ref, &
-                                                 tr_mixed_eri=.TRUE., comm_exchange=active_space_env%eri%comm_exchange)
+                                                 tr_mixed_eri=.TRUE., comm_exchange=active_space_env%eri%comm_exchange, &
+                                                 restricted=restricted)
          END IF
          !
          ! calculate energy
@@ -2913,6 +2945,19 @@ CONTAINS
                   IF (i1 /= i2 .AND. i3 /= i4) THEN
                      ks_ref(i2, i4) = ks_ref(i2, i4) + erint*p_mat(i1, i3)
                   END IF
+                  ! The stored integral represents both orders of unequal orbital pairs.
+                  IF (i12 /= i34) THEN
+                     ks_ref(i3, i1) = ks_ref(i3, i1) + erint*p_mat(i4, i2)
+                     IF (i1 /= i2) THEN
+                        ks_ref(i3, i2) = ks_ref(i3, i2) + erint*p_mat(i4, i1)
+                     END IF
+                     IF (i3 /= i4) THEN
+                        ks_ref(i4, i1) = ks_ref(i4, i1) + erint*p_mat(i3, i2)
+                     END IF
+                     IF (i1 /= i2 .AND. i3 /= i4) THEN
+                        ks_ref(i4, i2) = ks_ref(i4, i2) + erint*p_mat(i3, i1)
+                     END IF
+                  END IF
                END DO
             END IF
          END DO
@@ -2941,22 +2986,24 @@ CONTAINS
 !> \param ks_a_ref fockian matrix for up-spin
 !> \param tr_mixed_eri boolean to indicate Coulomb interaction alignment
 !> \param comm_exchange ...
+!> \param restricted use the common, eightfold-symmetric ERIs for both spin densities
 ! **************************************************************************************************
    SUBROUTINE build_subspace_spin_fock_matrix(active_orbitals, eri_aa, eri_ab, p_a_mat, p_b_mat, ks_a_ref, tr_mixed_eri, &
-                                              comm_exchange)
+                                              comm_exchange, restricted)
       INTEGER, DIMENSION(:, :), INTENT(IN)               :: active_orbitals
       TYPE(dbcsr_csr_type), INTENT(IN)                   :: eri_aa, eri_ab
       REAL(dp), DIMENSION(:, :), INTENT(IN)              :: p_a_mat, p_b_mat
       REAL(dp), DIMENSION(:, :), INTENT(INOUT)           :: ks_a_ref
       LOGICAL, INTENT(IN)                                :: tr_mixed_eri
       TYPE(mp_comm_type), INTENT(IN)                     :: comm_exchange
+      LOGICAL, INTENT(IN)                                :: restricted
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'build_subspace_spin_fock_matrix'
 
       INTEGER                                            :: handle, i1, i12, i12l, i2, i3, i34, &
                                                             i34l, i4, irptr, m1, m2, nindex, &
                                                             nmo_total, norb, spin1, spin2
-      REAL(dp)                                           :: erint
+      REAL(dp)                                           :: erint, p12, p34
       TYPE(mp_comm_type)                                 :: mp_group
 
       CALL timeset(routineN, handle)
@@ -2984,11 +3031,19 @@ CONTAINS
                   CALL csr_idx_from_combined(i34, nmo_total, i3, i4)
                   erint = eri_aa%nzval_local%r_dp(irptr + i34l)
                   ! Coulomb
+                  p12 = p_a_mat(i1, i2)
+                  p34 = p_a_mat(i3, i4)
+                  IF (restricted) THEN
+                     p12 = p12 + p_b_mat(i1, i2)
+                     p34 = p34 + p_b_mat(i3, i4)
+                  END IF
+                  IF (i1 /= i2) p12 = 2.0_dp*p12
+                  IF (i3 /= i4) p34 = 2.0_dp*p34
                   !F_ij += (ij|kl)*d_kl
-                  ks_a_ref(i1, i2) = ks_a_ref(i1, i2) + erint*p_a_mat(i3, i4)
+                  ks_a_ref(i1, i2) = ks_a_ref(i1, i2) + erint*p34
                   IF (i12 /= i34) THEN
                      !F_kl += (ij|kl)*d_ij
-                     ks_a_ref(i3, i4) = ks_a_ref(i3, i4) + erint*p_a_mat(i1, i2)
+                     ks_a_ref(i3, i4) = ks_a_ref(i3, i4) + erint*p12
                   END IF
                   ! Exchange
                   erint = -1.0_dp*erint
@@ -3006,36 +3061,53 @@ CONTAINS
                      !F_jl -= (ij|kl)*d_ik
                      ks_a_ref(i2, i4) = ks_a_ref(i2, i4) + erint*p_a_mat(i1, i3)
                   END IF
+                  IF (i12 /= i34) THEN
+                     ks_a_ref(i3, i1) = ks_a_ref(i3, i1) + erint*p_a_mat(i4, i2)
+                     IF (i1 /= i2) THEN
+                        ks_a_ref(i3, i2) = ks_a_ref(i3, i2) + erint*p_a_mat(i4, i1)
+                     END IF
+                     IF (i3 /= i4) THEN
+                        ks_a_ref(i4, i1) = ks_a_ref(i4, i1) + erint*p_a_mat(i3, i2)
+                     END IF
+                     IF (i1 /= i2 .AND. i3 /= i4) THEN
+                        ks_a_ref(i4, i2) = ks_a_ref(i4, i2) + erint*p_a_mat(i3, i1)
+                     END IF
+                  END IF
                END DO
             END IF
          END DO
       END DO
       !
 
-      DO m1 = 1, norb
-         i1 = active_orbitals(m1, 1)
-         DO m2 = m1, norb
-            i2 = active_orbitals(m2, 1)
-            i12 = csr_idx_to_combined(i1, i2, nmo_total)
-            IF (MOD(i12 - 1, comm_exchange%num_pe) == comm_exchange%mepos) THEN
-               i12l = (i12 - 1)/comm_exchange%num_pe + 1
-               irptr = eri_ab%rowptr_local(i12l) - 1
-               DO i34l = 1, eri_ab%nzerow_local(i12l)
-                  i34 = eri_ab%colind_local(irptr + i34l)
-                  CALL csr_idx_from_combined(i34, nmo_total, i3, i4)
-                  erint = eri_ab%nzval_local%r_dp(irptr + i34l)
-                  ! Coulomb
-                  IF (tr_mixed_eri) THEN
-                     !F_kl += (kl beta|ij alpha )*d_alpha_ij
-                     ks_a_ref(i3, i4) = ks_a_ref(i3, i4) + erint*p_b_mat(i1, i2)
-                  ELSE
-                     !F_ij += (ij alpha|kl beta )*d_beta_kl
-                     ks_a_ref(i1, i2) = ks_a_ref(i1, i2) + erint*p_b_mat(i3, i4)
-                  END IF
-               END DO
-            END IF
+      ! Shared-orbital Coulomb contributions from both spins were included above.
+      IF (.NOT. restricted) THEN
+         DO m1 = 1, norb
+            i1 = active_orbitals(m1, 1)
+            DO m2 = m1, norb
+               i2 = active_orbitals(m2, 1)
+               i12 = csr_idx_to_combined(i1, i2, nmo_total)
+               IF (MOD(i12 - 1, comm_exchange%num_pe) == comm_exchange%mepos) THEN
+                  i12l = (i12 - 1)/comm_exchange%num_pe + 1
+                  irptr = eri_ab%rowptr_local(i12l) - 1
+                  DO i34l = 1, eri_ab%nzerow_local(i12l)
+                     i34 = eri_ab%colind_local(irptr + i34l)
+                     CALL csr_idx_from_combined(i34, nmo_total, i3, i4)
+                     erint = eri_ab%nzval_local%r_dp(irptr + i34l)
+                     ! Coulomb
+                     IF (tr_mixed_eri) THEN
+                        !F_kl += (kl beta|ij alpha )*d_alpha_ij
+                        ks_a_ref(i3, i4) = ks_a_ref(i3, i4) + erint*p_b_mat(i1, i2)
+                        IF (i1 /= i2) ks_a_ref(i3, i4) = ks_a_ref(i3, i4) + erint*p_b_mat(i1, i2)
+                     ELSE
+                        !F_ij += (ij alpha|kl beta )*d_beta_kl
+                        ks_a_ref(i1, i2) = ks_a_ref(i1, i2) + erint*p_b_mat(i3, i4)
+                        IF (i3 /= i4) ks_a_ref(i1, i2) = ks_a_ref(i1, i2) + erint*p_b_mat(i3, i4)
+                     END IF
+                  END DO
+               END IF
+            END DO
          END DO
-      END DO
+      END IF
       !
       DO m1 = 1, norb
          i1 = active_orbitals(m1, spin1)

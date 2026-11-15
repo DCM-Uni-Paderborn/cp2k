@@ -31,6 +31,7 @@ FLAG_EXCEPTIONS = (
     r"FD_DEBUG",
     r"GRID_DO_COLLOCATE",
     r"GRID_GPU.*_H",
+    r"GRID_SEP_.+",
     r"INTEL_MKL_VERSION",
     r"LIBINT2_MAX_AM_eri",
     r"LIBGRPP",
@@ -155,6 +156,11 @@ LGPL_PATHS = (
     "src/tb/tblite_stream_plan.F",
     "src/tb/tblite_transform_contract.F",
 )
+
+# Redistributed data that is not covered by the CP2K source licenses. Every file
+# below these paths (except the LICENSE file itself) must declare its license
+# through an SPDX identifier near the top.
+CC_BY_SA_PATHS = ("data/NNP/NaClaq-cnnp/",)
 
 
 @lru_cache(maxsize=None)
@@ -281,6 +287,10 @@ def check_file(path: pathlib.Path) -> List[str]:
         warnings += [f"{path}: Copyright banner malformed"]
     if path.name == "LICENSE" and bsd_licensed and f"2000-{year}" not in content:
         warnings += [f"{path}: Copyright banner malformed"]
+    if any(str(path).startswith(p) for p in CC_BY_SA_PATHS) and path.name != "LICENSE":
+        head = "\n".join(content.split("\n")[:8])
+        if "SPDX-License-Identifier: CC-BY-SA-4.0" not in head:
+            warnings += [f"{path}: Missing SPDX-License-Identifier: CC-BY-SA-4.0"]
     if path.name == "cp2k_info.F" and f'cp2k_year = "{year}"' not in content:
         warnings += [f"{path}: Wrong year."]
 

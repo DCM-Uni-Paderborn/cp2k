@@ -12,7 +12,7 @@
 !> \author MI
 ! **************************************************************************************************
 MODULE input_cp2k_properties_dft
-   USE bibliography, ONLY: Dixon2023, Doll2025, Wong2026, Loring2015, Cerjan2023, Futera2017, &
+   USE bibliography, ONLY: Dixon2023, Doll2025, Wong2026, Loring2015, Cerjan2023, Fei2021, Futera2017, &
                            Hedin1965, &
                            Hybertsen1986, &
                            Hartwigsen1998, &
@@ -44,7 +44,7 @@ MODULE input_cp2k_properties_dft
                                  silent_print_level
    USE cp_units, ONLY: cp_unit_to_cp2k
    USE input_constants, ONLY: &
-      cohsex_diagonal, cohsex_off, cohsex_qp_update, &
+      cohsex_diagonal, cohsex_off, cohsex_qp_update, gw_ac_nevanlinna, gw_ac_pade, &
       current_gauge_atom, current_gauge_r, current_gauge_r_and_step_func, &
       current_orb_center_atom, current_orb_center_box, current_orb_center_common, &
       current_orb_center_wannier, do_et_ddapc, do_full_density, do_no_et, do_spin_density, &
@@ -81,6 +81,7 @@ MODULE input_cp2k_properties_dft
                               logical_t, &
                               real_t
    USE input_cp2k_xas, ONLY: create_xas_tdp_section
+   USE nlo, ONLY: create_nonlinear_optics_section
    USE kinds, ONLY: dp
    USE string_utilities, ONLY: s2a
 #include "./base/base_uses.f90"
@@ -150,6 +151,10 @@ CONTAINS
       CALL section_release(subsection)
 
       CALL create_rixs_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      CALL create_nonlinear_optics_section(subsection)
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
@@ -2493,7 +2498,7 @@ CONTAINS
                           "For the GW algorithm for molecules, see \[Wilhelm2021\]. "// &
                           "For 2D materials, see \[Graml2024\].", &
                           citations=[Wilhelm2021, Graml2024], &
-                          n_keywords=1, n_subsections=4, repeats=.FALSE.)
+                          n_keywords=1, n_subsections=5, repeats=.FALSE.)
 
       NULLIFY (keyword)
       CALL keyword_create(keyword, __LOCATION__, &
@@ -2519,10 +2524,11 @@ CONTAINS
       CALL keyword_release(keyword)
 
       CALL keyword_create(keyword, __LOCATION__, name="EPS_FILTER", &
-                          description="Determines a threshold for the DBCSR based sparse "// &
-                          "multiplications. Normally, `EPS_FILTER` determines accuracy "// &
-                          "and timing of low-scaling GW calculations. (Lower filter means "// &
-                          "higher numerical precision, but higher computational cost.)", &
+                          description="Threshold for sparse operations on spatially local "// &
+                          "matrices, including DBCSR matrix multiplication. EPS_FILTER "// &
+                          "usually controls the accuracy and runtime of low-scaling GW: "// &
+                          "a smaller value increases numerical precision and computational "// &
+                          "cost.", &
                           usage="EPS_FILTER 1.0E-6", &
                           default_r_val=1.0E-8_dp)
       CALL section_add_keyword(section, keyword)
@@ -2539,7 +2545,8 @@ CONTAINS
       CALL keyword_create(keyword, __LOCATION__, name="REGULARIZATION_RI", &
                           description="Regularization applied to the GW RI fitting matrix "// &
                           "$M_{PQ}$. A negative value selects the context-dependent default: "// &
-                          "zero for molecules and 1.0E-2 for periodic systems.", &
+                          "zero for molecules, 1.0E-8 for periodic RI-RS GW and 1.0E-2 "// &
+                          "for other periodic systems.", &
                           usage="REGULARIZATION_RI 1.0E-4", &
                           default_r_val=-1.0_dp)
       CALL section_add_keyword(section, keyword)
@@ -2554,6 +2561,16 @@ CONTAINS
                           usage="CUTOFF_RADIUS_RI 3.0", &
                           default_r_val=cp_unit_to_cp2k(value=3.0_dp, unit_str="angstrom"), &
                           type_of_var=real_t, unit_str="angstrom")
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="RI_CUTOFF_ATTENUATION", &
+                          description="Positive attenuation omega (in inverse bohr) of the "// &
+                          "erfc(omega*r)/r RI metric used by periodic full-k RI-RS GW. "// &
+                          "The default is 0.3 bohr^-1. Other GW implementations use "// &
+                          "the truncated Coulomb metric set by CUTOFF_RADIUS_RI.", &
+                          usage="RI_CUTOFF_ATTENUATION 0.3", default_r_val=0.3_dp, &
+                          type_of_var=real_t, unit_str="bohr^-1")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -2632,14 +2649,41 @@ CONTAINS
                           "A small benchmark of ω_max is contained in Fig. 5 of "// &
                           "J. Wilhelm et al., JCTC 12, 3623-3635 (2016). "// &
                           "Note that we used ω_max = 1 Ha = 27.211 eV in the benchmark "// &
-                          "M. Azizi et al., PRB 109, 245101 (2024).", &
+                          "M. Azizi et al., PRB 109, 245101 (2024). "// &
+                          "With ANALYTIC_CONTINUATION NEVANLINNA, only used for the Padé fallback of "// &
+                          "levels without Nevanlinna interpolant.", &
                           unit_str="eV", &
                           usage="FREQ_MAX_FIT 20.0", &
                           default_r_val=cp_unit_to_cp2k(value=10.0_dp, unit_str="eV"))
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword, __LOCATION__, name="COHSEX", &
+      CALL keyword_create(keyword, __LOCATION__, name="ANALYTIC_CONTINUATION", &
+                          description="Method for the analytic continuation of the self-energy Σ(iω) "// &
+                          "to real frequencies. NEVANLINNA only uses functions with a positive spectral "// &
+                          "function on the real-frequency axis. It comes with an error estimate for the "// &
+                          "analytic continuation: in the file bandstructure_SCF_and_G0W0, GW levels with "// &
+                          "unstable analytic continuation are marked with *, and GW levels with multiple "// &
+                          "solutions of the quasiparticle equation are marked with m. PADE fits a Padé "// &
+                          "approximant to Σ(iω) below FREQ_MAX_FIT.", &
+                          usage="ANALYTIC_CONTINUATION PADE", &
+                          enum_c_vals=s2a("NEVANLINNA", "PADE"), &
+                          enum_i_vals=[gw_ac_nevanlinna, gw_ac_pade], &
+                          enum_desc=s2a("Nevanlinna interpolant with error estimate.", &
+                                        "Padé approximant."), &
+                          citations=[Fei2021], &
+                          default_i_val=gw_ac_nevanlinna)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      NULLIFY (subsection)
+      CALL section_create(subsection, __LOCATION__, name="COHSEX", &
+                          description="Static Coulomb-hole screened-exchange (COHSEX) approximation "// &
+                          "and scaling of its correlation self-energy.", &
+                          n_keywords=3, n_subsections=0, repeats=.FALSE.)
+
+      NULLIFY (keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="_SECTION_PARAMETERS_", &
                           description="Static Coulomb-hole screened-exchange (COHSEX) approximation to "// &
                           "$G_0W_0$. Only the static screened Coulomb interaction $W(\omega=0)$ is computed; "// &
                           "its correlation part $W^\text{c}(0) = W(0) - v$ gives the static correlation "// &
@@ -2649,14 +2693,14 @@ CONTAINS
                           "v^\text{xc}_{mn} + \Sigma^\text{c}_{mn}$ is built in the Kohn-Sham MO basis; its "// &
                           "occupied-virtual blocks are set to zero. The quasiparticle energies are written to "// &
                           "the file Quasiparticle_energies_singlepole.", &
-                          usage="COHSEX QP_UPDATE", &
+                          usage="&COHSEX QP_UPDATE", &
                           enum_c_vals=s2a("OFF", "DIAGONAL", "QP_UPDATE"), &
                           enum_i_vals=[cohsex_off, cohsex_diagonal, cohsex_qp_update], &
-                          enum_desc=s2a("No static COHSEX (default without the keyword).", &
+                          enum_desc=s2a("No static COHSEX (default without the section).", &
                                         "Diagonal static COHSEX (Hedin 1965; Hybertsen and Louie 1986): the "// &
                                         "quasiparticle energies are the diagonal elements "// &
                                         "$\varepsilon_n^\text{DG} = H^\text{QP}_{nn}$. "// &
-                                        "Default of the lone keyword.", &
+                                        "Default of the section without a parameter.", &
                                         "Static COHSEX with quasiparticle update (Tyagi and Voora 2024): "// &
                                         "$H^\text{QP}$ is diagonalized, giving the canonical static COHSEX "// &
                                         "energies $\varepsilon_n^\text{CN}$ and MOs. Both "// &
@@ -2664,26 +2708,29 @@ CONTAINS
                                         "the MOs at the $\Gamma$ point with DFT%PRINT%MO and DFT%PRINT%MO_CUBES."), &
                           citations=[Hedin1965, Hybertsen1986, Tyagi2024], &
                           default_i_val=cohsex_off, lone_keyword_i_val=cohsex_diagonal)
-      CALL section_add_keyword(section, keyword)
+      CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword, __LOCATION__, name="COHSEX_SCALE_OCC", &
+      CALL keyword_create(keyword, __LOCATION__, name="SCALE_OCC", &
                           description="Scaling factor of the static COHSEX correlation self-energy in the "// &
                           "occupied-occupied block of $H^\text{QP}$.", &
-                          usage="COHSEX_SCALE_OCC 0.6", &
+                          usage="SCALE_OCC 0.6", &
                           citations=[Tyagi2026], &
                           default_r_val=1.0_dp)
-      CALL section_add_keyword(section, keyword)
+      CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
 
-      CALL keyword_create(keyword, __LOCATION__, name="COHSEX_SCALE_VIRT", &
+      CALL keyword_create(keyword, __LOCATION__, name="SCALE_VIRT", &
                           description="Scaling factor of the static COHSEX correlation self-energy in the "// &
                           "virtual-virtual block of $H^\text{QP}$.", &
-                          usage="COHSEX_SCALE_VIRT 0.6", &
+                          usage="SCALE_VIRT 0.6", &
                           citations=[Tyagi2026], &
                           default_r_val=1.0_dp)
-      CALL section_add_keyword(section, keyword)
+      CALL section_add_keyword(subsection, keyword)
       CALL keyword_release(keyword)
+
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
 
       NULLIFY (subsection, print_key)
       CALL section_create(subsection, __LOCATION__, name="PRINT", &
@@ -2728,12 +2775,9 @@ CONTAINS
 
       CPASSERT(.NOT. ASSOCIATED(section))
       CALL section_create(section, __LOCATION__, name="AUTO_RI", &
-                          description="Optimizes the RI basis for non-periodic RI-RS GW "// &
-                          "calculations. The fitting target combines occupied-empty "// &
-                          "transitions and exchange products. Atom-local (AA) functions are "// &
-                          "selected first. Neighbor-pair (AB) functions are also used to fit "// &
-                          "occupied-empty transitions and exchange products. Currently only "// &
-                          "non-periodic molecules are supported.", &
+                          description="Optimizes an RI basis for molecular "// &
+                          "and full-k periodic RI-RS GW. The fitting target combines "// &
+                          "occupied-empty transitions and exchange products.", &
                           n_keywords=3, n_subsections=0, repeats=.FALSE.)
       NULLIFY (keyword)
       CALL keyword_create(keyword, __LOCATION__, name="RI_AO_RATIO", &
@@ -2743,7 +2787,7 @@ CONTAINS
                           "as 1, 1.5, 2, 3 and 4 until the GW energies are converged. "// &
                           "Larger values increase time and memory, but also increase the "// &
                           "numerical accuracy.", &
-                          default_r_val=2.0_dp, usage="RI_AO_RATIO 2")
+                          default_r_val=3.0_dp, usage="RI_AO_RATIO 3")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -2755,18 +2799,6 @@ CONTAINS
                           "GW-BSE excitations up to 10 eV.", &
                           default_r_val=cp_unit_to_cp2k(value=5.0_dp, unit_str="eV"), &
                           unit_str="eV", usage="OCC_EMPTY_FRONTIER_ORBITAL_WINDOW [eV] 5.0")
-      CALL section_add_keyword(section, keyword)
-      CALL keyword_release(keyword)
-
-      CALL keyword_create(keyword, __LOCATION__, name="NEIGHBOR_RADIUS", &
-                          description="The RI basis also contains contractions of Gaussian "// &
-                          "functions centered on different atoms. An atom pair A-B is "// &
-                          "included for these contractions when its distance is smaller than "// &
-                          "NEIGHBOR_RADIUS. Larger radii increase the computational cost. "// &
-                          "Three angstrom is a reasonable value and usually does not need to "// &
-                          "be changed.", &
-                          default_r_val=cp_unit_to_cp2k(value=3.0_dp, unit_str="angstrom"), &
-                          unit_str="angstrom", usage="NEIGHBOR_RADIUS [angstrom] 3.0")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
@@ -2916,9 +2948,10 @@ CONTAINS
       CALL keyword_create( &
          keyword, __LOCATION__, name="CUTOFF_ATOMIC_CLUSTER", &
          description="Radius of the atom-centred cluster used to optimize the grid points. "// &
-         "All atoms within this distance of the centre atom are included.", &
-         usage="CUTOFF_ATOMIC_CLUSTER [angstrom] 3.0", type_of_var=real_t, &
-         default_r_val=cp_unit_to_cp2k(value=3.0_dp, unit_str="angstrom"), &
+         "All atoms within this distance of the centre atom are included. "// &
+         "A negative value selects 1.4 times the distance to the nearest neighbouring atom.", &
+         usage="CUTOFF_ATOMIC_CLUSTER -1", type_of_var=real_t, &
+         default_r_val=cp_unit_to_cp2k(value=-1.0_dp, unit_str="angstrom"), &
          unit_str="angstrom")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -2927,7 +2960,7 @@ CONTAINS
          keyword, __LOCATION__, name="MAX_ITER", &
          description="Maximum number of objective-and-gradient evaluations in the single "// &
          "cooperative Cartesian grid optimization.", &
-         usage="MAX_ITER 300", default_i_val=300)
+         usage="MAX_ITER 20", default_i_val=20)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
