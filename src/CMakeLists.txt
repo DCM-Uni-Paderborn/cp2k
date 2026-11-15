@@ -45,22 +45,14 @@ if(CP2K_USE_CUDA
   if(CP2K_ENABLE_DBM_GPU)
     list(APPEND CP2K_DBM_SRCS_C dbm/dbm_multiply_gpu.c)
     if(CP2K_USE_OPENCL)
-      set(CP2K_DBM_OPENCL_KERNEL dbm/dbm_multiply_opencl.cl)
-      set(CP2K_DBM_OPENCL_GENHDR
-          "${CMAKE_CURRENT_BINARY_DIR}/${CP2K_DBM_OPENCL_KERNEL}.h")
-      # cmake-lint: disable=E1126
-      add_custom_command(
-        COMMAND
-          ${CP2K_OPENCL_SCRIPT} -b 6 -p \"\" -I "${CP2K_OPENCL_BACKEND}"
-          ${CMAKE_CURRENT_SOURCE_DIR}/${CP2K_DBM_OPENCL_KERNEL}
-          "${CP2K_DBM_OPENCL_GENHDR}"
-        DEPENDS ${CP2K_OPENCL_SCRIPT} ${CP2K_OPENCL_COMMON}
-                ${CMAKE_CURRENT_SOURCE_DIR}/${CP2K_DBM_OPENCL_KERNEL}
-        OUTPUT "${CP2K_DBM_OPENCL_GENHDR}"
-        COMMENT "Generating OpenCL kernel for DBM")
-      add_custom_target(cp2k_dbm_opencl_kernel
-                        DEPENDS "${CP2K_DBM_OPENCL_GENHDR}")
-      include_directories(${CMAKE_CURRENT_BINARY_DIR}/dbm)
+      # The OpenCL backend is maintained in LIBXSTREAM (samples/dbm), which
+      # enumerates its files and generates the kernel header per target.
+      if(NOT COMMAND libxstream_add_dbm)
+        message(
+          FATAL_ERROR
+            "LIBXSTREAM does not provide the DBM backend (libxstream_add_dbm).")
+      endif()
+      set(CP2K_DBM_OPENCL ON)
       include_directories(${CP2K_OPENCL_BACKEND})
       if(CP2K_OPENCL_SAMPLES)
         include_directories(${CP2K_OPENCL_SAMPLES})
@@ -74,6 +66,12 @@ if(CP2K_USE_CUDA
   if(CP2K_ENABLE_GRID_GPU)
     list(APPEND CP2K_SRCS_GPU ${CP2K_GRID_SRCS_GPU})
   endif()
+
+  if(CP2K_ENABLE_NNP_GPU)
+    list(APPEND CP2K_SRCS_GPU ${CP2K_NNP_SRCS_GPU})
+    list(APPEND CP2K_SRCS_C ${CP2K_NNP_SRCS_GPU_C})
+  endif()
+
   if(CP2K_USE_HIP)
     set_source_files_properties(${CP2K_SRCS_GPU} PROPERTIES LANGUAGE HIP)
   endif()
@@ -88,14 +86,14 @@ list(APPEND CP2K_SRCS_C ${CP2K_DBM_SRCS_C} ${CP2K_GRID_SRCS_C})
 
 if(CP2K_ENABLE_CONSISTENCY_CHECKS)
   cp2k_compare_src_with_list(
-    "${CP2K_FPGA_SRC_C};${CP2K_SRCS_C};${CP2K_MPIWRAP_SRCS_C};${CP2K_OFFLOAD_SRCS_C};${CP2K_DBM_SRCS_C};${CP2K_GRID_SRCS_C};${CP2K_PW_SRCS_C};${CP2K_DBM_SRCS_GPU_C};${CP2K_PROGS_C}"
+    "${CP2K_FPGA_SRC_C};${CP2K_SRCS_C};${CP2K_MPIWRAP_SRCS_C};${CP2K_OFFLOAD_SRCS_C};${CP2K_DBM_SRCS_C};${CP2K_GRID_SRCS_C};${CP2K_PW_SRCS_C};${CP2K_DBM_SRCS_GPU_C};${CP2K_NNP_SRCS_GPU_C};${CP2K_PROGS_C}"
     "*.c"
     "${CP2K_EXCLUDED_SRCS_C}")
   cp2k_compare_src_with_list(
     "${CP2K_SRCS_F};${CP2K_OFFLOAD_SRCS_F};${CP2K_PROGS_F}" "*.F"
     "${CP2K_EXCLUDED_SRCS_F}")
   cp2k_compare_src_with_list(
-    "${CP2K_GRID_SRCS_GPU};${CP2K_GRID_SRCS_HIP};${CP2K_DBM_SRCS_GPU};${CP2K_PW_SRCS_GPU}"
+    "${CP2K_GRID_SRCS_GPU};${CP2K_GRID_SRCS_HIP};${CP2K_DBM_SRCS_GPU};${CP2K_PW_SRCS_GPU};${CP2K_NNP_SRCS_GPU}"
     "*.cu"
     "")
   cp2k_compare_src_with_list("${CP2K_SRCS_CPP}" "*.cpp" "")
@@ -176,6 +174,7 @@ add_fypp_sources(CP2K_PROGS_F_FYPP ${CP2K_PROGS_F})
 if(CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM")
   set_source_files_properties(
     ${CMAKE_CURRENT_BINARY_DIR}/hfxbase/hfx_contraction_methods.F
+    ${CMAKE_CURRENT_BINARY_DIR}/hfxbase/hfx_contract_block.F
     PROPERTIES COMPILE_FLAGS "${COMPILE_FLAGS} -O1")
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "Intel")
     set_source_files_properties(
@@ -210,8 +209,8 @@ endif()
 target_compile_features(cp2k PUBLIC cuda_std_11)
 target_include_directories(cp2k PUBLIC $<INSTALL_INTERFACE:include/cp2k>)
 
-if(TARGET cp2k_dbm_opencl_kernel)
-  add_dependencies(cp2k cp2k_dbm_opencl_kernel)
+if(CP2K_DBM_OPENCL)
+  libxstream_add_dbm(cp2k)
 endif()
 
 set_target_properties(
@@ -282,7 +281,7 @@ target_link_libraries(
     $<$<BOOL:${CP2K_USE_SPLA}>:SPLA::spla>
     $<$<BOOL:${CP2K_USE_MIMIC}>:CP2K::MIMIC::mclf>
     $<$<BOOL:${CP2K_USE_MIMIC}>:CP2K::MIMIC::mcl>
-    $<$<BOOL:${CP2K_USE_LIBINT2}>:Libint2::int2>
+    $<$<BOOL:${CP2K_USE_LIBINT2}>:${CP2K_LIBINT2_TARGET}>
     $<$<BOOL:${CP2K_USE_LIBFCI}>:libfci::fci>
     $<$<BOOL:${CP2K_USE_LIBGINT}>:cp2k::LibGint::libGint>
     $<$<BOOL:${CP2K_USE_COSMA}>:cp2k::cosma>
@@ -404,7 +403,8 @@ if(CP2K_USE_CUDA
            $<$<NOT:$<BOOL:${CP2K_ENABLE_ELPA_GPU}>>:__NO_OFFLOAD_ELPA>
            $<$<NOT:$<BOOL:${CP2K_ENABLE_GRID_GPU}>>:__NO_OFFLOAD_GRID>
            $<$<NOT:$<BOOL:${CP2K_ENABLE_DBM_GPU}>>:__NO_OFFLOAD_DBM>
-           $<$<NOT:$<BOOL:${CP2K_ENABLE_PW_GPU}>>:__NO_OFFLOAD_PW>)
+           $<$<NOT:$<BOOL:${CP2K_ENABLE_PW_GPU}>>:__NO_OFFLOAD_PW>
+           $<$<NOT:$<BOOL:${CP2K_ENABLE_NNP_GPU}>>:__NO_OFFLOAD_NNP>)
 endif()
 
 add_dependencies(cp2k cp2k_build_info)
@@ -586,8 +586,8 @@ endforeach()
 add_executable(
   dbm_miniapp dbm/dbm_miniapp.c ${CP2K_DBM_SRCS_C} ${CP2K_MPIWRAP_SRCS_C}
               ${CP2K_DBM_SRCS_GPU} ${CP2K_OFFLOAD_SRCS_C})
-if(TARGET cp2k_dbm_opencl_kernel)
-  add_dependencies(dbm_miniapp cp2k_dbm_opencl_kernel)
+if(CP2K_DBM_OPENCL)
+  libxstream_add_dbm(dbm_miniapp)
 endif()
 target_compile_definitions(
   dbm_miniapp
