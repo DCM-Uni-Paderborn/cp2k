@@ -15,8 +15,11 @@
 MODULE gw_utils
    USE atomic_kind_types,               ONLY: atomic_kind_type,&
                                               get_atomic_kind_set
+   USE auto_basis,                      ONLY: create_ri_aux_basis_set
+   USE basis_set_container_types,       ONLY: add_basis_set_to_container
    USE basis_set_types,                 ONLY: get_gto_basis_set,&
-                                              gto_basis_set_type
+                                              gto_basis_set_type,&
+                                              init_orb_basis_set
    USE bibliography,                    ONLY: Graml2024,&
                                               cite_reference
    USE cell_types,                      ONLY: cell_type,&
@@ -25,7 +28,8 @@ MODULE gw_utils
    USE cp_blacs_env,                    ONLY: cp_blacs_env_create,&
                                               cp_blacs_env_release,&
                                               cp_blacs_env_type
-   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+   USE cp_cfm_types,                    ONLY: cp_cfm_copy_general,&
+                                              cp_cfm_create,&
                                               cp_cfm_release,&
                                               cp_cfm_to_cfm,&
                                               cp_cfm_to_fm,&
@@ -61,15 +65,17 @@ MODULE gw_utils
    USE gw_auto_ri_generate_RI_basis,    ONLY: generate_auto_ri_basis
    USE gw_auto_ri_types,                ONLY: auto_ri_type
    USE gw_compute_V_and_W,              ONLY: get_V_tr_R
+   USE gw_ri_rs_small_cell_full_kp_gamma,ONLY: prepare_ri_rs_gamma_correction
    USE gw_utils_compute_integrals,      ONLY: build_3c_integral_block
    USE gw_utils_fm,                     ONLY: cfm_contract_ABA,&
                                               fm_invert,&
                                               local_complex_power
    USE input_constants,                 ONLY: &
-        G0W0, cohsex_qp_update, do_potential_coulomb, do_potential_truncated, evGW0, &
-        ri_rpa_g0w0_crossing_newton, ri_rs_large_cell_Gamma, ri_rs_non_periodic, &
-        rtp_bse_kernel_ri_ao, rtp_bse_kernel_ri_rs, rtp_method_bse, rtp_method_bse_linearized, &
-        tensor_large_cell_Gamma, tensor_small_cell_full_kp, tensor_static_cohsex, xc_none
+        G0W0, cohsex_qp_update, do_potential_coulomb, do_potential_short, do_potential_truncated, &
+        evGW0, gw_ac_nevanlinna, ri_rpa_g0w0_crossing_newton, ri_rs_large_cell_Gamma, &
+        ri_rs_non_periodic, ri_rs_small_cell_full_kp, rtp_bse_kernel_ri_ao, rtp_bse_kernel_ri_rs, &
+        rtp_method_bse, rtp_method_bse_linearized, tensor_large_cell_Gamma, &
+        tensor_small_cell_full_kp, tensor_static_cohsex, xc_none
    USE input_section_types,             ONLY: section_vals_get,&
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
@@ -80,13 +86,12 @@ MODULE gw_utils
                                               dp,&
                                               int_8
    USE kpoint_k_r_trafo_simple,         ONLY: rs_to_kp
-   USE kpoint_types,                    ONLY: get_kpoint_info,&
-                                              kpoint_create,&
+   USE kpoint_types,                    ONLY: kpoint_create,&
+                                              kpoint_release,&
                                               kpoint_type
-   USE libint_wrapper,                  ONLY: cp_libint_static_cleanup,&
-                                              cp_libint_static_init
    USE machine,                         ONLY: m_walltime
-   USE mathlib,                         ONLY: gcd
+   USE mathlib,                         ONLY: erfc_cutoff,&
+                                              gcd
    USE message_passing,                 ONLY: mp_cart_type,&
                                               mp_mem_avail_per_rank_GB,&
                                               mp_mem_used_per_rank_GB,&
@@ -99,9 +104,8 @@ MODULE gw_utils
    USE physcon,                         ONLY: angstrom,&
                                               evolt
    USE post_scf_bandstructure_types,    ONLY: post_scf_bandstructure_type
-   USE post_scf_bandstructure_utils,    ONLY: allocate_GW_eigenvalues,&
-                                              gw_flavour_label,&
-                                              rsmat_to_kp
+   USE post_scf_bandstructure_utils,    ONLY: create_operator_kpoints,&
+                                              gw_flavour_label
    USE qs_energy_types,                 ONLY: qs_energy_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_env_part_release,&
@@ -110,8 +114,15 @@ MODULE gw_utils
    USE qs_interactions,                 ONLY: init_interaction_radii_orb_basis
    USE qs_kind_types,                   ONLY: get_qs_kind,&
                                               qs_kind_type
+   USE qs_kpoint_operators,             ONLY: kpoint_operator_context_create,&
+                                              kpoint_operator_context_release,&
+                                              kpoint_operator_context_type,&
+                                              kpoint_operator_get,&
+                                              kpoint_operator_prepare,&
+                                              kpoint_slot_ks
    USE qs_ks_methods,                   ONLY: qs_ks_build_kohn_sham_matrix
-   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_rho_methods,                  ONLY: qs_rho_update_rho
+   USE qs_rho_types,                    ONLY: qs_rho_type
    USE qs_tensors,                      ONLY: build_3c_integrals,&
                                               build_3c_neighbor_lists,&
                                               get_tensor_occupancy,&
@@ -126,6 +137,7 @@ MODULE gw_utils
    USE rpa_gw,                          ONLY: continuation_pade
    USE rpa_gw_im_time_util,             ONLY: build_ao_propagator
    USE time_frequency_grids,            ONLY: build_minimax_time_frequency_grid
+   USE util,                            ONLY: sort
 #include "base/base_uses.f90"
 
    IMPLICIT NONE
@@ -174,7 +186,6 @@ CONTAINS
 
       CALL set_heuristic_parameters(bs_env, qs_env)
 
-      CALL cp_libint_static_init()
       IF (bs_env%auto_ri%enabled) CALL generate_auto_ri_basis(qs_env, bs_env)
 
       CALL get_RI_basis(qs_env, bs_env)
@@ -195,13 +206,15 @@ CONTAINS
       CALL allocate_GW_eigenvalues(bs_env)
 
       SELECT CASE (bs_env%gw_implementation)
-      CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
+      CASE (tensor_large_cell_Gamma, tensor_static_cohsex)
 
-         IF (.NOT. bs_env%do_gw_ri_rs) THEN
-            CALL check_sparsity_3c(qs_env, bs_env)
+         CALL check_sparsity_3c(qs_env, bs_env)
 
-            CALL set_sparsity_parallelization_parameters(bs_env)
-         END IF
+         CALL set_sparsity_parallelization_parameters(bs_env)
+
+         CALL check_for_restart_files(qs_env, bs_env)
+
+      CASE (ri_rs_large_cell_Gamma, ri_rs_non_periodic)
 
          CALL check_for_restart_files(qs_env, bs_env)
 
@@ -218,6 +231,12 @@ CONTAINS
          CALL trafo_V_xc_R_to_kp(qs_env, bs_env)
 
          CALL heuristic_RI_regularization(qs_env, bs_env)
+
+      CASE (ri_rs_small_cell_full_kp)
+
+         CALL trafo_V_xc_R_to_kp(qs_env, bs_env)
+
+         CALL prepare_ri_rs_gamma_correction(qs_env, bs_env)
 
       END SELECT
 
@@ -256,6 +275,7 @@ CONTAINS
                       cell=bs_env%ri_rs%cell, particle_set=bs_env%ri_rs%particle_set, input=input)
       rtbse_sec => section_vals_get_subs_vals(input, "DFT%REAL_TIME_PROPAGATION%RTBSE")
       CALL section_vals_val_get(rtbse_sec, "CUTOFF_RADIUS_W0", r_val=bs_env%ri_rs%cutoff_radius_w0)
+
    END SUBROUTINE get_parameters_from_qs_env
 
 ! **************************************************************************************************
@@ -271,14 +291,15 @@ CONTAINS
 
       INTEGER                                            :: handle
       LOGICAL                                            :: do_evgw0
-      TYPE(section_vals_type), POINTER                   :: auto_ri_sec, evgw0_sec, grid_opt_sec, &
-                                                            gw_sec, ri_rs_sec
+      TYPE(section_vals_type), POINTER                   :: auto_ri_sec, cohsex_sec, evgw0_sec, &
+                                                            grid_opt_sec, gw_sec, ri_rs_sec
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (auto_ri_sec, evgw0_sec, grid_opt_sec, gw_sec, ri_rs_sec)
+      NULLIFY (auto_ri_sec, cohsex_sec, evgw0_sec, grid_opt_sec, gw_sec, ri_rs_sec)
       gw_sec => section_vals_get_subs_vals(bs_sec, "GW")
       auto_ri_sec => section_vals_get_subs_vals(gw_sec, "AUTO_RI")
+      cohsex_sec => section_vals_get_subs_vals(gw_sec, "COHSEX")
       evgw0_sec => section_vals_get_subs_vals(gw_sec, "EVGW0")
       ri_rs_sec => section_vals_get_subs_vals(gw_sec, "RI_RS")
       grid_opt_sec => section_vals_get_subs_vals(ri_rs_sec, "GRID_OPTIMIZATION")
@@ -288,14 +309,16 @@ CONTAINS
       CALL section_vals_val_get(gw_sec, "REGULARIZATION_RI", r_val=bs_env%input_regularization_RI)
       CALL section_vals_val_get(gw_sec, "REGULARIZATION_MINIMAX", r_val=bs_env%input_regularization_minimax)
       CALL section_vals_val_get(gw_sec, "CUTOFF_RADIUS_RI", r_val=bs_env%ri_metric%cutoff_radius)
+      CALL section_vals_val_get(gw_sec, "RI_CUTOFF_ATTENUATION", r_val=bs_env%ri_metric%omega)
       CALL section_vals_val_get(gw_sec, "MEMORY_PER_PROC", r_val=bs_env%input_memory_per_proc_GB)
       CALL section_vals_val_get(gw_sec, "APPROX_KP_EXTRAPOL", l_val=bs_env%approx_kp_extrapol)
       CALL section_vals_val_get(gw_sec, "SIZE_LATTICE_SUM", i_val=bs_env%size_lattice_sum_V)
       CALL section_vals_val_get(gw_sec, "KPOINTS_W", i_vals=bs_env%nkp_grid_chi_eps_W_input)
       CALL section_vals_val_get(gw_sec, "HEDIN_SHIFT", l_val=bs_env%do_hedin_shift)
       CALL section_vals_val_get(gw_sec, "FREQ_MAX_FIT", r_val=bs_env%freq_max_fit)
-      CALL section_vals_val_get(gw_sec, "COHSEX_SCALE_OCC", r_val=bs_env%cohsex_scale_occ)
-      CALL section_vals_val_get(gw_sec, "COHSEX_SCALE_VIRT", r_val=bs_env%cohsex_scale_virt)
+      CALL section_vals_val_get(gw_sec, "ANALYTIC_CONTINUATION", i_val=bs_env%ac_method)
+      CALL section_vals_val_get(cohsex_sec, "SCALE_OCC", r_val=bs_env%cohsex_scale_occ)
+      CALL section_vals_val_get(cohsex_sec, "SCALE_VIRT", r_val=bs_env%cohsex_scale_virt)
       CALL read_rirs_input(bs_env%ri_rs, ri_rs_sec)
       CALL read_rirs_grid_opt(bs_env%ri_rs, grid_opt_sec)
       CALL read_evgw0_input(bs_env, evgw0_sec, do_evgw0)
@@ -358,7 +381,7 @@ CONTAINS
       CALL section_vals_val_get(grid_opt_sec, "CUTOFF_ATOMIC_CLUSTER", r_val=grid_opt%cutoff_atomic_cluster)
       CALL section_vals_val_get(grid_opt_sec, "MAX_ITER", i_val=grid_opt%max_iter)
       CALL section_vals_val_get(grid_opt_sec, "RS_AO_RATIO", r_val=grid_opt%rs_ao_ratio)
-      IF (grid_opt%rs_ao_ratio <= 0.0_dp) CPABORT("RS_AO_RATIO must be positive")
+
       CALL timestop(handle)
 
    END SUBROUTINE read_rirs_grid_opt
@@ -381,7 +404,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       CALL section_vals_val_get(evgw0_sec, "_SECTION_PARAMETERS_", l_val=do_evgw0)
-      CALL section_vals_val_get(evgw0_sec, "MAX_ITER", i_val=bs_env%evgw0_iter)
+      CALL section_vals_val_get(evgw0_sec, "MAX_ITER", i_val=bs_env%evgw0_n_iter)
       CALL section_vals_val_get(evgw0_sec, "EPS_ITER", r_val=bs_env%evgw0_eps_iter)
 
       CALL timestop(handle)
@@ -389,7 +412,7 @@ CONTAINS
    END SUBROUTINE read_evgw0_input
 
 ! **************************************************************************************************
-!> \brief Reads and validates the automatic RI input.
+!> \brief Reads the automatic RI input.
 !> \param auto_ri automatic RI basis optimization parameters
 !> \param auto_ri_sec AUTO_RI input section
 ! **************************************************************************************************
@@ -411,12 +434,6 @@ CONTAINS
 
       CALL section_vals_val_get(auto_ri_sec, "RI_AO_RATIO", r_val=auto_ri%ri_ao_ratio)
       CALL section_vals_val_get(auto_ri_sec, "OCC_EMPTY_FRONTIER_ORBITAL_WINDOW", r_val=auto_ri%occ_energy_window)
-      CALL section_vals_val_get(auto_ri_sec, "NEIGHBOR_RADIUS", r_val=auto_ri%neighbor_radius)
-      IF (.NOT. (auto_ri%ri_ao_ratio > 0.0_dp)) CPABORT("AUTO_RI%RI_AO_RATIO must be positive")
-      IF (.NOT. (auto_ri%occ_energy_window >= 0.0_dp)) THEN
-         CPABORT("AUTO_RI%OCC_EMPTY_FRONTIER_ORBITAL_WINDOW must be nonnegative")
-      END IF
-      IF (.NOT. (auto_ri%neighbor_radius > 0.0_dp)) CPABORT("AUTO_RI%NEIGHBOR_RADIUS must be positive")
 
       CALL timestop(handle)
 
@@ -440,18 +457,41 @@ CONTAINS
       ! GRID_OPTIMIZATION is available only with RI-RS.
       CPASSERT(.NOT. bs_env%ri_rs%grid_opt%enabled .OR. bs_env%do_gw_ri_rs)
       IF (bs_env%ri_rs%grid_opt%enabled) THEN
+         IF (bs_env%ri_rs%grid_opt%rs_ao_ratio <= 0.0_dp) CPABORT("RS_AO_RATIO must be positive")
          IF (bs_env%ri_rs%grid_opt%max_iter < 1) THEN
             CPABORT("GRID_OPTIMIZATION%MAX_ITER must be positive")
          END IF
-         IF (bs_env%ri_rs%grid_opt%cutoff_atomic_cluster <= 0.0_dp) THEN
-            CPABORT("GRID_OPTIMIZATION%CUTOFF_ATOMIC_CLUSTER must be positive")
+         IF (bs_env%ri_rs%grid_opt%cutoff_atomic_cluster == 0.0_dp) THEN
+            CPABORT("CUTOFF_ATOMIC_CLUSTER must be nonzero")
          END IF
+      END IF
+      IF (bs_env%do_gw_ri_rs) THEN
          IF (bs_env%ri_rs%tikhonov < 0.0_dp) THEN
             CPABORT("RI_RS%TIKHONOV must not be negative")
          END IF
-         IF (bs_env%do_periodic) THEN
-            CPABORT("GRID_OPTIMIZATION currently supports nonperiodic local environments only")
+         IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+            IF (.NOT. bs_env%ri_rs%grid_opt%enabled) THEN
+               CPABORT("Full-k RI-RS GW requires RI_RS%GRID_OPTIMIZATION")
+            END IF
+            IF (bs_env%size_lattice_sum_V < 1) THEN
+               CPABORT("GW%SIZE_LATTICE_SUM must be positive")
+            END IF
          END IF
+      END IF
+      IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+         IF (.NOT. (bs_env%ri_metric%omega > 0.0_dp)) THEN
+            CPABORT("RI_CUTOFF_ATTENUATION must be positive for periodic RI-RS GW")
+         END IF
+         IF (.NOT. (ALL(bs_env%periodic == [1, 1, 0]) .OR. ALL(bs_env%periodic == 1))) THEN
+            CPABORT("Periodic RI-RS GW requires PERIODIC XY or XYZ")
+         END IF
+         IF (bs_env%approx_kp_extrapol) THEN
+            CPABORT("APPROX_KP_EXTRAPOL cannot be combined with RI-RS GW")
+         END IF
+      END IF
+      IF (.NOT. do_evgw0) bs_env%evgw0_n_iter = 1
+      IF (do_evgw0 .AND. bs_env%evgw0_eps_iter <= 0.0_dp) THEN
+         CPABORT("EVGW0%EPS_ITER must be positive")
       END IF
 
       ! evGW0 implemented so far only with RI-RS.
@@ -459,8 +499,14 @@ CONTAINS
       IF (bs_env%auto_ri%enabled) THEN
          ! AUTO_RI is available only with RI-RS.
          CPASSERT(bs_env%do_gw_ri_rs)
-         ! AUTO_RI is implemented only for nonperiodic systems.
-         CPASSERT(.NOT. bs_env%do_periodic)
+         IF (bs_env%do_periodic .AND. &
+             bs_env%gw_implementation /= ri_rs_small_cell_full_kp) THEN
+            CPABORT('Periodic AUTO_RI requires RI_RS_SMALL_CELL_FULL_KP')
+         END IF
+         IF (.NOT. (bs_env%auto_ri%ri_ao_ratio > 0.0_dp)) CPABORT("AUTO_RI%RI_AO_RATIO must be positive")
+         IF (.NOT. (bs_env%auto_ri%occ_energy_window >= 0.0_dp)) THEN
+            CPABORT("AUTO_RI%OCC_EMPTY_FRONTIER_ORBITAL_WINDOW must be nonnegative")
+         END IF
       END IF
 
       bs_env%gw_flavour = G0W0
@@ -526,9 +572,9 @@ CONTAINS
       ELSE IF (bs_env%do_gw_ri_rs) THEN
 
          CALL cp_warn(__LOCATION__, &
-                      "MEMORY_PER_PROC is set, but it is not used by the RI-RS GW code, which "// &
-                      "detects the available memory per MPI process automatically. The keyword "// &
-                      "is ignored.")
+                      "MEMORY_PER_PROC is set, but it is not used by this RI-RS GW code path, "// &
+                      "which detects the available memory per MPI process automatically. The "// &
+                      "keyword is ignored.")
 
       END IF
 
@@ -562,6 +608,11 @@ CONTAINS
          WRITE (u, '(T2,A)') ' '
          WRITE (u, '(T2,A,I45)') 'Input: Number of time/freq. points', bs_env%num_time_freq_points
          WRITE (u, "(T2,A,F44.1,A)") 'Input: ω_max for fitting Σ(iω) (eV)', bs_env%freq_max_fit*evolt
+         IF (bs_env%ac_method == gw_ac_nevanlinna) THEN
+            WRITE (u, "(T2,A,A51)") 'Input: Analytic continuation', 'NEVANLINNA'
+         ELSE
+            WRITE (u, "(T2,A,A51)") 'Input: Analytic continuation', 'PADE'
+         END IF
          WRITE (u, '(T2,A,ES27.1)') 'Input: Filter threshold for sparse tensor operations', &
             bs_env%eps_filter
          WRITE (u, "(T2,A,L55)") 'Input: Apply Hedin shift', bs_env%do_hedin_shift
@@ -579,9 +630,9 @@ CONTAINS
             ELSE
                WRITE (u, FMT="(T2,A,T71,A10)") "static COHSEX approximation (COHSEX)", "DIAGONAL"
             END IF
-            WRITE (u, FMT="(T2,A,T74,F8.6)") "static COHSEX scaling of Σ^c, occ-occ (COHSEX_SCALE_OCC):", &
+            WRITE (u, FMT="(T2,A,T74,F8.6)") "static COHSEX scaling of Σ^c, occ-occ (COHSEX%SCALE_OCC):", &
                bs_env%cohsex_scale_occ
-            WRITE (u, FMT="(T2,A,T74,F8.6)") "static COHSEX scaling of Σ^c, virt-virt (COHSEX_SCALE_VIRT):", &
+            WRITE (u, FMT="(T2,A,T74,F8.6)") "static COHSEX scaling of Σ^c, virt-virt (COHSEX%SCALE_VIRT):", &
                bs_env%cohsex_scale_virt
          END IF
          WRITE (u, '(A)') ' '
@@ -621,9 +672,14 @@ CONTAINS
             'Input: RI-RS grid optimization activated', .TRUE.
          WRITE (unit_nr, '(T2,A,T69,F12.1)') &
             'Input: RS points per AO function', bs_env%ri_rs%grid_opt%rs_ao_ratio
-         WRITE (unit_nr, '(T2,A,T73,F6.1,A)') &
-            'Input: Cutoff radius for atomic clusters', &
-            bs_env%ri_rs%grid_opt%cutoff_atomic_cluster*angstrom, ' Å'
+         IF (bs_env%ri_rs%grid_opt%cutoff_atomic_cluster < 0.0_dp) THEN
+            WRITE (unit_nr, '(T2,A,T52,A29)') &
+               'Input: Atomic cluster radius', 'Automatic: 1.4 x nearest atom'
+         ELSE
+            WRITE (unit_nr, '(T2,A,T73,F6.1,A)') &
+               'Input: Cutoff radius for atomic clusters', &
+               bs_env%ri_rs%grid_opt%cutoff_atomic_cluster*angstrom, ' Å'
+         END IF
          WRITE (unit_nr, '(T2,A,T75,I6)') &
             'Input: Maximum grid optimization iterations', &
             bs_env%ri_rs%grid_opt%max_iter
@@ -637,13 +693,11 @@ CONTAINS
             'Input: AUTO_RI number of RI functions per AO function:', bs_env%auto_ri%ri_ao_ratio
          WRITE (unit_nr, '(T2,A,T74,F4.1,A)') &
             'Input: AUTO_RI frontier orbital window:', bs_env%auto_ri%occ_energy_window*evolt, ' eV'
-         WRITE (unit_nr, '(T2,A,T75,F4.1,A)') &
-            'Input: AUTO_RI neighbor radius:', bs_env%auto_ri%neighbor_radius*angstrom, ' Å'
       END IF
 
       IF (bs_env%gw_flavour == evGW0) THEN
          WRITE (unit_nr, '(T2,A,I42)') 'Input: Maximum number of evGW0 cycles', &
-            bs_env%evgw0_iter
+            bs_env%evgw0_n_iter
          WRITE (unit_nr, '(T2,A,F42.5,A)') 'Input: evGW0 convergence threshold', &
             bs_env%evgw0_eps_iter*evolt, ' eV'
       END IF
@@ -690,7 +744,9 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'setup_AO_and_RI_basis_set'
 
-      INTEGER                                            :: handle, natom, nkind
+      INTEGER                                            :: handle, ikind, natom, nkind, sort_basis
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(gto_basis_set_type), POINTER                  :: reference_basis
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
 
@@ -699,7 +755,23 @@ CONTAINS
       CALL get_qs_env(qs_env, &
                       qs_kind_set=qs_kind_set, &
                       particle_set=particle_set, &
-                      natom=natom, nkind=nkind)
+                      natom=natom, nkind=nkind, dft_control=dft_control)
+
+      ! AUTO_RI needs a reference pool before its atom-local contraction.
+      IF (bs_env%auto_ri%enabled) THEN
+         CALL section_vals_val_get(qs_env%input, "DFT%SORT_BASIS", i_val=sort_basis)
+         DO ikind = 1, nkind
+            NULLIFY (reference_basis)
+            CALL get_qs_kind(qs_kind_set(ikind), basis_set=reference_basis, basis_type="RI_AUX")
+            IF (.NOT. ASSOCIATED(reference_basis)) THEN
+               CALL create_ri_aux_basis_set(reference_basis, qs_kind_set(ikind), &
+                                            dft_control%auto_basis_ri_aux, basis_sort=sort_basis)
+               IF (reference_basis%norm_type < 0) reference_basis%norm_type = 2
+               CALL init_orb_basis_set(reference_basis)
+               CALL add_basis_set_to_container(qs_kind_set(ikind)%basis_sets, reference_basis, "RI_AUX")
+            END IF
+         END DO
+      END IF
 
       ! set up basis
       ALLOCATE (bs_env%sizes_RI(natom), bs_env%sizes_AO(natom))
@@ -728,10 +800,13 @@ CONTAINS
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'set_heuristic_parameters'
 
-      INTEGER                                            :: handle, u
+      INTEGER                                            :: exchange_grid(3), handle, u
       LOGICAL                                            :: do_BvK_cell
 
       CALL timeset(routineN, handle)
+
+      ! Use a 16-parameter Padé fit; cap it at the available fit frequencies below.
+      bs_env%nparam_pade = 16
 
       ! for generating numerically stable minimax Fourier integration weights
       bs_env%num_points_per_magnitude = 200
@@ -752,19 +827,37 @@ CONTAINS
       bs_env%stabilize_exp = 70.0_dp
       bs_env%eps_atom_grid_2d_mat = 1.0E-50_dp
 
-      ! use a 16-parameter Padé fit
-      bs_env%nparam_pade = 16
+      ! Nevanlinna continuation: weights of Σ^c(iτ) -> Σ^c(iω) by a truncated SVD, and the
+      ! quasiparticle solution as median over fit windows with the Newton search and the
+      ! solution of largest weight Z
+      IF (bs_env%ac_method == gw_ac_nevanlinna) THEN
+         bs_env%nevanlinna%rcond_weights = 1.0E-10_dp
+         bs_env%nevanlinna%window_min_points = 6
+         bs_env%nevanlinna%window_freq_min = 10.0_dp/evolt
+         bs_env%nevanlinna%window_freq_max = 100.0_dp/evolt
+         bs_env%nevanlinna%window_spread = 0.05_dp/evolt
+         bs_env%nevanlinna%qp_newton_max_step = 1.0_dp/evolt
+         bs_env%nevanlinna%qp_maxz_radius = 1.5_dp/evolt
+      END IF
 
-      ! resolution of the identity with the truncated Coulomb metric
+      ! Resolution of the identity with the truncated Coulomb metric.
       bs_env%ri_metric%potential_type = do_potential_truncated
-      bs_env%ri_metric%omega = 0.0_dp
-      ! cutoff radius is specified in the input
       bs_env%ri_metric%filename = "t_c_g.dat"
+      IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+         bs_env%ri_metric%potential_type = do_potential_short
+         CALL erfc_cutoff(1.0E-10_dp, bs_env%ri_metric%omega, bs_env%ri_metric%cutoff_radius)
+         bs_env%ri_metric%filename = ""
+      ELSE
+         bs_env%ri_metric%omega = 0.0_dp
+      END IF
 
       bs_env%eps_eigval_mat_RI = 0.0_dp
 
-      IF (bs_env%input_regularization_RI > -1.0E-12_dp) THEN
+      IF (bs_env%input_regularization_RI >= 0.0_dp) THEN
          bs_env%regularization_RI = bs_env%input_regularization_RI
+      ELSE IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+         ! periodic RI-RS: relative eigenvalue cutoff when inverting the RI metric M(q)
+         bs_env%regularization_RI = 1.0E-8_dp
       ELSE
          ! default case:
 
@@ -779,10 +872,18 @@ CONTAINS
       ! Coulomb operator for the exchange self-energy. Periodic systems use the truncated
       ! operator described by Guidon, VandeVondele, and Hutter, JCTC 5, 3010 (2009).
       IF (bs_env%do_periodic) THEN
-         do_BvK_cell = bs_env%gw_implementation == tensor_small_cell_full_kp
+         do_BvK_cell = bs_env%gw_implementation == tensor_small_cell_full_kp .OR. &
+                       bs_env%gw_implementation == ri_rs_small_cell_full_kp
+         SELECT CASE (bs_env%gw_implementation)
+         CASE (ri_rs_small_cell_full_kp)
+            ! The Born-von Karman cell follows the SCF k mesh, not the AO image-list extent.
+            exchange_grid = bs_env%kpoints_scf_desymm%nkp_grid
+         CASE DEFAULT
+            exchange_grid = bs_env%cell_grid_scf_desymm
+         END SELECT
          CALL trunc_coulomb_for_exchange(qs_env, bs_env%trunc_coulomb, &
                                          rel_cutoff_trunc_coulomb_ri_x=0.5_dp, &
-                                         cell_grid=bs_env%cell_grid_scf_desymm, &
+                                         cell_grid=exchange_grid, &
                                          do_BvK_cell=do_BvK_cell)
       ELSE
          bs_env%trunc_coulomb%potential_type = do_potential_coulomb
@@ -801,12 +902,28 @@ CONTAINS
             WRITE (u, FMT="(T2,2A,F21.1,A)") "Cutoff radius for the truncated Coulomb ", &
                "operator in Σ^x:", bs_env%trunc_coulomb%cutoff_radius*angstrom, " Å"
          END IF
-         WRITE (u, FMT="(T2,2A,F15.1,A)") "Cutoff radius for the truncated Coulomb ", &
-            "operator in RI metric:", bs_env%ri_metric%cutoff_radius*angstrom, " Å"
-         WRITE (u, FMT="(T2,A,ES48.1)") "Regularization parameter of RI ", bs_env%regularization_RI
-         WRITE (u, FMT="(T2,A,ES38.1)") "Regularization parameter of minimax grids", &
-            bs_env%regularization_minimax
-         IF (bs_env%do_periodic) THEN
+         SELECT CASE (bs_env%ri_metric%potential_type)
+         CASE (do_potential_short)
+            WRITE (u, FMT="(T2,A,T61,F12.2,A)") "Input: Attenuation of the RI metric:", &
+               bs_env%ri_metric%omega, " bohr^-1"
+         CASE (do_potential_truncated)
+            WRITE (u, FMT="(T2,2A,F15.1,A)") "Cutoff radius for the truncated Coulomb ", &
+               "operator in RI metric:", bs_env%ri_metric%cutoff_radius*angstrom, " Å"
+         END SELECT
+         IF (bs_env%num_time_freq_points < 35) THEN
+            WRITE (u, FMT="(T2,A,ES38.1)") "Regularization parameter of minimax grids", &
+               bs_env%regularization_minimax
+         END IF
+         IF (bs_env%ac_method == gw_ac_nevanlinna) THEN
+            WRITE (u, FMT="(T2,A,ES31.1)") "SVD cutoff of minimax weights for Σ(iτ) -> Σ(iω)", &
+               bs_env%nevanlinna%rcond_weights
+         END IF
+         IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+            WRITE (u, FMT="(T2,A,T72,A9)") "Coulomb matrix V(q) from", "Ewald sum"
+            IF (ALL(bs_env%periodic == [1, 1, 0])) THEN
+               WRITE (u, FMT="(T2,A,I43)") "Lattice sum size for 2D V(q=0) body:", bs_env%size_lattice_sum_V
+            END IF
+         ELSE IF (bs_env%do_periodic) THEN
             WRITE (u, FMT="(T2,A,I53)") "Lattice sum size for V(k):", bs_env%size_lattice_sum_V
          END IF
       END IF
@@ -832,12 +949,14 @@ CONTAINS
 
       CALL set_AO_RI_basis_function_indices(qs_env, bs_env)
       CALL setup_kpoints_chi_eps_W(bs_env, bs_env%kpoints_chi_eps_W)
-      IF (bs_env%gw_implementation == tensor_small_cell_full_kp) THEN
+      IF (bs_env%gw_implementation == tensor_small_cell_full_kp .OR. &
+          bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
          CALL setup_cells_3c(qs_env, bs_env)
       END IF
       CALL set_parallelization_parameters(qs_env, bs_env)
       CALL allocate_matrices(qs_env, bs_env)
-      IF (bs_env%gw_implementation /= tensor_small_cell_full_kp) THEN
+      IF (bs_env%gw_implementation /= tensor_small_cell_full_kp .AND. &
+          bs_env%gw_implementation /= ri_rs_small_cell_full_kp) THEN
          CALL compute_Minv_Gamma(qs_env, bs_env)
       END IF
 
@@ -858,7 +977,7 @@ CONTAINS
 
       INTEGER                                            :: handle, i_RI, iatom, ikind, iset, &
                                                             max_AO_bf_per_atom, n_ao_test, n_atom, &
-                                                            n_kind, n_RI, nset, nsgf, u
+                                                            n_kind, n_RI, nset, u
       INTEGER, ALLOCATABLE, DIMENSION(:)                 :: kind_of
       INTEGER, DIMENSION(:), POINTER                     :: l_max, l_min, nsgf_set
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
@@ -897,11 +1016,9 @@ CONTAINS
       n_ao_test = 0
       DO iatom = 1, n_atom
          bs_env%i_ao_start_from_atom(iatom) = n_ao_test + 1
-         ikind = kind_of(iatom)
-         CALL get_qs_kind(qs_kind=qs_kind_set(ikind), nsgf=nsgf, basis_type="ORB")
-         n_ao_test = n_ao_test + nsgf
+         n_ao_test = n_ao_test + bs_env%sizes_AO(iatom)
          bs_env%i_ao_end_from_atom(iatom) = n_ao_test
-         max_AO_bf_per_atom = MAX(max_AO_bf_per_atom, nsgf)
+         max_AO_bf_per_atom = MAX(max_AO_bf_per_atom, bs_env%sizes_AO(iatom))
       END DO
       CPASSERT(n_ao_test == bs_env%n_ao)
       bs_env%max_AO_bf_per_atom = max_AO_bf_per_atom
@@ -1003,6 +1120,9 @@ CONTAINS
                CASE (tensor_large_cell_Gamma, ri_rs_large_cell_Gamma, ri_rs_non_periodic, tensor_static_cohsex)
                   nkp_grid(i_dim) = 4
                   nkp_grid_extra(i_dim) = 6
+               CASE (ri_rs_small_cell_full_kp)
+                  nkp_grid(i_dim) = bs_env%kpoints_scf_desymm%nkp_grid(i_dim)
+                  nkp_grid_extra(i_dim) = 1
                CASE (tensor_small_cell_full_kp)
                   nkp_grid(i_dim) = bs_env%kpoints_scf_desymm%nkp_grid(i_dim)*4
                   nkp_grid_extra(i_dim) = bs_env%kpoints_scf_desymm%nkp_grid(i_dim)*8
@@ -1019,9 +1139,14 @@ CONTAINS
 
       END IF
 
-      nkp_orig = MAX(nkp_grid(1)*nkp_grid(2)*nkp_grid(3)/2, 1)
-
-      nkp_extra = nkp_grid_extra(1)*nkp_grid_extra(2)*nkp_grid_extra(3)/2
+      nkp_orig = MAX(PRODUCT(nkp_grid)/2, 1)
+      nkp_extra = PRODUCT(nkp_grid_extra)/2
+      IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+         CPASSERT(ALL(nkp_grid == bs_env%kpoints_scf_desymm%nkp_grid))
+         nkp_orig = PRODUCT(nkp_grid)
+         nkp_extra = 0
+         CPASSERT(nkp_orig == bs_env%nkp_scf_desymm)
+      END IF
 
       nkp = nkp_orig + nkp_extra
 
@@ -1036,8 +1161,12 @@ CONTAINS
       ALLOCATE (kpoints_chi_eps_W%xkp(3, nkp), kpoints_chi_eps_W%wkp(nkp))
       ALLOCATE (bs_env%wkp_no_extra(nkp), bs_env%wkp_s_p(nkp))
 
-      CALL compute_xkp(kpoints_chi_eps_W%xkp, 1, nkp_orig, nkp_grid)
-      CALL compute_xkp(kpoints_chi_eps_W%xkp, nkp_orig + 1, nkp, nkp_grid_extra)
+      IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+         kpoints_chi_eps_W%xkp = bs_env%kpoints_scf_desymm%xkp(1:3, :)
+      ELSE
+         CALL compute_xkp(kpoints_chi_eps_W%xkp, 1, nkp_orig, nkp_grid)
+         CALL compute_xkp(kpoints_chi_eps_W%xkp, nkp_orig + 1, nkp, nkp_grid_extra)
+      END IF
 
       n_dim = SUM(periodic)
       IF (n_dim == 0) THEN
@@ -1045,6 +1174,10 @@ CONTAINS
          kpoints_chi_eps_W%wkp(1) = 1.0_dp
          bs_env%wkp_s_p(1) = 1.0_dp
          bs_env%wkp_no_extra(1) = 1.0_dp
+      ELSE IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+         kpoints_chi_eps_W%wkp = 1.0_dp/REAL(nkp, dp)
+         bs_env%wkp_s_p(:) = kpoints_chi_eps_W%wkp
+         bs_env%wkp_no_extra(:) = kpoints_chi_eps_W%wkp
       ELSE
 
          n_dim_inv = 1.0_dp/REAL(n_dim, KIND=dp)
@@ -1085,11 +1218,16 @@ CONTAINS
 
       IF (u > 0 .AND. bs_env%do_periodic) THEN
          WRITE (u, FMT="(T2,A)") " "
-         WRITE (u, FMT="(T2,1A,T71,3I4)") "K-point mesh 1 for χ, ε, W", nkp_grid(1:3)
-         WRITE (u, FMT="(T2,2A,T71,3I4)") "K-point mesh 2 for χ, ε, W ", &
-            "(for k-point extrapolation of W)", nkp_grid_extra(1:3)
-         WRITE (u, FMT="(T2,A,T80,L)") "Approximate the k-point extrapolation", &
-            bs_env%approx_kp_extrapol
+         SELECT CASE (bs_env%gw_implementation)
+         CASE (ri_rs_small_cell_full_kp)
+            WRITE (u, '(T2,A,T71,3I4)') "K-point mesh for χ, ε, W", nkp_grid
+         CASE DEFAULT
+            WRITE (u, FMT="(T2,1A,T71,3I4)") "K-point mesh 1 for χ, ε, W", nkp_grid(1:3)
+            WRITE (u, FMT="(T2,2A,T71,3I4)") "K-point mesh 2 for χ, ε, W ", &
+               "(for k-point extrapolation of W)", nkp_grid_extra(1:3)
+            WRITE (u, FMT="(T2,A,T80,L)") "Approximate the k-point extrapolation", &
+               bs_env%approx_kp_extrapol
+         END SELECT
       END IF
 
       CALL timestop(handle)
@@ -1330,6 +1468,12 @@ CONTAINS
                    + bs_env%ri_metric%cutoff_radius) CYCLE
                IF (dik > radius_RI_kind(kind_of(atom_i)) + radius_ao_kind(kind_of(atom_k)) &
                    + bs_env%ri_metric%cutoff_radius) CYCLE
+
+               IF (bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
+                  ! RI-RS forms its integrals later; only geometric cell support is needed here.
+                  nblocks_3c_max(j_cell, k_cell) = nblocks_3c_max(j_cell, k_cell) + 1
+                  CYCLE
+               END IF
 
                j_size = bs_env%i_ao_end_from_atom(atom_j) - bs_env%i_ao_start_from_atom(atom_j) + 1
                k_size = bs_env%i_ao_end_from_atom(atom_k) - bs_env%i_ao_start_from_atom(atom_k) + 1
@@ -1877,10 +2021,10 @@ CONTAINS
 
          CALL dbcsr_deallocate_matrix_set(mat_ks_without_v_xc)
 
-      CASE (tensor_small_cell_full_kp)
+      CASE (tensor_small_cell_full_kp, ri_rs_small_cell_full_kp)
 
          ! calculate KS-matrix without XC
-         CALL qs_ks_build_kohn_sham_matrix(qs_env, calculate_forces=.FALSE., just_energy=.FALSE.)
+         CALL build_periodic_ks_with_gapw_density(qs_env)
          CALL get_qs_env(qs_env=qs_env, matrix_ks_kp=matrix_ks_kp)
 
          ALLOCATE (bs_env%fm_V_xc_R(dft_control%nimages, bs_env%n_spin))
@@ -1914,9 +2058,10 @@ CONTAINS
                                    r_val=myfraction)
       END IF
 
-      IF (bs_env%gw_implementation == tensor_small_cell_full_kp) THEN
+      IF (bs_env%gw_implementation == tensor_small_cell_full_kp .OR. &
+          bs_env%gw_implementation == ri_rs_small_cell_full_kp) THEN
          ! calculate KS-matrix again with XC
-         CALL qs_ks_build_kohn_sham_matrix(qs_env, calculate_forces=.FALSE., just_energy=.FALSE.)
+         CALL build_periodic_ks_with_gapw_density(qs_env)
          DO ispin = 1, bs_env%n_spin
             DO img = 1, dft_control%nimages
                ! store h_ks in fm_work_mo
@@ -1931,6 +2076,25 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE compute_V_xc
+
+! **************************************************************************************************
+!> \brief Rebuild a periodic KS matrix with the GAPW density derived from the converged AO density.
+!> \param qs_env ...
+! **************************************************************************************************
+   SUBROUTINE build_periodic_ks_with_gapw_density(qs_env)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+
+      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_rho_type), POINTER                         :: rho
+
+      CALL get_qs_env(qs_env, dft_control=dft_control)
+      IF (dft_control%qs_control%gapw .OR. dft_control%qs_control%gapw_xc) THEN
+         CALL get_qs_env(qs_env, rho=rho)
+         CALL qs_rho_update_rho(rho, qs_env)
+      END IF
+      CALL qs_ks_build_kohn_sham_matrix(qs_env, calculate_forces=.FALSE., just_energy=.FALSE.)
+
+   END SUBROUTINE build_periodic_ks_with_gapw_density
 
 ! **************************************************************************************************
 !> \brief Sets the interaction radii used by the GW calculation.
@@ -2100,6 +2264,45 @@ CONTAINS
    END SUBROUTINE create_2c_t
 
 ! **************************************************************************************************
+!> \brief Allocate the arrays holding the GW quasiparticle energies
+!> \param bs_env ...
+! **************************************************************************************************
+   SUBROUTINE allocate_GW_eigenvalues(bs_env)
+      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'allocate_GW_eigenvalues'
+
+      INTEGER                                            :: handle, n_ao, n_spin, nkp
+
+      CALL timeset(routineN, handle)
+
+      n_ao = bs_env%n_ao
+      nkp = bs_env%nkp_bs_and_DOS
+      n_spin = bs_env%n_spin
+
+      IF (.NOT. ALLOCATED(bs_env%eigenval_GW)) THEN
+         ALLOCATE (bs_env%eigenval_GW(n_ao, nkp, n_spin))
+      END IF
+      IF (.NOT. ALLOCATED(bs_env%eigenval_HF)) THEN
+         ALLOCATE (bs_env%eigenval_HF(n_ao, nkp, n_spin))
+      END IF
+
+      SELECT CASE (bs_env%gw_flavour)
+      CASE (G0W0, evGW0)
+         IF (.NOT. ALLOCATED(bs_env%eigenval_G0W0)) THEN
+            ALLOCATE (bs_env%eigenval_G0W0(n_ao, nkp, n_spin))
+         END IF
+      END SELECT
+
+      IF (bs_env%gw_flavour == evGW0 .AND. .NOT. ALLOCATED(bs_env%eigenval_evGW0)) THEN
+         ALLOCATE (bs_env%eigenval_evGW0(n_ao, nkp, n_spin))
+      END IF
+
+      CALL timestop(handle)
+
+   END SUBROUTINE allocate_GW_eigenvalues
+
+! **************************************************************************************************
 !> \brief ...
 !> \param qs_env ...
 !> \param bs_env ...
@@ -2192,7 +2395,7 @@ CONTAINS
       IF (bs_env%unit_nr > 0) THEN
          WRITE (bs_env%unit_nr, '(T2,A)') ''
          WRITE (bs_env%unit_nr, '(T2,A,F27.1,A)') &
-            'Computed 3-center integrals (µν|P), execution time', t2 - t1, ' s'
+            'Computed 3-center integrals (µν|P), Exec. time', t2 - t1, ' s'
          WRITE (bs_env%unit_nr, '(T2,A,F48.3,A)') 'Percentage of non-zero (µν|P)', &
             bs_env%occupation_3c_int*100, ' %'
          WRITE (bs_env%unit_nr, '(T2,A,F33.1,A)') 'Max. distance between µ,ν in non-zero (µν|P)', &
@@ -3082,22 +3285,18 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER :: routineN = 'trafo_V_xc_R_to_kp'
 
       INTEGER                                            :: handle, ikp, img, ispin, n_ao
-      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index_scf
-      TYPE(cp_cfm_type)                                  :: cfm_mo_coeff, cfm_V_xc
+      TYPE(cp_cfm_type)                                  :: cfm_kp_group, cfm_mo_coeff, cfm_V_xc
       TYPE(cp_fm_type)                                   :: fm_V_xc_re
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks
-      TYPE(kpoint_type), POINTER                         :: kpoints_scf
-      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_nl
+      TYPE(kpoint_operator_context_type)                 :: operators
+      TYPE(kpoint_type), POINTER                         :: kpoints_bs
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
 
       n_ao = bs_env%n_ao
 
-      CALL get_qs_env(qs_env, matrix_ks_kp=matrix_ks, kpoints=kpoints_scf)
-
-      NULLIFY (sab_nl)
-      CALL get_kpoint_info(kpoints_scf, sab_nl=sab_nl, cell_to_index=cell_to_index_scf)
+      CALL get_qs_env(qs_env, para_env=para_env, matrix_ks_kp=matrix_ks)
 
       CALL cp_cfm_create(cfm_V_xc, bs_env%cfm_work_mo%matrix_struct)
       CALL cp_cfm_create(cfm_mo_coeff, bs_env%cfm_work_mo%matrix_struct)
@@ -3111,14 +3310,19 @@ CONTAINS
          END DO
       END DO
 
+      CALL create_operator_kpoints(qs_env, bs_env, kpoints_bs, cfm_kp_group)
+      CALL kpoint_operator_context_create(operators, kpoints_bs, bs_env%fm_work_mo(1), bs_env%n_spin)
+      CALL kpoint_operator_prepare(operators, matrix_ks, kpoint_slot_ks)
+
       ALLOCATE (bs_env%v_xc_n(n_ao, bs_env%nkp_bs_and_DOS, bs_env%n_spin))
 
       DO ispin = 1, bs_env%n_spin
          DO ikp = 1, bs_env%nkp_bs_and_DOS
 
             ! v^xc^R -> v^xc(k)  (matrix_ks stores v^xc^R, see SUBROUTINE compute_V_xc)
-            CALL rsmat_to_kp(matrix_ks, ispin, bs_env%kpoints_DOS%xkp(1:3, ikp), &
-                             cell_to_index_scf, sab_nl, bs_env, cfm_V_xc)
+            CALL kpoint_operator_get(operators, ikp, ispin, matrix_ks, cmat=cfm_kp_group, &
+                                     matrix_row=ispin, slot=kpoint_slot_ks)
+            CALL cp_cfm_copy_general(cfm_kp_group, cfm_V_xc, para_env)
 
             ! get C_µn(k)
             CALL cp_cfm_to_cfm(bs_env%cfm_mo_coeff_kp(ikp, ispin), cfm_mo_coeff)
@@ -3134,8 +3338,12 @@ CONTAINS
 
       END DO
 
+      CALL kpoint_operator_context_release(operators)
+      CALL cp_cfm_release(cfm_kp_group)
+      CALL kpoint_release(kpoints_bs)
+
       ! just rebuild the overwritten KS matrix again
-      CALL qs_ks_build_kohn_sham_matrix(qs_env, calculate_forces=.FALSE., just_energy=.FALSE.)
+      CALL build_periodic_ks_with_gapw_density(qs_env)
 
       CALL cp_cfm_release(cfm_V_xc)
       CALL cp_cfm_release(cfm_mo_coeff)
@@ -3233,7 +3441,7 @@ CONTAINS
       INTEGER                                            :: handle, homo, ispin, n_mo, n_top, &
                                                             num_time_freq_points, u
       REAL(KIND=dp)                                      :: E_max, E_max_ispin, E_min, E_min_ispin, &
-                                                            E_range, max_error_min
+                                                            E_range, max_error_min, max_error_sigma
 
       CALL timeset(routineN, handle)
 
@@ -3257,7 +3465,7 @@ CONTAINS
                           bs_env%eigenval_scf_Gamma(homo, ispin)
             E_max_ispin = bs_env%eigenval_scf_Gamma(n_top, ispin) - &
                           bs_env%eigenval_scf_Gamma(1, ispin)
-         CASE (tensor_small_cell_full_kp)
+         CASE (tensor_small_cell_full_kp, ri_rs_small_cell_full_kp)
             E_min_ispin = MINVAL(bs_env%eigenval_scf(homo + 1, :, ispin)) - &
                           MAXVAL(bs_env%eigenval_scf(homo, :, ispin))
             E_max_ispin = MAXVAL(bs_env%eigenval_scf(n_top, :, ispin)) - &
@@ -3271,7 +3479,7 @@ CONTAINS
       ! superset covers each channel, so it is accurate; per-spin grids would only be more efficient).
       IF (bs_env%n_spin > 1) THEN
          CALL cp_hint(__LOCATION__, &
-                      "Open-shell GW uses one minimax grid spanning [min gap, max span] across both "// &
+                      "Open-shell GW uses one time-frequency grid spanning [min gap, max span] across both "// &
                       "spin channels; raise NUM_TIME_FREQ_POINTS if QP convergence is marginal for "// &
                       "strongly spin-asymmetric systems.")
       END IF
@@ -3284,6 +3492,21 @@ CONTAINS
                                              build_sine=.TRUE., time_scaling=2.0_dp, time_weight_scaling=1.0_dp, &
                                              max_fit_error=max_error_min, print_warning=.FALSE., unit_nr=0, &
                                              prefer_external_backend=.FALSE.)
+
+      ! Σ^c(iτ) -> Σ^c(iω) has its own weights: for NEVANLINNA, a truncated SVD keeps the samples
+      ! of Σ^c(iω) causal; χ and W keep the regularized weights and do not depend on the
+      ! analytic continuation
+      IF (bs_env%ac_method == gw_ac_nevanlinna) THEN
+         CALL build_minimax_time_frequency_grid(num_time_freq_points, E_min, E_max, bs_env%regularization_minimax, &
+                                                bs_env%num_points_per_magnitude, bs_env%time_frequency_grid_sigma, &
+                                                build_frequency=.TRUE., build_time=.TRUE., build_transforms=.TRUE., &
+                                                build_sine=.TRUE., time_scaling=2.0_dp, time_weight_scaling=1.0_dp, &
+                                                max_fit_error=max_error_sigma, print_warning=.FALSE., unit_nr=0, &
+                                                prefer_external_backend=.FALSE., &
+                                                rcond=bs_env%nevanlinna%rcond_weights)
+      ELSE
+         bs_env%time_frequency_grid_sigma = bs_env%time_frequency_grid
+      END IF
 
       ! determine number of fit points in the interval [0,ω_max] for virt, or [-ω_max,0] for occ
       bs_env%num_freq_points_fit = COUNT(bs_env%time_frequency_grid%frequency < bs_env%freq_max_fit)
@@ -3299,10 +3522,20 @@ CONTAINS
          bs_env%nparam_pade = bs_env%num_freq_points_fit
       END IF
 
+      ! the Nevanlinna interpolant goes through all imaginary frequencies; its Padé fallback keeps
+      ! the points below ω_max and the number of Padé parameters of the PADE continuation
+      bs_env%num_freq_points_pade = bs_env%num_freq_points_fit
+      IF (bs_env%ac_method == gw_ac_nevanlinna) THEN
+         bs_env%num_freq_points_fit = num_time_freq_points
+         DEALLOCATE (bs_env%imag_freq_points_fit)
+         ALLOCATE (bs_env%imag_freq_points_fit(num_time_freq_points))
+         bs_env%imag_freq_points_fit(:) = bs_env%time_frequency_grid%frequency
+      END IF
+
       u = bs_env%unit_nr
       IF (u > 0) THEN
          WRITE (u, '(T2,A)') ''
-         WRITE (u, '(T2,A,F55.2)') 'SCF direct band gap (eV)', E_min*evolt
+         WRITE (u, '(T2,A,F50.2)') 'SCF fundamental band gap (eV)', E_min*evolt
          WRITE (u, '(T2,A,F53.2)') 'Max. SCF eigval diff. (eV)', E_max*evolt
          WRITE (u, '(T2,A,F55.2)') 'E-Range for minimax grid', E_range
          WRITE (u, '(T2,A,I27)') 'Number of Padé parameters for analytic continuation:', &
@@ -3353,8 +3586,6 @@ CONTAINS
       ELSE
          CALL neighbor_list_3c_destroy(bs_env%nl_3c)
       END IF
-
-      CALL cp_libint_static_cleanup()
 
       CALL timestop(handle)
 
@@ -3415,31 +3646,65 @@ CONTAINS
 !> \param eigenval_scf ...
 !> \param ikp ...
 !> \param ispin ...
+!> \param i_iter ...
 ! **************************************************************************************************
    SUBROUTINE analyt_conti_and_print(bs_env, Sigma_c_ikp_n_freq, Sigma_x_ikp_n, V_xc_ikp_n, &
-                                     eigenval_scf, ikp, ispin)
+                                     eigenval_scf, ikp, ispin, i_iter)
 
       TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: Sigma_c_ikp_n_freq
       REAL(KIND=dp), DIMENSION(:)                        :: Sigma_x_ikp_n, V_xc_ikp_n, eigenval_scf
       INTEGER                                            :: ikp, ispin
+      INTEGER, INTENT(IN), OPTIONAL                      :: i_iter
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'analyt_conti_and_print'
+      INTEGER, PARAMETER                                 :: max_pade_orders = 7
 
       CHARACTER(len=3)                                   :: occ_vir
       CHARACTER(len=default_path_length)                 :: fname
       CHARACTER(len=default_string_length)               :: gw_label
-      INTEGER                                            :: handle, i_mo, ikp_for_print, iunit, &
-                                                            n_mo, nkp
-      LOGICAL                                            :: is_bandstruc_kpoint, print_DOS_kpoints, &
-                                                            print_ikp
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: dummy, eigenval_G, Sigma_c_ikp_n_qp
+      INTEGER :: ac_used, handle, i_central, i_mo, i_order, icycle, ikp_for_print, iunit, &
+         n_ac_nevanlinna, n_ac_pade, n_central, n_mo, n_orders, n_window, nkp
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: multi_count
+      INTEGER, DIMENSION(max_pade_orders)                :: order_index
+      LOGICAL                                            :: do_nevanlinna, is_bandstruc_kpoint, &
+                                                            multi_i, print_DOS_kpoints, print_ikp
+      LOGICAL, ALLOCATABLE, DIMENSION(:)                 :: multi, unstable
+      REAL(KIND=dp)                                      :: ac_pick, pick_min
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: eigenval_G, m_value, Sigma_c_ikp_n_qp, &
+                                                            z_value
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: Sigma_c_orders
+      REAL(KIND=dp), DIMENSION(max_pade_orders)          :: Sigma_c_sorted
 
       CALL timeset(routineN, handle)
 
+      icycle = 1
+      IF (PRESENT(i_iter)) icycle = i_iter
+
+      ! A single Padé approximant occasionally places a spurious pole next to the
+      ! quasiparticle energy, where Newton then fails and Σ^c jumps by up to 1 eV from one
+      ! k-point to the next. Averaging the central values over the orders nparam_pade,
+      ! nparam_pade - 1, ..., nparam_pade - 6 discards such outliers: the three central
+      ! values for an odd number of orders, the two central values for an even one.
+      n_orders = MAX(1, MIN(max_pade_orders, bs_env%nparam_pade - 1))
+      n_central = MIN(n_orders, 3 - MODULO(n_orders + 1, 2))
+      i_central = (n_orders - n_central)/2 + 1
+
       n_mo = bs_env%n_ao
-      ALLOCATE (dummy(n_mo), Sigma_c_ikp_n_qp(n_mo), eigenval_G(n_mo))
+      ALLOCATE (z_value(n_mo), m_value(n_mo), Sigma_c_ikp_n_qp(n_mo), eigenval_G(n_mo), &
+                Sigma_c_orders(n_mo, n_orders))
+      Sigma_c_orders(:, :) = 0.0_dp
       Sigma_c_ikp_n_qp(:) = 0.0_dp
+
+      do_nevanlinna = (bs_env%ac_method == gw_ac_nevanlinna)
+      ALLOCATE (unstable(n_mo), multi(n_mo), multi_count(n_mo))
+      unstable(:) = .FALSE.
+      multi(:) = .FALSE.
+      multi_count(:) = 0
+      n_window = 0
+      n_ac_nevanlinna = 0
+      n_ac_pade = 0
+      pick_min = 0.0_dp
 
       ! Eigenvalues of the Green's function that produced Σ^c: the DFT ones for G0W0, the
       ! previous cycle's quasiparticle energies for evGW0. They set the Newton start value,
@@ -3451,24 +3716,80 @@ CONTAINS
          eigenval_G(:) = eigenval_scf(:)
       END IF
 
-      DO i_mo = 1, n_mo
+      IF (do_nevanlinna) THEN
 
-         ! parallelization
-         IF (MODULO(i_mo, bs_env%para_env%num_pe) /= bs_env%para_env%mepos) CYCLE
+         ! Nevanlinna continuation through all imaginary frequencies, then the median over fit
+         ! windows and the marks of unreliable (*) and multi-solution (m) levels
+         DO i_mo = 1, n_mo
+            IF (MODULO(i_mo, bs_env%para_env%num_pe) /= bs_env%para_env%mepos) CYCLE
+            CALL continuation_pade(Sigma_c_ikp_n_qp, &
+                                   bs_env%imag_freq_points_fit, z_value, m_value, &
+                                   Sigma_c_ikp_n_freq(:, 1:bs_env%num_freq_points_fit), &
+                                   Sigma_x_ikp_n(:) - V_xc_ikp_n(:), &
+                                   eigenval_G(:), eigenval_scf(:), &
+                                   bs_env%do_hedin_shift, &
+                                   i_mo, bs_env%n_occ(ispin), bs_env%n_vir(ispin), &
+                                   bs_env%nparam_pade, bs_env%num_freq_points_fit, &
+                                   ri_rpa_g0w0_crossing_newton, bs_env%n_occ(ispin), &
+                                   0.0_dp, .TRUE., .FALSE., 1, e_fermi_ext=bs_env%e_fermi(ispin), &
+                                   ac_method=gw_ac_nevanlinna, ac_used=ac_used, ac_pick=ac_pick, &
+                                   num_fit_points_pade=bs_env%num_freq_points_pade, &
+                                   qp_start_eigenval=.TRUE., &
+                                   qp_newton_max_step=bs_env%nevanlinna%qp_newton_max_step, &
+                                   qp_maxz_radius=bs_env%nevanlinna%qp_maxz_radius, qp_multi=multi_i)
+            IF (multi_i) multi_count(i_mo) = 1
+            IF (ac_used == gw_ac_nevanlinna) THEN
+               n_ac_nevanlinna = n_ac_nevanlinna + 1
+            ELSE
+               n_ac_pade = n_ac_pade + 1
+            END IF
+            pick_min = MIN(pick_min, ac_pick)
+         END DO
 
-         CALL continuation_pade(Sigma_c_ikp_n_qp, &
-                                bs_env%imag_freq_points_fit, dummy, dummy, &
-                                Sigma_c_ikp_n_freq, &
-                                Sigma_x_ikp_n(:) - V_xc_ikp_n(:), &
-                                eigenval_G(:), eigenval_scf(:), &
-                                bs_env%do_hedin_shift, &
-                                i_mo, bs_env%n_occ(ispin), bs_env%n_vir(ispin), &
-                                bs_env%nparam_pade, bs_env%num_freq_points_fit, &
-                                ri_rpa_g0w0_crossing_newton, bs_env%n_occ(ispin), &
-                                0.0_dp, .TRUE., .FALSE., 1, e_fermi_ext=bs_env%e_fermi(ispin))
-      END DO
+         CALL bs_env%para_env%sum(Sigma_c_ikp_n_qp)
+         CALL bs_env%para_env%sum(n_ac_nevanlinna)
+         CALL bs_env%para_env%sum(n_ac_pade)
+         CALL bs_env%para_env%min(pick_min)
+         CALL bs_env%para_env%sum(multi_count)
+         multi(:) = (multi_count(:) > 0)
 
-      CALL bs_env%para_env%sum(Sigma_c_ikp_n_qp)
+         CALL qp_median_over_windows(bs_env, Sigma_c_ikp_n_freq, Sigma_x_ikp_n, V_xc_ikp_n, &
+                                     eigenval_G, eigenval_scf, ispin, Sigma_c_ikp_n_qp, unstable, &
+                                     multi, n_window)
+         CALL propagate_unstable_marks(unstable, multi, bs_env%n_occ(ispin))
+         CALL print_qp_marks(bs_env, unstable, multi, n_window, ikp, ispin)
+
+      ELSE
+
+         DO i_mo = 1, n_mo
+
+            ! parallelization
+            IF (MODULO(i_mo, bs_env%para_env%num_pe) /= bs_env%para_env%mepos) CYCLE
+
+            DO i_order = 1, n_orders
+               CALL continuation_pade(Sigma_c_orders(:, i_order), &
+                                      bs_env%imag_freq_points_fit, z_value, m_value, &
+                                      Sigma_c_ikp_n_freq(:, 1:bs_env%num_freq_points_fit), &
+                                      Sigma_x_ikp_n(:) - V_xc_ikp_n(:), &
+                                      eigenval_G(:), eigenval_scf(:), &
+                                      bs_env%do_hedin_shift, &
+                                      i_mo, bs_env%n_occ(ispin), bs_env%n_vir(ispin), &
+                                      bs_env%nparam_pade - i_order + 1, bs_env%num_freq_points_fit, &
+                                      ri_rpa_g0w0_crossing_newton, bs_env%n_occ(ispin), &
+                                      0.0_dp, .TRUE., .FALSE., 1, e_fermi_ext=bs_env%e_fermi(ispin))
+            END DO
+         END DO
+
+         CALL bs_env%para_env%sum(Sigma_c_orders)
+
+         DO i_mo = 1, n_mo
+            Sigma_c_sorted(1:n_orders) = Sigma_c_orders(i_mo, 1:n_orders)
+            CALL sort(Sigma_c_sorted(1:n_orders), n_orders, order_index(1:n_orders))
+            Sigma_c_ikp_n_qp(i_mo) = SUM(Sigma_c_sorted(i_central:i_central + n_central - 1))/ &
+                                     REAL(n_central, KIND=dp)
+         END DO
+
+      END IF
 
       CALL correct_obvious_fitting_fails(Sigma_c_ikp_n_qp, ispin, bs_env)
 
@@ -3477,7 +3798,7 @@ CONTAINS
                                           Sigma_x_ikp_n(:) - &
                                           V_xc_ikp_n(:)
 
-      IF (ALLOCATED(bs_env%eigenval_G0W0) .AND. bs_env%evgw0_i_iter <= 1) THEN
+      IF (ALLOCATED(bs_env%eigenval_G0W0) .AND. icycle == 1) THEN
          bs_env%eigenval_G0W0(:, ikp, ispin) = bs_env%eigenval_GW(:, ikp, ispin)
       END IF
 
@@ -3503,7 +3824,7 @@ CONTAINS
 
          ! in an evGW0 run the spectrum of every cycle is appended, so only the very first
          ! cycle replaces the file
-         IF (ikp_for_print == 1 .AND. ispin == 1 .AND. bs_env%evgw0_i_iter <= 1) THEN
+         IF (ikp_for_print == 1 .AND. ispin == 1 .AND. icycle == 1) THEN
             CALL open_file(TRIM(fname), unit_number=iunit, file_status="REPLACE", &
                            file_action="WRITE")
          ELSE
@@ -3513,14 +3834,26 @@ CONTAINS
 
          IF (bs_env%gw_flavour == evGW0 .AND. ikp_for_print == 1 .AND. ispin == 1) THEN
             WRITE (iunit, "(A)") " "
-            WRITE (iunit, "(A,I0)") "evGW0 cycle: ", bs_env%evgw0_i_iter
+            WRITE (iunit, "(A,I0)") "evGW0 cycle: ", icycle
+            IF (icycle == 1) THEN
+               WRITE (iunit, '(A)') '# G0W0 spectrum (first cycle, without SOC)'
+            END IF
          END IF
 
          WRITE (iunit, "(A)") " "
          WRITE (iunit, "(A10,I7,A25,3F10.4,T90,A7,I2)") "kpoint: ", ikp_for_print, "coordinate: ", &
             bs_env%kpoints_DOS%xkp(:, ikp), "spin: ", ispin
          WRITE (iunit, "(A)") " "
+         IF (do_nevanlinna) THEN
+            WRITE (iunit, "(A,I6,A,I6,A,ES10.2)") " analytic continuation: Nevanlinna for", &
+               n_ac_nevanlinna, " level(s), Padé fallback for", n_ac_pade, &
+               " level(s); smallest relative Pick eigenvalue", pick_min
+            WRITE (iunit, "(A)") " "
+         END IF
          gw_label = "ϵ_nk^"//TRIM(gw_flavour_label(bs_env))//" (eV)"
+         IF (bs_env%gw_flavour == evGW0 .AND. icycle == 1) THEN
+            gw_label = "ϵ_nk^G0W0 (eV)"
+         END IF
          WRITE (iunit, "(A5,A12,3A17,A16,A18)") "n", "k", "ϵ_nk^DFT (eV)", "Σ^c_nk (eV)", &
             "Σ^x_nk (eV)", "v_nk^xc (eV)", TRIM(gw_label)
          WRITE (iunit, "(A)") " "
@@ -3528,15 +3861,22 @@ CONTAINS
          DO i_mo = 1, n_mo
             IF (i_mo <= bs_env%n_occ(ispin)) occ_vir = 'occ'
             IF (i_mo > bs_env%n_occ(ispin)) occ_vir = 'vir'
-            WRITE (iunit, "(I5,3A,I5,4F16.3,F17.3)") i_mo, ' (', occ_vir, ') ', ikp_for_print, &
+            WRITE (iunit, "(I5,3A,I5,4F16.3,F17.3,A)") i_mo, ' (', occ_vir, ') ', ikp_for_print, &
                eigenval_scf(i_mo)*evolt, &
                Sigma_c_ikp_n_qp(i_mo)*evolt, &
                Sigma_x_ikp_n(i_mo)*evolt, &
                V_xc_ikp_n(i_mo)*evolt, &
-               bs_env%eigenval_GW(i_mo, ikp, ispin)*evolt
+               bs_env%eigenval_GW(i_mo, ikp, ispin)*evolt, &
+               TRIM(MERGE('  *', '   ', unstable(i_mo)))//TRIM(MERGE('  m', '   ', multi(i_mo)))
          END DO
 
          WRITE (iunit, "(A)") " "
+         IF (ANY(unstable)) WRITE (iunit, "(A)") &
+            " * not reliable: the fit windows disagree, or an unstable or multi-solution level "// &
+            "lies between this level and the HOMO (occupied) or the LUMO (virtual)"
+         IF (ANY(multi)) WRITE (iunit, "(A)") &
+            " m multi-solution level: a second quasiparticle solution carries more than a quarter "// &
+            "of the weight"
 
          CALL close_file(iunit)
 
@@ -3545,6 +3885,237 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE analyt_conti_and_print
+
+! **************************************************************************************************
+!> \brief quasiparticle energies as median over Nevanlinna continuations from fit windows; each
+!>        window consists of the lowest k imaginary frequencies, k >= window_min_points, with the
+!>        highest frequency in [window_freq_min, window_freq_max] (bs_env%nevanlinna)
+!> \param bs_env ...
+!> \param Sigma_c_ikp_n_freq Sigma^c(iω) of all levels
+!> \param Sigma_x_ikp_n ...
+!> \param V_xc_ikp_n ...
+!> \param eigenval_G eigenvalues of the Green's function that produced Σ^c
+!> \param eigenval_scf ...
+!> \param ispin ...
+!> \param Sigma_c_ikp_n_qp Sigma^c at the quasiparticle energy; replaced by the window median
+!> \param unstable the window solutions of the level spread more than window_spread
+!> \param multi more than half of the windows find a second solution of comparable weight
+!> \param n_window number of fit windows; zero if no window exists, then nothing is changed
+! **************************************************************************************************
+   SUBROUTINE qp_median_over_windows(bs_env, Sigma_c_ikp_n_freq, Sigma_x_ikp_n, V_xc_ikp_n, &
+                                     eigenval_G, eigenval_scf, ispin, Sigma_c_ikp_n_qp, unstable, multi, &
+                                     n_window)
+
+      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(IN)      :: Sigma_c_ikp_n_freq
+      REAL(KIND=dp), DIMENSION(:)                        :: Sigma_x_ikp_n, V_xc_ikp_n, eigenval_G, &
+                                                            eigenval_scf
+      INTEGER                                            :: ispin
+      REAL(KIND=dp), DIMENSION(:)                        :: Sigma_c_ikp_n_qp
+      LOGICAL, DIMENSION(:)                              :: unstable, multi
+      INTEGER, INTENT(OUT)                               :: n_window
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'qp_median_over_windows'
+      REAL(KIND=dp), PARAMETER                           :: max_abs_sigma = 1.0E3_dp
+
+      COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:, :)     :: sig_sel
+      INTEGER                                            :: handle, i_mo, i_win, j, k_w, n_mo, &
+                                                            n_valid, n_w
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: multi_count, order, window_size
+      LOGICAL                                            :: multi_i
+      REAL(KIND=dp)                                      :: v
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: m_dummy, q_sorted, Sigma_c_win, w_sel, &
+                                                            z_dummy
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: q_win
+
+      CALL timeset(routineN, handle)
+
+      n_mo = bs_env%n_ao
+      n_w = bs_env%num_time_freq_points
+
+      ! imaginary frequencies in ascending order
+      ALLOCATE (order(n_w), window_size(n_w))
+      DO j = 1, n_w
+         order(j) = j
+      END DO
+      DO j = 2, n_w
+         k_w = order(j)
+         i_win = j - 1
+         DO WHILE (i_win >= 1)
+            IF (bs_env%time_frequency_grid%frequency(order(i_win)) <= bs_env%time_frequency_grid%frequency(k_w)) EXIT
+            order(i_win + 1) = order(i_win)
+            i_win = i_win - 1
+         END DO
+         order(i_win + 1) = k_w
+      END DO
+
+      n_window = 0
+      DO j = bs_env%nevanlinna%window_min_points, n_w
+         v = bs_env%time_frequency_grid%frequency(order(j))
+         IF (v >= bs_env%nevanlinna%window_freq_min .AND. v <= bs_env%nevanlinna%window_freq_max) THEN
+            n_window = n_window + 1
+            window_size(n_window) = j
+         END IF
+      END DO
+
+      ! without at least two fit windows there is no error estimate: all levels are marked
+      IF (n_window < 2) THEN
+         CALL cp_warn(__LOCATION__, "Fewer than two fit windows for the Nevanlinna continuation, "// &
+                      "so no error estimate; all GW levels are marked as not reliable. "// &
+                      "Increase NUM_TIME_FREQ_POINTS.")
+         unstable(:) = .TRUE.
+      END IF
+      IF (n_window == 0) THEN
+         DEALLOCATE (order, window_size)
+         CALL timestop(handle)
+         RETURN
+      END IF
+
+      ALLOCATE (q_win(n_mo, n_window), Sigma_c_win(n_mo), q_sorted(n_window), &
+                multi_count(n_mo), z_dummy(n_mo), m_dummy(n_mo))
+      q_win(:, :) = 0.0_dp
+      multi_count(:) = 0
+
+      DO i_win = 1, n_window
+         k_w = window_size(i_win)
+         ALLOCATE (w_sel(k_w), sig_sel(n_mo, k_w))
+         DO j = 1, k_w
+            w_sel(j) = bs_env%time_frequency_grid%frequency(order(j))
+            sig_sel(:, j) = Sigma_c_ikp_n_freq(:, order(j))
+         END DO
+         Sigma_c_win(:) = 0.0_dp
+         DO i_mo = 1, n_mo
+            IF (MODULO(i_mo, bs_env%para_env%num_pe) /= bs_env%para_env%mepos) CYCLE
+            CALL continuation_pade(Sigma_c_win, w_sel, z_dummy, m_dummy, sig_sel, &
+                                   Sigma_x_ikp_n(:) - V_xc_ikp_n(:), &
+                                   eigenval_G(:), eigenval_scf(:), &
+                                   bs_env%do_hedin_shift, &
+                                   i_mo, bs_env%n_occ(ispin), bs_env%n_vir(ispin), &
+                                   k_w, k_w, &
+                                   ri_rpa_g0w0_crossing_newton, bs_env%n_occ(ispin), &
+                                   0.0_dp, .TRUE., .FALSE., 1, e_fermi_ext=bs_env%e_fermi(ispin), &
+                                   ac_method=gw_ac_nevanlinna, qp_start_eigenval=.TRUE., &
+                                   qp_newton_max_step=bs_env%nevanlinna%qp_newton_max_step, &
+                                   qp_maxz_radius=bs_env%nevanlinna%qp_maxz_radius, qp_multi=multi_i)
+            q_win(i_mo, i_win) = Sigma_c_win(i_mo)
+            IF (multi_i) multi_count(i_mo) = multi_count(i_mo) + 1
+         END DO
+         DEALLOCATE (w_sel, sig_sel)
+      END DO
+
+      CALL bs_env%para_env%sum(q_win)
+      CALL bs_env%para_env%sum(multi_count)
+      multi(:) = (2*multi_count(:) > n_window)
+
+      DO i_mo = 1, n_mo
+         ! sort the valid window solutions
+         n_valid = 0
+         DO i_win = 1, n_window
+            v = q_win(i_mo, i_win)
+            IF (.NOT. (v == v) .OR. ABS(v) > max_abs_sigma) CYCLE
+            n_valid = n_valid + 1
+            j = n_valid
+            DO WHILE (j > 1)
+               IF (q_sorted(j - 1) <= v) EXIT
+               q_sorted(j) = q_sorted(j - 1)
+               j = j - 1
+            END DO
+            q_sorted(j) = v
+         END DO
+         ! a level without two valid window solutions has no error estimate
+         IF (n_valid < 2) unstable(i_mo) = .TRUE.
+         IF (n_valid == 0) CYCLE
+         IF (MODULO(n_valid, 2) == 1) THEN
+            Sigma_c_ikp_n_qp(i_mo) = q_sorted((n_valid + 1)/2)
+         ELSE
+            Sigma_c_ikp_n_qp(i_mo) = 0.5_dp*(q_sorted(n_valid/2) + q_sorted(n_valid/2 + 1))
+         END IF
+         IF (n_valid > 1) unstable(i_mo) = (q_sorted(n_valid) - q_sorted(1) > bs_env%nevanlinna%window_spread)
+      END DO
+
+      DEALLOCATE (order, window_size, q_win, Sigma_c_win, q_sorted, multi_count, z_dummy, m_dummy)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE qp_median_over_windows
+
+! **************************************************************************************************
+!> \brief counted from the HOMO downwards and from the LUMO upwards, all levels beyond the first
+!>        unstable or multi-solution level are marked unstable: the quasiparticle solution of a
+!>        deeper level cannot be trusted once a closer level is not reliable
+!> \param unstable ...
+!> \param multi ...
+!> \param homo ...
+! **************************************************************************************************
+   SUBROUTINE propagate_unstable_marks(unstable, multi, homo)
+
+      LOGICAL, DIMENSION(:), INTENT(INOUT)               :: unstable
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: multi
+      INTEGER, INTENT(IN)                                :: homo
+
+      INTEGER                                            :: i_mo
+      LOGICAL                                            :: beyond_mark
+
+      beyond_mark = .FALSE.
+      DO i_mo = homo, 1, -1
+         IF (beyond_mark) unstable(i_mo) = .TRUE.
+         IF (unstable(i_mo) .OR. multi(i_mo)) beyond_mark = .TRUE.
+      END DO
+
+      beyond_mark = .FALSE.
+      DO i_mo = homo + 1, SIZE(unstable)
+         IF (beyond_mark) unstable(i_mo) = .TRUE.
+         IF (unstable(i_mo) .OR. multi(i_mo)) beyond_mark = .TRUE.
+      END DO
+
+   END SUBROUTINE propagate_unstable_marks
+
+! **************************************************************************************************
+!> \brief print the number of marked levels and warn if the HOMO or the LUMO is marked
+!> \param bs_env ...
+!> \param unstable ...
+!> \param multi ...
+!> \param n_window ...
+!> \param ikp ...
+!> \param ispin ...
+! **************************************************************************************************
+   SUBROUTINE print_qp_marks(bs_env, unstable, multi, n_window, ikp, ispin)
+
+      TYPE(post_scf_bandstructure_type), POINTER         :: bs_env
+      LOGICAL, DIMENSION(:), INTENT(IN)                  :: unstable, multi
+      INTEGER, INTENT(IN)                                :: n_window, ikp, ispin
+
+      INTEGER                                            :: homo, u
+
+      homo = bs_env%n_occ(ispin)
+      u = bs_env%unit_nr
+
+      IF (u > 0) THEN
+         WRITE (u, '(T2,A,I6,A,I2,A,I4,A)') 'GW analytic continuation (k-point', ikp, ', spin', &
+            ispin, '): Nevanlinna, median over', n_window, ' fit windows'
+         WRITE (u, '(T2,A,I49)') 'Levels marked * (not reliable)', COUNT(unstable)
+         WRITE (u, '(T2,A,I47)') 'Levels marked m (multi-solution)', COUNT(multi)
+         WRITE (u, '(T2,A)') ' '
+      END IF
+
+      IF (homo >= 1) THEN
+         IF (unstable(homo)) THEN
+            CPWARN("Analytic continuation unstable for the HOMO; its G0W0 energy is not reliable.")
+         END IF
+         IF (multi(homo)) THEN
+            CPWARN("The HOMO has a second quasiparticle solution of comparable weight.")
+         END IF
+      END IF
+      IF (homo < SIZE(unstable)) THEN
+         IF (unstable(homo + 1)) THEN
+            CPWARN("Analytic continuation unstable for the LUMO; its G0W0 energy is not reliable.")
+         END IF
+         IF (multi(homo + 1)) THEN
+            CPWARN("The LUMO has a second quasiparticle solution of comparable weight.")
+         END IF
+      END IF
+
+   END SUBROUTINE print_qp_marks
 
 ! **************************************************************************************************
 !> \brief ...

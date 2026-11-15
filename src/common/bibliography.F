@@ -82,7 +82,7 @@ MODULE bibliography
                             Clabaut2021, Ren2011, Ren2013, Cohen2000, Rogers2002, Filippetti2000, &
                             Limpanuparb2011, Martin2003, Yin2017, Goerigk2017, &
                             Wilhelm2016a, Wilhelm2016b, Wilhelm2017, Wilhelm2018, Wilhelm2021, Lass2018, &
-                            cp2kqs2020, Iannuzzi2026, Behler2007, Behler2011, Schran2020a, Schran2020b, &
+                            cp2kqs2020, Iannuzzi2026, Mirhosseini2026, Behler2007, Behler2011, Schran2020a, Schran2020b, &
                             Rycroft2009, Thomas2015, Brehm2018, Brehm2020, Shigeta2001, Heinecke2016, &
                             Brehm2021, Bussy2021a, Bussy2021b, Ditler2021, Ditler2022, Mattiat2019, &
                             Mattiat2022, Belleflamme2023, Knizia2013, Musaelian2023, Eriksen2020, &
@@ -100,10 +100,11 @@ MODULE bibliography
                             KuhneHeskeProdan2020, Schreder2021, Schreder2024_1, Schreder2024_2, &
                             Shiga2022, Lindh1995, Chai2024a, Rullan2026, Sundararaman2017, Andreussi2019, &
                             Chai2025a, Neugebauer2023, Chai2024b, Moynihan2017, Cococcioni2005, &
-                            Cances2000, Herbst2022, Zhang2025, Gresch2017, Soluyanov2011, Dixon2023, Doll2025, &
+                            Cances2000, Herbst2022, Zhang2025, Zhang2026, Gresch2017, Soluyanov2011, Dixon2023, Doll2025, &
                             Wong2026, Loring2015, EsteveParedes2023, Cerjan2023, Bairnsfather2026, Davidson1975, &
                             Olsen1988, Stratmann1998, Vecharynski2017, Stathopoulos1998, Bai2012, &
-                            Fukaya2014, Schreder2024_3, Pizzi2020, Marzari1997, Souza2001, Hummel2017
+                            Fukaya2014, Schreder2024_3, Pizzi2020, Marzari1997, Souza2001, &
+                            Hummel2017, Cheng2015, Fei2021
 
 CONTAINS
 
@@ -1751,6 +1752,14 @@ CONTAINS
                          source="J. Phys. Chem. B", volume="130", pages="1237-1310", &
                          year=2026, doi="10.1021/acs.jpcb.5c05851")
 
+      CALL add_reference(key=Mirhosseini2026, &
+                         authors=s2a("H. Mirhosseini", "T. M. A. Müller", "M. Krack", &
+                                     "T. D. Kühne", "J. Hutter"), &
+                         title="The UZH protocol: Separating errors and constructing "// &
+                         "improved CP2K basis sets and pseudopotentials", &
+                         source="J. Chem. Phys.", volume="165", pages="104103", &
+                         year=2026, doi="10.1063/5.0347392")
+
       CALL add_reference(key=Rycroft2009, &
                          authors=s2a("C. H. Rycroft"), &
                          title="VORO++: A three-dimensional Voronoi cell library in C++", &
@@ -2384,6 +2393,12 @@ CONTAINS
                          source="Langmuir", volume="41", pages="3675-3683", &
                          year=2025, doi="10.1021/acs.langmuir.4c05004")
 
+      CALL add_reference(key=Zhang2026, &
+                         authors=s2a("C. Zhang", "R. Zhao", "Z. He", "M. Iannuzzi", "Y. Chen", "J. Lan"), &
+                         title="A Flexible and Generalized Constant-Potential Framework in i-PI", &
+                         source="J. Chem. Theory Comput.", volume="22", pages="5761-5769", &
+                         year=2026, doi="10.1021/acs.jctc.6c00504")
+
       CALL add_reference(key=Gresch2017, &
                          authors=s2a("D. Gresch", "G. Autes", "O. V. Yazyev", "M. Troyer", &
                                      "D. Vanderbilt", "B. A. Bernevig", "A. A. Soluyanov"), &
@@ -2506,6 +2521,19 @@ CONTAINS
                          "wave DFT environment", &
                          source="J. Chem. Phys.", volume="161", pages="144110", &
                          year=2024, doi="10.1063/5.0222409")
+
+      CALL add_reference(key=Cheng2015, &
+                         authors=s2a("J. L. Cheng", "N. Vermeulen", "J. E. Sipe"), &
+                         title="Third-order nonlinearity of graphene: Effects of phenomenological "// &
+                         "relaxation and finite temperature", &
+                         source="Phys. Rev. B", volume="91", pages="235320", &
+                         year=2015, doi="10.1103/PhysRevB.91.235320")
+
+      CALL add_reference(key=Fei2021, &
+                         authors=s2a("J. Fei", "C.-N. Yeh", "E. Gull"), &
+                         title="Nevanlinna Analytical Continuation", &
+                         source="Phys. Rev. Lett.", volume="126", pages="056402", &
+                         year=2021, doi="10.1103/PhysRevLett.126.056402")
 
    END SUBROUTINE add_all_references
 

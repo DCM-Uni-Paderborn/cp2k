@@ -725,7 +725,7 @@ CONTAINS
                              description="Export a restricted RI-HF reference and CC4S input after converged single-point SCF. "// &
                                   "Requires RI_FLAVOR MO, XC_FUNCTIONAL NONE, HF FRACTION 1 and identical HF and RI operators. "// &
                                        "Use COULOMB for molecules or TRUNCATED for neutral, fully periodic Gamma-point cells. "// &
-                                       "Dense implementation for small systems; no k-point sampling. "// &
+                                       "Complete distributed intermediates; no k-point sampling. "// &
                                        "FILENAME sets the common file prefix; exact names (=name) and stdout are unsupported.", &
                                        print_level=debug_print_level + 1, filename="cc4s", common_iter_levels=2)
       CALL keyword_create(keyword, __LOCATION__, name="METHOD", &
@@ -752,8 +752,17 @@ CONTAINS
                           default_r_val=1.0e-6_dp)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="OUTPUT_BUFFER_SIZE", &
+                          description="Maximum output buffer size per MPI rank in MiB (1 MiB = 1048576 bytes). "// &
+                          "Positive real value; rounded down to whole Real64 elements and capped by the vertex size. "// &
+                          "The element count must fit a default INTEGER. Does not directly set transformation batch sizes.", &
+                          default_r_val=8.0_dp)
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="MAX_MEMORY", &
-                          description="Maximum estimated dense export workspace per MPI rank in MB (excluding SCF storage).", &
+                          description="Maximum estimated export workspace per MPI rank in MB, "// &
+                          "Selects orbital and auxiliary batch sizes; includes output and reduction buffers. "// &
+                          "Excludes existing SCF storage, allocator overhead and CC4S. This is not a process memory limit.", &
                           default_r_val=1024.0_dp)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
@@ -3399,6 +3408,17 @@ CONTAINS
                           "KPOINTS_SOURCE MP_GRID or SCF. Localization is performed by external Wannier90.", &
                           type_of_var=enum_t, enum_c_vals=s2a("NONE", "IDENTITY", "AO_SCDM", "AO_HYBRID"), &
                           enum_i_vals=[-1, 0, 1, 2], default_i_val=-1, citations=[Pizzi2020])
+      CALL section_add_keyword(print_key, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="EXPORT_PROJECTION_CANDIDATES", &
+                          description="Write complete projection banks for external trial selection, "// &
+                          "without changing INITIAL_PROJECTIONS. AO writes SEED_NAME_ao_candidates.amn. "// &
+                          "AO_HYBRID writes SEED_NAME_hybrid_candidates.amn using the same s/p hybrids "// &
+                          "as INITIAL_PROJECTIONS AO_HYBRID. BOTH writes both files. "// &
+                          "The banks use the exported bands and Bloch gauge before energy-window masking. "// &
+                          "Requires KPOINTS_SOURCE MP_GRID or SCF.", &
+                          type_of_var=enum_t, enum_c_vals=s2a("NONE", "AO", "AO_HYBRID", "BOTH"), &
+                          enum_i_vals=[0, 1, 2, 3], default_i_val=0)
       CALL section_add_keyword(print_key, keyword)
       CALL keyword_release(keyword)
       CALL keyword_create(keyword, __LOCATION__, name="DIS_WIN_MIN", &
