@@ -42,7 +42,7 @@ MODULE qs_upf_inverse_hfx
    USE lebedev,                         ONLY: get_number_of_lebedev_grid,&
                                               init_lebedev_grids,&
                                               lebedev_grid
-   USE libint_2c_3c,                    ONLY: cutoff_screen_factor
+   USE integral_library_types,          ONLY: cutoff_screen_factor
    USE mathconstants,                   ONLY: fourpi,&
                                               twopi
    USE mathlib,                         ONLY: inv_3x3
