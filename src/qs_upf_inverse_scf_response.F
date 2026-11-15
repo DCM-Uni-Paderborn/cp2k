@@ -87,8 +87,9 @@ CONTAINS
 !>        Their selected and default covectors differ only in the constraint normal. A kernel
 !>        from the default branch can therefore be used between tangent projections, together
 !>        with the current selected KS operator and the physical constraint curvature.
-!>        Spin-paired Skala uses this common tangent also at zero kinetic density
-!>        on the Fourier grid and its interpolated atomic background.
+!>        Native Skala uses this common tangent at zero kinetic density on the
+!>        Fourier grid and its interpolated atomic background. Each spin-resolved
+!>        constraint fixes the kinetic input of that spin independently.
 !> \param qs_env Original evaluated inverse environment and its registered physical constraints.
 !> \return Whether the selected surfaces admit this native density-tangent construction.
 ! **************************************************************************************************
@@ -152,7 +153,7 @@ CONTAINS
             IF (.NOT. model .AND. targets(i) <= 0.0_dp) RETURN
             IF (ALL(floors /= targets(i))) RETURN
          CASE (skala_kinetic_descriptor)
-            IF (.NOT. model .OR. control%nspins /= 1 .OR. targets(i) /= 0.0_dp) RETURN
+            IF (.NOT. model .OR. targets(i) /= 0.0_dp) RETURN
             IF (domains(i) /= skala_fft_domain .AND. domains(i) /= skala_background_domain) RETURN
          CASE DEFAULT
             RETURN
