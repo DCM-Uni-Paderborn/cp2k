@@ -102,7 +102,7 @@ spack:
 
   repos:
     builtin:
-      commit: 4fcf009e9f80634440c461937f322a9f0510a37b # 2026-11-04
+      commit: 9e16dc370fb1ea0fa9971c6c6283b85fa414ec6a # 2026-11-13
 
   specs:
     # Build tools
@@ -117,7 +117,7 @@ spack:
     - "fftw@3.3.11"
 #   - "hdf5@2.2.0"
     - "libfci@0.1.0"
-    - "libint@2.13.1-cp2k-lmax-5"
+    - "libint@2.14.1-cp2k-lmax-5"
     - "libvori@220621"
     - "libwignernj@0.8.0"
     - "libxc@7.1.2"

@@ -95,6 +95,26 @@ done
 # Disable python bytecode generation to suppress __pycache__ folder creation
 export PYTHONDONTWRITEBYTECODE=1
 
+# Abort git transfers slower than 1 KB/s for 60 s, since git has no timeout,
+# so that a stalled clone (e.g. py-torch with submodules) fails and is retried
+export GIT_HTTP_LOW_SPEED_LIMIT=1000
+export GIT_HTTP_LOW_SPEED_TIME=60
+
+# Run a command that downloads data with up to 3 attempts and a backoff
+# of 60 s and 120 s to bridge transient network issues
+retry_download() {
+  local attempt delay=60
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    if ((attempt < 3)); then
+      echo "WARNING: Attempt ${attempt} of 3 failed, retrying in ${delay} seconds: $*"
+      sleep "${delay}"
+      delay=$((delay * 2))
+    fi
+  done
+  return 1
+}
+
 # Print OS info if available
 if [[ -f /etc/os-release ]]; then
   echo ""
@@ -1183,7 +1203,7 @@ if [[ ! -f "${SPACK_BUILD_PATH}/BUILD_DEPENDENCIES_COMPLETED" ]]; then
   # also retains a partially downloaded release archive across interruptions.
   if [[ ! -d "${SPACK_ROOT}" ]]; then
     echo "Installing Spack ${SPACK_VERSION}"
-    if ! wget -q -c "https://github.com/spack/spack/releases/download/v${SPACK_VERSION}/spack-${SPACK_VERSION}.tar.gz"; then
+    if ! retry_download wget -nv -c --timeout=60 --tries=2 "https://github.com/spack/spack/releases/download/v${SPACK_VERSION}/spack-${SPACK_VERSION}.tar.gz"; then
       echo "ERROR: Downloading Spack ${SPACK_VERSION} failed"
       ${EXIT_CMD} 1
     fi
@@ -1195,7 +1215,7 @@ if [[ ! -f "${SPACK_BUILD_PATH}/BUILD_DEPENDENCIES_COMPLETED" ]]; then
       echo "ERROR: Installing Spack ${SPACK_VERSION} failed"
       ${EXIT_CMD} 1
     fi
-    rm -f "v${SPACK_VERSION}.tar.gz"
+    rm -f "spack-${SPACK_VERSION}.tar.gz"
   fi
   export PATH="${SPACK_ROOT}/bin:${PATH}"
 
@@ -1228,7 +1248,7 @@ if [[ ! -f "${SPACK_BUILD_PATH}/BUILD_DEPENDENCIES_COMPLETED" ]]; then
         echo "ERROR: python3 -m pip was not found"
         ${EXIT_CMD} 1
       fi
-      if ! python3 -m pip install "${VERBOSE_FLAG}" --upgrade pip \
+      if ! retry_download python3 -m pip install "${VERBOSE_FLAG}" --upgrade pip \
         boto3==1.38.11 google-cloud-storage==3.1.0; then
         echo "ERROR: The installation of Python packages for the Spack cache failed"
         ${EXIT_CMD} 1
@@ -1396,12 +1416,6 @@ if [[ ! -f "${SPACK_BUILD_PATH}/BUILD_DEPENDENCIES_COMPLETED" ]]; then
     sed -E -e "s/gcc@10:/gcc@${GCC_VERSION}/" -i "${CP2K_CONFIG_FILE}"
   fi
 
-  # Disable PEXSI because of an issue with SuperLU using GCC version 15
-  if ((CUDA_SM_CODE > 0)) || ((GCC_VERSION_NEWEST > 14)); then
-    sed -E -e '/\s*-\s+"pexsi@/ s/^ /#/' -i "${CP2K_CONFIG_FILE}"
-    echo "INFO: PEXSI has been disabled because CUDA or GCC 15 is used"
-  fi
-
   # Create CP2K environment if needed
   if spack env list | grep -q "${CP2K_ENV}"; then
     echo "The Spack environment \"${CP2K_ENV}\" exists already"
@@ -1425,7 +1439,7 @@ if [[ ! -f "${SPACK_BUILD_PATH}/BUILD_DEPENDENCIES_COMPLETED" ]]; then
   fi
 
   # Update the repo builtin
-  if ! spack repo update; then
+  if ! retry_download spack repo update; then
     echo "ERROR: The update of the repo builtin failed"
     ${EXIT_CMD} 1
   fi
@@ -1493,29 +1507,15 @@ if [[ ! -f "${SPACK_BUILD_PATH}/BUILD_DEPENDENCIES_COMPLETED" ]]; then
 
   ((VERBOSE > 0)) && spack find -c
 
-  # Abort git transfers slower than 1 KB/s for 60 s, since git has no timeout,
-  # so that a stalled clone (e.g. py-torch with submodules) fails and is retried
-  export GIT_HTTP_LOW_SPEED_LIMIT=1000
-  export GIT_HTTP_LOW_SPEED_TIME=60
-
-  # Install CP2K dependencies via Spack (retry with backoff to bridge transient network
-  # issues, whereby already installed packages are skipped)
-  for i in 1 2 3; do
-    if spack -e "${CP2K_ENV}" install -j "${NUM_PROCS}" -p "${NUM_PACKAGES}" "${VERBOSE_SPACK}"; then
-      break
+  # Install CP2K dependencies via Spack (a retry skips already installed packages)
+  if ! retry_download spack -e "${CP2K_ENV}" install -j "${NUM_PROCS}" -p "${NUM_PACKAGES}" "${VERBOSE_SPACK}"; then
+    echo "ERROR: Building the CP2K dependencies with spack failed"
+    if [[ "${USE_EXTERNALS}" == "yes" ]]; then
+      echo "HINT:  Try to re-run the build without the (-ue | --use_externals) flag which avoids"
+      echo "       errors or conflicts caused by externals from the host system"
     fi
-    if ((i == 3)); then
-      echo "ERROR: Building the CP2K dependencies with spack failed"
-      if [[ "${USE_EXTERNALS}" == "yes" ]]; then
-        echo "HINT:  Try to re-run the build without the (-ue | --use_externals) flag which avoids"
-        echo "       errors or conflicts caused by externals from the host system"
-      fi
-      ${EXIT_CMD} 1
-    fi
-    INSTALL_DELAY=$((60 * 2 ** (i - 1)))
-    echo "WARNING: Installation attempt ${i} failed, retrying in ${INSTALL_DELAY} seconds"
-    sleep "${INSTALL_DELAY}"
-  done
+    ${EXIT_CMD} 1
+  fi
 
   # Find all compilers
   if ! spack compiler find; then
@@ -1575,14 +1575,6 @@ export CMAKE_BUILD_PATH="${BUILD_PATH}/build"
 Torch_DIR="$(dirname "$(find "${SPACK_ROOT}" ! -type l -name TorchConfig.cmake | tail -n 1)")"
 export Torch_DIR
 
-# Check if PEXSI was built
-if [[ "${MPI_MODE}" != "no" ]]; then
-  CP2K_USE_PEXSI="$(grep -Eq '\s*#\s*-\s+"pexsi@' "${CP2K_CONFIG_FILE}" && echo OFF || echo ON)"
-else
-  CP2K_USE_PEXSI="ON"
-fi
-export CP2K_USE_PEXSI
-
 if [[ ! -d "${CMAKE_BUILD_PATH}" ]]; then
   mkdir -p "${CMAKE_BUILD_PATH}"
   case "${CP2K_VERSION}" in
@@ -1599,7 +1591,6 @@ if [[ ! -d "${CMAKE_BUILD_PATH}" ]]; then
         -DCMAKE_SKIP_RPATH="ON" \
         -DCMAKE_VERBOSE_MAKEFILE="${VERBOSE_MAKEFILE}" \
         ${CMAKE_FEATURE_FLAGS} \
-        -DCP2K_USE_PEXSI="${CP2K_USE_PEXSI}" \
         ${CMAKE_CUDA_FLAGS} \
         -Wno-error=dev |&
         tee "${CMAKE_BUILD_PATH}/cmake.log"
@@ -1892,7 +1883,7 @@ run_benchmark_input() {
   else
     echo "failed."
     echo
-    [[ -f "\${output}" ]] && tail -n 100 "\${output}"
+    [[ -f "\${output}" ]] && tail -n 1000 "\${output}"
     echo
     echo "Summary: Running \${input} failed."
     echo "Status: FAILED"
@@ -2069,8 +2060,11 @@ if [[ -n "${GROMACS_VERSION}" ]]; then
   echo -e "\n*** Downloading GROMACS ${GROMACS_VERSION} ***\n"
   # Spack's OpenSSL libs on LD_LIBRARY_PATH can break the system git-remote-https
   # helper (mismatched libldap), so clone with a clean library path
-  LD_LIBRARY_PATH="" git clone -b "${GROMACS_VERSION}" -c advice.detachedHead=false --depth=1 ${VERBOSE_FLAG} --single-branch \
-    https://gitlab.com/gromacs/gromacs.git "${GROMACS_ROOT}"
+  if ! LD_LIBRARY_PATH="" retry_download git clone -b "${GROMACS_VERSION}" -c advice.detachedHead=false --depth=1 ${VERBOSE_FLAG} --single-branch \
+    https://gitlab.com/gromacs/gromacs.git "${GROMACS_ROOT}"; then
+    echo -e "\nERROR: Downloading GROMACS ${GROMACS_VERSION} failed"
+    ${EXIT_CMD} 1
+  fi
   cd "${GROMACS_ROOT}" || ${EXIT_CMD} 1
   GROMACS_REVISION="$(git rev-parse --short HEAD)"
 
@@ -2117,7 +2111,7 @@ if [[ -n "${GROMACS_VERSION}" ]]; then
   if ((EXIT_CODE != 0)); then
     echo "ERROR: The CMake configuration step for GROMACS failed with the error code ${EXIT_CODE}"
     [[ "${IN_CONTAINER}" == "yes" ]] && mkdir -p /workspace/artifacts/ && cp "${GROMACS_BUILD_PATH}"/*.log /workspace/artifacts/
-    tail -n 200 "${GROMACS_BUILD_PATH}"/cmake.log
+    tail -n 1000 "${GROMACS_BUILD_PATH}"/cmake.log
     echo -e "\nStatus: FAILED\n"
     ${EXIT_CMD} "${EXIT_CODE}"
   fi
@@ -2129,7 +2123,7 @@ if [[ -n "${GROMACS_VERSION}" ]]; then
   if ((EXIT_CODE != 0)); then
     echo "ERROR: The CMake build step for GROMACS failed with the error code ${EXIT_CODE}"
     [[ "${IN_CONTAINER}" == "yes" ]] && mkdir -p /workspace/artifacts/ && cp "${GROMACS_BUILD_PATH}"/*.log /workspace/artifacts/
-    tail -n 200 "${GROMACS_BUILD_PATH}"/make.log
+    tail -n 1000 "${GROMACS_BUILD_PATH}"/make.log
     ${EXIT_CMD} "${EXIT_CODE}"
   fi
 
@@ -2141,7 +2135,7 @@ if [[ -n "${GROMACS_VERSION}" ]]; then
   if ((EXIT_CODE != 0)); then
     [[ "${IN_CONTAINER}" == "yes" ]] && mkdir -p /workspace/artifacts/ && cp "${GROMACS_BUILD_PATH}"/*.log /workspace/artifacts/
     echo -e "\nERROR: The CMake installation step for GROMACS failed with the error code ${EXIT_CODE}"
-    tail -n 100 "${GROMACS_BUILD_PATH}"/install.log
+    tail -n 1000 "${GROMACS_BUILD_PATH}"/install.log
     ${EXIT_CMD} "${EXIT_CODE}"
   fi
 
@@ -2193,8 +2187,11 @@ if [[ -n "${ASE_VERSION}" ]]; then
   echo -e "\n*** Downloading ASE ${ASE_VERSION} ***\n"
   # Spack's OpenSSL libs on LD_LIBRARY_PATH can break the system git-remote-https
   # helper (mismatched libldap), so clone with a clean library path
-  LD_LIBRARY_PATH="" git clone -b "${ASE_VERSION}" -c advice.detachedHead=false --depth=1 ${VERBOSE_FLAG} --single-branch \
-    https://gitlab.com/ase/ase.git "${ASE_ROOT}"
+  if ! LD_LIBRARY_PATH="" retry_download git clone -b "${ASE_VERSION}" -c advice.detachedHead=false --depth=1 ${VERBOSE_FLAG} --single-branch \
+    https://gitlab.com/ase/ase.git "${ASE_ROOT}"; then
+    echo -e "\nERROR: Downloading ASE ${ASE_VERSION} failed"
+    ${EXIT_CMD} 1
+  fi
   cd "${ASE_ROOT}" || ${EXIT_CMD} 1
   ASE_REVISION="$(git rev-parse --short HEAD)"
 
@@ -2205,7 +2202,7 @@ if [[ -n "${ASE_VERSION}" ]]; then
     ${EXIT_CMD} 1
   fi
   export PATH="${INSTALL_PREFIX}/ase/bin:${PATH}"
-  if ! "${INSTALL_PREFIX}"/ase/bin/python3 -m pip install --ignore-installed ${VERBOSE_FLAG} ".[test]"; then
+  if ! retry_download "${INSTALL_PREFIX}"/ase/bin/python3 -m pip install --ignore-installed ${VERBOSE_FLAG} ".[test]"; then
     echo -e "\nERROR: The ASE installation (venv) failed"
     ${EXIT_CMD} 1
   fi
@@ -2215,7 +2212,7 @@ cp2k_shell = ${INSTALL_PREFIX}/bin/cp2k_shell
 cp2k_main =  ${INSTALL_PREFIX}/bin/cp2k
 ***
   # Install additional packages for ASE
-  if ! "${INSTALL_PREFIX}"/ase/bin/python3 -m pip install --ignore-installed ${VERBOSE_FLAG} matplotlib numpy packaging six spglib; then
+  if ! retry_download "${INSTALL_PREFIX}"/ase/bin/python3 -m pip install --ignore-installed ${VERBOSE_FLAG} matplotlib numpy packaging six spglib; then
     echo -e "\nERROR: The installation of additional packages for ASE failed"
     ${EXIT_CMD} 1
   fi
