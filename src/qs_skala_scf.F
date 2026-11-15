@@ -3214,7 +3214,7 @@ CONTAINS
       INTEGER, ALLOCATABLE                               :: descriptors(:), domains(:), &
                                                             jump_owners(:), points(:, :), spins(:)
       LOGICAL                                            :: capture_jumps, fixed_orbitals, restore, &
-                                                            valid
+                                                            skala_limits, valid, weighted_limit
       LOGICAL, ALLOCATABLE                               :: assembled(:)
       REAL(dp)                                           :: energy, kinetic_probe, &
                                                             kinetic_tolerance, probe, tolerance
@@ -3250,18 +3250,21 @@ CONTAINS
                                          probe, tolerance, descriptors=descriptors, domains=domains, &
                                          kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance, targets=targets)
       ALLOCATE (weights(m), gradient(n), physical(n), assembled(m), values(m))
-      weights = 0.0_dp
       assembled = .FALSE.
-      CALL skala_density_constraints_update_weights(state%constraints, weights)
       ! Native Skala selects the limiting covector independently at each registered descriptor,
       ! including positive density floors. Missing or nonunique owners still use full KS evaluations.
-      capture_jumps = skala_only_functional(state)
+      skala_limits = skala_only_functional(state)
+      capture_jumps = skala_limits
       IF (.NOT. capture_jumps .AND. ALL(targets >= 0.0_dp) .AND. ANY(targets > 0.0_dp) .AND. &
           ALL(descriptors == skala_density_descriptor)) THEN
          functionals => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC%XC_FUNCTIONAL")
          capture_jumps = xc_functionals_floor_jumps_available(functionals)
       END IF
       IF (PRESENT(assemble_jumps)) capture_jumps = capture_jumps .AND. assemble_jumps
+      weighted_limit = skala_limits .AND. capture_jumps .AND. ANY(original_weights /= 0.0_dp)
+      weights = 0.0_dp
+      IF (weighted_limit) weights = original_weights
+      CALL skala_density_constraints_update_weights(state%constraints, weights)
       ! A zero-density constraint can coexist with positive spin floors. Its absent local
       ! owner keeps the complete KS fallback without discarding the other primitive jumps.
       IF (capture_jumps) CALL skala_density_jumps_begin(state%constraints)
@@ -3285,6 +3288,12 @@ CONTAINS
       END IF
       ! Only the derivative selection changes from here. Keep the same installed MOs and density.
       fixed_orbitals = .TRUE.
+      IF (weighted_limit .AND. (.NOT. valid .OR. .NOT. ALL(assembled))) THEN
+         weights = 0.0_dp
+         CALL skala_density_constraints_update_weights(state%constraints, weights)
+         CALL evaluate_limiting_state(state, coordinate, energy, positive_gradient, fixed_orbitals)
+         weighted_limit = .FALSE.
+      END IF
       last_limit = 0
       IF (valid) THEN
          DO i = 1, m
@@ -3295,6 +3304,12 @@ CONTAINS
                IF (assembled(i)) negative_changes(:, i) = jump_values(i)*physical
             END IF
          END DO
+         IF (weighted_limit) THEN
+            ! The collected jumps are independent of the selected weights. Recover the
+            ! positive covector while leaving the accepted KS operator installed.
+            positive_gradient(:) = positive_gradient - MATMUL(negative_changes, original_weights)
+            RETURN
+         END IF
          DO i = 1, m
             IF (assembled(i)) CYCLE
             weights(i) = 1.0_dp
