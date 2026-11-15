@@ -2917,13 +2917,15 @@ CONTAINS
    INTEGER, INTENT(in)                                :: grad_deriv, npoints
    CHARACTER(LEN=default_string_length), INTENT(IN)   :: func_name
    REAL(KIND=dp), INTENT(in)                          :: sc
-   TYPE(libxc_worker_set_type), INTENT(INOUT)         :: workers
+   TYPE(libxc_worker_set_type), INTENT(INOUT), TARGET :: workers
    TYPE(xc_rho_set_type), INTENT(IN) :: rho_set
    TYPE(twofold_real_type) :: sigma_precise(3)
 
    INTEGER                                            :: bsize, family, i, i0, ib, ii, ithread, &
                                                          nb, nblocks, nthreads
-   LOGICAL                                            :: is_gga, is_mgga
+   LOGICAL                                            :: has_laplace, is_gga, is_mgga, no_exc
+   REAL(KIND=dp)                                      :: eps_rho, eps_tau
+   TYPE(libxc_worker_type), POINTER                   :: w
 
    ithread = 0
    nthreads = 1
@@ -2949,148 +2951,150 @@ CONTAINS
    CALL libxc_family_flags(family, is_gga, is_mgga, TRIM(func_name))
 
    ! Below the cutoff LibXC leaves outputs at zero, so no test is needed here.
-   ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace, &
-              no_exc => workers%no_exc, eps_rho => workers%epsilon_rho, &
-              eps_tau => workers%epsilon_tau)
-      !$OMP    DO
-      DO ib = 1, nblocks
-         IF (libxc_is_gpu()) CALL libxc_worker_resize_cuda(w, workers%family, workers%nspin, npoints)
-         i0 = (ib - 1)*bsize
-         nb = MIN(bsize, npoints - i0)
+   ! Avoid ifx crashes with ASSOCIATE inside the parallel region.
+   w => workers%worker(ithread + 1)
+   has_laplace = workers%has_laplace
+   no_exc = workers%no_exc
+   eps_rho = workers%epsilon_rho
+   eps_tau = workers%epsilon_tau
+   !$OMP    DO
+   DO ib = 1, nblocks
+      IF (libxc_is_gpu()) CALL libxc_worker_resize_cuda(w, workers%family, workers%nspin, npoints)
+      i0 = (ib - 1)*bsize
+      nb = MIN(bsize, npoints - i0)
 
-         ! stage this block's inputs in LibXC's layout
+      ! stage this block's inputs in LibXC's layout
+      DO i = 1, nb
+         w%rho(1, i) = rho(i0 + i)
+      END DO
+      IF (is_gga) THEN
          DO i = 1, nb
-            w%rho(1, i) = rho(i0 + i)
+            w%sigma(1, i) = norm_drho(i0 + i)**2
+         END DO
+      END IF
+      IF (is_mgga) THEN
+         DO i = 1, nb
+            ii = i0 + i
+            w%lapl(1, i) = laplace_rho(ii)
+            w%tau(1, i) = tau(ii)
+         END DO
+         ! Continue at nonpositive tau without discarding finite density.
+         ! The projection's Jacobian and curvature are applied after evaluation.
+         DO i = 1, nb
+            CALL libxc_precise_sigma(rho_set, i0 + i, 1, [norm_drho(i0 + i), 0.0_dp, 0.0_dp], sigma_precise)
+            w%sigma(1, i) = twofold_value(sigma_precise(1))
+            w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau(i0 + i), eps_rho, eps_tau, &
+                                               sigma_precise=sigma_precise(1))
+         END DO
+      END IF
+
+      ! one LibXC call for the whole block, on the host or the device
+      CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
+      IF (is_mgga .AND. grad_deriv >= 1) THEN
+         DO i = 1, nb
+            CALL libxc_precise_sigma(rho_set, i0 + i, 1, [norm_drho(i0 + i), 0.0_dp, 0.0_dp], sigma_precise)
+            CALL libxc_mgga_tau_pullback(w, i, [tau(i0 + i)], 1, grad_deriv, has_laplace, eps_rho, eps_tau, &
+                                         sigma_precise=sigma_precise)
+         END DO
+      END IF
+
+      ! accumulate; each derivative is added by exactly one loop
+      DO i = 1, nb
+         ii = i0 + i
+         e_0(ii) = e_0(ii) + sc*w%exc(i)*rho(ii)
+      END DO
+      IF (grad_deriv >= 1) THEN
+         DO i = 1, nb
+            ii = i0 + i
+            e_rho(ii) = e_rho(ii) + sc*w%vrho(1, i)
          END DO
          IF (is_gga) THEN
             DO i = 1, nb
-               w%sigma(1, i) = norm_drho(i0 + i)**2
+               ii = i0 + i
+               e_ndrho(ii) = e_ndrho(ii) + sc*2.0_dp*w%vsigma(1, i)*norm_drho(ii)
+            END DO
+            DO i = 1, nb
+               ii = i0 + i
+               e_gamma(ii) = e_gamma(ii) + sc*w%vsigma(1, i)
             END DO
          END IF
          IF (is_mgga) THEN
             DO i = 1, nb
                ii = i0 + i
-               w%lapl(1, i) = laplace_rho(ii)
-               w%tau(1, i) = tau(ii)
-            END DO
-            ! Continue at nonpositive tau without discarding finite density.
-            ! The projection's Jacobian and curvature are applied after evaluation.
-            DO i = 1, nb
-               CALL libxc_precise_sigma(rho_set, i0 + i, 1, [norm_drho(i0 + i), 0.0_dp, 0.0_dp], sigma_precise)
-               w%sigma(1, i) = twofold_value(sigma_precise(1))
-               w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau(i0 + i), eps_rho, eps_tau, &
-                                                  sigma_precise=sigma_precise(1))
+               e_tau(ii) = e_tau(ii) + sc*w%vtau(1, i)
             END DO
          END IF
-
-         ! one LibXC call for the whole block, on the host or the device
-         CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
-         IF (is_mgga .AND. grad_deriv >= 1) THEN
+         IF (is_mgga .AND. has_laplace) THEN
             DO i = 1, nb
-               CALL libxc_precise_sigma(rho_set, i0 + i, 1, [norm_drho(i0 + i), 0.0_dp, 0.0_dp], sigma_precise)
-               CALL libxc_mgga_tau_pullback(w, i, [tau(i0 + i)], 1, grad_deriv, has_laplace, eps_rho, eps_tau, &
-                                            sigma_precise=sigma_precise)
+               ii = i0 + i
+               e_laplace_rho(ii) = e_laplace_rho(ii) + sc*w%vlapl(1, i)
             END DO
          END IF
-
-         ! accumulate; each derivative is added by exactly one loop
+      END IF
+      IF (grad_deriv >= 2) THEN
          DO i = 1, nb
             ii = i0 + i
-            e_0(ii) = e_0(ii) + sc*w%exc(i)*rho(ii)
+            e_rho_rho(ii) = e_rho_rho(ii) + sc*w%v2rho2(1, i)
          END DO
-         IF (grad_deriv >= 1) THEN
+         IF (is_gga) THEN
             DO i = 1, nb
                ii = i0 + i
-               e_rho(ii) = e_rho(ii) + sc*w%vrho(1, i)
+               e_ndrho_rho(ii) = e_ndrho_rho(ii) + sc*2.0_dp*w%v2rhosigma(1, i)*norm_drho(ii)
+               e_ndrho_ndrho(ii) = e_ndrho_ndrho(ii) + &
+                                   sc*2.0_dp*(2.0_dp*w%sigma(1, i)*w%v2sigma2(1, i) + w%vsigma(1, i))
             END DO
-            IF (is_gga) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  e_ndrho(ii) = e_ndrho(ii) + sc*2.0_dp*w%vsigma(1, i)*norm_drho(ii)
-               END DO
-               DO i = 1, nb
-                  ii = i0 + i
-                  e_gamma(ii) = e_gamma(ii) + sc*w%vsigma(1, i)
-               END DO
-            END IF
-            IF (is_mgga) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  e_tau(ii) = e_tau(ii) + sc*w%vtau(1, i)
-               END DO
-            END IF
-            IF (is_mgga .AND. has_laplace) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  e_laplace_rho(ii) = e_laplace_rho(ii) + sc*w%vlapl(1, i)
-               END DO
-            END IF
-         END IF
-         IF (grad_deriv >= 2) THEN
             DO i = 1, nb
                ii = i0 + i
-               e_rho_rho(ii) = e_rho_rho(ii) + sc*w%v2rho2(1, i)
+               #:for descs, arr, idx in ugga_fill_2
+                  e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+               #:endfor
             END DO
-            IF (is_gga) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  e_ndrho_rho(ii) = e_ndrho_rho(ii) + sc*2.0_dp*w%v2rhosigma(1, i)*norm_drho(ii)
-                  e_ndrho_ndrho(ii) = e_ndrho_ndrho(ii) + &
-                                      sc*2.0_dp*(2.0_dp*w%sigma(1, i)*w%v2sigma2(1, i) + w%vsigma(1, i))
-               END DO
-               DO i = 1, nb
-                  ii = i0 + i
-                  #:for descs, arr, idx in ugga_fill_2
-                     e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-                  #:endfor
-               END DO
-            END IF
-            IF (is_mgga) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  #:for descs, arr, idx in umgga_extra_2
-                     e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-                  #:endfor
-                  e_rho_tau(ii) = e_rho_tau(ii) + sc*w%v2rhotau(1, i)
-                  e_ndrho_tau(ii) = e_ndrho_tau(ii) + sc*2.0_dp*w%v2sigmatau(1, i)*norm_drho(ii)
-                  e_tau_tau(ii) = e_tau_tau(ii) + sc*w%v2tau2(1, i)
-               END DO
-            END IF
-            IF (is_mgga .AND. has_laplace) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  e_rho_laplace_rho(ii) = e_rho_laplace_rho(ii) + sc*w%v2rholapl(1, i)
-                  e_ndrho_laplace_rho(ii) = e_ndrho_laplace_rho(ii) + &
-                                            sc*2.0_dp*w%v2sigmalapl(1, i)*norm_drho(ii)
-                  e_laplace_rho_laplace_rho(ii) = e_laplace_rho_laplace_rho(ii) + sc*w%v2lapl2(1, i)
-                  e_laplace_rho_tau(ii) = e_laplace_rho_tau(ii) + sc*w%v2lapltau(1, i)
-               END DO
-            END IF
          END IF
-         IF (grad_deriv >= 3) THEN
+         IF (is_mgga) THEN
             DO i = 1, nb
                ii = i0 + i
-               e_rho_rho_rho(ii) = e_rho_rho_rho(ii) + sc*w%v3rho3(1, i)
+               #:for descs, arr, idx in umgga_extra_2
+                  e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+               #:endfor
+               e_rho_tau(ii) = e_rho_tau(ii) + sc*w%v2rhotau(1, i)
+               e_ndrho_tau(ii) = e_ndrho_tau(ii) + sc*2.0_dp*w%v2sigmatau(1, i)*norm_drho(ii)
+               e_tau_tau(ii) = e_tau_tau(ii) + sc*w%v2tau2(1, i)
             END DO
-            IF (is_mgga) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  #:for descs, arr, idx in umgga_fill_3
-                     e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-                  #:endfor
-               END DO
-            ELSE IF (is_gga) THEN
-               DO i = 1, nb
-                  ii = i0 + i
-                  #:for descs, arr, idx in ugga_fill_3
-                     e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-                  #:endfor
-               END DO
-            END IF
          END IF
-      END DO
+         IF (is_mgga .AND. has_laplace) THEN
+            DO i = 1, nb
+               ii = i0 + i
+               e_rho_laplace_rho(ii) = e_rho_laplace_rho(ii) + sc*w%v2rholapl(1, i)
+               e_ndrho_laplace_rho(ii) = e_ndrho_laplace_rho(ii) + &
+                                         sc*2.0_dp*w%v2sigmalapl(1, i)*norm_drho(ii)
+               e_laplace_rho_laplace_rho(ii) = e_laplace_rho_laplace_rho(ii) + sc*w%v2lapl2(1, i)
+               e_laplace_rho_tau(ii) = e_laplace_rho_tau(ii) + sc*w%v2lapltau(1, i)
+            END DO
+         END IF
+      END IF
+      IF (grad_deriv >= 3) THEN
+         DO i = 1, nb
+            ii = i0 + i
+            e_rho_rho_rho(ii) = e_rho_rho_rho(ii) + sc*w%v3rho3(1, i)
+         END DO
+         IF (is_mgga) THEN
+            DO i = 1, nb
+               ii = i0 + i
+               #:for descs, arr, idx in umgga_fill_3
+                  e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+               #:endfor
+            END DO
+         ELSE IF (is_gga) THEN
+            DO i = 1, nb
+               ii = i0 + i
+               #:for descs, arr, idx in ugga_fill_3
+                  e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+               #:endfor
+            END DO
+         END IF
+      END IF
+   END DO
 !$OMP    END DO
-   END ASSOCIATE
 
 END SUBROUTINE libxc_spin_unpolarized_calc
 #endif
@@ -3228,7 +3232,7 @@ REAL(KIND=dp), DIMENSION(*), INTENT(INOUT) :: e_ndrhoa_laplace_rhob, e_ndrhob_la
 INTEGER, INTENT(in)                                :: grad_deriv, npoints
 CHARACTER(LEN=default_string_length), INTENT(IN)   :: func_name
 REAL(KIND=dp), INTENT(in)                          :: sc
-TYPE(libxc_worker_set_type), INTENT(INOUT)         :: workers
+TYPE(libxc_worker_set_type), INTENT(INOUT), TARGET :: workers
 TYPE(xc_rho_set_type), INTENT(IN) :: rho_set
 TYPE(twofold_real_type) :: sigma_precise(3)
 REAL(dp), INTENT(IN), OPTIONAL :: floor_slopes(:, :)
@@ -3236,7 +3240,9 @@ REAL(dp), INTENT(IN) :: floor_tolerance
 
 INTEGER                                            :: bsize, family, i, i0, ib, ii, ithread, &
                                                       nb, nblocks, nthreads
-LOGICAL                                            :: is_gga, is_mgga
+LOGICAL                                            :: has_laplace, is_gga, is_mgga, no_exc
+REAL(KIND=dp)                                      :: eps_rho, eps_tau
+TYPE(libxc_worker_type), POINTER                   :: w
 
 ithread = 0
 nthreads = 1
@@ -3261,272 +3267,274 @@ CALL libxc_family_flags(family, is_gga, is_mgga, TRIM(func_name))
 
 ! Density and tau cutoffs are applied by LibXC itself, as in the
 ! spin-unpolarized case.
-ASSOCIATE (w => workers%worker(ithread + 1), has_laplace => workers%has_laplace, &
-           no_exc => workers%no_exc, eps_rho => workers%epsilon_rho, &
-           eps_tau => workers%epsilon_tau)
+! Avoid ifx crashes with ASSOCIATE inside the parallel region.
+w => workers%worker(ithread + 1)
+has_laplace = workers%has_laplace
+no_exc = workers%no_exc
+eps_rho = workers%epsilon_rho
+eps_tau = workers%epsilon_tau
 !$OMP    DO
-   DO ib = 1, nblocks
-      IF (libxc_is_gpu()) CALL libxc_worker_resize_cuda(w, workers%family, workers%nspin, npoints)
-      i0 = (ib - 1)*bsize
-      nb = MIN(bsize, npoints - i0)
+DO ib = 1, nblocks
+   IF (libxc_is_gpu()) CALL libxc_worker_resize_cuda(w, workers%family, workers%nspin, npoints)
+   i0 = (ib - 1)*bsize
+   nb = MIN(bsize, npoints - i0)
 
-      ! stage this block's inputs in LibXC's layout
+   ! stage this block's inputs in LibXC's layout
+   DO i = 1, nb
+      ii = i0 + i
+      w%rho(1, i) = MAX(rhoa(ii), 0.0_dp)
+      w%rho(2, i) = MAX(rhob(ii), 0.0_dp)
+      IF (PRESENT(floor_slopes)) THEN
+         IF (floor_slopes(1, ii) >= 0.0_dp) THEN
+            CPASSERT(ABS(rhoa(ii) - libxc_density_floor(eps_rho)) <= floor_tolerance)
+         END IF
+         IF (floor_slopes(2, ii) >= 0.0_dp) THEN
+            CPASSERT(ABS(rhob(ii) - libxc_density_floor(eps_rho)) <= floor_tolerance)
+         END IF
+      END IF
+      ! Keep the original total-density screen, but evaluate active spin floors
+      ! on the positive branch of Libxc's internal per-spin exchange screen.
+      IF (SUM(w%rho(:, i)) >= eps_rho) w%rho(:, i) = MAX(w%rho(:, i), libxc_density_floor(eps_rho))
+   END DO
+   IF (is_gga) THEN
+      ! Use the actual norms in the energy and their contractions. An artificial
+      ! positive floor would change uniform-spin energies and their derivatives.
       DO i = 1, nb
          ii = i0 + i
-         w%rho(1, i) = MAX(rhoa(ii), 0.0_dp)
-         w%rho(2, i) = MAX(rhob(ii), 0.0_dp)
+         w%nda(i) = norm_drhoa(ii)
+         w%ndb(i) = norm_drhob(ii)
+         w%nd(i) = norm_drho(ii)
+         w%sigma(1, i) = w%nda(i)**2
+         w%sigma(3, i) = w%ndb(i)**2
+         w%sigma(2, i) = 0.5_dp*(w%nd(i)**2 - w%sigma(1, i) - w%sigma(3, i))
+      END DO
+   END IF
+   IF (is_mgga) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         w%lapl(1, i) = laplace_rhoa(ii)
+         w%lapl(2, i) = laplace_rhob(ii)
+         w%tau(1, i) = MAX(tau_a(ii), 0.0_dp)
+         w%tau(2, i) = MAX(tau_b(ii), 0.0_dp)
+      END DO
+      ! Apply the same continuous kinetic-density projection per spin channel.
+      DO i = 1, nb
+         CALL libxc_precise_sigma(rho_set, i0 + i, 2, &
+                                  [norm_drhoa(i0 + i), norm_drho(i0 + i), norm_drhob(i0 + i)], sigma_precise)
+         w%sigma(:, i) = twofold_value(sigma_precise)
+         w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau_a(i0 + i), eps_rho, eps_tau, &
+                                            sigma_precise=sigma_precise(1))
+         w%tau(2, i) = libxc_c2_project_tau(w%rho(2, i), w%sigma(3, i), tau_b(i0 + i), eps_rho, eps_tau, &
+                                            sigma_precise=sigma_precise(3))
+      END DO
+   END IF
+
+   ! one LibXC call for the whole block, on the host or the device
+   CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
+   DO i = 1, nb
+      w%rho(:, i) = MAX([rhoa(i0 + i), rhob(i0 + i)], 0.0_dp)
+   END DO
+   IF (grad_deriv >= 1 .AND. .NOT. no_exc) THEN
+      DO i = 1, nb
          IF (PRESENT(floor_slopes)) THEN
-            IF (floor_slopes(1, ii) >= 0.0_dp) THEN
-               CPASSERT(ABS(rhoa(ii) - libxc_density_floor(eps_rho)) <= floor_tolerance)
-            END IF
-            IF (floor_slopes(2, ii) >= 0.0_dp) THEN
-               CPASSERT(ABS(rhob(ii) - libxc_density_floor(eps_rho)) <= floor_tolerance)
-            END IF
+            CALL libxc_spin_floor_pullback(w, i, grad_deriv, has_laplace, eps_rho, floor_slopes(:, i0 + i))
+         ELSE
+            CALL libxc_spin_floor_pullback(w, i, grad_deriv, has_laplace, eps_rho)
          END IF
-         ! Keep the original total-density screen, but evaluate active spin floors
-         ! on the positive branch of Libxc's internal per-spin exchange screen.
-         IF (SUM(w%rho(:, i)) >= eps_rho) w%rho(:, i) = MAX(w%rho(:, i), libxc_density_floor(eps_rho))
+      END DO
+   END IF
+   IF (is_mgga .AND. grad_deriv >= 1) THEN
+      DO i = 1, nb
+         CALL libxc_precise_sigma(rho_set, i0 + i, 2, &
+                                  [norm_drhoa(i0 + i), norm_drho(i0 + i), norm_drhob(i0 + i)], sigma_precise)
+         IF (PRESENT(floor_slopes)) THEN
+            CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
+                                 grad_deriv, has_laplace, eps_rho, eps_tau, floor_slopes(:, i0 + i), sigma_precise=sigma_precise)
+         ELSE
+            CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
+                                         grad_deriv, has_laplace, eps_rho, eps_tau, sigma_precise=sigma_precise)
+         END IF
+      END DO
+   END IF
+   IF (grad_deriv >= 1) THEN
+      DO i = 1, nb
+         CALL libxc_spin_density_pullback(w, i, [rhoa(i0 + i), rhob(i0 + i)], grad_deriv)
+      END DO
+   END IF
+   ! accumulate; one loop per group of derivatives, selected by the
+   ! order requested and the family
+   DO i = 1, nb
+      ii = i0 + i
+      e_0(ii) = e_0(ii) + sc*w%exc(i)*(w%rho(1, i) + w%rho(2, i))
+   END DO
+   IF (grad_deriv >= 1) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         e_rhoa(ii) = e_rhoa(ii) + sc*w%vrho(1, i)
+         e_rhob(ii) = e_rhob(ii) + sc*w%vrho(2, i)
       END DO
       IF (is_gga) THEN
-         ! Use the actual norms in the energy and their contractions. An artificial
-         ! positive floor would change uniform-spin energies and their derivatives.
          DO i = 1, nb
             ii = i0 + i
-            w%nda(i) = norm_drhoa(ii)
-            w%ndb(i) = norm_drhob(ii)
-            w%nd(i) = norm_drho(ii)
-            w%sigma(1, i) = w%nda(i)**2
-            w%sigma(3, i) = w%ndb(i)**2
-            w%sigma(2, i) = 0.5_dp*(w%nd(i)**2 - w%sigma(1, i) - w%sigma(3, i))
+            e_ndrho(ii) = e_ndrho(ii) + sc*w%vsigma(2, i)*w%nd(i)
+            e_ndrhoa(ii) = e_ndrhoa(ii) + &
+                           sc*(2.0_dp*w%vsigma(1, i) - w%vsigma(2, i))*w%nda(i)
+            e_ndrhob(ii) = e_ndrhob(ii) + &
+                           sc*(2.0_dp*w%vsigma(3, i) - w%vsigma(2, i))*w%ndb(i)
          END DO
       END IF
       IF (is_mgga) THEN
          DO i = 1, nb
             ii = i0 + i
-            w%lapl(1, i) = laplace_rhoa(ii)
-            w%lapl(2, i) = laplace_rhob(ii)
-            w%tau(1, i) = MAX(tau_a(ii), 0.0_dp)
-            w%tau(2, i) = MAX(tau_b(ii), 0.0_dp)
-         END DO
-         ! Apply the same continuous kinetic-density projection per spin channel.
-         DO i = 1, nb
-            CALL libxc_precise_sigma(rho_set, i0 + i, 2, &
-                                     [norm_drhoa(i0 + i), norm_drho(i0 + i), norm_drhob(i0 + i)], sigma_precise)
-            w%sigma(:, i) = twofold_value(sigma_precise)
-            w%tau(1, i) = libxc_c2_project_tau(w%rho(1, i), w%sigma(1, i), tau_a(i0 + i), eps_rho, eps_tau, &
-                                               sigma_precise=sigma_precise(1))
-            w%tau(2, i) = libxc_c2_project_tau(w%rho(2, i), w%sigma(3, i), tau_b(i0 + i), eps_rho, eps_tau, &
-                                               sigma_precise=sigma_precise(3))
+            e_tau_a(ii) = e_tau_a(ii) + sc*w%vtau(1, i)
+            e_tau_b(ii) = e_tau_b(ii) + sc*w%vtau(2, i)
          END DO
       END IF
-
-      ! one LibXC call for the whole block, on the host or the device
-      CALL libxc_worker_eval(w, workers%family, workers%nspin, grad_deriv, no_exc, nb)
-      DO i = 1, nb
-         w%rho(:, i) = MAX([rhoa(i0 + i), rhob(i0 + i)], 0.0_dp)
-      END DO
-      IF (grad_deriv >= 1 .AND. .NOT. no_exc) THEN
+      IF (is_mgga .AND. has_laplace) THEN
          DO i = 1, nb
-            IF (PRESENT(floor_slopes)) THEN
-               CALL libxc_spin_floor_pullback(w, i, grad_deriv, has_laplace, eps_rho, floor_slopes(:, i0 + i))
-            ELSE
-               CALL libxc_spin_floor_pullback(w, i, grad_deriv, has_laplace, eps_rho)
-            END IF
+            ii = i0 + i
+            e_laplace_rhoa(ii) = e_laplace_rhoa(ii) + sc*w%vlapl(1, i)
+            e_laplace_rhob(ii) = e_laplace_rhob(ii) + sc*w%vlapl(2, i)
          END DO
       END IF
-      IF (is_mgga .AND. grad_deriv >= 1) THEN
-         DO i = 1, nb
-            CALL libxc_precise_sigma(rho_set, i0 + i, 2, &
-                                     [norm_drhoa(i0 + i), norm_drho(i0 + i), norm_drhob(i0 + i)], sigma_precise)
-            IF (PRESENT(floor_slopes)) THEN
-               CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
-                                    grad_deriv, has_laplace, eps_rho, eps_tau, floor_slopes(:, i0 + i), sigma_precise=sigma_precise)
-            ELSE
-               CALL libxc_mgga_tau_pullback(w, i, [tau_a(i0 + i), tau_b(i0 + i)], 2, &
-                                            grad_deriv, has_laplace, eps_rho, eps_tau, sigma_precise=sigma_precise)
-            END IF
-         END DO
-      END IF
-      IF (grad_deriv >= 1) THEN
-         DO i = 1, nb
-            CALL libxc_spin_density_pullback(w, i, [rhoa(i0 + i), rhob(i0 + i)], grad_deriv)
-         END DO
-      END IF
-      ! accumulate; one loop per group of derivatives, selected by the
-      ! order requested and the family
+   END IF
+   IF (grad_deriv >= 2) THEN
       DO i = 1, nb
          ii = i0 + i
-         e_0(ii) = e_0(ii) + sc*w%exc(i)*(w%rho(1, i) + w%rho(2, i))
+         e_rhoa_rhoa(ii) = e_rhoa_rhoa(ii) + sc*w%v2rho2(1, i)
+         e_rhoa_rhob(ii) = e_rhoa_rhob(ii) + sc*w%v2rho2(2, i)
+         e_rhob_rhob(ii) = e_rhob_rhob(ii) + sc*w%v2rho2(3, i)
       END DO
-      IF (grad_deriv >= 1) THEN
+      IF (is_gga) THEN
          DO i = 1, nb
             ii = i0 + i
-            e_rhoa(ii) = e_rhoa(ii) + sc*w%vrho(1, i)
-            e_rhob(ii) = e_rhob(ii) + sc*w%vrho(2, i)
+            e_ndrho_rhoa(ii) = e_ndrho_rhoa(ii) + sc*w%v2rhosigma(2, i)*w%nd(i)
+            e_ndrho_rhob(ii) = e_ndrho_rhob(ii) + sc*w%v2rhosigma(5, i)*w%nd(i)
+            e_ndrhoa_rhoa(ii) = e_ndrhoa_rhoa(ii) + &
+                                sc*(2.0_dp*w%v2rhosigma(1, i) - w%v2rhosigma(2, i))*w%nda(i)
+            e_ndrhoa_rhob(ii) = e_ndrhoa_rhob(ii) + &
+                                sc*(2.0_dp*w%v2rhosigma(4, i) - w%v2rhosigma(5, i))*w%nda(i)
+            e_ndrhob_rhoa(ii) = e_ndrhob_rhoa(ii) + &
+                                sc*(2.0_dp*w%v2rhosigma(3, i) - w%v2rhosigma(2, i))*w%ndb(i)
+            e_ndrhob_rhob(ii) = e_ndrhob_rhob(ii) + &
+                                sc*(2.0_dp*w%v2rhosigma(6, i) - w%v2rhosigma(5, i))*w%ndb(i)
+            e_ndrho_ndrho(ii) = e_ndrho_ndrho(ii) + &
+                                sc*(w%vsigma(2, i) + w%nd(i)**2*w%v2sigma2(4, i))
+            e_ndrho_ndrhoa(ii) = e_ndrho_ndrhoa(ii) + &
+                                 sc*(2.0_dp*w%v2sigma2(2, i) - w%v2sigma2(4, i))*w%nd(i)*w%nda(i)
+            e_ndrho_ndrhob(ii) = e_ndrho_ndrhob(ii) + &
+                                 sc*(2.0_dp*w%v2sigma2(5, i) - w%v2sigma2(4, i))*w%nd(i)*w%ndb(i)
+            e_ndrhoa_ndrhoa(ii) = e_ndrhoa_ndrhoa(ii) + &
+                                  sc*(2.0_dp*w%vsigma(1, i) - w%vsigma(2, i) + w%nda(i)**2*( &
+                                      4.0_dp*w%v2sigma2(1, i) - 4.0_dp*w%v2sigma2(2, i) + w%v2sigma2(4, i)))
+            e_ndrhoa_ndrhob(ii) = e_ndrhoa_ndrhob(ii) + &
+                                  sc*(4.0_dp*w%v2sigma2(3, i) - 2.0_dp*w%v2sigma2(2, i) - &
+                                      2.0_dp*w%v2sigma2(5, i) + w%v2sigma2(4, i))*w%nda(i)*w%ndb(i)
+            e_ndrhob_ndrhob(ii) = e_ndrhob_ndrhob(ii) + &
+                                  sc*(2.0_dp*w%vsigma(3, i) - w%vsigma(2, i) + w%ndb(i)**2*( &
+                                      4.0_dp*w%v2sigma2(6, i) - 4.0_dp*w%v2sigma2(5, i) + w%v2sigma2(4, i)))
          END DO
-         IF (is_gga) THEN
-            DO i = 1, nb
-               ii = i0 + i
-               e_ndrho(ii) = e_ndrho(ii) + sc*w%vsigma(2, i)*w%nd(i)
-               e_ndrhoa(ii) = e_ndrhoa(ii) + &
-                              sc*(2.0_dp*w%vsigma(1, i) - w%vsigma(2, i))*w%nda(i)
-               e_ndrhob(ii) = e_ndrhob(ii) + &
-                              sc*(2.0_dp*w%vsigma(3, i) - w%vsigma(2, i))*w%ndb(i)
-            END DO
-         END IF
-         IF (is_mgga) THEN
-            DO i = 1, nb
-               ii = i0 + i
-               e_tau_a(ii) = e_tau_a(ii) + sc*w%vtau(1, i)
-               e_tau_b(ii) = e_tau_b(ii) + sc*w%vtau(2, i)
-            END DO
-         END IF
-         IF (is_mgga .AND. has_laplace) THEN
-            DO i = 1, nb
-               ii = i0 + i
-               e_laplace_rhoa(ii) = e_laplace_rhoa(ii) + sc*w%vlapl(1, i)
-               e_laplace_rhob(ii) = e_laplace_rhob(ii) + sc*w%vlapl(2, i)
-            END DO
-         END IF
       END IF
-      IF (grad_deriv >= 2) THEN
+      IF (is_mgga) THEN
          DO i = 1, nb
             ii = i0 + i
-            e_rhoa_rhoa(ii) = e_rhoa_rhoa(ii) + sc*w%v2rho2(1, i)
-            e_rhoa_rhob(ii) = e_rhoa_rhob(ii) + sc*w%v2rho2(2, i)
-            e_rhob_rhob(ii) = e_rhob_rhob(ii) + sc*w%v2rho2(3, i)
+            e_rhoa_tau_a(ii) = e_rhoa_tau_a(ii) + sc*w%v2rhotau(1, i)
+            e_rhoa_tau_b(ii) = e_rhoa_tau_b(ii) + sc*w%v2rhotau(2, i)
+            e_rhob_tau_a(ii) = e_rhob_tau_a(ii) + sc*w%v2rhotau(3, i)
+            e_rhob_tau_b(ii) = e_rhob_tau_b(ii) + sc*w%v2rhotau(4, i)
+            e_ndrho_tau_a(ii) = e_ndrho_tau_a(ii) + sc*w%v2sigmatau(3, i)*w%nd(i)
+            e_ndrho_tau_b(ii) = e_ndrho_tau_b(ii) + sc*w%v2sigmatau(4, i)*w%nd(i)
+            e_ndrhoa_tau_a(ii) = e_ndrhoa_tau_a(ii) + &
+                                 sc*(2.0_dp*w%v2sigmatau(1, i) - w%v2sigmatau(3, i))*w%nda(i)
+            e_ndrhoa_tau_b(ii) = e_ndrhoa_tau_b(ii) + &
+                                 sc*(2.0_dp*w%v2sigmatau(2, i) - w%v2sigmatau(4, i))*w%nda(i)
+            e_ndrhob_tau_a(ii) = e_ndrhob_tau_a(ii) + &
+                                 sc*(2.0_dp*w%v2sigmatau(5, i) - w%v2sigmatau(3, i))*w%ndb(i)
+            e_ndrhob_tau_b(ii) = e_ndrhob_tau_b(ii) + &
+                                 sc*(2.0_dp*w%v2sigmatau(6, i) - w%v2sigmatau(4, i))*w%ndb(i)
+            e_tau_a_tau_a(ii) = e_tau_a_tau_a(ii) + sc*w%v2tau2(1, i)
+            e_tau_a_tau_b(ii) = e_tau_a_tau_b(ii) + sc*w%v2tau2(2, i)
+            e_tau_b_tau_b(ii) = e_tau_b_tau_b(ii) + sc*w%v2tau2(3, i)
          END DO
-         IF (is_gga) THEN
-            DO i = 1, nb
-               ii = i0 + i
-               e_ndrho_rhoa(ii) = e_ndrho_rhoa(ii) + sc*w%v2rhosigma(2, i)*w%nd(i)
-               e_ndrho_rhob(ii) = e_ndrho_rhob(ii) + sc*w%v2rhosigma(5, i)*w%nd(i)
-               e_ndrhoa_rhoa(ii) = e_ndrhoa_rhoa(ii) + &
-                                   sc*(2.0_dp*w%v2rhosigma(1, i) - w%v2rhosigma(2, i))*w%nda(i)
-               e_ndrhoa_rhob(ii) = e_ndrhoa_rhob(ii) + &
-                                   sc*(2.0_dp*w%v2rhosigma(4, i) - w%v2rhosigma(5, i))*w%nda(i)
-               e_ndrhob_rhoa(ii) = e_ndrhob_rhoa(ii) + &
-                                   sc*(2.0_dp*w%v2rhosigma(3, i) - w%v2rhosigma(2, i))*w%ndb(i)
-               e_ndrhob_rhob(ii) = e_ndrhob_rhob(ii) + &
-                                   sc*(2.0_dp*w%v2rhosigma(6, i) - w%v2rhosigma(5, i))*w%ndb(i)
-               e_ndrho_ndrho(ii) = e_ndrho_ndrho(ii) + &
-                                   sc*(w%vsigma(2, i) + w%nd(i)**2*w%v2sigma2(4, i))
-               e_ndrho_ndrhoa(ii) = e_ndrho_ndrhoa(ii) + &
-                                    sc*(2.0_dp*w%v2sigma2(2, i) - w%v2sigma2(4, i))*w%nd(i)*w%nda(i)
-               e_ndrho_ndrhob(ii) = e_ndrho_ndrhob(ii) + &
-                                    sc*(2.0_dp*w%v2sigma2(5, i) - w%v2sigma2(4, i))*w%nd(i)*w%ndb(i)
-               e_ndrhoa_ndrhoa(ii) = e_ndrhoa_ndrhoa(ii) + &
-                                     sc*(2.0_dp*w%vsigma(1, i) - w%vsigma(2, i) + w%nda(i)**2*( &
-                                         4.0_dp*w%v2sigma2(1, i) - 4.0_dp*w%v2sigma2(2, i) + w%v2sigma2(4, i)))
-               e_ndrhoa_ndrhob(ii) = e_ndrhoa_ndrhob(ii) + &
-                                     sc*(4.0_dp*w%v2sigma2(3, i) - 2.0_dp*w%v2sigma2(2, i) - &
-                                         2.0_dp*w%v2sigma2(5, i) + w%v2sigma2(4, i))*w%nda(i)*w%ndb(i)
-               e_ndrhob_ndrhob(ii) = e_ndrhob_ndrhob(ii) + &
-                                     sc*(2.0_dp*w%vsigma(3, i) - w%vsigma(2, i) + w%ndb(i)**2*( &
-                                         4.0_dp*w%v2sigma2(6, i) - 4.0_dp*w%v2sigma2(5, i) + w%v2sigma2(4, i)))
-            END DO
-         END IF
-         IF (is_mgga) THEN
-            DO i = 1, nb
-               ii = i0 + i
-               e_rhoa_tau_a(ii) = e_rhoa_tau_a(ii) + sc*w%v2rhotau(1, i)
-               e_rhoa_tau_b(ii) = e_rhoa_tau_b(ii) + sc*w%v2rhotau(2, i)
-               e_rhob_tau_a(ii) = e_rhob_tau_a(ii) + sc*w%v2rhotau(3, i)
-               e_rhob_tau_b(ii) = e_rhob_tau_b(ii) + sc*w%v2rhotau(4, i)
-               e_ndrho_tau_a(ii) = e_ndrho_tau_a(ii) + sc*w%v2sigmatau(3, i)*w%nd(i)
-               e_ndrho_tau_b(ii) = e_ndrho_tau_b(ii) + sc*w%v2sigmatau(4, i)*w%nd(i)
-               e_ndrhoa_tau_a(ii) = e_ndrhoa_tau_a(ii) + &
-                                    sc*(2.0_dp*w%v2sigmatau(1, i) - w%v2sigmatau(3, i))*w%nda(i)
-               e_ndrhoa_tau_b(ii) = e_ndrhoa_tau_b(ii) + &
-                                    sc*(2.0_dp*w%v2sigmatau(2, i) - w%v2sigmatau(4, i))*w%nda(i)
-               e_ndrhob_tau_a(ii) = e_ndrhob_tau_a(ii) + &
-                                    sc*(2.0_dp*w%v2sigmatau(5, i) - w%v2sigmatau(3, i))*w%ndb(i)
-               e_ndrhob_tau_b(ii) = e_ndrhob_tau_b(ii) + &
-                                    sc*(2.0_dp*w%v2sigmatau(6, i) - w%v2sigmatau(4, i))*w%ndb(i)
-               e_tau_a_tau_a(ii) = e_tau_a_tau_a(ii) + sc*w%v2tau2(1, i)
-               e_tau_a_tau_b(ii) = e_tau_a_tau_b(ii) + sc*w%v2tau2(2, i)
-               e_tau_b_tau_b(ii) = e_tau_b_tau_b(ii) + sc*w%v2tau2(3, i)
-            END DO
-         END IF
-         IF (is_mgga .AND. has_laplace) THEN
-            DO i = 1, nb
-               ii = i0 + i
-               e_rhoa_laplace_rhoa(ii) = e_rhoa_laplace_rhoa(ii) + sc*w%v2rholapl(1, i)
-               e_rhoa_laplace_rhob(ii) = e_rhoa_laplace_rhob(ii) + sc*w%v2rholapl(2, i)
-               e_rhob_laplace_rhoa(ii) = e_rhob_laplace_rhoa(ii) + sc*w%v2rholapl(3, i)
-               e_rhob_laplace_rhob(ii) = e_rhob_laplace_rhob(ii) + sc*w%v2rholapl(4, i)
-               e_ndrho_laplace_rhoa(ii) = e_ndrho_laplace_rhoa(ii) + sc*w%v2sigmalapl(3, i)*w%nd(i)
-               e_ndrho_laplace_rhob(ii) = e_ndrho_laplace_rhob(ii) + sc*w%v2sigmalapl(4, i)*w%nd(i)
-               e_ndrhoa_laplace_rhoa(ii) = e_ndrhoa_laplace_rhoa(ii) + &
-                                           sc*(2.0_dp*w%v2sigmalapl(1, i) - w%v2sigmalapl(3, i))*w%nda(i)
-               e_ndrhoa_laplace_rhob(ii) = e_ndrhoa_laplace_rhob(ii) + &
-                                           sc*(2.0_dp*w%v2sigmalapl(2, i) - w%v2sigmalapl(4, i))*w%nda(i)
-               e_ndrhob_laplace_rhoa(ii) = e_ndrhob_laplace_rhoa(ii) + &
-                                           sc*(2.0_dp*w%v2sigmalapl(5, i) - w%v2sigmalapl(3, i))*w%ndb(i)
-               e_ndrhob_laplace_rhob(ii) = e_ndrhob_laplace_rhob(ii) + &
-                                           sc*(2.0_dp*w%v2sigmalapl(6, i) - w%v2sigmalapl(4, i))*w%ndb(i)
-               e_laplace_rhoa_laplace_rhoa(ii) = e_laplace_rhoa_laplace_rhoa(ii) + sc*w%v2lapl2(1, i)
-               e_laplace_rhoa_laplace_rhob(ii) = e_laplace_rhoa_laplace_rhob(ii) + sc*w%v2lapl2(2, i)
-               e_laplace_rhob_laplace_rhob(ii) = e_laplace_rhob_laplace_rhob(ii) + sc*w%v2lapl2(3, i)
-               e_laplace_rhoa_tau_a(ii) = e_laplace_rhoa_tau_a(ii) + sc*w%v2lapltau(1, i)
-               e_laplace_rhoa_tau_b(ii) = e_laplace_rhoa_tau_b(ii) + sc*w%v2lapltau(2, i)
-               e_laplace_rhob_tau_a(ii) = e_laplace_rhob_tau_a(ii) + sc*w%v2lapltau(3, i)
-               e_laplace_rhob_tau_b(ii) = e_laplace_rhob_tau_b(ii) + sc*w%v2lapltau(4, i)
-            END DO
-         END IF
       END IF
-      IF (grad_deriv >= 3) THEN
+      IF (is_mgga .AND. has_laplace) THEN
          DO i = 1, nb
             ii = i0 + i
-            e_rhoa_rhoa_rhoa(ii) = e_rhoa_rhoa_rhoa(ii) + sc*w%v3rho3(1, i)
-            e_rhoa_rhoa_rhob(ii) = e_rhoa_rhoa_rhob(ii) + sc*w%v3rho3(2, i)
-            e_rhoa_rhob_rhob(ii) = e_rhoa_rhob_rhob(ii) + sc*w%v3rho3(3, i)
-            e_rhob_rhob_rhob(ii) = e_rhob_rhob_rhob(ii) + sc*w%v3rho3(4, i)
+            e_rhoa_laplace_rhoa(ii) = e_rhoa_laplace_rhoa(ii) + sc*w%v2rholapl(1, i)
+            e_rhoa_laplace_rhob(ii) = e_rhoa_laplace_rhob(ii) + sc*w%v2rholapl(2, i)
+            e_rhob_laplace_rhoa(ii) = e_rhob_laplace_rhoa(ii) + sc*w%v2rholapl(3, i)
+            e_rhob_laplace_rhob(ii) = e_rhob_laplace_rhob(ii) + sc*w%v2rholapl(4, i)
+            e_ndrho_laplace_rhoa(ii) = e_ndrho_laplace_rhoa(ii) + sc*w%v2sigmalapl(3, i)*w%nd(i)
+            e_ndrho_laplace_rhob(ii) = e_ndrho_laplace_rhob(ii) + sc*w%v2sigmalapl(4, i)*w%nd(i)
+            e_ndrhoa_laplace_rhoa(ii) = e_ndrhoa_laplace_rhoa(ii) + &
+                                        sc*(2.0_dp*w%v2sigmalapl(1, i) - w%v2sigmalapl(3, i))*w%nda(i)
+            e_ndrhoa_laplace_rhob(ii) = e_ndrhoa_laplace_rhob(ii) + &
+                                        sc*(2.0_dp*w%v2sigmalapl(2, i) - w%v2sigmalapl(4, i))*w%nda(i)
+            e_ndrhob_laplace_rhoa(ii) = e_ndrhob_laplace_rhoa(ii) + &
+                                        sc*(2.0_dp*w%v2sigmalapl(5, i) - w%v2sigmalapl(3, i))*w%ndb(i)
+            e_ndrhob_laplace_rhob(ii) = e_ndrhob_laplace_rhob(ii) + &
+                                        sc*(2.0_dp*w%v2sigmalapl(6, i) - w%v2sigmalapl(4, i))*w%ndb(i)
+            e_laplace_rhoa_laplace_rhoa(ii) = e_laplace_rhoa_laplace_rhoa(ii) + sc*w%v2lapl2(1, i)
+            e_laplace_rhoa_laplace_rhob(ii) = e_laplace_rhoa_laplace_rhob(ii) + sc*w%v2lapl2(2, i)
+            e_laplace_rhob_laplace_rhob(ii) = e_laplace_rhob_laplace_rhob(ii) + sc*w%v2lapl2(3, i)
+            e_laplace_rhoa_tau_a(ii) = e_laplace_rhoa_tau_a(ii) + sc*w%v2lapltau(1, i)
+            e_laplace_rhoa_tau_b(ii) = e_laplace_rhoa_tau_b(ii) + sc*w%v2lapltau(2, i)
+            e_laplace_rhob_tau_a(ii) = e_laplace_rhob_tau_a(ii) + sc*w%v2lapltau(3, i)
+            e_laplace_rhob_tau_b(ii) = e_laplace_rhob_tau_b(ii) + sc*w%v2lapltau(4, i)
          END DO
       END IF
-      IF (grad_deriv >= 1 .AND. is_gga) THEN
-         DO i = 1, nb
-            ii = i0 + i
-            #:for descs, arr, idx in gamma_only_1
-               e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-            #:endfor
-         END DO
-      END IF
-      IF (grad_deriv >= 2 .AND. is_gga) THEN
-         DO i = 1, nb
-            ii = i0 + i
-            #:for descs, arr, idx in gamma_only_2
-               e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-            #:endfor
-         END DO
-      END IF
-      IF (grad_deriv >= 2 .AND. is_mgga) THEN
-         DO i = 1, nb
-            ii = i0 + i
-            #:for descs, arr, idx in [e for e in mgga_fill_2 if e not in gga_fill_2]
-               e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-            #:endfor
-         END DO
-      END IF
-      IF (grad_deriv >= 3 .AND. is_mgga) THEN
-         DO i = 1, nb
-            ii = i0 + i
-            #:for descs, arr, idx in mgga_fill_3
-               e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-            #:endfor
-         END DO
-      END IF
-      IF (grad_deriv >= 3 .AND. is_gga .AND. .NOT. is_mgga) THEN
-         DO i = 1, nb
-            ii = i0 + i
-            #:for descs, arr, idx in gamma_only_3
-               e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
-            #:endfor
-         END DO
-      END IF
-   END DO
+   END IF
+   IF (grad_deriv >= 3) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         e_rhoa_rhoa_rhoa(ii) = e_rhoa_rhoa_rhoa(ii) + sc*w%v3rho3(1, i)
+         e_rhoa_rhoa_rhob(ii) = e_rhoa_rhoa_rhob(ii) + sc*w%v3rho3(2, i)
+         e_rhoa_rhob_rhob(ii) = e_rhoa_rhob_rhob(ii) + sc*w%v3rho3(3, i)
+         e_rhob_rhob_rhob(ii) = e_rhob_rhob_rhob(ii) + sc*w%v3rho3(4, i)
+      END DO
+   END IF
+   IF (grad_deriv >= 1 .AND. is_gga) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         #:for descs, arr, idx in gamma_only_1
+            e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+         #:endfor
+      END DO
+   END IF
+   IF (grad_deriv >= 2 .AND. is_gga) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         #:for descs, arr, idx in gamma_only_2
+            e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+         #:endfor
+      END DO
+   END IF
+   IF (grad_deriv >= 2 .AND. is_mgga) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         #:for descs, arr, idx in [e for e in mgga_fill_2 if e not in gga_fill_2]
+            e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+         #:endfor
+      END DO
+   END IF
+   IF (grad_deriv >= 3 .AND. is_mgga) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         #:for descs, arr, idx in mgga_fill_3
+            e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+         #:endfor
+      END DO
+   END IF
+   IF (grad_deriv >= 3 .AND. is_gga .AND. .NOT. is_mgga) THEN
+      DO i = 1, nb
+         ii = i0 + i
+         #:for descs, arr, idx in gamma_only_3
+            e_${'_'.join(descs)}$ (ii) = e_${'_'.join(descs)}$ (ii) + sc*w%${arr}$ (${idx}$, i)
+         #:endfor
+      END DO
+   END IF
+END DO
 !$OMP    END DO
-END ASSOCIATE
 
 END SUBROUTINE libxc_spin_polarized_calc
 #endif
