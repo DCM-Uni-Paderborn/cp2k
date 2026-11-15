@@ -58,10 +58,13 @@ MODULE qs_upf_inverse_scf_response
                                               qs_upf_inverse_xc_grid_kernel,&
                                               qs_upf_inverse_xc_semilocal_kernel_available
    USE rs_pw_interface,                 ONLY: pw_real_transfer
-   USE skala_density_constraints,       ONLY: skala_density_constraints_count,&
+   USE skala_density_constraints,       ONLY: skala_background_domain,&
+                                              skala_density_constraints_count,&
                                               skala_density_constraints_get,&
                                               skala_density_constraints_type,&
-                                              skala_density_descriptor
+                                              skala_density_descriptor,&
+                                              skala_fft_domain,&
+                                              skala_kinetic_descriptor
    USE skala_gpw_functional,            ONLY: native_skala_gapw_atom_composite_requested,&
                                               native_skala_gapw_composite_reference,&
                                               native_skala_spin_floors,&
@@ -80,12 +83,12 @@ MODULE qs_upf_inverse_scf_response
 CONTAINS
 
 ! **************************************************************************************************
-!> \brief Recognize native positive spin-density floors with a linear density constraint.
-!>        Their selected and default covectors differ only in the density normal. A kernel
+!> \brief Recognize native descriptor boundaries with a linear density-matrix constraint.
+!>        Their selected and default covectors differ only in the constraint normal. A kernel
 !>        from the default branch can therefore be used between tangent projections, together
 !>        with the current selected KS operator and the physical constraint curvature.
-!>        Native model density clamps have the same common tangent. Kinetic and nonlinear
-!>        selector boundaries retain numerical response.
+!>        Spin-paired Skala uses this common tangent also at zero kinetic density
+!>        on the Fourier grid and its interpolated atomic background.
 !> \param qs_env Original evaluated inverse environment and its registered physical constraints.
 !> \return Whether the selected surfaces admit this native density-tangent construction.
 ! **************************************************************************************************
@@ -118,7 +121,7 @@ CONTAINS
       model = xc_section_uses_native_skala_evaluator(xc)
       functional => section_vals_get_subs_vals(xc, "XC_FUNCTIONAL")
       IF (model) THEN
-         ! The complete native model kernel is used only for its own density clamps.
+         ! Require a single native model with the corresponding descriptor boundaries.
          i = 0
          DO
             i = i + 1
@@ -138,15 +141,22 @@ CONTAINS
       CALL skala_density_constraints_get(constraints, points, spins, weights, probe, tolerance, &
                                          descriptors=descriptors, domains=domains, targets=targets, &
                                          kinetic_probe=kinetic_probe, kinetic_tolerance=kinetic_tolerance)
-      IF (ANY(descriptors /= skala_density_descriptor)) RETURN
       IF (control%nspins == 1) THEN
          IF (ANY(spins /= 0)) RETURN
       ELSE
          IF (ANY(spins < 1) .OR. ANY(spins > 2)) RETURN
       END IF
       DO i = 1, SIZE(targets)
-         IF (.NOT. model .AND. targets(i) <= 0.0_dp) RETURN
-         IF (ALL(floors /= targets(i))) RETURN
+         SELECT CASE (descriptors(i))
+         CASE (skala_density_descriptor)
+            IF (.NOT. model .AND. targets(i) <= 0.0_dp) RETURN
+            IF (ALL(floors /= targets(i))) RETURN
+         CASE (skala_kinetic_descriptor)
+            IF (.NOT. model .OR. control%nspins /= 1 .OR. targets(i) /= 0.0_dp) RETURN
+            IF (domains(i) /= skala_fft_domain .AND. domains(i) /= skala_background_domain) RETURN
+         CASE DEFAULT
+            RETURN
+         END SELECT
       END DO
       available = .TRUE.
    END FUNCTION qs_upf_inverse_scf_density_tangent_available
