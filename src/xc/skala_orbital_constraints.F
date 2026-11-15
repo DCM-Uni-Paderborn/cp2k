@@ -1520,9 +1520,10 @@ CONTAINS
                                       ABS(trial_slope) <= 0.9_dp*ABS(slope)
                   IF (gradient_progress) THEN
                      direction(:) = fraction*direction
-                     ! Try the coupled curvature when roundoff hides the energy change
-                     ! and the unconstrained trial still exceeds the stopping bound.
-                     IF (coupled_curvature .AND. m == 0 .AND. ASSOCIATED(hessian_local)) THEN
+                     ! Try the supplied curvature when roundoff hides the energy change
+                     ! and the trial still exceeds the stopping bound.
+                     IF (coupled_curvature .AND. ((m == 0 .AND. ASSOCIATED(hessian_local)) .OR. &
+                                                (r > 0 .AND. ASSOCIATED(lagrangian_hessian_local)))) THEN
                         gradient_progress = free_gradient_norm(trial_reduced) <= gradient_tolerance
                      END IF
                      EXIT

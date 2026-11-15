@@ -731,6 +731,16 @@ CONTAINS
       IF (ABS(coordinate(4) - SUM(coordinate(:3)**2)) > 1.e-16_dp .OR. analytical_hessian_calls == 0) THEN
          ERROR STOP 'Analytical constrained response lost feasibility or was not used'
       END IF
+      ! An unresolved BFGS decrease leaves one free direction above tolerance.
+      coordinate(:3) = [1.e-6_dp, 2.e-6_dp, 0.0_dp]
+      coordinate(4) = SUM(coordinate(:3)**2)
+      CALL skala_constrained_stationarity(scaled_curved_constraints, curved_energy_gradient, energy_zero, coordinate, &
+                                          [1.e-24_dp], tolerance, converged, max_iterations=1, iterations=iterations, &
+                                          curvature_steps=.TRUE., apply_lagrangian_hessian=curved_lagrangian_hessian, &
+                                          check_stalled_segment=crossing_segment)
+      IF (.NOT. converged .OR. iterations /= 1 .OR. NORM2(weights*coordinate(:3)) > tolerance) THEN
+         ERROR STOP 'Analytical constrained curvature missed the final step below energy resolution'
+      END IF
       ! Feasibility in field units alone does not resolve a weak-normal orbital curve.
       coordinate = [0.2_dp, 0.0_dp, 0.0_dp, 0.04_dp + 1.e-10_dp]
       CALL skala_constraint_chart_create(scaled_curved_constraints, energy_zero, coordinate, [1.e-17_dp], curve, valid)
