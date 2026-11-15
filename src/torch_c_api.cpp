@@ -602,6 +602,8 @@ void torch_c_tensor_hessian_vector(const torch_c_tensor_t *tensor,
                                    torch_c_tensor_t *responses[],
                                    const bool to_host, int *status) {
   *status = 0;
+  for (int i = 0; i < count; i++)
+    responses[i] = nullptr;
   try {
     TorchFloatingPointMaskGuard fpe_guard;
     c10::OptionalDeviceGuard guard;
