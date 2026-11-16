@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_NAME")/.." && pwd -P)"
 
 tblite_ver="0.8.0"
 tblite_sha256="2d00fd612b3fcbb69365de53577080457ceae221cd151be52e7a9977b4832ad3"
-save_tblite_rev="6232a09435d35bf2352c604b976a181cbae32bf2"
+save_tblite_rev="d8ac71722d63a0c0913f141669b15cc2bb5a9b1f"
 save_tblite_repo="${SAVE_TBLITE_REPOSITORY:-https://github.com/DCM-Uni-Paderborn/save_tblite.git}"
 save_tblite_src_dir="save_tblite-${save_tblite_rev}"
 save_tblite_dftd_rev="92f4c4dc62be78cd25227ef1335dfa11e247a832"
@@ -51,7 +51,6 @@ case "$with_tblite" in
         git clone --no-checkout "${save_tblite_repo}" "${save_tblite_src_dir}"
         git -C "${save_tblite_src_dir}" checkout --detach "${save_tblite_rev}"
         cd "${save_tblite_src_dir}"
-        patch -p1 < "${SCRIPT_DIR}/stage8/save_tblite-macos-blas.patch"
 
         mkdir -p build && cd build
         cmake \
@@ -70,7 +69,6 @@ case "$with_tblite" in
         echo "${save_tblite_rev}" > save_tblite_revision
         write_checksums "${install_lock_file}" \
           "${SCRIPT_DIR}/stage8/$(basename ${SCRIPT_NAME})" \
-          "${SCRIPT_DIR}/stage8/save_tblite-macos-blas.patch" \
           save_tblite_revision
         cd ../..
       fi
