@@ -212,7 +212,7 @@ CONTAINS
                            END DO
                         END DO
                         laplace_factor = 4.0_dp*alpha**2*r_squared - 2.0_dp*alpha*REAL(2*l + 3, dp)
-                        primitive_laplacian(:) = polynomial_laplacian + laplace_factor*polynomial
+                        primitive_laplacian = polynomial_laplacian + laplace_factor*polynomial
                         IF (PRESENT(laplacian_gradient)) THEN
                            primitive_laplace_gradient = polynomial_laplace_gradient + laplace_factor*polynomial_gradient + &
                               (8.0_dp*alpha**2*polynomial - 2.0_dp*alpha*primitive_laplacian)*r
