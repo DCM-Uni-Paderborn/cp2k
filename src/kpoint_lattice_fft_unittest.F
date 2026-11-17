@@ -63,7 +63,7 @@ PROGRAM kpoint_lattice_fft_unittest
 
    CALL mp_world_init(mp_comm)
    CALL check_image_reconstruction(mp_comm)
-   fft_backend = "FFTSG"
+   fft_backend = "FFTW3"
    IF (COMMAND_ARGUMENT_COUNT() > 0) THEN
       CALL GET_COMMAND_ARGUMENT(1, fft_argument)
       ! The regtest driver passes the source directory as the first argument.

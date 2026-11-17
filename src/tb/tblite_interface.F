@@ -172,6 +172,7 @@ MODULE tblite_interface
    USE cp_fm_types, ONLY: copy_info_type, cp_fm_cleanup_copy_general, &
                           cp_fm_create, cp_fm_finish_copy_general, cp_fm_get_info, &
                           cp_fm_release, cp_fm_start_copy_general, cp_fm_type
+   USE cp_cfm_types, ONLY: cp_cfm_set_submatrix, cp_cfm_type
    USE cp_fm_pool_types, ONLY: cp_fm_pool_type, &
                                fm_pool_create_fm, fm_pool_give_back_fm
    USE cp_log_handling, ONLY: cp_get_default_logger, &
@@ -183,7 +184,7 @@ MODULE tblite_interface
 #if defined(__TBLITE_GXTB)
    USE cryssym, ONLY: full_grid_gen
 #endif
-   USE input_constants, ONLY: gfn1xtb, gfn2xtb, gxtb, ipea1xtb, smear_energy_window, &
+   USE input_constants, ONLY: gfn1xtb, gfn2xtb, gxtb, ipea1xtb, rskp_backend_fft, smear_energy_window, &
                               smear_fermi_dirac, smear_gaussian, smear_list, smear_mp, smear_mv, &
                               tblite_cli_born_kernel_auto, tblite_cli_born_kernel_p16, &
                               tblite_cli_born_kernel_still, tblite_cli_solution_state_bar1mol, &
@@ -217,7 +218,6 @@ MODULE tblite_interface
                               tblite_scc_mixer_auto, tblite_scc_mixer_cp2k, &
                               tblite_scc_mixer_none, tblite_scc_mixer_tblite, &
                               tblite_solver_gvd, tblite_solver_gvr
-   USE input_cp2k_kpoints, ONLY: lattice_fft_auto, lattice_fft_off, lattice_fft_on
    USE input_section_types, ONLY: section_vals_val_get, section_vals_get_subs_vals, section_vals_type
    USE kinds, ONLY: default_path_length, default_string_length, dp, int_8
    USE kpoint_methods, ONLY: calibrate_symmetry_phases, kpoint_density_transform, &
@@ -347,7 +347,7 @@ MODULE tblite_interface
    PUBLIC :: tb_derive_dH_off
    PUBLIC :: tb_gxtb_gamma_gradient, tb_gxtb_kpoint_gradient
 #if defined(__TBLITE_GXTB)
-   PUBLIC :: tb_apply_gxtb_kpoint_fm, tb_mix_gxtb_gamma_fm, tb_prepare_gxtb_kpoint_mixer, &
+   PUBLIC :: tb_apply_gxtb_kpoint_cfm, tb_apply_gxtb_kpoint_fm, tb_mix_gxtb_gamma_fm, tb_prepare_gxtb_kpoint_mixer, &
              tb_sync_gxtb_kpoint_density, tb_gxtb_kpoint_exchange_gradient
 #endif
 
@@ -3986,16 +3986,7 @@ CONTAINS
       ! The mixer needs all F(k), independently of the distribution used by the eigensolver.
       ! Transform the local blocks once per spin on complete regular grids. Keep the exact
       ! per-k sum for reduced/general grids, LATTICE_FFT OFF, or the bounded-memory fallback.
-      SELECT CASE (kpoints%lattice_fft)
-      CASE (lattice_fft_auto)
-         request_grid_fft = nkp >= 2 .AND. PRODUCT(kpoints%nkp_grid) >= 27
-      CASE (lattice_fft_on)
-         request_grid_fft = .TRUE.
-      CASE (lattice_fft_off)
-         request_grid_fft = .FALSE.
-      CASE DEFAULT
-         CPABORT("Unknown lattice FFT selection mode")
-      END SELECT
+      request_grid_fft = kpoints%rskp_transform == rskp_backend_fft
       DO ispin = 1, nspin
          use_grid_fft = .FALSE.
          IF (request_grid_fft) THEN
@@ -7928,16 +7919,7 @@ CONTAINS
       ! Independent qualification and reduced-storage fused symmetry retain
       ! the direct phase sum. Other paths can use the exact CP2K lattice FFT.
       IF (keep_direct) RETURN
-      SELECT CASE (kpoints%lattice_fft)
-      CASE (lattice_fft_auto)
-         requested = kmap%nfull >= 27
-      CASE (lattice_fft_on)
-         requested = .TRUE.
-      CASE (lattice_fft_off)
-         requested = .FALSE.
-      CASE DEFAULT
-         CPABORT("Unknown lattice FFT selection mode")
-      END SELECT
+      requested = kpoints%rskp_transform == rskp_backend_fft
       IF (.NOT. requested) RETURN
       remaining_bytes = 64_int_8*1024_int_8**2
       IF (PRESENT(overlap_cache)) THEN
@@ -10460,7 +10442,7 @@ CONTAINS
 !> Apply the complete mixed g-xTB F(k), or add explicit exchange for a non-native backend.
 !>
 !> This hook is called after the ordinary real-space KS matrix has been Bloch summed, but before it
-!> is redistributed to a k-point group.  AUTO/TBLITE replaces the raw matrix by the complete result
+!> is used by the k-point eigensolver. AUTO/TBLITE replaces the raw matrix by the complete result
 !> of save_tblite's potential mixer.  CP2K/NONE retain CP2K's matrix and only add exchange.
 ! **************************************************************************************************
    SUBROUTINE tb_apply_gxtb_kpoint_fm(qs_env, ik, ispin, fm_real, fm_imag)
@@ -10592,6 +10574,39 @@ CONTAINS
       END IF
 
    END SUBROUTINE tb_apply_gxtb_kpoint_fm
+
+! **************************************************************************************************
+!> \brief Apply cached g-xTB corrections directly on the owning group's complex AO layout.
+!> \param qs_env environment holding the replicated Fock corrections
+!> \param ik global k-point index
+!> \param ispin spin index
+!> \param fock local complex Fock matrix
+! **************************************************************************************************
+   SUBROUTINE tb_apply_gxtb_kpoint_cfm(qs_env, ik, ispin, fock)
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      INTEGER, INTENT(IN)                                :: ik, ispin
+      TYPE(cp_cfm_type), INTENT(INOUT)                    :: fock
+
+      TYPE(tblite_type), POINTER                         :: tb
+      COMPLEX(KIND=dp), PARAMETER                        :: add = (1.0_dp, 0.0_dp)
+
+      tb => qs_env%tb_tblite
+      IF (.NOT. ASSOCIATED(tb)) RETURN
+      IF (tb%mixed_fock_kp_valid) THEN
+         CPASSERT(ALLOCATED(tb%mixed_fock_kp))
+         CALL cp_cfm_set_submatrix(fock, tb%mixed_fock_kp(:, :, ispin, ik))
+         RETURN
+      END IF
+      IF (tb%acp_fock_kp_valid) THEN
+         CPASSERT(ALLOCATED(tb%acp_fock_kp))
+         CALL cp_cfm_set_submatrix(fock, tb%acp_fock_kp(:, :, ik), beta=add)
+      END IF
+      IF (tb%exchange_fock_kp_valid) THEN
+         CPASSERT(ALLOCATED(tb%exchange_fock_kp))
+         CALL cp_cfm_set_submatrix(fock, tb%exchange_fock_kp(:, :, ispin, ik), beta=add)
+      END IF
+   END SUBROUTINE tb_apply_gxtb_kpoint_cfm
+
 
 ! **************************************************************************************************
 !> \brief ...

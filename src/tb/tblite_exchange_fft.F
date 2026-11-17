@@ -8,6 +8,7 @@
 MODULE tblite_exchange_fft
 #if defined(__TBLITE_GXTB_TRANSFORM)
    USE, INTRINSIC :: ieee_arithmetic, ONLY: ieee_is_finite
+   USE fft_lib, ONLY: fft_supports_arbitrary_lengths
    USE fft_tools, ONLY: fft3d, fft_alloc, fft_dealloc, FWFFT, BWFFT
    USE kinds, ONLY: dp
    USE kpoint_lattice_fft, ONLY: regular_kpoint_grid, lattice_fft_shape
@@ -53,7 +54,7 @@ CONTAINS
       REAL(KIND=dp), INTENT(IN)                          :: weights(:)
       LOGICAL, INTENT(IN), OPTIONAL                      :: force_direct
 
-      INTEGER                                            :: axis, cell, k, nk
+      INTEGER                                            :: axis, cell, fft_mesh(3), k, nk
       LOGICAL                                            :: direct, same
       REAL(KIND=dp)                                      :: offset(3), scaled, tolerance
 
@@ -90,7 +91,15 @@ CONTAINS
             END DO
          END DO
       END IF
-      IF (self%use_fft) self%use_fft = lattice_fft_shape(nmesh, self%nfft, allow_arbitrary=.TRUE.)
+      IF (self%use_fft) THEN
+         fft_mesh = nmesh
+         ! The single-grid FFTSG transform needs at least three points on each axis.
+         ! Pad by a multiple of the original length to preserve the lattice phases.
+         IF (.NOT. fft_supports_arbitrary_lengths()) THEN
+            WHERE (nmesh < 3) fft_mesh = nmesh + 2
+         END IF
+         self%use_fft = lattice_fft_shape(fft_mesh, self%nfft, allow_arbitrary=.TRUE.)
+      END IF
       IF (direct) self%use_fft = .FALSE.
       IF (self%use_fft) THEN
          ALLOCATE (self%cell_index(3, nk), self%cell_phase(nk))

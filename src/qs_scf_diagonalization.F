@@ -13,242 +13,159 @@
 !>      05.2009
 ! **************************************************************************************************
 MODULE qs_scf_diagonalization
-   USE cp_array_utils, ONLY: &
-      cp_1d_r_p_type
-   USE cp_blacs_env, ONLY: &
-      cp_blacs_env_type
-   USE cp_cfm_basic_linalg, ONLY: &
-      cp_cfm_column_scale, &
-      cp_cfm_scale_and_add, &
-      cp_cfm_scale_and_add_fm, &
-      cp_cfm_transpose, &
-      cp_cfm_triangular_multiply
-   USE cp_cfm_diag, ONLY: &
-      cp_cfm_diag_workspace_type, &
-      cp_cfm_geeig, &
-      cp_cfm_geeig_canon, &
-      cp_cfm_geeig_canon_local, &
-      cp_cfm_geeig_local, &
-      cp_cfm_heevd, &
-      cp_cfm_local_workspace_prepare
-   USE cp_cfm_types, ONLY: &
-      cp_cfm_create, &
-      cp_cfm_release, &
-      cp_cfm_set_all, &
-      cp_cfm_to_cfm, &
-      cp_cfm_to_fm, &
-      cp_cfm_type, &
-      cp_fm_to_cfm
-   USE cp_control_types, ONLY: &
-      dft_control_type, &
-      hairy_probes_type
-   USE cp_dbcsr_api, ONLY: &
-      dbcsr_copy, &
-      dbcsr_create, &
-      dbcsr_deallocate_matrix, &
-      dbcsr_init_p, &
-      dbcsr_p_type, &
-      dbcsr_release_p, &
-      dbcsr_set, &
-      dbcsr_type, &
-      dbcsr_type_symmetric
-   USE cp_dbcsr_cp2k_link, ONLY: &
-      cp_dbcsr_alloc_block_from_nbl
-   USE cp_dbcsr_operations, ONLY: &
-      copy_dbcsr_to_fm, &
-      copy_fm_to_dbcsr, &
-      cp_dbcsr_sm_fm_multiply, &
-      dbcsr_allocate_matrix_set
-   USE cp_fm_basic_linalg, ONLY: &
-      cp_fm_column_scale, &
-      cp_fm_scale_and_add, &
-      cp_fm_symm, &
-      cp_fm_uplo_to_full
-   USE cp_fm_cholesky, ONLY: &
-      cp_fm_cholesky_reduce, &
-      cp_fm_cholesky_restore
-   USE cp_fm_diag, ONLY: &
-      choose_eigv_solver, &
-      cp_fm_geeig, &
-      cp_fm_geeig_canon, &
-      diag_check_requested, &
-      direct_generalized_diagonalization, &
-      diag_lib_explicit
-   USE cp_fm_pool_types, ONLY: &
-      cp_fm_pool_type, &
-      fm_pool_create_fm, &
-      fm_pool_get_el_struct, &
-      fm_pool_give_back_fm
-   USE cp_fm_struct, ONLY: &
-      cp_fm_struct_create, &
-      cp_fm_struct_release, &
-      cp_fm_struct_type
-   USE cp_fm_types, ONLY: &
-      cp_fm_add_to_element, &
-      cp_fm_create, &
-      cp_fm_get_info, &
-      cp_fm_release, &
-      cp_fm_set_all, &
-      cp_fm_to_fm, &
-      cp_fm_type
-   USE cp_log_handling, ONLY: &
-      cp_get_default_logger, &
-      cp_logger_get_default_unit_nr, &
-      cp_logger_type
-   USE cp_output_handling, ONLY: &
-      cp_print_key_finished_output, &
-      cp_print_key_unit_nr, &
-      debug_print_level
-   USE dft_plus_u, ONLY: &
-      lowdin_kp_apply
-   USE ieee_arithmetic, ONLY: &
-      ieee_is_finite
-   USE input_constants, ONLY: &
-      cholesky_dbcsr, &
-      cholesky_inverse, &
-      cholesky_off, &
-      cholesky_reduce, &
-      cholesky_restore, &
-      core_guess, &
-      diag_update_method_adiis, &
-      general_roks, &
-      gxtb, &
-      high_spin_roks, &
-      ot_precond_full_all, &
-      ot_precond_full_kinetic, &
-      ot_precond_full_single_inverse, &
-      ot_precond_none, &
-      ot_precond_s_inverse, &
-      restart_guess
-   USE input_cp2k_kpoints, ONLY: &
-      lattice_fft_auto, &
-      lattice_fft_off, &
-      lattice_fft_on
-   USE input_section_types, ONLY: &
-      section_vals_get_subs_vals, &
-      section_vals_type
-   USE kinds, ONLY: &
-      dp, &
-      int_8
-   USE kpoint_methods, ONLY: &
-      kpoint_density_matrices, &
-      kpoint_density_transform, &
-      kpoint_set_mo_occupation, &
-      rskp_grid_type, &
-      rskp_transform_grid_prepare, &
-      rskp_transform_grid_release
-   USE kpoint_types, ONLY: &
-      get_kpoint_info, &
-      kpoint_env_type, &
-      kpoint_type
-   USE local_gemm_api, ONLY: &
-      LOCAL_GEMM_PU_GPU, &
-      local_gemm_ctxt_type
-   USE machine, ONLY: &
-      m_flush, &
-      m_walltime
-   USE mathconstants, ONLY: &
-      gaussi, &
-      z_one, &
-      z_zero
-   USE message_passing, ONLY: &
-      mp_para_env_type
-   USE parallel_gemm_api, ONLY: &
-      parallel_gemm
-   USE preconditioner, ONLY: &
-      dbcsr_pair_to_cfm, &
-      make_preconditioner_complex_full_kinetic, &
-      make_preconditioner_complex_full_s_inverse, &
-      prepare_preconditioner, &
-      restart_preconditioner
-   USE preconditioner_makes, ONLY: &
-      make_complex_full_all, &
-      make_complex_full_single_inverse
-   USE preconditioner_types, ONLY: &
-      destroy_preconditioner, &
-      init_preconditioner
-   USE qs_density_matrices, ONLY: &
-      calculate_density_matrix
-   USE qs_density_mixing_types, ONLY: &
-      direct_mixing_nr, &
-      gspace_mixing_nr
-   USE qs_diis, ONLY: &
-      qs_diis_b_calc_err_kp, &
-      qs_diis_b_check_i_alloc_kp, &
-      qs_diis_b_clear, &
-      qs_diis_b_clear_kp, &
-      qs_diis_b_info_kp, &
-      qs_diis_b_step, &
-      qs_diis_b_step_kp
-   USE qs_energy_types, ONLY: &
-      qs_energy_type
-   USE qs_environment_types, ONLY: &
-      get_qs_env, &
-      qs_environment_type
-   USE qs_gspace_mixing, ONLY: &
-      gspace_mixing
-   USE qs_kpoint_operators, ONLY: &
-      kpoint_operator_context_create, &
-      kpoint_operator_context_release, &
-      kpoint_operator_context_type, &
-      kpoint_operator_evaluate, &
-      kpoint_operator_finish, &
-      kpoint_operator_get, &
-      kpoint_operator_get_local, &
-      kpoint_operator_prepare, &
-      kpoint_operator_start, &
-      kpoint_operator_store, &
-      kpoint_operator_work_size, &
-      kpoint_slot_ks, &
-      kpoint_slot_s, &
-      kpoint_slot_t, &
-      kpoint_spin_free
-   USE qs_ks_methods, ONLY: &
-      qs_ks_update_qs_env
-   USE qs_ks_types, ONLY: &
-      qs_ks_did_change, &
-      qs_ks_env_type
-   USE qs_matrix_pools, ONLY: &
-      mpools_get, &
-      qs_matrix_pools_type
-   USE qs_mixing_utils, ONLY: &
-      charge_mixing_init, &
-      mixing_allocate, &
-      mixing_init, &
-      self_consistency_check
-   USE qs_mo_methods, ONLY: &
-      calculate_subspace_eigenvalues
-   USE qs_mo_occupation, ONLY: &
-      set_mo_occupation
-   USE qs_mo_types, ONLY: &
-      get_mo_set, &
-      mo_set_type
-   USE qs_neighbor_list_types, ONLY: &
-      neighbor_list_set_p_type
-   USE qs_ot_eigensolver, ONLY: &
-      ot_eigensolver, &
-      ot_eigensolver_complex
-   USE qs_rho_atom_types, ONLY: &
-      rho_atom_type
-   USE qs_rho_methods, ONLY: &
-      qs_rho_update_rho
-   USE qs_rho_types, ONLY: &
-      qs_rho_get, &
-      qs_rho_type
-   USE qs_scf_block_davidson, ONLY: &
-      generate_extended_space, &
-      generate_extended_space_c, &
-      generate_extended_space_sparse
+   USE cp_array_utils,                  ONLY: cp_1d_r_p_type
+   USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+   USE cp_cfm_basic_linalg,             ONLY: cp_cfm_column_scale,&
+                                              cp_cfm_scale_and_add,&
+                                              cp_cfm_scale_and_add_fm,&
+                                              cp_cfm_transpose,&
+                                              cp_cfm_triangular_multiply
+   USE cp_cfm_cholesky,                 ONLY: cp_cfm_cholesky_decompose
+   USE cp_cfm_diag,                     ONLY: cp_cfm_diag_workspace_type,&
+                                              cp_cfm_geeig,&
+                                              cp_cfm_geeig_canon,&
+                                              cp_cfm_geeig_canon_local,&
+                                              cp_cfm_geeig_local,&
+                                              cp_cfm_heevd,&
+                                              cp_cfm_local_workspace_prepare
+   USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                              cp_cfm_release,&
+                                              cp_cfm_set_all,&
+                                              cp_cfm_to_cfm,&
+                                              cp_cfm_to_fm,&
+                                              cp_cfm_type,&
+                                              cp_fm_to_cfm
+   USE cp_control_types,                ONLY: dft_control_type,&
+                                              hairy_probes_type
+   USE cp_dbcsr_api,                    ONLY: dbcsr_copy,&
+                                              dbcsr_create,&
+                                              dbcsr_init_p,&
+                                              dbcsr_p_type,&
+                                              dbcsr_release_p,&
+                                              dbcsr_set,&
+                                              dbcsr_type,&
+                                              dbcsr_type_symmetric
+   USE cp_dbcsr_cp2k_link,              ONLY: cp_dbcsr_alloc_block_from_nbl
+   USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              copy_fm_to_dbcsr,&
+                                              cp_dbcsr_sm_fm_multiply,&
+                                              dbcsr_allocate_matrix_set
+   USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale,&
+                                              cp_fm_scale_and_add,&
+                                              cp_fm_symm,&
+                                              cp_fm_uplo_to_full
+   USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_reduce,&
+                                              cp_fm_cholesky_restore
+   USE cp_fm_diag,                      ONLY: choose_eigv_solver,&
+                                              cp_fm_geeig,&
+                                              cp_fm_geeig_canon,&
+                                              diag_check_requested,&
+                                              diag_lib_explicit,&
+                                              direct_generalized_diagonalization
+   USE cp_fm_pool_types,                ONLY: cp_fm_pool_type,&
+                                              fm_pool_create_fm,&
+                                              fm_pool_get_el_struct,&
+                                              fm_pool_give_back_fm
+   USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
+                                              cp_fm_struct_release,&
+                                              cp_fm_struct_type
+   USE cp_fm_types,                     ONLY: cp_fm_add_to_element,&
+                                              cp_fm_create,&
+                                              cp_fm_get_info,&
+                                              cp_fm_release,&
+                                              cp_fm_to_fm,&
+                                              cp_fm_type
+   USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                              cp_logger_get_default_unit_nr,&
+                                              cp_logger_type
+   USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
+                                              cp_print_key_unit_nr,&
+                                              debug_print_level
+   USE dft_plus_u,                      ONLY: lowdin_kp_apply
+   USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_constants,                 ONLY: &
+        cholesky_dbcsr, cholesky_inverse, cholesky_off, cholesky_reduce, cholesky_restore, &
+        core_guess, diag_update_method_adiis, general_roks, gxtb, high_spin_roks, ot_precond_full_all, &
+        ot_precond_full_kinetic, ot_precond_full_single_inverse, ot_precond_none, &
+        ot_precond_s_inverse, restart_guess
+   USE input_section_types,             ONLY: section_vals_get_subs_vals,&
+                                              section_vals_type
+   USE kinds,                           ONLY: dp,&
+                                              int_8
+   USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
+                                              kpoint_density_transform,&
+                                              kpoint_set_mo_occupation
+   USE kpoint_types,                    ONLY: get_kpoint_info,&
+                                              kpoint_env_type,&
+                                              kpoint_type
+   USE local_gemm_api,                  ONLY: LOCAL_GEMM_PU_GPU,&
+                                              local_gemm_ctxt_type
+   USE machine,                         ONLY: m_flush,&
+                                              m_walltime
+   USE mathconstants,                   ONLY: z_one,&
+                                              z_zero
+   USE message_passing,                 ONLY: mp_para_env_type
+   USE parallel_gemm_api,               ONLY: parallel_gemm
+   USE preconditioner,                  ONLY: dbcsr_pair_to_cfm,&
+                                              make_preconditioner_complex_full_kinetic,&
+                                              make_preconditioner_complex_full_s_inverse,&
+                                              prepare_preconditioner,&
+                                              restart_preconditioner
+   USE preconditioner_makes,            ONLY: make_complex_full_all,&
+                                              make_complex_full_single_inverse
+   USE preconditioner_types,            ONLY: destroy_preconditioner,&
+                                              init_preconditioner
+   USE qs_density_matrices,             ONLY: calculate_density_matrix
+   USE qs_density_mixing_types,         ONLY: direct_mixing_nr,&
+                                              gspace_mixing_nr
+   USE qs_diis,                         ONLY: qs_diis_b_calc_err_kp,&
+                                              qs_diis_b_check_i_alloc_kp,&
+                                              qs_diis_b_clear,&
+                                              qs_diis_b_clear_kp,&
+                                              qs_diis_b_info_kp,&
+                                              qs_diis_b_step,&
+                                              qs_diis_b_step_kp
+   USE qs_energy_types,                 ONLY: qs_energy_type
+   USE qs_environment_types,            ONLY: get_qs_env,&
+                                              qs_environment_type
+   USE qs_gspace_mixing,                ONLY: gspace_mixing
+   USE qs_kpoint_operators,             ONLY: &
+        kpoint_operator_batch_size, kpoint_operator_context_create, &
+        kpoint_operator_context_release, kpoint_operator_context_type, kpoint_operator_evaluate, &
+        kpoint_operator_evaluate_batch, kpoint_operator_finish, kpoint_operator_get, &
+        kpoint_operator_get_local, kpoint_operator_prepare, kpoint_operator_start, &
+        kpoint_operator_store, kpoint_slot_ks, kpoint_slot_s, kpoint_slot_t, kpoint_spin_free
+   USE qs_ks_methods,                   ONLY: qs_ks_update_qs_env
+   USE qs_ks_types,                     ONLY: qs_ks_did_change,&
+                                              qs_ks_env_type
+   USE qs_matrix_pools,                 ONLY: mpools_get,&
+                                              qs_matrix_pools_type
+   USE qs_mixing_utils,                 ONLY: charge_mixing_init,&
+                                              mixing_allocate,&
+                                              mixing_init,&
+                                              self_consistency_check
+   USE qs_mo_methods,                   ONLY: calculate_subspace_eigenvalues
+   USE qs_mo_occupation,                ONLY: set_mo_occupation
+   USE qs_mo_types,                     ONLY: get_mo_set,&
+                                              mo_set_type
+   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_ot_eigensolver,               ONLY: ot_eigensolver,&
+                                              ot_eigensolver_complex
+   USE qs_rho_atom_types,               ONLY: rho_atom_type
+   USE qs_rho_methods,                  ONLY: qs_rho_update_rho
+   USE qs_rho_types,                    ONLY: qs_rho_get,&
+                                              qs_rho_type
+   USE qs_scf_block_davidson,           ONLY: generate_extended_space,&
+                                              generate_extended_space_c,&
+                                              generate_extended_space_sparse
+   USE qs_scf_lanczos,                  ONLY: lanczos_refinement,&
+                                              lanczos_refinement_2v
    USE qs_scf_lanczos_c,                ONLY: lanczos_channel_begin,&
                                               lanczos_channel_end,&
                                               lanczos_sweep_suffix,&
                                               lanczos_workspace_create,&
                                               lanczos_workspace_release,&
                                               lanczos_workspace_type
-   USE cp_cfm_cholesky,                 ONLY: cp_cfm_cholesky_decompose
-   USE qs_scf_lanczos, ONLY: &
-      lanczos_refinement, &
-      lanczos_refinement_2v
    USE qs_scf_methods, ONLY: &
       combine_ks_matrices, &
       eigensolver, &
@@ -264,12 +181,12 @@ MODULE qs_scf_diagonalization
       scf_control_type
 #if defined(__TBLITE_GXTB)
    USE tblite_interface, ONLY: &
+      tb_apply_gxtb_kpoint_cfm, &
       tb_apply_gxtb_kpoint_fm, &
       tb_mix_gxtb_gamma_fm, &
       tb_native_scc_mixer_active, &
       tb_prepare_gxtb_kpoint_mixer
 #endif
-   USE qs_kpoint_operators, ONLY: kpoint_operator_batch_size, kpoint_operator_evaluate_batch
 
 !$ USE OMP_LIB, ONLY: omp_get_max_threads, &
 !$                    omp_get_thread_num
@@ -291,7 +208,6 @@ MODULE qs_scf_diagonalization
       TYPE(cp_cfm_diag_workspace_type) :: solver
       TYPE(lanczos_workspace_type) :: lan_ws
       TYPE(local_gemm_ctxt_type) :: gemm_ctx
-      COMPLEX(KIND=dp), ALLOCATABLE :: phase(:, :)
    END TYPE kp_diag_workspace_type
 
    PUBLIC :: do_general_diag, do_general_diag_kp, do_roks_diag, &
@@ -827,9 +743,6 @@ CONTAINS
       LOGICAL, INTENT(IN)                                :: update_p
       LOGICAL, INTENT(INOUT)                             :: diis_step
       REAL(dp), INTENT(INOUT), OPTIONAL                  :: diis_error
-#if defined(__TBLITE_GXTB)
-      CLASS(*), POINTER :: correction_context
-#endif
       TYPE(qs_environment_type), OPTIONAL, POINTER       :: qs_env
       TYPE(hairy_probes_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: probe
@@ -839,20 +752,15 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'do_general_diag_kp'
 
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: coeffs
-      COMPLEX(KIND=dp), POINTER, DIMENSION(:, :, :, :)  :: mixed_fock_kp
       REAL(dp), POINTER :: effective_u(:, :), adiis_u(:, :)
       INTEGER :: cdiis_ncall, handle, ib, ikp, ispin, kplocal, kpmax, &
-                 lattice_fft, nb, nkp, nspin, omp_threads, nworkers, fft_ready
+                 nb, nkp, nspin, omp_threads, nworkers
       INTEGER, DIMENSION(2)                              :: kp_range
-      INTEGER, DIMENSION(3)                              :: nkp_grid
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
-      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL :: adiis_cdiis, cache_smat, cdiis_step, do_diis, my_added_mos_auto_grow, prepared_ops, prepared_part, &
-                 reuse_smat, spin_grid_fft, use_adiis, use_grid_fft, use_local_kpoints, use_real_wfn
-      LOGICAL :: is_gxtb, native_gxtb_mixer
+      LOGICAL :: adiis_cdiis, cache_smat, cdiis_step, do_diis, my_added_mos_auto_grow, &
+                 reuse_smat, use_adiis, use_local_kpoints, use_real_wfn
       REAL(KIND=dp)                                      :: diis_weight
       REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvalues
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(cp_cfm_type), POINTER :: cksmat, cmos, csmat, cwork
       TYPE(kp_diag_workspace_type), ALLOCATABLE, TARGET :: workspace(:)
       TYPE(cp_fm_pool_type), POINTER     :: ao_ao_fm_pool
@@ -861,19 +769,17 @@ CONTAINS
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(cp_fm_type), POINTER                          :: mo_coeff
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: adiis_ks, effective_ks
-      TYPE(dbcsr_type), POINTER                          :: rmatrix
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_operator_context_type)                 :: op_ctx
-      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_nl
       TYPE(qs_matrix_pools_type), POINTER                :: mpools
-      TYPE(rskp_grid_type)                               :: s_grid
-      TYPE(rskp_grid_type), ALLOCATABLE, DIMENSION(:)    :: ks_grid
       TYPE(section_vals_type), POINTER                   :: scf_section
 
-      TYPE(dft_control_type), POINTER                    :: dft_control
+      TYPE(qs_environment_type), POINTER                 :: gxtb_env
+      LOGICAL                                            :: native_gxtb_mixer
 #if defined(__TBLITE_GXTB)
+      TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: scf_kpoints
 #endif
 
@@ -882,23 +788,22 @@ CONTAINS
       my_added_mos_auto_grow = .FALSE.
       IF (PRESENT(added_mos_auto_grow)) added_mos_auto_grow = .FALSE.
 
-      NULLIFY (adiis_ks, dft_control, effective_ks, mixed_fock_kp, sab_nl)
-      is_gxtb = .FALSE.
+      NULLIFY (adiis_ks, effective_ks, gxtb_env, sab_nl)
       native_gxtb_mixer = .FALSE.
-      CALL get_kpoint_info(kpoints, nkp=nkp, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
-                           kp_dist=kp_dist, sab_nl=sab_nl, &
-                           cell_to_index=cell_to_index, nkp_grid=nkp_grid, lattice_fft=lattice_fft)
+      CALL get_kpoint_info(kpoints, nkp=nkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
+                           kp_dist=kp_dist, sab_nl=sab_nl)
       CPASSERT(ASSOCIATED(sab_nl))
       kplocal = kp_range(2) - kp_range(1) + 1
       kpmax = MAXVAL(kp_dist(2, :) - kp_dist(1, :) + 1)
 
 #if defined(__TBLITE_GXTB)
       IF (PRESENT(qs_env)) THEN
+         NULLIFY (dft_control, scf_kpoints)
          CALL get_qs_env(qs_env, dft_control=dft_control, kpoints=scf_kpoints)
          IF (ASSOCIATED(dft_control)) THEN
-            is_gxtb = dft_control%qs_control%xtb_control%do_tblite .AND. &
-                      dft_control%qs_control%xtb_control%tblite_method == gxtb
-            IF (is_gxtb) THEN
+            IF (dft_control%qs_control%xtb_control%do_tblite .AND. &
+                dft_control%qs_control%xtb_control%tblite_method == gxtb) THEN
+               gxtb_env => qs_env
                native_gxtb_mixer = tb_native_scc_mixer_active(dft_control)
                IF (.NOT. update_p .AND. .NOT. ASSOCIATED(scf_kpoints, kpoints)) THEN
                   CPABORT("Post-SCF g-xTB new k-point grid is not yet implemented")
@@ -957,30 +862,18 @@ CONTAINS
          END IF
       END IF
 
-      para_env => kpoints%blacs_env_all%para_env
       nspin = SIZE(matrix_ks, 1)
       omp_threads = 1
 !$    omp_threads = omp_get_max_threads()
       ! One-rank groups use the same worker path for MPI, OpenMP and hybrid jobs.
       use_local_kpoints = kpoints%para_env_kp%num_pe == 1 .AND. .NOT. use_real_wfn
       IF (diag_check_requested()) use_local_kpoints = .FALSE.
-      ! Density/DIIS mixing needs collective operator corrections. Native
-      ! potential mixing instead prepares complete read-only F(k) before workers.
-      IF (is_gxtb .AND. .NOT. native_gxtb_mixer) use_local_kpoints = .FALSE.
-      IF (para_env%num_pe == 1 .AND. omp_threads == 1) THEN
-         IF (lattice_fft == lattice_fft_on .OR. &
-             (lattice_fft == lattice_fft_auto .AND. nkp >= 2 .AND. PRODUCT(nkp_grid) >= 27)) THEN
-            use_local_kpoints = .FALSE.
-         END IF
-      END IF
       ib = 0
       nb = 0
       NULLIFY (scf_section)
 
-      NULLIFY (rmatrix)
-
       fmwork => scf_env%scf_work1
-      ! Both real and complex operators share the same assembly and transfer context.
+      ! Both real and complex operators share the same prepared context.
       CALL kpoint_operator_context_create(op_ctx, kpoints, fmwork(1), nspin)
 
       ! fm pools to be used within a kpoint group
@@ -1010,15 +903,11 @@ CONTAINS
       END IF
 
       ! Prepare H/S before starting any round. ADIIS can replace only the idle KS slot.
-      prepared_ops = .FALSE.
-      ! A single distributed group can also assemble its prepared local tiles.
-      CALL kpoint_operator_prepare(op_ctx, effective_ks, kpoint_slot_ks, prepared_ops)
+      CALL kpoint_operator_prepare(op_ctx, effective_ks, kpoint_slot_ks)
       IF (.NOT. reuse_smat) THEN
-         CALL kpoint_operator_prepare(op_ctx, matrix_s, kpoint_slot_s, prepared_part, matrix_row=kpoint_spin_free)
-         prepared_ops = prepared_ops .AND. prepared_part
+         CALL kpoint_operator_prepare(op_ctx, matrix_s, kpoint_slot_s, matrix_row=kpoint_spin_free)
       END IF
 
-      use_local_kpoints = use_local_kpoints .AND. prepared_ops
       nworkers = 1
       IF (use_local_kpoints) nworkers = MIN(omp_threads, kplocal)
       IF (.NOT. use_real_wfn .OR. do_diis) THEN
@@ -1029,7 +918,7 @@ CONTAINS
          ELSE
             mo_struct => kp%mos(1)%cmo_coeff%matrix_struct
          END IF
-         CALL kp_diag_workspaces_create(workspace, nworkers, matrix_struct, mo_struct, 0, &
+         CALL kp_diag_workspaces_create(workspace, nworkers, matrix_struct, mo_struct, &
                                         use_local_kpoints, scf_env%cholesky_method == cholesky_off)
          cksmat => workspace(1)%cksmat
          csmat => workspace(1)%csmat
@@ -1037,75 +926,21 @@ CONTAINS
          cmos => workspace(1)%cmos
       END IF
 
-      ! Prepared operators select FFT or direct assembly inside their common route.
-      ! Only an unprepared operator needs the sparse-grid/transfer fallback below.
-      ! Divide its conservative memory budget between H spins and S.
-      ALLOCATE (ks_grid(nspin))
-      SELECT CASE (lattice_fft)
-      CASE (lattice_fft_auto)
-         use_grid_fft = nkp >= 2 .AND. PRODUCT(nkp_grid) >= 27
-      CASE (lattice_fft_on)
-         use_grid_fft = .TRUE.
-      CASE (lattice_fft_off)
-         use_grid_fft = .FALSE.
-      CASE DEFAULT
-         CPABORT("Unknown lattice FFT selection mode")
-      END SELECT
-      use_grid_fft = use_grid_fft .AND. .NOT. prepared_ops
-      ! The driver needs sparse scratch only for forward lattice-FFT preparation.
-      IF (use_grid_fft) THEN
-         ALLOCATE (rmatrix)
-         CALL dbcsr_create(rmatrix, template=matrix_ks(1, 1)%matrix, matrix_type=dbcsr_type_symmetric)
-         CALL cp_dbcsr_alloc_block_from_nbl(rmatrix, sab_nl)
-      END IF
-      IF (use_grid_fft .AND. .NOT. reuse_smat) THEN
-         CALL rskp_transform_grid_prepare(s_grid, rmatrix, matrix_s, 1, xkp, nkp_grid, &
-                                          cell_to_index, sab_nl, use_grid_fft, &
-                                          max_storage_bytes=512_int_8*1024_int_8**2/INT(nspin + 1, int_8))
-         fft_ready = MERGE(1, 0, use_grid_fft)
-         CALL para_env%min(fft_ready)
-         use_grid_fft = fft_ready == 1
-      END IF
-      IF (use_grid_fft) THEN
-         DO ispin = 1, nspin
-            CALL rskp_transform_grid_prepare(ks_grid(ispin), rmatrix, effective_ks, ispin, xkp, nkp_grid, &
-                                             cell_to_index, sab_nl, spin_grid_fft, &
-                                             max_storage_bytes=512_int_8*1024_int_8**2/INT(nspin + 1, int_8))
-            use_grid_fft = use_grid_fft .AND. spin_grid_fft
-         END DO
-         fft_ready = MERGE(1, 0, use_grid_fft)
-         CALL para_env%min(fft_ready)
-         use_grid_fft = fft_ready == 1
-      END IF
-      IF (.NOT. use_grid_fft) THEN
-         CALL rskp_transform_grid_release(s_grid)
-         DO ispin = 1, nspin
-            CALL rskp_transform_grid_release(ks_grid(ispin))
-         END DO
-      END IF
-
 #if defined(__TBLITE_GXTB)
-      IF (is_gxtb) THEN
-         IF (update_p) CALL tb_prepare_gxtb_kpoint_mixer(qs_env, matrix_ks, kpoints, scf_env)
-         IF (native_gxtb_mixer) THEN
-            CPASSERT(ASSOCIATED(qs_env%tb_tblite))
-            CPASSERT(qs_env%tb_tblite%mixed_fock_kp_valid)
-            CPASSERT(ALLOCATED(qs_env%tb_tblite%mixed_fock_kp))
-            mixed_fock_kp => qs_env%tb_tblite%mixed_fock_kp
-            CPASSERT(SIZE(mixed_fock_kp, 3) == nspin)
-            CPASSERT(SIZE(mixed_fock_kp, 4) == nkp)
-         END IF
+      IF (ASSOCIATED(gxtb_env) .AND. update_p) THEN
+         CALL tb_prepare_gxtb_kpoint_mixer(gxtb_env, matrix_ks, kpoints, scf_env)
       END IF
 #endif
 
-      ! Setup and start all the communication.
+      ! Mark operator rounds; preparation above has already captured their values.
       IF (.NOT. use_local_kpoints) THEN
          DO ikp = 1, kpmax
             DO ispin = 1, nspin
-               CALL start_ks_operator(ikp, ispin, effective_ks, use_grid_fft, ks_grid(ispin))
+               CALL kpoint_operator_start(op_ctx, ikp, ispin, effective_ks, kpoint_slot_ks, &
+                                          matrix_row=ispin)
                IF (.NOT. cache_smat .OR. (.NOT. reuse_smat .AND. ispin == 1)) THEN
-                  CALL kpoint_operator_start(op_ctx, ikp, ispin, matrix_s, kpoint_slot_s, s_grid, &
-                                             use_grid_fft, matrix_row=kpoint_spin_free)
+                  CALL kpoint_operator_start(op_ctx, ikp, ispin, matrix_s, kpoint_slot_s, &
+                                             matrix_row=kpoint_spin_free)
                END IF
             END DO
          END DO
@@ -1121,7 +956,7 @@ CONTAINS
          IF (use_local_kpoints) THEN
             CALL kp_diag_local_phase(op_ctx, kpoints, workspace, scf_env, scf_control, nspin, &
                                      cache_smat, reuse_smat, use_adiis, ib, .TRUE., 1.0_dp, &
-                                     potential=effective_u, mixed_fock_kp=mixed_fock_kp)
+                                     potential=effective_u, gxtb_env=gxtb_env)
          ELSE
             DO ikp = 1, kpmax
                DO ispin = 1, nspin
@@ -1171,9 +1006,7 @@ CONTAINS
          ! All first-pass instances have finished. Capture the selected
          ! ADIIS operator once instead of retransferring it in every round.
          IF (use_adiis .AND. diis_weight < 1.0_dp) THEN
-            CALL kpoint_operator_prepare(op_ctx, adiis_ks, kpoint_slot_ks, prepared_part)
-            ! A collective prepare rejection must return all ranks to the transfer path.
-            use_local_kpoints = use_local_kpoints .AND. prepared_part
+            CALL kpoint_operator_prepare(op_ctx, adiis_ks, kpoint_slot_ks)
          END IF
 
       ELSE
@@ -1185,14 +1018,20 @@ CONTAINS
          IF (do_diis) effective_u => adiis_u
          CALL kp_diag_local_phase(op_ctx, kpoints, workspace, scf_env, scf_control, nspin, &
                                   cache_smat, reuse_smat, use_adiis, ib, .FALSE., diis_weight, coeffs, &
-                                  potential=effective_u, mixed_fock_kp=mixed_fock_kp)
+                                  potential=effective_u, gxtb_env=gxtb_env)
       ELSE
          DO ikp = 1, kpmax
             DO ispin = 1, nspin
                IF (do_diis) THEN
                   IF (use_adiis .AND. diis_weight < 1.0_dp) THEN
-                     CALL start_ks_operator(ikp, ispin, adiis_ks, .FALSE.)
+                     CALL kpoint_operator_start(op_ctx, ikp, ispin, adiis_ks, kpoint_slot_ks, &
+                                                matrix_row=ispin)
                      CALL kpoint_operator_finish(op_ctx, ikp, ispin, kpoint_slot_ks, cwork)
+#if defined(__TBLITE_GXTB)
+                     IF (ikp <= kplocal .AND. ASSOCIATED(gxtb_env)) THEN
+                        CALL tb_apply_gxtb_kpoint_cfm(gxtb_env, kp_range(1) + ikp - 1, ispin, cwork)
+                     END IF
+#endif
                      IF (ikp <= kplocal .AND. ASSOCIATED(adiis_u)) THEN
                         CALL lowdin_kp_apply(kpoints%kp_env(ikp)%kpoint_env, adiis_u(:, ispin), cmat=cwork)
                      END IF
@@ -1250,13 +1089,6 @@ CONTAINS
          END IF
       END IF
 
-      IF (ASSOCIATED(rmatrix)) CALL dbcsr_deallocate_matrix(rmatrix)
-      CALL rskp_transform_grid_release(s_grid)
-      DO ispin = 1, nspin
-         CALL rskp_transform_grid_release(ks_grid(ispin))
-      END DO
-      DEALLOCATE (ks_grid)
-
       IF (use_real_wfn) THEN
          CALL cp_fm_release(rksmat)
          CALL cp_fm_release(rsmat)
@@ -1280,6 +1112,11 @@ CONTAINS
 
          IF (use_real_wfn) THEN
             CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_ks, fm_re=rksmat)
+#if defined(__TBLITE_GXTB)
+            IF (round <= kplocal .AND. ASSOCIATED(gxtb_env)) THEN
+               CALL tb_apply_gxtb_kpoint_fm(gxtb_env, kp_range(1) + round - 1, spin, rksmat)
+            END IF
+#endif
             CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_s, fm_re=rsmat)
             IF (round <= kplocal .AND. ASSOCIATED(effective_u)) THEN
                CALL lowdin_kp_apply(kpoints%kp_env(round)%kpoint_env, effective_u(:, spin), rmat=rksmat)
@@ -1290,6 +1127,11 @@ CONTAINS
             END IF
          ELSE
             CALL kpoint_operator_finish(op_ctx, round, spin, kpoint_slot_ks, cksmat)
+#if defined(__TBLITE_GXTB)
+            IF (round <= kplocal .AND. ASSOCIATED(gxtb_env)) THEN
+               CALL tb_apply_gxtb_kpoint_cfm(gxtb_env, kp_range(1) + round - 1, spin, cksmat)
+            END IF
+#endif
             IF (round <= kplocal .AND. ASSOCIATED(effective_u)) THEN
                CALL lowdin_kp_apply(kpoints%kp_env(round)%kpoint_env, effective_u(:, spin), cmat=cksmat)
             END IF
@@ -1309,56 +1151,7 @@ CONTAINS
          END IF
       END SUBROUTINE harvest_operators
 
-! **************************************************************************************************
-!> \brief Preserve collective g-xTB corrections without penalizing ordinary operators.
-!> \param round global transfer round
-!> \param spin spin row
-!> \param ks_operator real-space KS ks_operator
-!> \param use_grid use the caller's prepared Fourier grid
-!> \param grid optional prepared Fourier grid
-! **************************************************************************************************
-      SUBROUTINE start_ks_operator(round, spin, ks_operator, use_grid, grid)
-         INTEGER, INTENT(IN) :: round, spin
-         TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER :: ks_operator
-         LOGICAL, INTENT(IN) :: use_grid
-         TYPE(rskp_grid_type), OPTIONAL, INTENT(IN) :: grid
-
-#if defined(__TBLITE_GXTB)
-         correction_context => qs_env
-         IF (is_gxtb) THEN
-            CALL kpoint_operator_start(op_ctx, round, spin, ks_operator, kpoint_slot_ks, grid, use_grid, &
-                                       matrix_row=spin, correct_operator=correct_gxtb_operator, correction_env=correction_context)
-            RETURN
-         END IF
-#endif
-         CALL kpoint_operator_start(op_ctx, round, spin, ks_operator, kpoint_slot_ks, grid, use_grid, matrix_row=spin)
-      END SUBROUTINE start_ks_operator
-
-
-
    END SUBROUTINE do_general_diag_kp
-
-#if defined(__TBLITE_GXTB)
-! **************************************************************************************************
-!> \brief Apply exchange/ACP or complete mixed F(k) before group transfers.
-!> \param ik global k-point index
-!> \param matrix_row spin row
-!> \param fm_re real part on the global distribution
-!> \param fm_im optional imaginary part for complex wavefunctions
-! **************************************************************************************************
-      SUBROUTINE correct_gxtb_operator(qs_env, ik, matrix_row, fm_re, fm_im)
-      CLASS(*), POINTER                                  :: qs_env
-      INTEGER, INTENT(IN)                                :: ik, matrix_row
-      TYPE(cp_fm_type)                                   :: fm_re
-      TYPE(cp_fm_type), OPTIONAL                         :: fm_im
-
-         SELECT TYPE (qs_env)
-         TYPE IS (qs_environment_type)
-            CALL tb_apply_gxtb_kpoint_fm(qs_env, ik, matrix_row, fm_re, fm_im)
-         END SELECT
-      END SUBROUTINE correct_gxtb_operator
-#endif
-
 
 ! **************************************************************************************************
 !> \brief Execute a local numerical phase. All SCF decisions and collectives belong to the caller.
@@ -1376,10 +1169,10 @@ CONTAINS
 !> \param diis_weight weight of the CDIIS candidate
 !> \param coeffs optional DIIS coefficients for the second phase
 !> \param potential optional Lowdin orbital potential paired with the prepared Hamiltonian
-!> \param mixed_fock_kp complete read-only native g-xTB F(k), or a disassociated pointer
+!> \param gxtb_env optional g-xTB environment holding read-only k-point corrections
 ! **************************************************************************************************
    SUBROUTINE kp_diag_local_phase(ctx, kpoints, workspace, scf_env, scf_control, nspin, &
-                                  cache_smat, reuse_smat, use_adiis, ib, store_error, diis_weight, coeffs, potential, mixed_fock_kp)
+                                  cache_smat, reuse_smat, use_adiis, ib, store_error, diis_weight, coeffs, potential, gxtb_env)
       TYPE(kpoint_operator_context_type), INTENT(IN) :: ctx
       TYPE(kpoint_type), POINTER :: kpoints
       TYPE(kp_diag_workspace_type), TARGET, INTENT(INOUT) :: workspace(:)
@@ -1389,25 +1182,25 @@ CONTAINS
       LOGICAL, INTENT(IN) :: cache_smat, reuse_smat, use_adiis, store_error
       REAL(KIND=dp), INTENT(IN) :: diis_weight
       COMPLEX(KIND=dp), OPTIONAL, INTENT(IN) :: coeffs(:)
-      COMPLEX(KIND=dp), POINTER, INTENT(IN) :: mixed_fock_kp(:, :, :, :)
+      TYPE(qs_environment_type), POINTER, INTENT(IN) :: gxtb_env
       REAL(dp), OPTIONAL, INTENT(IN) :: potential(:, :)
 
       COMPLEX(KIND=dp), ALLOCATABLE :: operators(:, :, :, :)
       REAL(KIND=dp), ALLOCATABLE :: block_work(:)
-      INTEGER :: first, ik, ikp, ispin, j, kplocal, nbatch, nmatrices, nworkers, thread, width, irow, icol
+      INTEGER :: first, ik, ikp, ispin, j, kplocal, nbatch, nmatrices, nworkers, thread, width
       INTEGER(KIND=int_8) :: work_size
       LOGICAL :: build_h, build_s
       TYPE(kpoint_env_type), POINTER :: kp
       TYPE(kp_diag_workspace_type), POINTER :: work
 
+#if !defined(__TBLITE_GXTB)
+      MARK_USED(gxtb_env)
+#endif
       kplocal = kpoints%kp_range(2) - kpoints%kp_range(1) + 1
       IF (kplocal == 0) RETURN
       nworkers = SIZE(workspace)
       build_s = .NOT. PRESENT(coeffs) .AND. .NOT. reuse_smat
       build_h = .NOT. PRESENT(coeffs) .OR. diis_weight < 1.0_dp
-      IF (ASSOCIATED(mixed_fock_kp)) THEN
-         CPASSERT(.NOT. PRESENT(coeffs) .AND. .NOT. store_error)
-      END IF
       nmatrices = MERGE(1, 0, build_h) + MERGE(1, 0, build_s)
       width = 1
       work_size = 0_int_8
@@ -1416,8 +1209,8 @@ CONTAINS
       ! The second CDIIS phase combines history without allocating operator tiles.
 !$OMP PARALLEL DEFAULT(NONE) NUM_THREADS(nworkers) IF(nworkers > 1) &
 !$OMP SHARED(ctx,kpoints,workspace,scf_env,scf_control,nspin,cache_smat,reuse_smat,use_adiis,ib, &
-!$OMP        store_error,diis_weight,coeffs,potential,kplocal,nworkers,build_h,build_s,nmatrices,width,work_size,mixed_fock_kp) &
-!$OMP PRIVATE(first,ik,ikp,ispin,j,nbatch,thread,kp,work,operators,block_work,irow,icol)
+!$OMP        store_error,diis_weight,coeffs,potential,kplocal,nworkers,build_h,build_s,nmatrices,width,work_size,gxtb_env) &
+!$OMP PRIVATE(first,ik,ikp,ispin,j,nbatch,thread,kp,work,operators,block_work)
       thread = 1
 !$    thread = omp_get_thread_num() + 1
       work => workspace(thread)
@@ -1437,12 +1230,22 @@ CONTAINS
             DO j = 1, nbatch
                ikp = first + j - 1
                kp => kpoints%kp_env(ikp)%kpoint_env
-               IF (build_h .AND. .NOT. ASSOCIATED(mixed_fock_kp)) THEN
+               IF (build_h) THEN
                   IF (PRESENT(coeffs)) THEN
                      work%csmat_base%local_data(:, :) = operators(:, :, j, 1)
+#if defined(__TBLITE_GXTB)
+                     IF (ASSOCIATED(gxtb_env)) THEN
+                        CALL tb_apply_gxtb_kpoint_cfm(gxtb_env, ik + j - 1, ispin, work%csmat_base)
+                     END IF
+#endif
                      IF (PRESENT(potential)) CALL lowdin_kp_apply(kp, potential(:, ispin), cmat=work%csmat_base)
                   ELSE
                      work%cksmat%local_data(:, :) = operators(:, :, j, 1)
+#if defined(__TBLITE_GXTB)
+                     IF (ASSOCIATED(gxtb_env)) THEN
+                        CALL tb_apply_gxtb_kpoint_cfm(gxtb_env, ik + j - 1, ispin, work%cksmat)
+                     END IF
+#endif
                      IF (PRESENT(potential)) CALL lowdin_kp_apply(kp, potential(:, ispin), cmat=work%cksmat)
                   END IF
                END IF
@@ -1546,20 +1349,18 @@ CONTAINS
 !> \param nworkers number of workers
 !> \param matrix_struct AO layout of the k-point group
 !> \param mo_struct MO layout of the k-point group
-!> \param nentry number of phase-sum entries
-!> \param local allocate local phase and solver scratch
+!> \param local allocate local solver scratch
 !> \param canonical use the canonical solver
 !> \param lanczos allocate the block-Lanczos kernel scratch
 !> \param nkrylov number of block expansion steps, sizes the kernel scratch
 !> \param nblock number of columns refined jointly, sizes the kernel scratch
 ! **************************************************************************************************
-   SUBROUTINE kp_diag_workspaces_create(workspace, nworkers, matrix_struct, mo_struct, nentry, local, canonical, &
+   SUBROUTINE kp_diag_workspaces_create(workspace, nworkers, matrix_struct, mo_struct, local, canonical, &
                                         lanczos, nkrylov, nblock)
       TYPE(kp_diag_workspace_type), ALLOCATABLE, &
          INTENT(OUT)                                     :: workspace(:)
       INTEGER, INTENT(IN)                                :: nworkers
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct, mo_struct
-      INTEGER, INTENT(IN)                                :: nentry
       LOGICAL, INTENT(IN)                                :: local, canonical
       LOGICAL, INTENT(IN), OPTIONAL                      :: lanczos
       INTEGER, INTENT(IN), OPTIONAL                      :: nkrylov, nblock
@@ -1583,7 +1384,6 @@ CONTAINS
          END IF
          IF (local) THEN
             CALL workspace(i)%gemm_ctx%create(LOCAL_GEMM_PU_GPU, timing=.FALSE.)
-            ALLOCATE (workspace(i)%phase(1, nentry))
             n = matrix_struct%nrow_global
             IF (canonical) THEN
                CALL cp_cfm_local_workspace_prepare(workspace(i)%solver, n, workspace(i)%cksmat%local_data)
@@ -1718,13 +1518,9 @@ CONTAINS
 !> \param fmwork returned global scratch fms
 !> \param op_ctx returned operator context
 !> \param matrix_struct returned AO layout of the k-point group
-!> \param prepare prepare the operator snapshot right away. The
-!>        transfer rounds of the Lanczos driver assemble lazily through
-!>        the get path and skip the snapshot
-!> \param prepared optional returned status of the snapshot preparation
 ! **************************************************************************************************
    SUBROUTINE kp_diag_setup(qs_env, kpoints, nspin, matrix_ks_kp, matrix_s_kp, fmwork, op_ctx, &
-                            matrix_struct, prepare, prepared)
+                            matrix_struct)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(kpoint_type), POINTER                         :: kpoints
       INTEGER, INTENT(IN)                                :: nspin
@@ -1732,15 +1528,11 @@ CONTAINS
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
       TYPE(kpoint_operator_context_type)                 :: op_ctx
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct
-      LOGICAL, INTENT(IN)                                :: prepare
-      LOGICAL, INTENT(OUT), OPTIONAL                     :: prepared
 
       INTEGER                                            :: i
-      LOGICAL                                            :: ks_ready, s_ready
       TYPE(cp_fm_pool_type), POINTER                     :: ao_ao_fm_pool, kp_ao_ao_fm_pool
       TYPE(qs_matrix_pools_type), POINTER                :: kp_mpools, mpools
 
-      IF (PRESENT(prepared)) prepared = .FALSE.
       CALL get_qs_env(qs_env, mpools=mpools)
       CALL mpools_get(mpools, ao_ao_fm_pool=ao_ao_fm_pool)
       ALLOCATE (fmwork(4))
@@ -1748,12 +1540,8 @@ CONTAINS
          CALL fm_pool_create_fm(ao_ao_fm_pool, fmwork(i))
       END DO
       CALL kpoint_operator_context_create(op_ctx, kpoints, fmwork(1), nspin)
-      IF (prepare) THEN
-         CALL kpoint_operator_prepare(op_ctx, matrix_ks_kp, kpoint_slot_ks, ks_ready)
-         CALL kpoint_operator_prepare(op_ctx, matrix_s_kp, kpoint_slot_s, s_ready, &
-                                      matrix_row=kpoint_spin_free)
-         IF (PRESENT(prepared)) prepared = ks_ready .AND. s_ready
-      END IF
+      CALL kpoint_operator_prepare(op_ctx, matrix_ks_kp, kpoint_slot_ks)
+      CALL kpoint_operator_prepare(op_ctx, matrix_s_kp, kpoint_slot_s, matrix_row=kpoint_spin_free)
       CALL get_kpoint_info(kpoints, mpools=kp_mpools)
       CALL mpools_get(kp_mpools, ao_ao_fm_pool=kp_ao_ao_fm_pool)
       matrix_struct => fm_pool_get_el_struct(kp_ao_ao_fm_pool)
@@ -1856,9 +1644,9 @@ CONTAINS
       DO ikp = 1, kpmax
          DO ispin = 1, nspin
             CALL kpoint_operator_start(op_ctx, ikp, ispin, matrix_ks, kpoint_slot_ks, &
-                                       use_grid=.FALSE., matrix_row=ispin)
+                                       matrix_row=ispin)
             CALL kpoint_operator_start(op_ctx, ikp, ispin, matrix_s, kpoint_slot_s, &
-                                       use_grid=.FALSE., matrix_row=kpoint_spin_free)
+                                       matrix_row=kpoint_spin_free)
          END DO
       END DO
 
@@ -3316,7 +3104,7 @@ CONTAINS
       ! work matrices: global scratch fms (also the operator-context
       ! template) and the complex H(k)/S(k)
       CALL kp_diag_setup(qs_env, kpoints, nspin, matrix_ks_kp, matrix_s_kp, fmwork, op_ctx, &
-                         matrix_struct, .TRUE.)
+                         matrix_struct)
       CALL cp_cfm_create(cksmat, matrix_struct, name="dav_hk")
       CALL cp_cfm_create(csmat, matrix_struct, name="dav_sk")
       CALL cp_cfm_create(csmat_base, matrix_struct, name="dav_sk_base")
@@ -3416,13 +3204,12 @@ CONTAINS
                                                             noise_scale = 100.0_dp
 
       INTEGER                                            :: handle, ik, ikp, ispin, kplocal, kpmax, &
-                                                            local_kpoint, max_iter, nentry, nspin, &
+                                                            local_kpoint, max_iter, nspin, &
                                                             output_unit
       INTEGER, DIMENSION(2)                              :: kp_range
       INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
       LOGICAL                                            :: my_check_moconv_only, my_grow, &
-                                                            prepared_ops, use_local_kpoints, &
-                                                            use_real_wfn
+                                                            use_local_kpoints, use_real_wfn
       REAL(KIND=dp)                                      :: eps_iter, eps_iter_empty
       TYPE(cp_fm_struct_type), POINTER                   :: matrix_struct, mo_struct
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: fmwork
@@ -3487,17 +3274,12 @@ CONTAINS
       IF (diag_check_requested()) use_local_kpoints = .FALSE.
       IF (my_check_moconv_only) use_local_kpoints = .FALSE.
       IF (diag_lib_explicit) use_local_kpoints = .FALSE.
-      ! the transfer rounds assemble their operators lazily through the
-      ! get path and skip the snapshot
       CALL kp_diag_setup(qs_env, kpoints, nspin, matrix_ks_kp, matrix_s_kp, fmwork, op_ctx, &
-                         matrix_struct, use_local_kpoints, prepared_ops)
-      use_local_kpoints = use_local_kpoints .AND. prepared_ops
+                         matrix_struct)
 
-      nentry = 0
-      IF (use_local_kpoints) CALL kpoint_operator_work_size(op_ctx, nentry)
       kp => kpoints%kp_env(1)%kpoint_env
       mo_struct => kp%mos(1)%cmo_coeff%matrix_struct
-      CALL kp_diag_workspaces_create(workspace, 1, matrix_struct, mo_struct, nentry, &
+      CALL kp_diag_workspaces_create(workspace, 1, matrix_struct, mo_struct, &
                                      use_local_kpoints, scf_env%cholesky_method == cholesky_off, &
                                      lanczos=.TRUE., nkrylov=scf_env%krylov_settings%nkrylov, &
                                      nblock=scf_env%krylov_settings%nblock)
@@ -3516,10 +3298,10 @@ CONTAINS
          DO ikp = 1, kplocal
             kp => kpoints%kp_env(ikp)%kpoint_env
             ik = kp_range(1) + ikp - 1
-            CALL kpoint_operator_evaluate(op_ctx, 1, kpoint_slot_s, ik, workspace(1)%phase, &
+            CALL kpoint_operator_evaluate(op_ctx, 1, kpoint_slot_s, ik, &
                                           workspace(1)%csmat_base)
             DO ispin = 1, nspin
-               CALL kpoint_operator_evaluate(op_ctx, ispin, kpoint_slot_ks, ik, workspace(1)%phase, &
+               CALL kpoint_operator_evaluate(op_ctx, ispin, kpoint_slot_ks, ik, &
                                              workspace(1)%cksmat)
                IF (scf_env%iter_count == 1 .AND. .NOT. kp%mos_prefilled) THEN
                   ! the K-point MOS enter the first SCF step allocated but
@@ -3541,11 +3323,11 @@ CONTAINS
             ! destination. Groups without a k point in the last rounds still
             ! join the service calls and skip their local solver work.
             CALL kpoint_operator_get(op_ctx, local_kpoint, kpoint_spin_free, matrix_s_kp, &
-                                     cmat=workspace(1)%csmat_base, matrix_row=kpoint_spin_free)
+                                     cmat=workspace(1)%csmat_base, matrix_row=kpoint_spin_free, slot=kpoint_slot_s)
 
             DO ispin = 1, nspin
                CALL kpoint_operator_get(op_ctx, local_kpoint, ispin, matrix_ks_kp, &
-                                        cmat=workspace(1)%cksmat, matrix_row=ispin)
+                                        cmat=workspace(1)%cksmat, matrix_row=ispin, slot=kpoint_slot_ks)
                IF (local_kpoint > kplocal) CYCLE
                kp => kpoints%kp_env(local_kpoint)%kpoint_env
 
@@ -4010,7 +3792,7 @@ CONTAINS
       CALL kpoint_operator_prepare(op_ctx, matrix_s, kpoint_slot_s, matrix_row=kpoint_spin_free)
       DO ikp = 1, kpmax
          CALL kpoint_operator_start(op_ctx, ikp, kpoint_spin_free, matrix_s, kpoint_slot_s, &
-                                    use_grid=.FALSE., matrix_row=kpoint_spin_free)
+                                    matrix_row=kpoint_spin_free)
       END DO
 
       ! Finish communication then diagonalise in each group
