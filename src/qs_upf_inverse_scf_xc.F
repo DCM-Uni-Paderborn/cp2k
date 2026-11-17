@@ -485,7 +485,7 @@ CONTAINS
                                                         partial, tau=partial_tau, projector_density=projected, &
                                                         kinetic=state%kinetic_cache, &
                                                         orbital_fields=.NOT. state%native_gaussian)
-               total_projected = total_projected + projected
+               total_projected(:, :) = total_projected + projected
                density%array = density%array + partial%array
                kinetic%array = kinetic%array + partial_tau%array
             END DO
