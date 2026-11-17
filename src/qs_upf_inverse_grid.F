@@ -903,7 +903,7 @@ CONTAINS
                                                            charge_terms%derivative, charge_terms%operator)
       END IF
       CPASSERT(ALL(SHAPE(charge_terms%operator) == [nproj, nproj]))
-      projected = charge_terms%operator
+      ALLOCATE (projected, SOURCE=charge_terms%operator)
       IF (PRESENT(projector_operator)) THEN
          CPASSERT(ALL(SHAPE(projector_operator) == [nproj, nproj]))
          projected(:, :) = projected + projector_operator
