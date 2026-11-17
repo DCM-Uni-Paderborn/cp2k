@@ -359,6 +359,7 @@ list(
   kpoint_methods.F
   kpoint_mo_dump.F
   kpoint_mo_symmetry_methods.F
+  kpoint_transform.F
   kpoint_transitional.F
   kpoint_types.F
   kpsym.F
@@ -1298,6 +1299,7 @@ list(
   motion/md_run.F
   motion/md_util.F
   motion/md_vel_utils.F
+  motion/neb_idpp.F
   motion/neb_io.F
   motion/neb_md_utils.F
   motion/neb_methods.F

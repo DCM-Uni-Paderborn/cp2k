@@ -212,7 +212,7 @@ CONTAINS
                            END DO
                         END DO
                         laplace_factor = 4.0_dp*alpha**2*r_squared - 2.0_dp*alpha*REAL(2*l + 3, dp)
-                        primitive_laplacian = polynomial_laplacian + laplace_factor*polynomial
+                        primitive_laplacian(:) = polynomial_laplacian + laplace_factor*polynomial
                         IF (PRESENT(laplacian_gradient)) THEN
                            primitive_laplace_gradient = polynomial_laplace_gradient + laplace_factor*polynomial_gradient + &
                               (8.0_dp*alpha**2*polynomial - 2.0_dp*alpha*primitive_laplacian)*r
@@ -671,31 +671,32 @@ CONTAINS
                      END DO
                   END IF
                   IF (PRESENT(laplacian)) THEN
-                     primitive_laplacian = CMPLX(0.0_dp, 0.0_dp, dp)
+                     primitive_laplacian(:) = CMPLX(0.0_dp, 0.0_dp, dp)
                      DO axis = 1, 3
-                        primitive_laplacian = primitive_laplacian + &
+                        primitive_laplacian(:) = primitive_laplacian + &
                            factored_derivative(moments, image_moments, powers, alpha, axis, axis, 0)
                      END DO
                   END IF
                   IF (PRESENT(laplacian_response)) THEN
-                     primitive_laplace_response = CMPLX(0.0_dp, 0.0_dp, dp)
+                     primitive_laplace_response(:) = CMPLX(0.0_dp, 0.0_dp, dp)
                      DO axis = 1, 3
                         DO other = 1, 3
-                           hessian_component = factored_derivative(moments, image_moments, powers, alpha, axis, axis, 0, other)
-                           primitive_laplace_response = primitive_laplace_response - center_response(other)*hessian_component
+                           hessian_component(:) = factored_derivative(moments, image_moments, powers, alpha, axis, axis, 0, other)
+                           primitive_laplace_response(:) = primitive_laplace_response - center_response(other)*hessian_component
                            IF (PRESENT(point_response)) THEN
-                              primitive_laplace_response = primitive_laplace_response + point_response(other, :)*hessian_component
+                              primitive_laplace_response(:) = &
+                                 primitive_laplace_response + point_response(other, :)*hessian_component
                            END IF
                            DO column = 1, 3
                               IF (cell_response(other, column) == 0.0_dp) CYCLE
-                              hessian_component = &
+                              hessian_component(:) = &
                                  factored_derivative(moments, image_moments, powers, alpha, axis, axis, column, other)
-                              primitive_laplace_response = primitive_laplace_response - &
+                              primitive_laplace_response(:) = primitive_laplace_response - &
                                                            cell_response(other, column)*hessian_component
                            END DO
                            IF (reduced_k_response(other) == 0.0_dp) CYCLE
-                           hessian_component = factored_derivative(moments, image_moments, powers, alpha, axis, axis, other)
-                           primitive_laplace_response = primitive_laplace_response + &
+                           hessian_component(:) = factored_derivative(moments, image_moments, powers, alpha, axis, axis, other)
+                           primitive_laplace_response(:) = primitive_laplace_response + &
                               CMPLX(0.0_dp, twopi*reduced_k_response(other), dp)*hessian_component
                         END DO
                      END DO

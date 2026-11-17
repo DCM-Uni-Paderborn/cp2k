@@ -40,6 +40,7 @@ MODULE kpoint_types
                                               section_vals_get_subs_vals,&
                                               section_vals_type,&
                                               section_vals_val_get
+   USE input_constants,                 ONLY: rskp_backend_gemm
    USE kinds,                           ONLY: default_string_length,&
                                               dp,&
                                               max_line_length
@@ -231,6 +232,7 @@ MODULE kpoint_types
       LOGICAL                                 :: symmetry = .FALSE.
       LOGICAL                                 :: full_grid = .FALSE.
       INTEGER                                 :: lattice_fft = lattice_fft_auto
+      INTEGER                                 :: rskp_transform = rskp_backend_gemm
       LOGICAL                                 :: inversion_symmetry_only = .FALSE.
       LOGICAL                                 :: restrict_atomic_symmetry = .FALSE.
       LOGICAL                                 :: cartesian_half_turns = .FALSE.
@@ -329,6 +331,7 @@ CONTAINS
       kpoint%verbose = .FALSE.
       kpoint%full_grid = .FALSE.
       kpoint%lattice_fft = lattice_fft_auto
+      kpoint%rskp_transform = rskp_backend_gemm
       kpoint%inversion_symmetry_only = .FALSE.
       kpoint%cartesian_half_turns = .FALSE.
       kpoint%proper_rotations_only = .FALSE.
@@ -716,7 +719,7 @@ CONTAINS
                               kp_env, kp_aux_env, mpools, iogrp, nkp_groups, kp_dist, cell_to_index, index_to_cell, &
                               sab_nl, sab_nl_nosym, inversion_symmetry_only, symmetry_backend, &
                               symmetry_reduction_method, gamma_centered, lattice_fft, cartesian_half_turns, &
-                              proper_rotations_only)
+                              proper_rotations_only, rskp_transform)
       TYPE(kpoint_type), INTENT(IN)                      :: kpoint
       CHARACTER(LEN=*), OPTIONAL                         :: kp_scheme
       INTEGER, DIMENSION(3), OPTIONAL                    :: nkp_grid
@@ -748,6 +751,7 @@ CONTAINS
                                                             symmetry_reduction_method
       LOGICAL, OPTIONAL                                  :: gamma_centered
       INTEGER, OPTIONAL                                  :: lattice_fft
+      INTEGER, OPTIONAL                                  :: rskp_transform
       LOGICAL, OPTIONAL                                  :: cartesian_half_turns, &
                                                             proper_rotations_only
 
@@ -759,6 +763,7 @@ CONTAINS
       IF (PRESENT(verbose)) verbose = kpoint%verbose
       IF (PRESENT(full_grid)) full_grid = kpoint%full_grid
       IF (PRESENT(lattice_fft)) lattice_fft = kpoint%lattice_fft
+      IF (PRESENT(rskp_transform)) rskp_transform = kpoint%rskp_transform
       IF (PRESENT(cartesian_half_turns)) cartesian_half_turns = kpoint%cartesian_half_turns
       IF (PRESENT(proper_rotations_only)) proper_rotations_only = kpoint%proper_rotations_only
       IF (PRESENT(inversion_symmetry_only)) inversion_symmetry_only = kpoint%inversion_symmetry_only
@@ -1045,6 +1050,7 @@ CONTAINS
          CALL section_vals_val_get(kpoint_section, "VERBOSE", l_val=kpoint%verbose)
          CALL section_vals_val_get(kpoint_section, "FULL_GRID", l_val=kpoint%full_grid)
          CALL section_vals_val_get(kpoint_section, "LATTICE_FFT", i_val=kpoint%lattice_fft)
+         CALL section_vals_val_get(kpoint_section, "RSKP_TRANSFORM", i_val=kpoint%rskp_transform)
          CALL section_vals_val_get(kpoint_section, "INVERSION_SYMMETRY_ONLY", &
                                    l_val=kpoint%inversion_symmetry_only)
          CALL section_vals_val_get(kpoint_section, "CARTESIAN_HALF_TURNS", l_val=kpoint%cartesian_half_turns)

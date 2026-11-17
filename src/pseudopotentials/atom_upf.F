@@ -330,7 +330,7 @@ CONTAINS
             END IF
             IF (icount == SIZE(pot%info)) CYCLE
             icount = icount + 1
-            pot%info(icount) = line
+            pot%info(icount) = line(:LEN(pot%info(icount)))
          END ASSOCIATE
       END DO
       pot%maxinfo = icount

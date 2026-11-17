@@ -214,17 +214,17 @@ CONTAINS
          IF (.NOT. gradient_active(axis)) CYCLE
          work(:, :) = work + SPREAD(vgradient(:, axis), 2, nright)*right_gradient(:, :, axis)
       END DO
-      IF (laplacian_active) work = work + SPREAD(vlaplacian, 2, nright)*right_laplacian
+      IF (laplacian_active) work(:, :) = work + SPREAD(vlaplacian, 2, nright)*right_laplacian
       CALL add_pair(left, work, weights, integral)
       IF (laplacian_active) THEN
-         work = SPREAD(vlaplacian, 2, nright)*right
+         work(:, :) = SPREAD(vlaplacian, 2, nright)*right
          CALL add_pair(left_laplacian, work, weights, integral)
       END IF
       DO axis = 1, 3
          IF (.NOT. gradient_active(axis) .AND. .NOT. tau_active .AND. .NOT. laplacian_active) CYCLE
          work(:, :) = SPREAD(vgradient(:, axis), 2, nright)*right
          IF (tau_active) work(:, :) = work + 0.5_dp*SPREAD(vtau, 2, nright)*right_gradient(:, :, axis)
-         IF (laplacian_active) work = work + 2.0_dp*SPREAD(vlaplacian, 2, nright)*right_gradient(:, :, axis)
+         IF (laplacian_active) work(:, :) = work + 2.0_dp*SPREAD(vlaplacian, 2, nright)*right_gradient(:, :, axis)
          CALL add_pair(left_gradient(:, :, axis), work, weights, integral)
       END DO
       IF (PRESENT(comm)) CALL comm%sum(integral)
@@ -425,8 +425,8 @@ CONTAINS
                END DO
             END DO
             IF (PRESENT(density_laplacian)) THEN
-               derivative = MATMUL(orbital_laplacian, coefficients(:, occupied))
-               derivative_direction = MATMUL(orbital_laplacian, coefficients_direction(:, occupied))
+               derivative(:, :) = MATMUL(orbital_laplacian, coefficients(:, occupied))
+               derivative_direction(:, :) = MATMUL(orbital_laplacian, coefficients_direction(:, occupied))
                density_laplacian = 4.0_dp*tau + 2.0_dp*REAL(SUM(CONJG(derivative_direction)*weighted + &
                                                                CONJG(derivative)*weighted_direction, DIM=2), dp)
             END IF
@@ -441,7 +441,7 @@ CONTAINS
             END DO
          END DO
          IF (PRESENT(density_laplacian)) THEN
-            derivative = MATMUL(orbital_laplacian, coefficients(:, occupied))
+            derivative(:, :) = MATMUL(orbital_laplacian, coefficients(:, occupied))
             density_laplacian = 4.0_dp*tau + 2.0_dp*REAL(SUM(CONJG(derivative)*weighted, DIM=2), dp)
          END IF
          RETURN
