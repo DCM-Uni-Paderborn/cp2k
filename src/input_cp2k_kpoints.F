@@ -14,6 +14,8 @@
 MODULE input_cp2k_kpoints
    USE bibliography,                    ONLY: MacDonald1978,&
                                               Monkhorst1976
+   USE input_constants,                 ONLY: rskp_backend_fft,&
+                                              rskp_backend_gemm
    USE input_keyword_types,             ONLY: keyword_create,&
                                               keyword_release,&
                                               keyword_type
@@ -63,7 +65,7 @@ CONTAINS
 !>      SYMMETRY         [on, off]
 !>      WAVEFUNCTION     [real, complex]
 !>      FULL_GRID        [on, off]
-!>      LATTICE_FFT      [auto, on, off]
+!>      RSKP_TRANSFORM   [gemm, fft]
 !>      INVERSION_SYMMETRY_ONLY [on, off]
 !>      DEBUG_FULL_KPOINT_SYMMETRY [on, off]
 !>      SYMMETRY_BACKEND [K290, SPGLIB]
@@ -163,6 +165,21 @@ CONTAINS
                                         "Prefer the FFT whenever the grid and memory checks allow it.", &
                                         "Use direct phase sums instead of lattice FFTs."), &
                           default_i_val=lattice_fft_auto)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, name="RSKP_TRANSFORM", &
+                          description="Select the backend for bulk real-space/k-point transforms, including RI-RS GW. "// &
+                          "GEMM contracts captured image panels with Bloch phases in k-point batches. "// &
+                          "FFT uses supported regular grids; forward transforms also accept subsets. "// &
+                          "Inverse FFT accepts weighted regular-grid subsets "// &
+                          "without spatial rotations. Explicit single-point and property Fourier calls "// &
+                          "are independent of this setting. Unsupported forced FFT configurations abort.", &
+                          usage="RSKP_TRANSFORM GEMM", type_of_var=enum_t, &
+                          enum_c_vals=s2a("GEMM", "FFT"), &
+                          enum_i_vals=[rskp_backend_gemm, rskp_backend_fft], &
+                          enum_desc=s2a("Use sparse phase GEMMs.", "Use regular-grid lattice FFTs."), &
+                          default_i_val=rskp_backend_gemm)
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
 
