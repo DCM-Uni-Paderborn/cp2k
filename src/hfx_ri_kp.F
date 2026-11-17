@@ -690,7 +690,7 @@ CONTAINS
       ALLOCATE (ks_t_sub(nspins, nimg), t_2c_ao_tmp(1), ks_t_split(2))
       CALL get_subgroup_ks_tensors(t_2c_ao_tmp, ks_t_split, ks_t_sub, para_env_sub, ri_data)
 
-      ALLOCATE (t_3c_apc_sub(nspins, nimg), t_3c_work_2(3))
+      ALLOCATE (t_3c_apc_sub(nspins, nimg), t_3c_work_2(4))
       CALL get_subgroup_3c_tensors(t_3c_work_2, t_3c_apc, t_3c_apc_sub, &
                                    para_env_sub, ri_data)
 
@@ -896,6 +896,7 @@ CONTAINS
       CALL dbt_destroy(t_3c_work_2(1))
       CALL dbt_destroy(t_3c_work_2(2))
       CALL dbt_destroy(t_3c_work_2(3))
+      CALL dbt_destroy(t_3c_work_2(4))
       DO i_img = 1, nimg
          DO i_spin = 1, nspins
             CALL dbt_destroy(t_3c_apc_sub(i_spin, i_img))
@@ -4078,6 +4079,7 @@ CONTAINS
                       ri_data%bsizes_AO_split, bsizes_RI_ext_split, bsizes_stack)
       CALL dbt_create(t_3c_work_2(1), t_3c_work_2(2))
       CALL dbt_create(t_3c_work_2(1), t_3c_work_2(3))
+      CALL dbt_create(t_3c_work_2(1), t_3c_work_2(4))
       CALL dbt_distribution_destroy(t_dist)
       DEALLOCATE (dist1, dist2, dist3, dist_stack)
 
