@@ -557,7 +557,8 @@ CONTAINS
          CALL inverse_radial_data(pot, radial)
          CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, delta)
          IF (PRESENT(home_coupling)) THEN
-            radial_coupling = inverse_radial_coupling(pot, radial, upf_radial_weights(pot))
+            ALLOCATE (radial_coupling(pot%number_of_proj, pot%number_of_proj))
+            radial_coupling(:, :) = inverse_radial_coupling(pot, radial, upf_radial_weights(pot))
             DO q = 1, delta%nproj
                DO p = 1, beta%nproj
                   IF (beta%angular_index(p) /= delta%angular_index(q)) CYCLE

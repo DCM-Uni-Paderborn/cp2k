@@ -1384,7 +1384,7 @@ CONTAINS
       CPASSERT(limit > 0)
       CPASSERT(ieee_is_finite(radius) .AND. radius > 0.0_dp)
       maximum_radius = radius
-      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), stalled_trial(d))
+      ALLOCATE (x(d), trial(d), values(m), jacobian(m, d), stalled_trial(d), deferred_trial(d))
       x(:) = coordinate
       converged = .FALSE.
       CALL skala_constraint_chart_create(evaluate_constraints, context, x, density_tolerances, curve, valid)
@@ -1483,7 +1483,7 @@ CONTAINS
                            IF (slope < 0.0_dp .AND. trial_slope <= 0.0_dp .AND. trial_energy > energy + roundoff) THEN
                               ! Both endpoint slopes still descend. Try local curvature and backtracking
                               ! before searching the full rejected interval for a physical minimum.
-                              deferred_trial = trial
+                              deferred_trial(:) = trial
                               deferred_scan = .TRUE.
                            ELSE IF (slope < 0.0_dp .AND. trial_slope > 0.0_dp .AND. &
                                     (trial_energy > energy + roundoff .OR. trial_slope > 0.9_dp*ABS(slope)) .AND. &
@@ -1499,7 +1499,7 @@ CONTAINS
                               IF ((uphill_excursion .OR. trial_energy > energy + roundoff) .AND. .NOT. event) THEN
                                  ! The shortened bracket found no event. Give local curvature and
                                  ! backtracking a chance before scanning the original uphill trial.
-                                 deferred_trial = trial
+                                 deferred_trial(:) = trial
                                  deferred_scan = .TRUE.
                               END IF
                            END IF
