@@ -2750,8 +2750,14 @@ CONTAINS
       limit = MIN(SIZE(coordinate), maximum_candidates)
       xc_section => section_vals_get_subs_vals(state%qs_env%input, "DFT%XC")
       CALL comm%set_handle(state%para_env%get_handle())
-      floors = native_skala_spin_floors(xc_section, comm)
-      IF (ALL(floors /= 0.0_dp)) floors = [0.0_dp, floors]
+      ALLOCATE (floors, SOURCE=native_skala_spin_floors(xc_section, comm))
+      IF (ALL(floors /= 0.0_dp)) THEN
+         BLOCK
+            REAL(dp), ALLOCATABLE :: expanded_floors(:)
+            ALLOCATE (expanded_floors, SOURCE=[0.0_dp, floors])
+            CALL MOVE_ALLOC(expanded_floors, floors)
+         END BLOCK
+      END IF
 
       count = 0
       scan: DO domain = skala_fft_domain, skala_last_sample_domain
@@ -2791,10 +2797,10 @@ CONTAINS
       CALL state%para_env%sum(gathered)
       CALL state%para_env%sum(context%targets)
       context%state => state
-      context%domains = gathered(1, :)
-      context%points = gathered(2:4, :)
-      context%spins = gathered(5, :)
-      context%descriptors = gathered(6, :)
+      ALLOCATE (context%domains, SOURCE=gathered(1, :))
+      ALLOCATE (context%points, SOURCE=gathered(2:4, :))
+      ALLOCATE (context%spins, SOURCE=gathered(5, :))
+      ALLOCATE (context%descriptors, SOURCE=gathered(6, :))
 
       original_energy = sum_ks_energies(state%energy, .TRUE.)
       ALLOCATE (trial, SOURCE=coordinate)
@@ -3263,7 +3269,7 @@ CONTAINS
       IF (PRESENT(assemble_jumps)) capture_jumps = capture_jumps .AND. assemble_jumps
       weighted_limit = skala_limits .AND. capture_jumps .AND. ANY(original_weights /= 0.0_dp)
       weights = 0.0_dp
-      IF (weighted_limit) weights = original_weights
+      IF (weighted_limit) weights(:) = original_weights
       CALL skala_density_constraints_update_weights(state%constraints, weights)
       ! A zero-density constraint can coexist with positive spin floors. Its absent local
       ! owner keeps the complete KS fallback without discarding the other primitive jumps.
@@ -4673,7 +4679,8 @@ CONTAINS
          ALLOCATE (remaining, SOURCE=PACK(pending,.NOT. selected))
          CALL MOVE_ALLOC(remaining, pending)
          ! The grid and its ownership are fixed while orbitals change along this segment.
-         rows = PACK(rows, .NOT. selected)
+         ALLOCATE (remaining, SOURCE=PACK(rows, .NOT. selected))
+         CALL MOVE_ALLOC(remaining, rows)
          DEALLOCATE (selected, values, windows)
       END DO
       IF (SIZE(pending) == 0) event%encountered = .FALSE.

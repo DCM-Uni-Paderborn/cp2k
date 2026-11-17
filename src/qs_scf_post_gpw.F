@@ -2913,7 +2913,8 @@ CONTAINS
 
                CALL qs_upf_inverse_electronic_density(qs_env, density_g, original_upf)
                IF (original_upf) THEN
-                  total_zcharge = zcharge
+                  IF (.NOT. ALLOCATED(total_zcharge)) ALLOCATE (total_zcharge, MOLD=zcharge)
+                  total_zcharge(:) = zcharge
                   ! Only PAW supplies frozen-core electrons in this export.
                   DO ikind = 1, nkind
                      qs_kind => qs_kind_set(ikind)
@@ -2938,7 +2939,7 @@ CONTAINS
          END IF
          IF (print_density == "TOTAL_DENSITY" .AND. &
              (dft_control%qs_control%gapw .OR. ALLOCATED(physical_density))) THEN
-            IF (.NOT. ALLOCATED(total_zcharge)) total_zcharge = zcharge
+            IF (.NOT. ALLOCATED(total_zcharge)) ALLOCATE (total_zcharge, SOURCE=zcharge)
             ! Native GAPW atom coefficients already contain the Bloch density image sum.
             ! Print total electronic density
             CALL get_qs_env(qs_env=qs_env, &
