@@ -169,7 +169,7 @@ CONTAINS
       ALLOCATE (radial_weights, SOURCE=upf_radial_weights(pot))
       IF (.NOT. radial_only) THEN
          ALLOCATE (coupling(nb, nb), identity(nb, nb), rotation(nb, nb))
-         coupling = inverse_radial_coupling(pot, radial, radial_weights)
+         coupling(:, :) = inverse_radial_coupling(pot, radial, radial_weights)
          identity = CMPLX(0.0_dp, 0.0_dp, dp)
          DO j = 1, nb
             identity(j, j) = CMPLX(1.0_dp, 0.0_dp, dp)
