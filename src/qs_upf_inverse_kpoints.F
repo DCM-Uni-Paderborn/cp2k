@@ -620,7 +620,7 @@ CONTAINS
             CALL qs_upf_inverse_grid_collocate_dense(frame%frames(ik), matrix, part, dpart, tpart, &
                                                      projector_density=projected, kinetic=kinetic, &
                                                      orbital_fields=orbital_fields)
-            total_projected = total_projected + projected
+            total_projected(:, :) = total_projected + projected
             density%array = density%array + part%array
             tau%array = tau%array + tpart%array
             IF (PRESENT(gradient)) THEN
