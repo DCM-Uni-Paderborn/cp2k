@@ -1019,15 +1019,15 @@ CONTAINS
       IF (frame%atom_local) RETURN
       ALLOCATE (cross(np, np))
       IF (calculate_response) THEN
-         ALLOCATE (dcross(np, np))
+         ALLOCATE (dcross(np, np), mixed(n, n))
          CALL qs_upf_inverse_cross_kinetic(frame, cross, dcross, atom_response, cell_response, reduced_k_response, kinds)
-         mixed = MATMUL(CONJG(TRANSPOSE(dw)), MATMUL(cross, frame%coefficients))
-         kinetic_response = kinetic_response + mixed + CONJG(TRANSPOSE(mixed)) + &
+         mixed(:, :) = MATMUL(CONJG(TRANSPOSE(dw)), MATMUL(cross, frame%coefficients))
+         kinetic_response(:, :) = kinetic_response + mixed + CONJG(TRANSPOSE(mixed)) + &
                             MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(dcross, frame%coefficients))
       ELSE
          CALL qs_upf_inverse_cross_kinetic(frame, cross, kinds=kinds)
       END IF
-      kinetic = kinetic + MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(cross, frame%coefficients))
+      kinetic(:, :) = kinetic + MATMUL(CONJG(TRANSPOSE(frame%coefficients)), MATMUL(cross, frame%coefficients))
    END SUBROUTINE qs_upf_inverse_atomic_operators
 
 ! **************************************************************************************************

@@ -1021,8 +1021,8 @@ CONTAINS
             ALLOCATE (partial_response(SIZE(coefficient_response, 1), SIZE(coefficient_response, 2), ns))
             coefficient_response = twofold_real_type()
             DO partition = 1, partitions
-               partial_response%hi = RESHAPE(partials(:ncoeff, partition), SHAPE(partial_response))
-               partial_response%lo = RESHAPE(partials(ncoeff + 1:, partition), SHAPE(partial_response))
+               partial_response(:, :, :)%hi = RESHAPE(partials(:ncoeff, partition), SHAPE(partial_response))
+               partial_response(:, :, :)%lo = RESHAPE(partials(ncoeff + 1:, partition), SHAPE(partial_response))
                coefficient_response = twofold_add(coefficient_response, partial_response)
             END DO
          END IF
