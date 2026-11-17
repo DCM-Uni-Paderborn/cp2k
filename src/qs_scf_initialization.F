@@ -304,9 +304,12 @@ CONTAINS
                CALL get_qs_env(qs_env, rho=rho)
                CALL qs_rho_get(rho, rho_g=rho_g)
                IF (ASSOCIATED(scf_env%mixing_store%rhoin)) THEN
-                  IF (SIZE(rho_g(1)%pw_grid%gsq) /= SIZE(scf_env%mixing_store%rhoin(1)%cc)) THEN
-                     CALL mixing_storage_release(scf_env%mixing_store)
-                     DEALLOCATE (scf_env%mixing_store)
+                  ! An SCF restart can converge without populating the PW mixing history.
+                  IF (ASSOCIATED(scf_env%mixing_store%rhoin(1)%cc)) THEN
+                     IF (SIZE(rho_g(1)%pw_grid%gsq) /= SIZE(scf_env%mixing_store%rhoin(1)%cc)) THEN
+                        CALL mixing_storage_release(scf_env%mixing_store)
+                        DEALLOCATE (scf_env%mixing_store)
+                     END IF
                   END IF
                END IF
             END IF
