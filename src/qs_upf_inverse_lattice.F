@@ -1380,7 +1380,10 @@ CONTAINS
          na = SIZE(angular_weights)
          ALLOCATE (bra(na, q - p + 1, 3), gradient(3, q - p + 1), scratch(q - p + 1), &
                    points(3, na), weights(na))
-         IF (PRESENT(response)) motion = SPREAD(atom_response(:, frame%center_atoms(a)), 2, na)
+         IF (PRESENT(response)) THEN
+            ALLOCATE (motion(3, na))
+            motion(:, :) = SPREAD(atom_response(:, frame%center_atoms(a)), 2, na)
+         END IF
          DO b = 1, SIZE(frame%center_atoms)
             kb = frame%center_kinds(b)
             IF (frame%delta_cache(kb)%radius <= 0.0_dp) CYCLE
@@ -1401,8 +1404,8 @@ CONTAINS
             IF (PRESENT(response)) ALLOCATE (dket, MOLD=ket)
             DO ir = 1, grid%nr
                IF (grid%rad(ir) >= radius) CYCLE
-               points = SPREAD(frame%positions(:, frame%center_atoms(a)), 2, na) + grid%rad(ir)*directions
-               weights = 0.5_dp*grid%wr(ir)*angular_weights
+               points(:, :) = SPREAD(frame%positions(:, frame%center_atoms(a)), 2, na) + grid%rad(ir)*directions
+               weights(:) = 0.5_dp*grid%wr(ir)*angular_weights
                DO ia = 1, na
                   CALL upf_radial_fields_evaluate(frame%delta_cache(ka), grid%rad(ir)*directions(:, ia), scratch, gradient)
                   bra(ia, :, :) = TRANSPOSE(gradient)
@@ -1428,6 +1431,7 @@ CONTAINS
             DEALLOCATE (value, ket, pair)
             IF (PRESENT(response)) DEALLOCATE (dket)
          END DO
+         IF (PRESENT(response)) DEALLOCATE (motion)
          DEALLOCATE (bra, gradient, scratch, points, weights, directions, angular_weights)
       END DO
       matrix = 0.5_dp*(matrix + CONJG(TRANSPOSE(matrix)))
@@ -1556,7 +1560,7 @@ CONTAINS
             directions(1, :) = grid%sin_pol*grid%cos_azi
             directions(2, :) = grid%sin_pol*grid%sin_azi
             directions(3, :) = grid%cos_pol
-            weights = grid%wa
+            weights(:) = grid%wa
          END ASSOCIATE
       END IF
    END SUBROUTINE centered_grid
