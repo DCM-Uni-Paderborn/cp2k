@@ -2120,10 +2120,10 @@ CONTAINS
       pot%number_of_proj = 1
       ALLOCATE (pot%paw, pot%lbeta(1), pot%qijl(5, 1, 0:0))
       pot%lbeta = 0
-      pot%r = [0.0_dp, 0.25_dp, 0.5_dp, 0.75_dp, 1.0_dp]
+      ALLOCATE (pot%r, SOURCE=[0.0_dp, 0.25_dp, 0.5_dp, 0.75_dp, 1.0_dp])
       pot%paw%cutoff_index = SIZE(pot%r)
-      pot%paw%ae_wfc = RESHAPE(SQRT(pot%r), [5, 1])
-      pot%paw%ps_wfc = 0.5_dp*pot%paw%ae_wfc
+      ALLOCATE (pot%paw%ae_wfc, SOURCE=RESHAPE(SQRT(pot%r), [5, 1]))
+      ALLOCATE (pot%paw%ps_wfc, SOURCE=0.5_dp*pot%paw%ae_wfc)
       pot%qijl(:, 1, 0) = 0.25_dp*pot%r
       CALL upf_projector_angular_init(pot%lbeta, 0, projectors)
       CALL paw_onecenter_init(pot, projectors, onecenter)
@@ -3553,10 +3553,10 @@ CONTAINS
       volume = 1.5_dp*1.6_dp*2.3_dp
       dcell = 0.0_dp
       dcell(1, 2) = 1.0_dp
-      center(1)%radii = [0.45_dp, 1.2_dp]
-      center(1)%weights = [0.2_dp, 0.4_dp]
-      center(1)%l = [0, 1, 1, 1]
-      center(1)%indices = [1, 2, 3, 4]
+      ALLOCATE (center(1)%radii, SOURCE=[0.45_dp, 1.2_dp])
+      ALLOCATE (center(1)%weights, SOURCE=[0.2_dp, 0.4_dp])
+      ALLOCATE (center(1)%l, SOURCE=[0, 1, 1, 1])
+      ALLOCATE (center(1)%indices, SOURCE=[1, 2, 3, 4])
       ALLOCATE (center(1)%density(2, 4), center(1)%shapes(2, 4))
       DO i = 1, 4
          center(1)%density(:, i) = SIN(0.7_dp*i*center(1)%radii)/(1.0_dp + i)
