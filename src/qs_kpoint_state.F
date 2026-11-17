@@ -210,15 +210,15 @@ CONTAINS
                      CALL kpoint_cell_gauge_action(kpoints, ik, op, kpoints%xkp(:, ik), &
                                                    action, rotation, antiunitary, status)
                      CPASSERT(status == 0)
-                     transformed = MATMUL(CONJG(TRANSPOSE(action)), MATMUL(original, action))
+                     transformed(:, :) = MATMUL(CONJG(TRANSPOSE(action)), MATMUL(original, action))
                      IF (antiunitary) transformed = CONJG(transformed)
-                     averaged = averaged + transformed
+                     averaged(:, :) = averaged + transformed
                      nops = nops + 1
                   END DO
                END IF
             END IF
             IF (nops > 0) THEN
-               averaged = (averaged + CONJG(TRANSPOSE(averaged)))/(2.0_dp*nops)
+               averaged(:, :) = (averaged + CONJG(TRANSPOSE(averaged)))/(2.0_dp*nops)
                CALL cp_cfm_set_submatrix(hamiltonian, averaged)
             END IF
             CALL get_mo_set(kp%mos(spin), eigenvalues=eigenvalues)
