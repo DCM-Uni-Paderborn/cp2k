@@ -3994,7 +3994,7 @@ CONTAINS
                batch_self((aux - 1)*nproj + 1:aux*nproj, :) = REAL(entry%values(:, :, aux), dp)
             END IF
          END DO
-         batch_moment = batch_moment - MATMUL(batch_self, REAL(local_coefficients, dp))
+         batch_moment(:, :) = batch_moment - MATMUL(batch_self, REAL(local_coefficients, dp))
          IF (.NOT. ASSOCIATED(retained)) DEALLOCATE (temporary%values)
       END IF
       DO aux = 1, fields%nfunction

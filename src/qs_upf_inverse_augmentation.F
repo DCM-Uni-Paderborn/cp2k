@@ -619,7 +619,8 @@ CONTAINS
       CALL fourier_potential(vdensity, vgradient, potential_g, active, active_gradient)
       CALL fourier_potential(vdensity_response, vgradient_response, response_g, active_response)
       IF (ANY(active_gradient) .AND. cell_moves) THEN
-         g_response = -MATMUL(TRANSPOSE(strain), vdensity%pw_grid%g)
+         ALLOCATE (g_response, MOLD=vdensity%pw_grid%g)
+         g_response(:, :) = -MATMUL(TRANSPOSE(strain), vdensity%pw_grid%g)
          CALL derivative_g%create(vdensity%pw_grid)
          CALL work_r%create(vdensity%pw_grid)
          ! Differentiate -div(vgradient) using the same real-grid projection as the adjoint.
@@ -879,12 +880,12 @@ CONTAINS
                                                                 hq(:, :, axis, 2)*dr(2) + hq(:, :, axis, 3)*dr(3))
                END DO
                IF (PRESENT(vlaplacian)) THEN
-                  term = term + vlaplacian(point)*laplace_q
+                  term(:, :) = term + vlaplacian(point)*laplace_q
                   DO axis = 1, 3
-                     dterm = dterm + vlaplacian(point)*laplace_q_gradient(:, :, axis)*dr(axis)
+                     dterm(:, :) = dterm + vlaplacian(point)*laplace_q_gradient(:, :, axis)*dr(axis)
                   END DO
                END IF
-               IF (PRESENT(vlaplacian_response)) dterm = dterm + vlaplacian_response(point)*laplace_q
+               IF (PRESENT(vlaplacian_response)) dterm(:, :) = dterm + vlaplacian_response(point)*laplace_q
                response(first:last, first:last) = response(first:last, first:last) + &
                                                   weight*dterm + weights_response(point)*term
             END DO

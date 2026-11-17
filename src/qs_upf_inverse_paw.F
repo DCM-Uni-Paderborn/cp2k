@@ -1043,7 +1043,7 @@ CONTAINS
          CALL project_paw_density(frames, density, kweights, first, last, dm)
          CALL project_paw_density(frames, direction, kweights, first, last, delta)
          CALL retained_projector_density(frames, kweights, first, last, dm, density_components, orbital_factors)
-         direction_components%hi = delta
+         direction_components(:, :, :)%hi = delta
          direction_components%lo = 0.0_dp
          IF (PRESENT(orbital_direction)) THEN
             CALL retained_projector_density(frames, kweights, first, last, delta, direction_components, &
