@@ -895,7 +895,7 @@ CONTAINS
       IF (.NOT. frame%direct) THEN
          ALLOCATE (d(np, n), e(np, n))
          CALL center_fields(frame, center, points, d, e, cache=cache)
-         e = SPREAD(potential, 2, n)*e
+         e(:, :) = SPREAD(potential, 2, n)*e
          CALL upf_inverse_pair(d, e, weights, ao_operator)
          ao_operator = 0.5_dp*(ao_operator + CONJG(TRANSPOSE(ao_operator)))
       END IF
