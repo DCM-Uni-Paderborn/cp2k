@@ -967,6 +967,7 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: inter, world
 
       IF (kpoints%lattice_fft == lattice_fft_off) RETURN
+      IF (.NOT. ASSOCIATED(kpoints%xkp)) RETURN
       nkp = SIZE(kpoints%xkp, 2)
       IF (kpoints%lattice_fft == lattice_fft_auto .AND. nkp < 27) RETURN
       IF (ANY(kpoints%nkp_grid <= 0)) RETURN
