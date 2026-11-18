@@ -21,10 +21,9 @@
       METHOD GAPW
     &END QS
     &SCF
-      EPS_SCF 1.0E-6
-      IGNORE_CONVERGENCE_FAILURE
-      MAX_SCF 5
-      SCF_GUESS RESTART
+      EPS_SCF 1.0E-10
+      MAX_SCF 120
+      SCF_GUESS ATOMIC
       &DIAGONALIZATION
         ALGORITHM STANDARD
       &END DIAGONALIZATION
@@ -35,7 +34,7 @@
         FRACTION 0.25
         &ACE
           ACTIVE .TRUE.
-          REBUILD_FREQUENCY 20
+          REBUILD_FREQUENCY 2
         &END ACE
         &MEMORY
           MAX_MEMORY 5
