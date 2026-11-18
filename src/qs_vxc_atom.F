@@ -128,7 +128,10 @@ MODULE qs_vxc_atom
 
    CHARACTER(len=*), PARAMETER, PRIVATE :: moduleN = 'qs_vxc_atom'
 
-   PUBLIC :: calculate_vxc_atom, &
+   PUBLIC :: add_gapw_atom_grid_interpolation_adjoint, &
+             atom_grid_image_bounds, &
+             interpolate_gapw_atom_grid_fields, &
+             calculate_vxc_atom, &
              calculate_vxc_atom_epr, &
              gapw_cdft_one_center
 
