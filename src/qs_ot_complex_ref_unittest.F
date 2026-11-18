@@ -147,7 +147,8 @@ CONTAINS
       INTEGER, INTENT(INOUT)                             :: nfail
 
       INTEGER                                            :: i, mode, solver
-      INTEGER, POINTER                                   :: cols(:), pgrid(:, :), rows(:), sizes(:)
+      INTEGER, CONTIGUOUS, POINTER                       :: cols(:), rows(:), sizes(:)
+      INTEGER, POINTER                                   :: pgrid(:, :)
       LOGICAL                                            :: fallback
       REAL(dp)                                           :: c(2, 1), error, evals(1), gram(2, 2), &
                                                             h(2, 2), metric(2, 2), vectors(2, 2)
