@@ -141,10 +141,12 @@ CONTAINS
                                                             output_unit
       LOGICAL                                            :: conv, hesrest, hess_reset, inverse, &
                                                             method_explicit, shell_present, &
-                                                            should_stop, use_mod_hes, use_rfo
+                                                            should_stop, step_on_ray, use_mod_hes, &
+                                                            use_rfo
       REAL(KIND=dp)                                      :: ediff, emin, eold, etot, pred, rad, rat, &
                                                             step, t_diff, t_now, t_old
-      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: dg, dr, dx, eigval, gold, work, xold
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: b_dx, dg, dr, dx, eigval, gold, s_raw, &
+                                                            work, xold
       REAL(KIND=dp), DIMENSION(:), POINTER               :: g
       TYPE(atomic_kind_list_type), POINTER               :: atomic_kinds
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -170,6 +172,7 @@ CONTAINS
       inverse = matrix_method == bfgs_inverse
       maxiter = gopt_param%max_iter
       conv = .FALSE.
+      step_on_ray = .FALSE.
       rat = 0.0_dp
       wildcard = " BFGS"
 
@@ -310,6 +313,11 @@ CONTAINS
 
       ALLOCATE (dr(ndf))
       dr(:) = 0.0_dp
+      IF (inverse) THEN
+         ALLOCATE (b_dx(ndf), s_raw(ndf))
+         b_dx(:) = 0.0_dp
+         s_raw(:) = 0.0_dp
+      END IF
 
       ! Geometry optimization starts now
       CALL cp_iterate(logger%iter_info, increment=0, iter_nr_out=iter_nr)
@@ -343,7 +351,13 @@ CONTAINS
             dx(:) = x0(:) - xold(:)
             dg(:) = g(:) - gold(:)
             IF (inverse) THEN
-               CALL bfgs_inverse_update(ndf, dx, dg, hess_mat, work)
+               ! Reuse step_on_ray checked when step dx = x0 - xold was accepted on the previous pass.
+               IF (step_on_ray) THEN
+                  CALL bfgs_inverse_update(ndf, dx, dg, hess_mat, work, b_dx=b_dx, &
+                                           output_unit=output_unit)
+               ELSE
+                  CALL bfgs_inverse_update(ndf, dx, dg, hess_mat, work)
+               END IF
             ELSE
                CALL bfgs(ndf, dx, dg, hess_mat, work, para_env, output_unit, hess_reset)
                IF (hess_reset) THEN
@@ -370,6 +384,7 @@ CONTAINS
 
          IF (inverse) THEN
             CALL bfgs_inverse_step(hess_mat, g, dr)
+            s_raw(:) = dr(:)
          ELSE
             ! Copying hessian hes to (ndf x ndf) matrix hes_mat for diagonalization
             CALL cp_fm_to_fm(hess_mat, hess_tmp)
@@ -406,6 +421,10 @@ CONTAINS
                dr(:) = rat*dr(:)
                step = rad
             END IF
+            ! Along the scaled inverse-Newton ray s_raw = rat*(-H*g), B*s_raw = -rat*g
+            ! holds without forming B, enabling primal Powell damping next step.
+            s_raw(:) = rat*s_raw(:)
+            b_dx(:) = -rat*gold(:)
          ELSE
             CALL trust_radius(ndf, step, rad, rat, dr, output_unit)
          END IF
@@ -426,8 +445,15 @@ CONTAINS
          dr(:) = x0(:) - xold(:)
          step = MAXVAL(ABS(dr))
 
-         ! This diagnostic requires B, not H. It is optional in gopt_f_io.
-         IF (.NOT. inverse) CALL energy_predict(ndf, work, hess_mat, dr, gold, pred, para_env)
+         IF (inverse) THEN
+            step_on_ray = is_step_on_ray(x0, xold, s_raw, dr)
+            CALL para_env%bcast(step_on_ray, para_env%source)
+            ! When dr stays on the ray rat*(-H*gold), B*dr = -rat*gold holds without forming B.
+            IF (step_on_ray) pred = (one - 0.5_dp*rat)*DOT_PRODUCT(gold, dr)
+         ELSE
+            CALL energy_predict(ndf, work, hess_mat, dr, gold, pred, para_env)
+            step_on_ray = .TRUE.
+         END IF
 
          ediff = etot - eold
 
@@ -442,14 +468,14 @@ CONTAINS
          t_now = m_walltime()
          t_diff = t_now - t_old
          t_old = t_now
-         IF (inverse) THEN
-            CALL gopt_f_io(gopt_env, force_env, root_section, its, etot, output_unit, &
-                           eold, emin, wildcard, gopt_param, ndf, dr, g, conv, &
-                           rat=rat, step=step, rad=rad, used_time=t_diff)
-         ELSE
+         IF (step_on_ray) THEN
             CALL gopt_f_io(gopt_env, force_env, root_section, its, etot, output_unit, &
                            eold, emin, wildcard, gopt_param, ndf, dr, g, conv, pred, rat, &
                            step, rad, used_time=t_diff)
+         ELSE
+            CALL gopt_f_io(gopt_env, force_env, root_section, its, etot, output_unit, &
+                           eold, emin, wildcard, gopt_param, ndf, dr, g, conv, &
+                           rat=rat, step=step, rad=rad, used_time=t_diff)
          END IF
 
          IF (conv .OR. (its == maxiter)) EXIT
@@ -483,6 +509,8 @@ CONTAINS
       IF (ALLOCATED(eigval)) DEALLOCATE (eigval)
       DEALLOCATE (work)
       DEALLOCATE (dr)
+      IF (ALLOCATED(b_dx)) DEALLOCATE (b_dx)
+      IF (ALLOCATED(s_raw)) DEALLOCATE (s_raw)
 
       CALL cp_print_key_finished_output(output_unit, logger, geo_section, &
                                         "PRINT%PROGRAM_RUN_INFO")
@@ -491,24 +519,54 @@ CONTAINS
    END SUBROUTINE geoopt_bfgs
 
 ! **************************************************************************************************
+!> \brief Check whether the accepted geometry x0 remains on xold + s_raw.
+!> \param x0 Accepted coordinates after projection and evaluation
+!> \param xold Coordinates at the start of the step
+!> \param s_raw Scaled inverse-Newton trial displacement
+!> \param step_vec Accepted displacement x0 - xold
+!> \return True when constraints or projections did not deflect the step off the ray
+! **************************************************************************************************
+   PURE FUNCTION is_step_on_ray(x0, xold, s_raw, step_vec) RESULT(on_ray)
+      REAL(KIND=dp), DIMENSION(:), INTENT(IN)            :: x0, xold, s_raw, step_vec
+      LOGICAL                                            :: on_ray
+
+      REAL(KIND=dp), PARAMETER :: coord_roundoff_tol = 64.0_dp*EPSILON(1.0_dp), &
+         primal_step_tol = 1.0E-10_dp
+
+      REAL(KIND=dp)                                      :: tol
+
+      ! Compare x0 against xold + s_raw directly so small steps avoid cancellation noise, while
+      ! still allowing coordinate-scale roundoff from projection transforms.
+      tol = MAX(primal_step_tol*MAXVAL(ABS(step_vec)), &
+                coord_roundoff_tol*MAXVAL(ABS(x0)), TINY(1.0_dp))
+      on_ray = MAXVAL(ABS(x0 - (xold + s_raw))) <= tol
+   END FUNCTION is_step_on_ray
+
+! **************************************************************************************************
 !> \brief Damped inverse-BFGS update, using only a matvec and local rank-two updates.
 !> \param ndf Number of optimization variables
 !> \param dx Actual change of optimization variables (not modified by damping)
 !> \param dg Change of gradients in the same coordinate system
 !> \param hess_mat Inverse Hessian, updated in place
 !> \param work Replicated workspace for H*dg
+!> \param b_dx Optional direct Hessian action B*dx; when present, applies
+!>             primal Powell damping via Sherman-Morrison-Woodbury
+!> \param output_unit Optional geometry log unit for damping diagnostics
 ! **************************************************************************************************
-   SUBROUTINE bfgs_inverse_update(ndf, dx, dg, hess_mat, work)
+   SUBROUTINE bfgs_inverse_update(ndf, dx, dg, hess_mat, work, b_dx, output_unit)
       INTEGER, INTENT(IN)                                :: ndf
       REAL(KIND=dp), INTENT(IN)                          :: dx(ndf), dg(ndf)
       TYPE(cp_fm_type), INTENT(IN)                       :: hess_mat
       REAL(KIND=dp), INTENT(OUT)                         :: work(ndf)
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: b_dx(ndf)
+      INTEGER, INTENT(IN), OPTIONAL                      :: output_unit
 
-      REAL(KIND=dp), PARAMETER                           :: min_curvature = 0.2_dp
+      REAL(KIND=dp), PARAMETER                           :: min_curvature = 0.2_dp, &
+                                                            min_sbs = 10.0_dp*TINY(1.0_dp)
 
       INTEGER                                            :: handle, i, ig, invalid, j, jg, nc, nr
       INTEGER, DIMENSION(:), POINTER                     :: cols, rows
-      REAL(KIND=dp)                                      :: coeff, rho, sy, theta, yhy
+      REAL(KIND=dp)                                      :: coeff, rho, sbs, sy, theta, yhy
       REAL(KIND=dp), CONTIGUOUS, DIMENSION(:, :), &
          POINTER                                         :: data
       REAL(KIND=dp), DIMENSION(ndf)                      :: secant
@@ -516,6 +574,11 @@ CONTAINS
       CALL timeset("bfgs_inverse_update", handle)
       IF (.NOT. ALL(ieee_is_finite(dx)) .OR. .NOT. ALL(ieee_is_finite(dg))) THEN
          CPABORT("Non-finite displacement or gradient difference in inverse BFGS")
+      END IF
+      IF (PRESENT(b_dx)) THEN
+         IF (.NOT. ALL(ieee_is_finite(b_dx))) THEN
+            CPABORT("Non-finite curvature vector in inverse BFGS")
+         END IF
       END IF
       work = 0.0_dp
       IF (NORM2(dx) == 0.0_dp .OR. NORM2(dg) == 0.0_dp) THEN
@@ -529,7 +592,10 @@ CONTAINS
       IF (.NOT. ieee_is_finite(sy) .OR. .NOT. ieee_is_finite(yhy)) THEN
          CPABORT("Non-finite curvature in inverse BFGS")
       END IF
-      IF (yhy <= 0.0_dp) THEN
+      invalid = 0
+      IF (yhy <= 0.0_dp) invalid = 1
+      CALL hess_mat%matrix_struct%para_env%max(invalid)
+      IF (invalid /= 0) THEN
          CALL cp_warn(__LOCATION__, &
                       "BFGS: non-positive inverse curvature; resetting to unity.")
          CALL cp_fm_set_all(hess_mat, alpha=0.0_dp, beta=1.0_dp)
@@ -538,7 +604,36 @@ CONTAINS
       END IF
 
       secant = dx
-      IF (sy < min_curvature*yhy) THEN
+      IF (PRESENT(b_dx)) THEN
+         ! Primal Powell damping in inverse form: with H*b_dx = dx, replacing y
+         ! by eta = theta*y + (1-theta)*B*s maps H*eta = theta*H*y + (1-theta)*dx
+         ! without forming B, yielding the exact inverse of the DIRECT update.
+         sbs = DOT_PRODUCT(dx, b_dx)
+         invalid = 0
+         IF (.NOT. ieee_is_finite(sbs) .OR. sbs <= MAX(EPSILON(1.0_dp)*ABS(sy), min_sbs)) invalid = 1
+         CALL hess_mat%matrix_struct%para_env%max(invalid)
+         IF (invalid /= 0) THEN
+            CALL cp_warn(__LOCATION__, &
+                         "BFGS: vanishing or non-positive predicted curvature; resetting to unity.")
+            CALL cp_fm_set_all(hess_mat, alpha=0.0_dp, beta=1.0_dp)
+            CALL timestop(handle)
+            RETURN
+         END IF
+         IF (sy < min_curvature*sbs) THEN
+            theta = ((1.0_dp - min_curvature)*sbs)/(sbs - sy)
+            IF (PRESENT(output_unit)) THEN
+               IF (output_unit > 0) THEN
+                  WRITE (UNIT=output_unit, FMT="(T2,A,F10.4,A,F3.1,A)") &
+                     "BFGS| Damped update, curvature ratio y.s/(s.B.s): ", sy/sbs, &
+                     " (threshold ", min_curvature, ")"
+                  CALL m_flush(output_unit)
+               END IF
+            END IF
+            work = theta*work + (1.0_dp - theta)*dx
+            sy = theta*sy + (1.0_dp - theta)*sbs
+            yhy = theta*DOT_PRODUCT(dg, work) + (1.0_dp - theta)*DOT_PRODUCT(b_dx, work)
+         END IF
+      ELSE IF (sy < min_curvature*yhy) THEN
          ! Dual-space damping: y^T*s_tilde >= min_curvature*y^T*H*y.
          ! Unlike damping y with B*s, this does not need the direct Hessian.
          theta = ((1.0_dp - min_curvature)*yhy)/(yhy - sy)
