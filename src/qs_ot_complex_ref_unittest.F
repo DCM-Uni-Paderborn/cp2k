@@ -238,7 +238,8 @@ CONTAINS
 
       COMPLEX(dp)                                        :: actual(n, n), density(n, n), &
                                                             expected(n, n), metric(n, n), &
-                                                            transformed_metric(n, n), upper(n, n), &
+                                                            transform(n, n), transformed_metric(n, n), &
+                                                            upper(n, n), &
                                                             vector(n)
       INTEGER                                            :: direction, i, j, part, spin, unit
       REAL(dp)                                           :: error, imaginary_part(n, n), &
@@ -281,9 +282,18 @@ CONTAINS
       DO j = 1, n
          DO i = 1, n
             density(i, j) = vector(i)*CONJG(vector(j))
-            transformed_metric(i, j) = metric(i, j)/(scaling(i)*scaling(j))
          END DO
          density(j, j) = density(j, j) + 0.03_dp
+      END DO
+      ! With M_old = U^H U and M_new = U^H D^-2 U the principal
+      ! transport is U^-1 D U, including for noncommuting metrics.
+      transformed_metric = MATMUL(CONJG(TRANSPOSE(upper)), upper/SPREAD(scaling**2, 2, n))
+      transform = upper*SPREAD(scaling, 2, n)
+      DO i = n, 1, -1
+         DO j = i + 1, n
+            transform(i, :) = transform(i, :) - upper(i, j)*transform(j, :)
+         END DO
+         transform(i, :) = transform(i, :)/upper(i, i)
       END DO
       CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), metric)
       CALL cp_cfm_set_submatrix(points%native_density(1, 1), density)
@@ -299,9 +309,7 @@ CONTAINS
          points%native_density_representation = MERGE(uspp_method_inverse_1c, uspp_method_inverse, direction == 1)
          IF (direction == 1) THEN
             CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), transformed_metric)
-            DO j = 1, n
-               expected(:, j) = scaling(:)*density(:, j)*scaling(j)
-            END DO
+            expected = MATMUL(transform, MATMUL(density, CONJG(TRANSPOSE(transform))))
          ELSE
             CALL cp_cfm_set_submatrix(points%native_operators(kpoint_slot_s)%matrices(1, 1), metric)
             expected = density
@@ -319,7 +327,7 @@ CONTAINS
          CALL cp_cfm_get_submatrix(points%native_density(1, 2), actual)
          error = MAX(error, MAXVAL(ABS(actual)))
       END DO
-      IF (error > 5.0E-12_dp) nfail = nfail + 1
+      CALL check_error("inverse density restart", error, 5.0E-12_dp, nfail)
       DO spin = 1, 2
          CALL cp_cfm_release(points%native_density(1, spin))
          CALL cp_cfm_release(points%native_trial(1, spin))
