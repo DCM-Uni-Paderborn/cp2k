@@ -610,14 +610,6 @@ registry["M105"] = GenericMatcher(r"TDDFT+SOC", col=5)
 registry["E_G0W0_direct_gap"] = GenericMatcher(r"G0W0 direct band gap", col=6)
 registry["E_G0W0_indirect_gap"] = GenericMatcher(r"G0W0 indirect band gap", col=6)
 
-# number of G0W0 levels marked not reliable (*) and multi-solution (m), Nevanlinna continuation
-registry["G0W0_levels_unstable"] = GenericMatcher(
-    r"Levels marked * (not reliable)", col=6
-)
-registry["G0W0_levels_multi"] = GenericMatcher(
-    r"Levels marked m (multi-solution)", col=5
-)
-
 # DFT + perturbative SOC bandgap of solid
 registry["E_SCF_SOC_gap"] = GenericMatcher(r"SCF+SOC direct band gap", col=6)
 
@@ -667,6 +659,14 @@ registry["BSE_osc_str_n2_UKS_ABBA"] = GenericMatcher(
 )
 registry["BSE_ampl_n2_UKS_ABBA"] = GenericMatcher(
     r"BSE|            2   α      1    =>     2        -ABBA-", col=8
+)
+# Closed-shell ABBA: a de-excitation amplitude |Y_ia^n| (needs EPS_X below it) and the
+# Davidson reference check against the full diagonalization (needs BSE_DEBUG_PRINT)
+registry["BSE_Y_ampl_n1_ABBA"] = GenericMatcher(
+    r"BSE|            1           4    <=     5        -ABBA-", col=7
+)
+registry["BSE_refcheck_overlap"] = GenericMatcher(
+    r"BSE|DEBUG| Min subspace overlap vs full diagonalization", col=8
 )
 registry["M115"] = GenericMatcher(r"MOMENTS_TRACE_RE|     0.10000000E+000", col=3)
 registry["M116"] = GenericMatcher(r"MOMENTS_TRACE_IM|     0.10000000E+000", col=3)
@@ -999,4 +999,10 @@ registry["Kubo_symmetry_current_error"] = GenericMatcher(
 
 registry["Kubo_symmetry_points"] = GenericMatcher(
     r"KUBO_TRANSPORT| Property symmetry representatives:", col=5
+)
+
+# Band structure unfolding (&UNFOLDING): energy of the first band in the .bs
+# file (the row carries extra occupation/weight columns, hence no end anchor)
+registry["Unfold_band1_energy"] = GenericMatcher(
+    r"^\s*1\s+([-+]?\d+\.\d+)\s+\d+\.\d+\s+\d+\.\d+", col=2, regex=True
 )
