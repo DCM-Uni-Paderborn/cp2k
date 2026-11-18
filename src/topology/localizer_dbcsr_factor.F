@@ -346,8 +346,8 @@ CONTAINS
       INTEGER(int_8), ALLOCATABLE                        :: keys(:)
       INTEGER, ALLOCATABLE :: key_order(:), position(:), recv_count(:), recv_disp(:), &
          recv_index(:, :), send_count(:), send_disp(:), send_index(:, :)
-      INTEGER, POINTER                                   :: col_dist(:), grid(:, :), row_dist(:), &
-                                                            sizes(:)
+      INTEGER, CONTIGUOUS, POINTER                       :: col_dist(:), row_dist(:), sizes(:)
+      INTEGER, POINTER                                   :: grid(:, :)
       REAL(dp)                                           :: buffer(tile_size, tile_size)
       REAL(dp), ALLOCATABLE                              :: recv_value(:), send_value(:)
       TYPE(dbcsr_distribution_type)                      :: distribution
