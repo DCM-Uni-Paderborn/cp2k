@@ -9,6 +9,7 @@ xTB/regtest-tblite-gxtb-complex                            tblite_gxtb spglib
 xTB/regtest-tblite-gxtb-acceleration                       tblite_gxtb_acceleration
 QS/regtest-constant-potential
 QMMM/QS/regtest-mpi                                         parallel mpiranks>2
+QS/regtest-kp-unfold
 QS/regtest-libgint                                          libGint libint offload_cuda
 MIMIC/regtest-qmmm                                          mimic mpiranks==4
 TMC/regtest_ana_on_the_fly                                  parallel mpiranks>2
