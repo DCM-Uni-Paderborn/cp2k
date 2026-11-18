@@ -246,7 +246,7 @@ MODULE tblite_interface
    USE qs_neighbor_list_types, ONLY: neighbor_list_iterator_create, neighbor_list_iterate, &
                                      get_iterator_info, neighbor_list_set_p_type, &
                                      neighbor_list_iterator_p_type, neighbor_list_iterator_release
-   USE qs_overlap, ONLY: build_overlap_matrix, create_sab_matrix
+   USE qs_overlap, ONLY: create_sab_matrix
    USE qs_rho_types, ONLY: qs_rho_get, qs_rho_type
    USE qs_scf_types, ONLY: qs_scf_env_type
    USE scf_control_types, ONLY: scf_control_type
@@ -10861,8 +10861,7 @@ CONTAINS
       TYPE(cell_type), POINTER                              :: cell_obj
       TYPE(cp_blacs_env_type), POINTER                      :: blacs_env
       TYPE(cp_logger_type), POINTER                         :: logger
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER          :: matrix_dh_native, matrix_h, matrix_p, matrix_s, matrix_w, &
-                                                                matrix_q_native, matrix_s_native
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER          :: matrix_dh_native, matrix_h, matrix_p, matrix_s, matrix_w
       TYPE(dft_control_type), POINTER                       :: dft_control
       TYPE(qs_force_type), DIMENSION(:), POINTER            :: force
       TYPE(gto_basis_set_type), POINTER                     :: basis_set_a, basis_set_b
@@ -10882,7 +10881,7 @@ CONTAINS
       CALL timeset(routineN, handle)
 
       NULLIFY (ks_env, energy, atomic_kind_set, qs_kind_set)
-      NULLIFY (matrix_dh_native, matrix_h, matrix_w, matrix_q_native, matrix_s, matrix_s_native, atprop, dft_control)
+      NULLIFY (matrix_dh_native, matrix_h, matrix_w, matrix_s, atprop, dft_control)
       NULLIFY (sab_orb, sab_kp, rho, tb, kpoints, cell_to_index, index_to_cell, cell_obj)
 #if defined(__TBLITE_GXTB)
       NULLIFY (gxtb_cell_to_index)
@@ -11047,15 +11046,6 @@ CONTAINS
             END DO
          END IF
          tb%use_virial = virial%pv_availability .AND. (.NOT. virial%pv_numer)
-      END IF
-
-      IF (calculate_forces .AND. .NOT. (use_gxtb_gamma .OR. use_gxtb_images)) THEN
-         CALL dbcsr_allocate_matrix_set(matrix_q_native, 1, nimg)
-         DO img = 1, nimg
-            ALLOCATE (matrix_q_native(1, img)%matrix)
-            CALL dbcsr_copy(matrix_q_native(1, img)%matrix, matrix_w(1, img)%matrix, &
-                            name="TBLITE NATIVE OVERLAP FORCE MATRIX")
-         END DO
       END IF
 
       CALL get_atomic_kind_set(atomic_kind_set=atomic_kind_set, atom_of_kind=atom_of_kind, kind_of=kind_of)
@@ -11551,15 +11541,6 @@ CONTAINS
             CALL dbcsr_finalize(matrix_h(i, img)%matrix)
          END DO
       END DO
-
-      IF (calculate_forces .AND. .NOT. (use_gxtb_gamma .OR. use_gxtb_images)) THEN
-         CALL build_overlap_matrix(ks_env, matrixkp_s=matrix_s_native, &
-                                   matrix_name="OVERLAP MATRIX", nderivative=nderivatives, &
-                                   basis_type_a="ORB", basis_type_b="ORB", sab_nl=sab_orb, &
-                                   calculate_forces=.TRUE., matrixkp_p=matrix_q_native)
-         CALL dbcsr_deallocate_matrix_set(matrix_s_native)
-         CALL dbcsr_deallocate_matrix_set(matrix_q_native)
-      END IF
 
       !compute multipole moments for gfn2
       IF (ANY(dft_control%qs_control%xtb_control%tblite_method == [gfn2xtb, gxtb])) THEN
