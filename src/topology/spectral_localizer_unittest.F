@@ -1086,7 +1086,8 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER :: para_env
       TYPE(dbcsr_distribution_type) :: distribution
       TYPE(localizer_matrix_type) :: h, s, flat
-      INTEGER, POINTER :: process_grid(:, :), row_dist(:), col_dist(:), sizes(:)
+      INTEGER, DIMENSION(:, :), POINTER :: process_grid
+      INTEGER, CONTIGUOUS, POINTER :: row_dist(:), col_dist(:), sizes(:)
       COMPLEX(dp) :: transform(n, n), u(n, n), rotation(n, n), scaled(n, n), hdense(n, n), sdense(n, n), exact(n, n)
       COMPLEX(dp), ALLOCATABLE :: result(:, :)
       REAL(dp) :: energies(n), residuals(4), difference, maximum_error, energy, scale, gap(2), metric_ratio, exact_gap

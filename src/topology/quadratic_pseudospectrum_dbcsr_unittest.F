@@ -160,7 +160,8 @@ PROGRAM quadratic_pseudospectrum_dbcsr_unittest
    TYPE(sparse_inertia_type), TARGET :: factors
    TYPE(quadratic_test_type) :: backend
    TYPE(quadratic_result_type) :: reference, trial
-   INTEGER, POINTER :: process_grid(:, :), row_dist(:), col_dist(:), block_size(:)
+   INTEGER, DIMENSION(:, :), POINTER :: process_grid
+   INTEGER, CONTIGUOUS, POINTER :: row_dist(:), col_dist(:), block_size(:)
    INTEGER, ALLOCATABLE :: rows(:), cols(:)
    REAL(dp), ALLOCATABLE :: a(:), b(:), diagonal(:)
    REAL(dp), POINTER :: block(:, :)
