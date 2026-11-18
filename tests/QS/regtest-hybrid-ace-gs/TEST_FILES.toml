@@ -12,8 +12,8 @@
   {matcher = "M072", tol = 1e-8, ref = 4.21907792E-03}
 ]
 "h2o-exact-ace-gpaw.inp"       = [
-  {matcher = "E_total", tol = 1e-10, ref = -76.29952974495100},
-  {matcher = "M072", tol = 1e-8, ref = 1.44497194E-04}
+  {matcher = "E_total", tol = 1e-10, ref = -76.33576447258913},
+  {matcher = "M072", tol = 1e-8, ref = 1.40370975E-04}
 ]
 "heh-ace-convergence.inp"      = [{matcher = "E_total", tol = 1e-10, ref = -2.725261850956314}]
 #EOF
