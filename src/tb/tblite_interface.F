@@ -13815,10 +13815,11 @@ CONTAINS
 
       INTEGER, DIMENSION(3)                              :: periodic
       TYPE(cell_type), POINTER                           :: cell
+      TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(virial_type), POINTER                         :: virial
 
       NULLIFY (virial, cell)
-      CALL get_qs_env(qs_env=qs_env, virial=virial, cell=cell)
+      CALL get_qs_env(qs_env=qs_env, virial=virial, cell=cell, para_env=para_env)
       CALL get_cell(cell=cell, periodic=periodic)
 
       IF (ALL(periodic == 0)) THEN
@@ -13828,6 +13829,8 @@ CONTAINS
                       "but it is not a physically meaningful bulk stress for an isolated molecule.")
       END IF
 
+      ! The SAVE provider returns the global tensor on every rank.
+      IF (tblite_provider_replicated .AND. .NOT. para_env%is_source()) RETURN
       virial%pv_virial = virial%pv_virial - tb%sigma
 
    END SUBROUTINE tb_add_stress
