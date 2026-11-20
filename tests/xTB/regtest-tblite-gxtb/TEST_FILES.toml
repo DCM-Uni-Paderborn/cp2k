@@ -95,6 +95,6 @@
 ]
 # The Gamma atom-block pattern must not truncate ACP or the exchange density.
 # The two cells are equivalent only with the explicit Gamma-centered even mesh.
-"NaCl_gxtb_kp_611_support.inp"                 = [{matcher = "E_total", tol = 1.0E-10, ref = -622.5480506040994}]
-"NaCl_gxtb_gamma_supercell_611_support.inp"    = [{matcher = "E_total", tol = 1.0E-10, ref = -3735.288303624481}]
+"NaCl_gxtb_kp_611_support.inp"                 = [{matcher = "E_total", tol = 1.0E-10, ref = -622.548050981021}]
+"NaCl_gxtb_gamma_supercell_611_support.inp"    = [{matcher = "E_total", tol = 1.0E-10, ref = -3735.288305886010}]
 #EOF
