@@ -328,6 +328,7 @@ list(
   input_cp2k_resp.F
   input_cp2k_restarts_util.F
   input_cp2k_rsgrid.F
+  input_cp2k_skala.F
   input_cp2k_subsys.F
   input_cp2k_smeagol.F
   input_cp2k_thermostats.F
@@ -1072,7 +1073,6 @@ list(
   common/timings.F
   common/timings_report.F
   common/timings_types.F
-  common/t_sh_p_s_c.F
   common/util.F
   common/xmgrace.F
   common/erf_complex.F
@@ -1106,7 +1106,8 @@ list(
   dbt/tas/dbt_tas_types.F
   dbt/tas/dbt_tas_util.F)
 
-list(APPEND CP2K_SRCS_F dbx/cp_dbcsr_api.F dbx/cp_dbcsr_contrib.F)
+list(APPEND CP2K_SRCS_F dbx/cp_dbcsr_api.F dbx/cp_dbcsr_contrib.F
+     dbx/cp_dbcsr_csr.F)
 
 list(
   APPEND
