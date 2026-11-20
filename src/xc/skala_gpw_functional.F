@@ -45,7 +45,8 @@ MODULE skala_gpw_functional
         skala_gpw_atom_partition_hard, skala_gpw_atom_partition_smooth, &
         skala_gpw_atom_subchunk_count, skala_gpw_atom_subchunk_layout, skala_gpw_feature_build, &
         skala_gpw_feature_build_atom_subchunk_bounds, skala_gpw_feature_release, &
-        skala_gpw_features_release_cache, skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, skala_grid_feature_build, &
+        skala_gpw_features_release_cache, skala_gpw_feature_type, skala_gpw_smooth_partition_derivatives, &
+        skala_grid_feature_build, &
         skala_grid_layout_type, skala_point_feature_build, &
         smooth_partition_atomic_weight_scale_derivative
    USE skala_torch_api,                 ONLY: skala_torch_model_get_exc,&
