@@ -390,7 +390,7 @@ CONTAINS
          do_wfc_low_scaling_kpoints, do_xtb_tblite, final_kpoint_reinit, is_identical, is_semi, &
          kpoint_explicit, kpoint_verbose, mp2_present, my_qmmm, ot_energies, owned_kpoints, &
          qmmm_decoupl, same_except_frac, sample_bands, use_ot, use_real_wfn
-      LOGICAL :: use_ref_cell
+      LOGICAL :: defer_kpoint_output, use_ref_cell
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: rtmat
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cell_type), POINTER                           :: my_cell, my_cell_ref
@@ -506,8 +506,13 @@ CONTAINS
             ! Use the production Mermin driver instead of maintaining a second sparse Gamma path.
             CALL set_kpoint_info(kpoints, kp_scheme="GAMMA")
          END IF
+         bands_section => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%BAND_STRUCTURE")
+         CALL section_vals_val_get(bands_section, "SAMPLE_IN_SCF", l_val=sample_bands)
          CALL get_kpoint_info(kpoints, verbose=kpoint_verbose)
-         IF (kpoint_verbose) CALL set_kpoint_info(kpoints, verbose=.FALSE.)
+         ! Band probes extend the full SCF mesh. Print it on the first initialization
+         ! so a second initialization for diagnostics cannot discard the probes.
+         defer_kpoint_output = kpoint_verbose .AND. .NOT. sample_bands
+         IF (defer_kpoint_output) CALL set_kpoint_info(kpoints, verbose=.FALSE.)
          do_hfx = .FALSE.
          hfx_section => section_vals_get_subs_vals(qs_env%input, "DFT%XC%HF")
          CALL section_vals_get(hfx_section, explicit=do_hfx)
@@ -606,8 +611,6 @@ CONTAINS
       END IF
 
       IF (owned_kpoints) THEN
-         bands_section => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%BAND_STRUCTURE")
-         CALL section_vals_val_get(bands_section, "SAMPLE_IN_SCF", l_val=sample_bands)
          IF (sample_bands) THEN
             IF (.NOT. has_uspp(qs_kind_set)) CPABORT("SAMPLE_IN_SCF requires original USPP or PAW.")
             CALL section_vals_val_get(qs_env%input, "DFT%SCF%OT%_SECTION_PARAMETERS_", l_val=use_ot)
@@ -653,7 +656,7 @@ CONTAINS
                                                           do_wfc_low_scaling, do_wfc_low_scaling_kpoints, &
                                                           do_xtb_tblite, do_dftb_scc_high_l, &
                                                           restricted=dftb_kpoint_sym_restricted)
-         final_kpoint_reinit = final_kpoint_reinit .OR. dftb_kpoint_sym_restricted .OR. kpoint_verbose
+         final_kpoint_reinit = final_kpoint_reinit .OR. dftb_kpoint_sym_restricted .OR. defer_kpoint_output
       END IF
       IF (final_kpoint_reinit) THEN
          CALL kpoint_reset_initialization(kpoints)
