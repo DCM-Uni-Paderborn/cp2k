@@ -662,7 +662,12 @@ CONTAINS
       CALL get_qs_env(qs_env=qs_env, para_env=para_env, blacs_env=blacs_env)
       CALL kpoint_env_initialize(kpoint, para_env, blacs_env)
 
-      CALL kpoint_initialize_mos(kpoint, qs_env%mos, nadd, alloc_dm=alloc_dm)
+      ! The inverse-UPF operators use the target AO density-matrix layout.
+      IF (original_upf) THEN
+         CALL kpoint_initialize_mos(kpoint, qs_env%mos, nadd, alloc_dm=.TRUE.)
+      ELSE
+         CALL kpoint_initialize_mos(kpoint, qs_env%mos, nadd, alloc_dm=alloc_dm)
+      END IF
       CALL kpoint_initialize_mo_set(kpoint)
 
       CALL get_qs_env(qs_env, sab_kp=sab_nl, dft_control=dft_control)
