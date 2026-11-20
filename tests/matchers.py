@@ -1,5 +1,4 @@
 import math
-import re
 import traceback
 from typing import Any, Dict
 
@@ -34,45 +33,6 @@ registry = MatcherRegistry()
 
 
 force_eval_energy = GenericMatcher(r"ENERGY| Total FORCE_EVAL", col=9)
-
-
-def restricted_fcidump_reference_offset(output: str) -> float:
-    """Return E(det) - E(SCF) for a canonical high-spin restricted FCIDUMP."""
-    headers = list(
-        re.finditer(
-            r"^&FCI\s+NORB=\s*(\d+),NELEC=\s*(\d+),MS2=\s*(\d+),[^/]*?/",
-            output,
-            re.M,
-        )
-    )
-    if not headers or re.search(r"UHF=\s*1", headers[-1].group()):
-        raise ValueError("No restricted FCIDUMP found.")
-    norb, nelec, ms2 = map(int, headers[-1].groups())
-    na, nb = (nelec + ms2) // 2, (nelec - ms2) // 2
-    if not 0 <= nb <= na <= norb or na + nb != nelec:
-        raise ValueError("Invalid FCIDUMP occupations.")
-
-    # CP2K writes one record per integral permutation class.
-    energy = 0.0
-    for line in output[headers[-1].end() :].strip().splitlines():
-        value, *indices = line.split()
-        i, j, k, l = map(int, indices)
-        integral = float(value.replace("D", "E"))
-        if i == j == k == l == 0:
-            energy += integral
-            break
-        if k == l == 0 and i == j:
-            energy += ((i <= na) + (i <= nb)) * integral
-        elif i == j and k == l:
-            if i == k:
-                energy += (i <= nb) * integral
-            else:
-                energy += ((i <= na) + (i <= nb)) * ((k <= na) + (k <= nb)) * integral
-        elif (i, j) == (k, l):
-            energy -= ((max(i, j) <= na) + (max(i, j) <= nb)) * integral
-    else:
-        raise ValueError("Missing FCIDUMP constant.")
-    return energy - force_eval_energy.extract(output)
 
 
 class GWOrbitalSelfEnergyMatcher(Matcher):
@@ -589,7 +549,7 @@ registry["FCIDUMP_MS2"] = GenericMatcher(
     r"&FCI .*MS2=\s*([-+0-9]+),", col=1, regex=True
 )
 registry["FCIDUMP_reference_energy"] = GenericMatcher(
-    restricted_fcidump_reference_offset
+    r"FCIDUMP| Reference determinant energy offset [hartree]:", col=7
 )
 registry["ROKS_FCIDUMP_spin_warning"] = TextPresenceMatcher("ROKS FCIDUMP spin blocks")
 registry["M093"] = GenericMatcher(r"SPGR| SPACE GROUP NUMBER:", col=5)
