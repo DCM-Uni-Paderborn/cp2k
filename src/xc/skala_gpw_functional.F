@@ -655,7 +655,8 @@ CONTAINS
                                 xc_deriv_method_id, xc_rho_smooth_id, pw_pool)
          CALL skala_gpw_feature_build(direction_features, direction_rho_set, rho_direction, particle_set, cell, &
                                       requires_grad=.FALSE., weights=weights, use_atom_chunks=native_grid_atom_chunks, &
-         route_atom_chunks=native_grid_atom_chunk_routing, atom_partition=native_grid_atom_partition, context_radius=context_radius)
+         route_atom_chunks=native_grid_atom_chunk_routing, atom_partition=native_grid_atom_partition, &
+         context_radius=context_radius, cuda_device=selected_cuda_device)
          response_collapsed_rks = direction_features%uses_collapsed_rks_dynamic
          IF (direction_features%uses_atom_chunks) THEN
             IF (direction_features%chunk_feature_count > 0) THEN
