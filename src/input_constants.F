@@ -877,11 +877,14 @@ MODULE input_constants
                                                do_potential_id = 7, &
                                                do_potential_truncated = 8, &
                                                do_potential_mix_cl_trunc = 9, &
-                                               do_potential_TShPSC = 1009, &
                                                ri_default = 10001
 
    ! HFX periodic number of shells
    INTEGER, PARAMETER, PUBLIC               :: do_hfx_auto_shells = -1
+
+   INTEGER, PARAMETER, PUBLIC               :: do_gpu_auto = 1, &
+                                               do_gpu_host = 2, &
+                                               do_gpu_device = 3
 
    ! adiabatic hybrid type
    INTEGER, PARAMETER, PUBLIC               :: do_adiabatic_hybrid_mcy3 = 1
