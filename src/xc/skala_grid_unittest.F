@@ -11,6 +11,7 @@ PROGRAM skala_grid_unittest
    USE cell_types,                      ONLY: cell_release,&
                                               cell_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_constants,                 ONLY: do_gpu_device, do_gpu_host
    USE input_cp2k_xc,                   ONLY: create_xc_section
    USE input_section_types,             ONLY: section_release,&
                                               section_type,&
@@ -85,8 +86,7 @@ PROGRAM skala_grid_unittest
    CALL comm%init()
    CALL create_xc_section(definition)
    CALL section_vals_create(xc, definition)
-   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%MODEL", c_val=TRIM(model))
-   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID", l_val=.TRUE.)
+   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%MODEL", c_val=TRIM(model))
    hmat = RESHAPE([6.0_dp, 0.0_dp, 0.0_dp, 0.4_dp, 5.0_dp, 0.0_dp, 0.2_dp, 0.3_dp, 7.0_dp], [3, 3])
    CALL cell_create(cell, hmat=hmat, periodic=[1, 1, 1])
    ALLOCATE (atoms(2))
@@ -127,13 +127,13 @@ PROGRAM skala_grid_unittest
       END DO
       IF (model_mode == "skala-float32") CALL atomic_fields()
       DO partition = 1, MERGE(1, 2, chunk_limit_test)
-         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_PARTITION", i_val=partition)
+         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%ATOM_PARTITION", i_val=partition)
          DO mode = 0, 1
-            CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNKS", &
+            CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%ATOM_CHUNKS", &
                                       l_val=(mode == 1 .OR. chunk_limit_test))
-            CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=1)
+            CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%ATOM_CHUNK_MAX_ROWS", i_val=1)
             IF (chunk_limit_test .AND. mode == 1) THEN
-               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_ATOM_CHUNK_MAX_ROWS", i_val=-1)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%ATOM_CHUNK_MAX_ROWS", i_val=-1)
             END IF
             CALL evaluate(rho, grad, tau, energy)
             IF (model_mode == "skala-float32" .AND. energy >= -1.0e-6_dp) THEN
@@ -153,7 +153,8 @@ PROGRAM skala_grid_unittest
             END IF
             IF (cuda_points) THEN
                DO device = 1, 2
-                  CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=(device == 1))
+                  CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                                            i_val=MERGE(do_gpu_device, do_gpu_host, (device == 1)))
                   CALL evaluate(rho, grad, tau, energy)
                   error = ABS(energy - reference)
                   IF (nr > 0) error = MAX(error, MAXVAL(ABS(vrho - ref_vrho)), &
@@ -199,7 +200,8 @@ PROGRAM skala_grid_unittest
       END DO
       DEALLOCATE (rho, grad, tau, drho, dgrad, dtau, vrho, vgrad, vtau, ref_vrho, ref_vgrad, ref_vtau)
    END DO
-   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=cuda_points)
+   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                             i_val=MERGE(do_gpu_device, do_gpu_host, cuda_points))
    IF (spinor_test) THEN
       CALL noncollinear_points()
    ELSE
@@ -389,13 +391,15 @@ CONTAINS
       IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "Spin-projected joint Hessian error: ", err
       IF (err > tol) ERROR STOP "Spin-projected joint Hessian fails Richardson finite differences"
       IF (cuda_points) THEN
-         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
+         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                                   i_val=do_gpu_host)
          CALL spinor_evaluate(y, centres, sizes, angular, other, plus_v, plus_c)
          err = MAX(ABS(e - other), MAXVAL(ABS(v - plus_v)), MAXVAL(ABS(vc - plus_c)))
          CALL spinor_evaluate(y, centres, sizes, angular, other, plus_v, plus_c, tangent, dc)
          err = MAX(err, MAXVAL(ABS(hv - plus_v)), MAXVAL(ABS(hc - plus_c)))
          CALL comm%max(err)
-         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
+         CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                                   i_val=do_gpu_device)
          IF (comm%mepos == 0) WRITE (*, '(A,ES12.4)') "CPU/GPU spin-projected covector/Hessian difference: ", err
          IF (err > tol) ERROR STOP "CPU/GPU spin-projected derivatives disagree"
       END IF
@@ -619,11 +623,13 @@ CONTAINS
                END DO
             END DO
             IF (cuda_points) THEN
-               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                                         i_val=do_gpu_host)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                      r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, &
                                      model_fp64=point_fp64)
-               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                                         i_val=do_gpu_device)
             END IF
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, pr, pg, pt, px, pc, pe, pd, model_fp64=point_fp64)
@@ -782,11 +788,13 @@ CONTAINS
             CALL comm%max(err)
             IF (err /= 0.0_dp) ERROR STOP "A zero direction must give zero field and geometry Hessian responses"
             IF (cuda_points) THEN
-               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.FALSE.)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                                         i_val=do_gpu_host)
                CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                      r, g, t, xc, plus, plus_r, plus_g, plus_t, plus_x, plus_c, plus_e, plus_d, &
                                      dr, dg, dt, dx, dc, de, dd, model_fp64=point_fp64)
-               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=.TRUE.)
+               CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                                         i_val=do_gpu_device)
             END IF
             CALL skala_point_eval(comm, points, energy_weights, descriptor_weights, sizes, centres, &
                                   r, g, t, xc, e, hr, hg, ht, hx, hc, he, hd, &

@@ -14,11 +14,11 @@
     UKS T
     &XC
       &XC_FUNCTIONAL
-        &GAUXC
+        &SKALA_NATIVE
           MODEL SKALA
-          NATIVE_GRID T
-          NATIVE_GRID_USE_CUDA F
-        &END GAUXC
+
+          USE_GPU HOST
+        &END SKALA_NATIVE
       &END XC_FUNCTIONAL
     &END XC
   &END DFT

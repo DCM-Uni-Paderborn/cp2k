@@ -11,6 +11,7 @@ PROGRAM skala_sirius_unittest
    USE cell_types,                      ONLY: cell_release,&
                                               cell_type
    USE ieee_arithmetic,                 ONLY: ieee_is_finite
+   USE input_constants,                 ONLY: do_gpu_device, do_gpu_host
    USE input_cp2k_pwdft,                ONLY: create_pwdft_section
    USE input_cp2k_xc,                   ONLY: create_xc_section
    USE input_section_types,             ONLY: section_release,&
@@ -262,9 +263,9 @@ PROGRAM skala_sirius_unittest
    END IF
    CALL create_xc_section(definition)
    CALL section_vals_create(xc, definition)
-   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%MODEL", c_val=TRIM(model))
-   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID", l_val=.TRUE.)
-   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%GAUXC%NATIVE_GRID_USE_CUDA", l_val=TRIM(model_device_arg) == "gpu")
+   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%MODEL", c_val=TRIM(model))
+   CALL section_vals_val_set(xc, "XC_FUNCTIONAL%SKALA_NATIVE%USE_GPU", &
+                             i_val=MERGE(do_gpu_device, do_gpu_host, TRIM(model_device_arg) == "gpu"))
    IF (atom_grid) THEN
       CALL create_pwdft_section(pwdft_definition)
       CALL section_vals_create(pwdft, pwdft_definition)
