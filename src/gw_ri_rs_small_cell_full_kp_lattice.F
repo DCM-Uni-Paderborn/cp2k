@@ -24,6 +24,7 @@ MODULE gw_ri_rs_small_cell_full_kp_lattice
    USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
                                               cp_dbcsr_dist2d_to_dist
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
+                                              cp_fm_struct_get,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
@@ -39,6 +40,7 @@ MODULE gw_ri_rs_small_cell_full_kp_lattice
    USE kpoint_types,                    ONLY: kpoint_type
    USE mathconstants,                   ONLY: pi,&
                                               twopi,&
+                                              z_one,&
                                               z_zero
    USE message_passing,                 ONLY: mp_para_env_type
    USE orbital_pointers,                ONLY: indco,&
@@ -72,6 +74,12 @@ MODULE gw_ri_rs_small_cell_full_kp_lattice
              build_ri_2c_lattice, &
              complex_bytes, &
              gamma_auxiliary_charges, &
+             grid_pair_indices, &
+             grid_pair_gemm, &
+             grid_pair_upper_multiply, &
+             grid_pair_shift, &
+             grid_pair_stencil_weight, &
+             image_weight, &
              owned_mo_coefficients, &
              real_bytes, &
              ri_2c_lattice_to_kp, &
@@ -79,8 +87,212 @@ MODULE gw_ri_rs_small_cell_full_kp_lattice
 
    ! Bytes per stored real and complex number.
    REAL(KIND=dp), PARAMETER :: real_bytes = REAL(dp_size, dp), complex_bytes = 2.0_dp*real_bytes
+   INTEGER, PARAMETER, PUBLIC :: grid_pair_stencil_denominator = 4**3
+   INTEGER, PARAMETER, PUBLIC :: grid_pair_panel_cols = 32
 
 CONTAINS
+
+! **************************************************************************************************
+!> \brief Decode an unordered grid pair p=i+j*(j-1)/2, 1<=i<=j.
+!> Integer corrections keep the triangular boundaries exact for large grids.
+!> \param ipair packed upper-triangle index
+!> \param il row
+!> \param ilp column
+! **************************************************************************************************
+   PURE SUBROUTINE grid_pair_indices(ipair, il, ilp)
+      INTEGER, INTENT(IN)                                :: ipair
+      INTEGER, INTENT(OUT)                               :: il, ilp
+
+      INTEGER(KIND=int_8)                                :: column, pair
+
+      pair = INT(ipair, int_8)
+      column = INT((1.0_dp + SQRT(8.0_dp*REAL(pair, dp) - 7.0_dp))/2.0_dp, int_8)
+      DO WHILE (column*(column + 1_int_8)/2_int_8 < pair)
+         column = column + 1_int_8
+      END DO
+      DO WHILE (column*(column - 1_int_8)/2_int_8 >= pair)
+         column = column - 1_int_8
+      END DO
+      ilp = INT(column)
+      il = INT(pair - column*(column - 1_int_8)/2_int_8)
+   END SUBROUTINE grid_pair_indices
+
+! **************************************************************************************************
+!> \brief Nearest lattice image of an unordered grid pair, including both half-cell ties.
+!> \param il row of the unordered pair
+!> \param ilp column of the unordered pair
+!> \param fractional_grid periodic fractional grid coordinates
+!> \param pair_shift lower nearest image on a tie
+!> \param pair_tie directions with two equidistant images
+! **************************************************************************************************
+   PURE SUBROUTINE grid_pair_shift(il, ilp, fractional_grid, pair_shift, pair_tie)
+      INTEGER, INTENT(IN)                                :: il, ilp
+      REAL(KIND=dp), INTENT(IN)                          :: fractional_grid(:, :)
+      INTEGER, INTENT(OUT)                               :: pair_shift(3)
+      LOGICAL, INTENT(OUT)                               :: pair_tie(3)
+
+      INTEGER                                            :: idir
+      REAL(KIND=dp)                                      :: delta(3), half_boundary, tolerance
+
+      delta = fractional_grid(:, il) - fractional_grid(:, ilp)
+      pair_shift = NINT(delta)
+      pair_tie = .FALSE.
+      DO idir = 1, 3
+         half_boundary = ANINT(delta(idir) - 0.5_dp) + 0.5_dp
+         tolerance = 64.0_dp*EPSILON(1.0_dp)*MAX(1.0_dp, ABS(delta(idir)))
+         IF (ABS(delta(idir) - half_boundary) <= tolerance) THEN
+            pair_shift(idir) = NINT(half_boundary - 0.5_dp)
+            pair_tie(idir) = .TRUE.
+         END IF
+      END DO
+   END SUBROUTINE grid_pair_shift
+
+! **************************************************************************************************
+!> \brief Upper triangle of A B^H in packed pair order, using bounded column panels.
+!> \param n grid points
+!> \param ninner contracted dimension
+!> \param left A
+!> \param right B; the caller supplies a Hermitian product
+!> \param pairs packed upper triangle
+!> \param panel reusable thread-local workspace
+! **************************************************************************************************
+   SUBROUTINE grid_pair_gemm(n, ninner, left, right, pairs, panel)
+      INTEGER, INTENT(IN)                                :: n, ninner
+      COMPLEX(KIND=dp), INTENT(IN)                       :: left(n, ninner), right(n, ninner)
+      COMPLEX(KIND=dp), INTENT(OUT) :: pairs(:), panel(n, MIN(grid_pair_panel_cols, n))
+
+      INTEGER                                            :: first, j, offset, width
+
+      CPASSERT(SIZE(pairs, KIND=int_8) == INT(n, int_8)*(n + 1)/2)
+      DO first = 1, n, grid_pair_panel_cols
+         width = MIN(grid_pair_panel_cols, n - first + 1)
+         CALL zgemm('N', 'C', first + width - 1, width, ninner, z_one, left, n, &
+                    right(first, 1), n, z_zero, panel, n)
+         DO j = first, first + width - 1
+            offset = INT(INT(j, int_8)*(j - 1)/2)
+            pairs(offset + 1:offset + j) = panel(1:j, j - first + 1)
+            pairs(offset + j) = CMPLX(REAL(pairs(offset + j), dp), 0.0_dp, dp)
+         END DO
+      END DO
+   END SUBROUTINE grid_pair_gemm
+
+! **************************************************************************************************
+!> \brief Y=U Z with U=triu(H,1)+diag(H)/2, so that H=U+U^H.
+!> Hermitian projections reconstruct the adjoint after contraction, saving the lower multiply.
+!> \param n grid points
+!> \param nrhs right-hand sides
+!> \param pairs packed upper triangle of H
+!> \param Z dense right-hand sides
+!> \param Y result
+!> \param panel reusable thread-local workspace
+! **************************************************************************************************
+   SUBROUTINE grid_pair_upper_multiply(n, nrhs, pairs, Z, Y, panel)
+      INTEGER, INTENT(IN)                                :: n, nrhs
+      COMPLEX(KIND=dp), INTENT(IN)                       :: pairs(:), Z(n, nrhs)
+      COMPLEX(KIND=dp), INTENT(OUT) :: Y(n, nrhs), panel(n, MIN(grid_pair_panel_cols, n))
+
+      INTEGER                                            :: first, j, offset, width
+
+      CPASSERT(SIZE(pairs, KIND=int_8) == INT(n, int_8)*(n + 1)/2)
+      Y = z_zero
+      DO first = 1, n, grid_pair_panel_cols
+         width = MIN(grid_pair_panel_cols, n - first + 1)
+         DO j = first, first + width - 1
+            offset = INT(INT(j, int_8)*(j - 1)/2)
+            panel(1:j, j - first + 1) = pairs(offset + 1:offset + j)
+            panel(j, j - first + 1) = CMPLX(0.5_dp*REAL(panel(j, j - first + 1), dp), 0.0_dp, dp)
+            panel(j + 1:first + width - 1, j - first + 1) = z_zero
+         END DO
+         CALL zgemm('N', 'N', first + width - 1, nrhs, width, z_one, panel, n, Z(first, 1), n, z_one, Y, n)
+      END DO
+   END SUBROUTINE grid_pair_upper_multiply
+
+! **************************************************************************************************
+!> \brief Finite-supercell image weight, averaged over equidistant pair centers.
+!> \param c image relative to the lower pair center
+!> \param n_mesh mesh length
+!> \param tie two equidistant centers
+!> \param boundary weight of a supercell endpoint
+!> \return image weight
+! **************************************************************************************************
+   PURE REAL(KIND=dp) FUNCTION image_weight(c, n_mesh, tie, boundary) RESULT(weight)
+      INTEGER, INTENT(IN)                                :: c, n_mesh
+      LOGICAL, INTENT(IN)                                :: tie
+      REAL(KIND=dp), INTENT(IN)                          :: boundary
+
+      INTEGER                                            :: i_center, n_centers
+
+      n_centers = MERGE(2, 1, tie)
+      weight = 0.0_dp
+      DO i_center = 0, n_centers - 1
+         IF (2*ABS(c - i_center) < n_mesh) THEN
+            weight = weight + 1.0_dp/REAL(n_centers, dp)
+         ELSE IF (2*ABS(c - i_center) == n_mesh) THEN
+            weight = weight + boundary/REAL(n_centers, dp)
+         END IF
+      END DO
+   END FUNCTION image_weight
+
+! **************************************************************************************************
+!> \brief Signed stencil numerator on an inversion-closed mesh, with denominator 64.
+!> All centered images share exp(2*pi*i*offset*cell); their remaining phases are signs.
+!> Each one-axis image weight is a multiple of 1/4, including half-cell averaging.
+!> \param cell canonical source cell
+!> \param shift lower pair center
+!> \param tie half-cell ties
+!> \param nmesh Born-von Karman mesh
+!> \param half_shift twice the mesh-scaled reciprocal offset
+!> \param displacement grid-point displacement in Cartesian coordinates
+!> \param hmat lattice matrix
+!> \param cutoff_squared squared distance cutoff; nonpositive disables truncation
+!> \return signed image-weight numerator
+! **************************************************************************************************
+   PURE INTEGER FUNCTION grid_pair_stencil_weight(cell, shift, tie, nmesh, half_shift, &
+                                                  displacement, hmat, cutoff_squared) RESULT(numerator)
+      INTEGER, INTENT(IN)                                :: cell(3), shift(3)
+      LOGICAL, INTENT(IN)                                :: tie(3)
+      INTEGER, INTENT(IN)                                :: nmesh(3), half_shift(3)
+      REAL(KIND=dp), INTENT(IN)                          :: displacement(3), hmat(3, 3), &
+                                                            cutoff_squared
+
+      INTEGER                                            :: base(3), ix, iy, iz, translated(3), &
+                                                            weight, weights(0:1, 3)
+      REAL(KIND=dp)                                      :: boundary(3), distance(3)
+
+      ! Periodic image weights partition unity when every supercell phase is one.
+      IF (cutoff_squared <= 0.0_dp .AND. ALL(MODULO(half_shift, 2) == 0)) THEN
+         numerator = grid_pair_stencil_denominator
+         RETURN
+      END IF
+      base = MODULO(cell - shift + nmesh/2, nmesh) - nmesh/2
+      boundary = 0.5_dp*REAL(1 - MODULO(half_shift, 2), dp)
+      DO ix = 1, 3
+         weights(:, ix) = NINT(4.0_dp*[image_weight(base(ix), nmesh(ix), tie(ix), boundary(ix)), &
+                                       image_weight(base(ix) + nmesh(ix), nmesh(ix), tie(ix), boundary(ix))])
+      END DO
+      ! Without a distance cutoff, the image sum separates into three one-axis sums.
+      IF (cutoff_squared <= 0.0_dp) THEN
+         numerator = PRODUCT(weights(0, :) + (1 - 2*MODULO(half_shift, 2))*weights(1, :))
+         IF (MODULO(DOT_PRODUCT(half_shift, (shift + base - cell)/nmesh), 2) /= 0) numerator = -numerator
+         RETURN
+      END IF
+      numerator = 0
+      DO iz = 0, 1
+         IF (weights(iz, 3) == 0) CYCLE
+         DO iy = 0, 1
+            IF (weights(iy, 2) == 0) CYCLE
+            DO ix = 0, 1
+               weight = weights(ix, 1)*weights(iy, 2)*weights(iz, 3)
+               IF (weight == 0) CYCLE
+               translated = shift + base + nmesh*[ix, iy, iz]
+               distance = displacement - MATMUL(hmat, REAL(translated, dp))
+               IF (SUM(distance**2) > cutoff_squared) CYCLE
+               IF (MODULO(DOT_PRODUCT(half_shift, (translated - cell)/nmesh), 2) /= 0) weight = -weight
+               numerator = numerator + weight
+            END DO
+         END DO
+      END DO
+   END FUNCTION grid_pair_stencil_weight
 
 ! **************************************************************************************************
 !> \brief Assembles the q-independent, atom-diagonal AA contraction from stored coefficients.
@@ -126,9 +338,8 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Dense MO coefficients of the cyclically owned SCF k points (owner of k: MODULO(k-1, ranks)).
-!> The locally stored parts of the distributed matrices are summed to the owner in batches of
-!> k points: few large reductions instead of one global gather per k, and no rank stores the
-!> coefficients of k points it does not own.
+!> Pack the local BLACS tiles by destination in bounded k-point batches. The common matrix
+!> structure supplies the row and column indices for unpacking each sender's tile.
 !> \param bs_env ...
 !> \param mo_coeff distributed MO coefficients per k point and spin
 !> \param coeff coeff(:, :, k_local, spin) for the owned k points
@@ -139,67 +350,113 @@ CONTAINS
       COMPLEX(KIND=dp), ALLOCATABLE, INTENT(OUT)         :: coeff(:, :, :, :)
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'owned_mo_coefficients'
-      REAL(KIND=dp), PARAMETER                           :: batch_bytes = 128.0E6_dp
+      INTEGER(KIND=int_8), PARAMETER :: buffer_elements = 64000000_int_8/INT(2*dp_size, int_8)
 
-      COMPLEX(KIND=dp), ALLOCATABLE                      :: batch(:, :, :)
-      INTEGER                                            :: batch_size, first_owned, handle, &
-                                                            i_batch, ikp, ispin, n_ao, n_batch, &
-                                                            n_k, n_mo, n_owned, num_pe, root_rank
+      COMPLEX(KIND=dp), ALLOCATABLE                      :: received(:), sent(:)
+      INTEGER :: batch_size, col, first_k, first_owned, first_owned_k, handle, i_col, i_owned, &
+         i_rank, i_row, ikp, ipcol, iprow, ispin, last_k, my_rank, n_ao, n_k, n_mo, n_owned, &
+         n_owned_batch, ncol_local, ncol_src, nrow_local, nrow_src, num_pe, offset
+      INTEGER(KIND=int_8)                                :: matrix_size, max_tile_size
+      INTEGER, ALLOCATABLE                               :: cols(:, :), recv_counts(:), &
+                                                            recv_displs(:), rows(:, :), &
+                                                            send_counts(:), send_displs(:), &
+                                                            tile_sizes(:)
+      INTEGER, POINTER                                   :: local_cols(:), local_rows(:)
+      LOGICAL                                            :: same_layout
+      TYPE(cp_blacs_env_type), POINTER                   :: context
+      TYPE(cp_fm_struct_type), POINTER                   :: layout
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
 
       n_k = SIZE(mo_coeff, 1)
-      num_pe = bs_env%para_env%num_pe
-      CALL cp_cfm_get_info(mo_coeff(1, 1), nrow_global=n_ao, ncol_global=n_mo)
-      ALLOCATE (coeff(n_ao, n_mo, (n_k + num_pe - 1 - bs_env%para_env%mepos)/num_pe, SIZE(mo_coeff, 2)))
-      batch_size = MAX(1, MIN((n_k + num_pe - 1)/num_pe, INT(batch_bytes/(complex_bytes*REAL(n_ao*n_mo, dp)))))
-      ALLOCATE (batch(n_ao, n_mo, batch_size))
+      para_env => bs_env%para_env
+      num_pe = para_env%num_pe
+      my_rank = para_env%mepos
+      CALL cp_cfm_get_info(mo_coeff(1, 1), nrow_global=n_ao, ncol_global=n_mo, nrow_local=nrow_local, &
+                           ncol_local=ncol_local, context=context, matrix_struct=layout)
+      CPASSERT(layout%para_env%num_pe == num_pe)
+      CPASSERT(layout%para_env%mepos == my_rank)
+      CALL cp_fm_struct_get(layout, nrow_locals=local_rows, ncol_locals=local_cols)
+      matrix_size = INT(n_ao, int_8)*INT(n_mo, int_8)
+      max_tile_size = INT(MAXVAL(local_rows), int_8)*INT(MAXVAL(local_cols), int_8)
+      CPASSERT(matrix_size > 0_int_8 .AND. max_tile_size > 0_int_8)
+      CPASSERT(matrix_size + max_tile_size <= INT(HUGE(0), int_8))
+      n_owned = (n_k + num_pe - 1 - my_rank)/num_pe
+      batch_size = INT(MIN(INT(n_k, int_8), INT(num_pe, int_8)*MAX(1_int_8, buffer_elements/matrix_size), &
+                           MAX(1_int_8, buffer_elements/max_tile_size)))
+      ALLOCATE (coeff(n_ao, n_mo, n_owned, SIZE(mo_coeff, 2)), &
+                sent(MAX(1, nrow_local*ncol_local*batch_size)), &
+                received(MAX(1, INT(matrix_size)*MIN(n_owned, (batch_size + num_pe - 1)/num_pe))))
+      ALLOCATE (rows(MAXVAL(local_rows), 0:context%num_pe(1) - 1), &
+                cols(MAXVAL(local_cols), 0:context%num_pe(2) - 1), &
+                recv_counts(0:num_pe - 1), recv_displs(0:num_pe - 1), &
+                send_counts(0:num_pe - 1), send_displs(0:num_pe - 1), tile_sizes(0:num_pe - 1))
+      DO iprow = 0, context%num_pe(1) - 1
+         DO i_row = 1, local_rows(iprow)
+            rows(i_row, iprow) = layout%l2g_row(i_row, iprow)
+         END DO
+      END DO
+      DO ipcol = 0, context%num_pe(2) - 1
+         DO i_col = 1, local_cols(ipcol)
+            cols(i_col, ipcol) = layout%l2g_col(i_col, ipcol)
+         END DO
+      END DO
+      DO i_rank = 0, num_pe - 1
+         iprow = context%mpi2blacs(1, i_rank)
+         ipcol = context%mpi2blacs(2, i_rank)
+         tile_sizes(i_rank) = local_rows(iprow)*local_cols(ipcol)
+      END DO
+      CPASSERT(SUM(tile_sizes) == INT(matrix_size))
+
       DO ispin = 1, SIZE(mo_coeff, 2)
-         DO root_rank = 0, MIN(num_pe, n_k) - 1
-            n_owned = (n_k - root_rank - 1)/num_pe + 1
-            DO first_owned = 1, n_owned, batch_size
-               n_batch = MIN(batch_size, n_owned - first_owned + 1)
-               DO i_batch = 1, n_batch
-                  ikp = root_rank + 1 + (first_owned + i_batch - 2)*num_pe
-                  CALL copy_local_cfm(mo_coeff(ikp, ispin), batch(:, :, i_batch))
+         DO first_k = 1, n_k, batch_size
+            last_k = MIN(first_k + batch_size - 1, n_k)
+            first_owned_k = first_k + MODULO(my_rank + 1 - first_k, num_pe)
+            first_owned = (first_owned_k - 1)/num_pe + 1
+            n_owned_batch = (last_k - first_owned_k + num_pe)/num_pe
+            recv_counts(:) = n_owned_batch*tile_sizes
+            recv_displs(0) = 0
+            DO i_rank = 1, num_pe - 1
+               recv_displs(i_rank) = recv_displs(i_rank - 1) + recv_counts(i_rank - 1)
+            END DO
+
+            offset = 0
+            DO i_rank = 0, num_pe - 1
+               send_displs(i_rank) = offset
+               DO ikp = first_k + MODULO(i_rank + 1 - first_k, num_pe), last_k, num_pe
+                  same_layout = ASSOCIATED(mo_coeff(ikp, ispin)%matrix_struct, layout)
+                  CPASSERT(same_layout)
+                  DO i_col = 1, ncol_local
+                     sent(offset + 1:offset + nrow_local) = mo_coeff(ikp, ispin)%local_data(:nrow_local, i_col)
+                     offset = offset + nrow_local
+                  END DO
                END DO
-               CALL bs_env%para_env%sum(batch(:, :, 1:n_batch), root_rank)
-               IF (root_rank == bs_env%para_env%mepos) THEN
-                  coeff(:, :, first_owned:first_owned + n_batch - 1, ispin) = batch(:, :, 1:n_batch)
-               END IF
+               send_counts(i_rank) = offset - send_displs(i_rank)
+            END DO
+
+            CALL para_env%alltoall(sent, send_counts, send_displs, received, recv_counts, recv_displs)
+            DO i_rank = 0, num_pe - 1
+               IF (recv_counts(i_rank) == 0) CYCLE
+               iprow = context%mpi2blacs(1, i_rank)
+               ipcol = context%mpi2blacs(2, i_rank)
+               nrow_src = local_rows(iprow)
+               ncol_src = local_cols(ipcol)
+               offset = recv_displs(i_rank)
+               DO i_owned = first_owned, first_owned + n_owned_batch - 1
+                  DO i_col = 1, ncol_src
+                     col = cols(i_col, ipcol)
+                     coeff(rows(:nrow_src, iprow), col, i_owned, ispin) = received(offset + 1:offset + nrow_src)
+                     offset = offset + nrow_src
+                  END DO
+               END DO
             END DO
          END DO
       END DO
-      DEALLOCATE (batch)
 
       CALL timestop(handle)
 
    END SUBROUTINE owned_mo_coefficients
-
-! **************************************************************************************************
-!> \brief Copy the locally owned elements of a distributed complex full matrix.
-!> \param cfm ...
-!> \param array ...
-! **************************************************************************************************
-   SUBROUTINE copy_local_cfm(cfm, array)
-      TYPE(cp_cfm_type)                                  :: cfm
-      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: array
-
-      INTEGER                                            :: col, i_col, i_row, ncol_local, &
-                                                            nrow_local, row
-      INTEGER, DIMENSION(:), POINTER                     :: col_indices, row_indices
-
-      CALL cp_cfm_get_info(cfm, nrow_local=nrow_local, ncol_local=ncol_local, &
-                           row_indices=row_indices, col_indices=col_indices)
-      array = z_zero
-      DO i_col = 1, ncol_local
-         col = col_indices(i_col)
-         DO i_row = 1, nrow_local
-            row = row_indices(i_row)
-            array(row, col) = cfm%local_data(i_row, i_col)
-         END DO
-      END DO
-   END SUBROUTINE copy_local_cfm
 
 ! **************************************************************************************************
 !> \brief Construct a complete cell grid dual to the uniform SCF k-point mesh.
@@ -487,7 +744,7 @@ CONTAINS
 
 ! **************************************************************************************************
 !> \brief Return the contiguous part of 1..n owned by one rank of a block distribution.
-!> \param n Number of distributed items (grid rows or ordered grid pairs).
+!> \param n Number of distributed items (grid rows or unordered grid pairs).
 !> \param rank ...
 !> \param n_rank ...
 !> \param first First owned item.
