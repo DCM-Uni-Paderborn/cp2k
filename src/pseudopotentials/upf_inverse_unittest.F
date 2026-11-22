@@ -18,6 +18,8 @@ PROGRAM upf_inverse_unittest
                                               ieee_value
    USE kinds,                           ONLY: dp
    USE mathconstants,                   ONLY: pi
+   USE mathlib,                         ONLY: det_3x3,&
+                                              invmat
    USE orbital_pointers,                ONLY: init_orbital_pointers,&
                                               ncoset
    USE paw_onecenter,                   ONLY: paw_onecenter_hartree,&
@@ -29,6 +31,7 @@ PROGRAM upf_inverse_unittest
         upf_inverse_basis_response, upf_inverse_init, upf_inverse_operator, &
         upf_inverse_operator_response, upf_inverse_project, upf_inverse_project_response, &
         upf_inverse_type
+   USE upf_inverse_coulomb,             ONLY: upf_inverse_coulomb_fourier_kernel
    USE upf_projector_integrals,         ONLY: upf_projector_angular_init,&
                                               upf_projector_type
    USE upf_types,                       ONLY: atom_upfpot_type
@@ -40,6 +43,7 @@ PROGRAM upf_inverse_unittest
    CALL check_atomic_residual()
    CALL check_gaussian_fields()
    CALL check_core_fourier()
+   CALL check_fourier_coulomb()
    CALL check_paw_hartree()
    WRITE (*, '(A)') 'upf_inverse_unittest PASS'
 CONTAINS
@@ -71,6 +75,99 @@ CONTAINS
       CALL check(ABS(energy - occupation**2/8.0_dp), 'PAW compensated Hartree energy', 2.e-15_dp)
       CALL check(ABS(potential(1, 1) - occupation/4.0_dp), 'PAW compensated Hartree derivative', 2.e-15_dp)
    END SUBROUTINE check_paw_hartree
+
+! **************************************************************************************************
+!> \brief Signed shell/PW coupling, reciprocal zero limit and joint geometry response.
+! **************************************************************************************************
+   SUBROUTINE check_fourier_coulomb()
+      INTEGER, PARAMETER                                 :: ng = 4, nh = 3, nr = 2
+
+      COMPLEX(dp)                                        :: derivative(ng, nr, nh), &
+                                                            kernel(ng, nr, nh), other(ng, nr, nh), &
+                                                            samples(ng, nr, nh, 2)
+      INTEGER                                            :: axis, info, l(nh), lm(nh), &
+                                                            miller(3, ng), side
+      REAL(dp) :: cell(3, 3), changed_cell(3, 3), dcell(3, 3), deformation(3, 3), dg(3, ng), &
+         dp_center(3), dr(nr), dvolume, g(3, ng), inverse_cell(3, 3), position(3), radii(nr), &
+         shift, volume
+
+      radii = [0.3_dp, 1.2_dp]
+      l = [0, 1, 2]
+      lm = [1, 3, 7]
+      g(:, 1) = 0.0_dp
+      g(:, 2) = [0.7_dp, 0.0_dp, 0.0_dp]
+      g(:, 3) = [0.3_dp, -0.2_dp, 0.4_dp]
+      g(:, 4) = -g(:, 3)
+      position = [0.2_dp, -0.7_dp, 0.4_dp]
+      volume = 7.0_dp
+      dr = [0.07_dp, -0.03_dp]
+      dg = 0.13_dp - 0.1_dp*g
+      dp_center = [-0.04_dp, 0.08_dp, 0.02_dp]
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, kernel, derivative, &
+                                              dr, dg, dp_center, 0.3_dp)
+      CALL check(MAXVAL(ABS(kernel(1, :, 1) - SQRT(4*pi)/volume)), 'shell monopole Fourier normalization')
+      CALL check(MAXVAL(ABS(kernel(1, :, 2:))), 'zero higher shell multipoles at G=0', 0.0_dp)
+      CALL check(MAXVAL(ABS(kernel(2, :, 1) - SQRT(4*pi)/volume* &
+                            EXP(CMPLX(0.0_dp, -DOT_PRODUCT(g(:, 2), position), dp))* &
+                            SIN(0.7_dp*radii)/(0.7_dp*radii))), 'analytic spherical shell form factor')
+      CALL check(MAXVAL(ABS(kernel(3, :, :) - CONJG(kernel(4, :, :)))), 'real density reciprocal conjugacy')
+      CALL check(MAXVAL(ABS(derivative(1, :, 2) - CMPLX(0.0_dp, &
+                                               -SQRT(12*pi)/volume*radii*dg(3, 1)/3.0_dp, dp))), 'dipole Fourier derivative at G=0')
+      DO side = 1, 2
+         shift = step*(2*side - 3)
+         CALL upf_inverse_coulomb_fourier_kernel(radii + shift*dr, l, lm, g + shift*dg, &
+                                                 position + shift*dp_center, volume + shift*0.3_dp, samples(:, :, :, side))
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, :, 2) - samples(:, :, :, 1))/(2*step) - derivative)), &
+                 'shell Fourier radius center reciprocal volume response', 2.e-9_dp)
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, other)
+      CALL check(MAXVAL(ABS(kernel - other)), 'optional Fourier response preserves forward map', 0.0_dp)
+
+      ! A real grid needs independent boundary signs, beyond reciprocal conjugacy.
+      cell = 0.0_dp
+      DO axis = 1, 3
+         cell(axis, axis) = REAL(8 - axis, dp)
+      END DO
+      miller(:, 1) = 0
+      miller(:, 2) = [-3, 0, 0]
+      miller(:, 3) = [-3, -3, 1]
+      miller(:, 4) = [-3, -3, -3]
+      lm(3) = 5
+      position = 0.0_dp
+      inverse_cell = cell
+      CALL invmat(inverse_cell, info)
+      IF (info /= 0) ERROR STOP 'Singular Fourier boundary cell'
+      g = 2*pi*MATMUL(TRANSPOSE(inverse_cell), REAL(miller, dp))
+      volume = det_3x3(cell)
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, kernel, &
+                                              cell=cell, grid_shape=[6, 6, 6])
+      CALL check(MAXVAL(ABS(kernel(3:, :, 3))), 'independent atomic quadrupole boundary signs', 2.e-15_dp)
+      cell(1, 2) = 0.3_dp
+      cell(2, 3) = 0.2_dp
+      inverse_cell = cell
+      CALL invmat(inverse_cell, info)
+      IF (info /= 0) ERROR STOP 'Singular sheared Fourier boundary cell'
+      g = 2*pi*MATMUL(TRANSPOSE(inverse_cell), REAL(miller, dp))
+      position = [0.2_dp, -0.7_dp, 0.4_dp]
+      dcell = RESHAPE([0.03_dp, -0.01_dp, 0.02_dp, 0.01_dp, -0.02_dp, 0.01_dp, -0.02_dp, 0.03_dp, 0.01_dp], [3, 3])
+      deformation = MATMUL(dcell, inverse_cell)
+      dg = -MATMUL(TRANSPOSE(deformation), g)
+      dvolume = volume*(deformation(1, 1) + deformation(2, 2) + deformation(3, 3))
+      CALL upf_inverse_coulomb_fourier_kernel(radii, l, lm, g, position, volume, kernel, derivative, &
+                                              dr, dg, dp_center, dvolume, cell, [6, 6, 6], dcell)
+      DO side = 1, 2
+         shift = step*(2*side - 3)
+         changed_cell = cell + shift*dcell
+         inverse_cell = changed_cell
+         CALL invmat(inverse_cell, info)
+         IF (info /= 0) ERROR STOP 'Singular displaced Fourier boundary cell'
+         CALL upf_inverse_coulomb_fourier_kernel(radii + shift*dr, l, lm, &
+                                               2*pi*MATMUL(TRANSPOSE(inverse_cell), REAL(miller, dp)), position + shift*dp_center, &
+                                             det_3x3(changed_cell), samples(:, :, :, side), cell=changed_cell, grid_shape=[6, 6, 6])
+      END DO
+      CALL check(MAXVAL(ABS((samples(:, :, :, 2) - samples(:, :, :, 1))/(2*step) - derivative)), &
+                 'real boundary shell center and general cell response', 2.e-9_dp)
+   END SUBROUTINE check_fourier_coulomb
 
 ! **************************************************************************************************
 !> \brief Original core normalization, finite endpoint and joint phase/lattice/volume derivative.
