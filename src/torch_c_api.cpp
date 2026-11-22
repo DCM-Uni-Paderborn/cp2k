@@ -27,7 +27,7 @@
 #include <cblas.h>
 #endif
 
-#include <cassert>
+#include "base/cp_assert.h"
 
 #include <cfenv>
 #include <climits>
@@ -167,7 +167,7 @@ static torch::Device get_device() {
   }
   const int chosen_device = offload_get_chosen_device();
   const int device = (chosen_device >= 0) ? chosen_device : 0;
-  assert(device < device_count);
+  cp_assert(device < device_count);
   return torch::Device(torch::kCUDA, device);
 }
 
@@ -419,13 +419,13 @@ static bool reset_tensor_from_array_double(torch_c_tensor_t **tensor,
 static void *get_data_ptr(const torch_c_tensor_t *tensor,
                           const torch::Dtype dtype, const int ndims,
                           int64_t sizes[]) {
-  assert(tensor->scalar_type() == dtype);
-  assert(tensor->ndimension() == ndims);
+  cp_assert(tensor->scalar_type() == dtype);
+  cp_assert(tensor->ndimension() == ndims);
   for (int i = 0; i < ndims; i++) {
     sizes[i] = tensor->size(i);
   }
 
-  assert(tensor->is_contiguous());
+  cp_assert(tensor->is_contiguous());
   return tensor->data_ptr();
 };
 
@@ -501,11 +501,11 @@ void torch_c_tensor_expand_dim(const torch_c_tensor_t *tensor,
                                torch_c_tensor_t **result) {
   c10::OptionalDeviceGuard guard;
   get_device_with_guard(guard);
-  assert(*result == NULL);
-  assert(dim >= 0);
-  assert(dim < tensor->dim());
+  cp_assert(*result == NULL);
+  cp_assert(dim >= 0);
+  cp_assert(dim < tensor->dim());
   std::vector<int64_t> sizes(tensor->sizes().begin(), tensor->sizes().end());
-  assert(sizes[dim] == 1);
+  cp_assert(sizes[dim] == 1);
   sizes[dim] = size;
   *result = new torch_c_tensor_t(tensor->expand(sizes));
 }
@@ -518,12 +518,12 @@ void torch_c_tensor_narrow(const torch_c_tensor_t *tensor, const int64_t dim,
                            torch_c_tensor_t **result) {
   c10::OptionalDeviceGuard guard;
   const auto device = get_device_with_guard(guard);
-  assert(*result == NULL);
-  assert(dim >= 0);
-  assert(start_index >= 0);
-  assert(length >= 0);
-  assert(dim < tensor->ndimension());
-  assert(start_index + length <= tensor->size(dim));
+  cp_assert(*result == NULL);
+  cp_assert(dim >= 0);
+  cp_assert(start_index >= 0);
+  cp_assert(length >= 0);
+  cp_assert(dim < tensor->ndimension());
+  cp_assert(start_index + length <= tensor->size(dim));
   *result =
       new torch_c_tensor_t(tensor->narrow(dim, start_index, length).to(device));
 }
@@ -704,7 +704,7 @@ void torch_c_tensor_linear_combination(const int count,
                                        const double coefficients[],
                                        torch_c_tensor_t **result) {
   TorchFloatingPointMaskGuard fpe_guard;
-  assert(count > 0 && *result == nullptr);
+  cp_assert(count > 0 && *result == nullptr);
   auto value = coefficients[0] * *inputs[0];
   for (int i = 1; i < count; i++)
     value = value + coefficients[i] * *inputs[i];
@@ -718,7 +718,7 @@ void torch_c_tensor_multiply(const torch_c_tensor_t *first,
                              const torch_c_tensor_t *second,
                              torch_c_tensor_t **result) {
   TorchFloatingPointMaskGuard fpe_guard;
-  assert(*result == nullptr);
+  cp_assert(*result == nullptr);
   *result = new torch_c_tensor_t(*first * *second);
 }
 
@@ -727,7 +727,7 @@ void torch_c_tensor_multiply(const torch_c_tensor_t *first,
  ******************************************************************************/
 void torch_c_tensor_cat(const int count, const torch_c_tensor_t *const inputs[],
                         torch_c_tensor_t **result) {
-  assert(count > 0 && *result == nullptr);
+  cp_assert(count > 0 && *result == nullptr);
   std::vector<torch::Tensor> values;
   for (int i = 0; i < count; i++)
     values.push_back(*inputs[i]);
@@ -826,14 +826,14 @@ void torch_c_tensor_grad_batch3(const torch_c_tensor_t *tensor1,
                                 torch_c_tensor_t **grad3) {
   c10::OptionalDeviceGuard guard;
   const auto device = get_device_with_guard(guard);
-  assert(*grad1 == nullptr && *grad2 == nullptr && *grad3 == nullptr);
+  cp_assert(*grad1 == nullptr && *grad2 == nullptr && *grad3 == nullptr);
 
   const torch::Tensor source1 = tensor1->grad();
   const torch::Tensor source2 = tensor2->grad();
   const torch::Tensor source3 = tensor3->grad();
-  assert(source1.defined() && source2.defined() && source3.defined());
-  assert(source1.device() == source2.device());
-  assert(source1.device() == source3.device());
+  cp_assert(source1.defined() && source2.defined() && source3.defined());
+  cp_assert(source1.device() == source2.device());
+  cp_assert(source1.device() == source3.device());
   if (use_batched_gradient_readback(source1)) {
     auto host1 =
         torch::empty(source1.sizes(),
@@ -871,7 +871,7 @@ void torch_c_tensor_release(torch_c_tensor_t *tensor) { delete (tensor); }
  * \author Ole Schuett
  ******************************************************************************/
 void torch_c_dict_create(torch_c_dict_t **dict_out) {
-  assert(*dict_out == NULL);
+  cp_assert(*dict_out == NULL);
   *dict_out = new c10::Dict<std::string, torch::Tensor>();
 }
 
@@ -879,7 +879,7 @@ void torch_c_dict_create(torch_c_dict_t **dict_out) {
  * \brief Clones a Torch dictionary.
  ******************************************************************************/
 void torch_c_dict_clone(const torch_c_dict_t *dict, torch_c_dict_t **dict_out) {
-  assert(*dict_out == NULL);
+  cp_assert(*dict_out == NULL);
   torch_c_dict_t *clone = new c10::Dict<std::string, torch::Tensor>();
   for (const auto &entry : *dict) {
     clone->insert(entry.key(), entry.value());
@@ -904,7 +904,7 @@ void torch_c_dict_insert(const torch_c_dict_t *dict, const char *key,
  ******************************************************************************/
 void torch_c_dict_get(const torch_c_dict_t *dict, const char *key,
                       torch_c_tensor_t **tensor, const bool to_host) {
-  assert(dict->contains(key));
+  cp_assert(dict->contains(key));
   const auto value = dict->at(key);
   *tensor = new torch_c_tensor_t(to_host ? value.cpu().contiguous() : value);
 }
@@ -921,7 +921,7 @@ void torch_c_dict_release(torch_c_dict_t *dict) { delete (dict); }
  * \author Ole Schuett
  ******************************************************************************/
 void torch_c_model_load(torch_c_model_t **model_out, const char *filename) {
-  assert(*model_out == NULL);
+  cp_assert(*model_out == NULL);
   c10::OptionalDeviceGuard guard;
   const auto device = get_device_with_guard(guard);
   set_jit_fusion_strategy();
@@ -939,7 +939,7 @@ void torch_c_model_load_with_metadata(torch_c_model_t **model_out,
                                       const char *key2, char **content1,
                                       int *length1, char **content2,
                                       int *length2) {
-  assert(*model_out == NULL);
+  cp_assert(*model_out == NULL);
   c10::OptionalDeviceGuard guard;
   const auto device = get_device_with_guard(guard);
   std::unordered_map<std::string, std::string> extra_files = {{key1, ""},
@@ -1047,7 +1047,7 @@ void torch_c_model_forward_mol_tensor(torch_c_model_t *model,
     if (device.is_cuda()) {
       graph_optimization.emplace(false);
     }
-    assert(*output == NULL);
+    cp_assert(*output == NULL);
     *output = new torch_c_tensor_t(
         model->get_method(method_name)({*inputs}).toTensor());
   } catch (const std::exception &error) {
@@ -1169,7 +1169,7 @@ void torch_c_model_get_attr_double(const torch_c_model_t *model,
 void torch_c_model_get_attr_string(const torch_c_model_t *model,
                                    const char *key, char *dest) {
   const std::string &str = model->attr(key).toStringRef();
-  assert(str.size() < 80); // default_string_length
+  cp_assert(str.size() < 80); // default_string_length
   for (int i = 0; i < str.size(); i++) {
     dest[i] = str[i];
   }
@@ -1193,7 +1193,7 @@ void torch_c_model_get_attr_strlist(const torch_c_model_t *model,
                                     char *dest) {
   const auto list = model->attr(key).toList();
   const std::string &str = list[index].toStringRef();
-  assert(str.size() < 80); // default_string_length
+  cp_assert(str.size() < 80); // default_string_length
   for (int i = 0; i < str.size(); i++) {
     dest[i] = str[i];
   }
