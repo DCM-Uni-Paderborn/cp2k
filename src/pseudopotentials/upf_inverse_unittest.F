@@ -58,10 +58,10 @@ CONTAINS
       pot%number_of_proj = 1
       ALLOCATE (pot%paw, pot%lbeta(1), pot%qijl(5, 1, 0:0))
       pot%lbeta = 0
-      pot%r = [0.0_dp, 0.25_dp, 0.5_dp, 0.75_dp, 1.0_dp]
+      ALLOCATE (pot%r, SOURCE=[0.0_dp, 0.25_dp, 0.5_dp, 0.75_dp, 1.0_dp])
       pot%paw%cutoff_index = SIZE(pot%r)
-      pot%paw%ae_wfc = RESHAPE(SQRT(pot%r), [5, 1])
-      pot%paw%ps_wfc = 0.5_dp*pot%paw%ae_wfc
+      ALLOCATE (pot%paw%ae_wfc, SOURCE=RESHAPE(SQRT(pot%r), [5, 1]))
+      ALLOCATE (pot%paw%ps_wfc, SOURCE=0.5_dp*pot%paw%ae_wfc)
       pot%qijl(:, 1, 0) = 0.25_dp*pot%r
       CALL upf_projector_angular_init(pot%lbeta, 0, projectors)
       CALL paw_onecenter_init(pot, projectors, onecenter)

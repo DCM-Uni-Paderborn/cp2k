@@ -167,7 +167,7 @@ CONTAINS
       ALLOCATE (radial_weights, SOURCE=upf_radial_weights(pot))
       IF (.NOT. radial_only) THEN
          ALLOCATE (coupling(nb, nb), identity(nb, nb), rotation(nb, nb))
-         coupling = inverse_radial_coupling(pot, radial, radial_weights)
+         coupling(:, :) = inverse_radial_coupling(pot, radial, radial_weights)
          identity = CMPLX(0.0_dp, 0.0_dp, dp)
          DO j = 1, nb
             identity(j, j) = CMPLX(1.0_dp, 0.0_dp, dp)
@@ -485,7 +485,8 @@ CONTAINS
          CALL inverse_radial_data(pot, radial)
          CALL upf_radial_fields_init(radial%r, radial%beta, radial%lbeta, delta)
          IF (PRESENT(home_coupling)) THEN
-            radial_coupling = inverse_radial_coupling(pot, radial, upf_radial_weights(pot))
+            ALLOCATE (radial_coupling(pot%number_of_proj, pot%number_of_proj))
+            radial_coupling(:, :) = inverse_radial_coupling(pot, radial, upf_radial_weights(pot))
             DO q = 1, delta%nproj
                DO p = 1, beta%nproj
                   IF (beta%angular_index(p) /= delta%angular_index(q)) CYCLE
