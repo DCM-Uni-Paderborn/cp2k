@@ -78,11 +78,16 @@ MODULE admm_methods
    USE input_section_types,             ONLY: section_vals_type,&
                                               section_vals_val_get
    USE kinds,                           ONLY: default_string_length,&
-                                              dp
+                                              dp,&
+                                              int_8
    USE kpoint_methods,                  ONLY: kpoint_density_matrices,&
                                               kpoint_density_transform,&
                                               kpoint_star_operator,&
                                               rskp_transform
+   USE kpoint_transform,                ONLY: rskp_prepared_transform_type,&
+                                              rskp_transform_evaluate,&
+                                              rskp_transform_prepare,&
+                                              rskp_transform_release
    USE kpoint_transitional,             ONLY: get_1d_pointer
    USE kpoint_types,                    ONLY: get_kpoint_env,&
                                               get_kpoint_info,&
@@ -109,7 +114,12 @@ MODULE admm_methods
                                               local_rho_type
    USE qs_mo_types,                     ONLY: get_mo_set,&
                                               mo_set_type
-   USE qs_neighbor_list_types,          ONLY: neighbor_list_set_p_type
+   USE qs_neighbor_list_types,          ONLY: get_iterator_info,&
+                                              neighbor_list_iterate,&
+                                              neighbor_list_iterator_create,&
+                                              neighbor_list_iterator_p_type,&
+                                              neighbor_list_iterator_release,&
+                                              neighbor_list_set_p_type
    USE qs_overlap,                      ONLY: build_overlap_force
    USE qs_rho_atom_methods,             ONLY: allocate_rho_atom_internals,&
                                               calculate_rho_atom_coeff
@@ -125,6 +135,7 @@ MODULE admm_methods
    USE qs_vxc,                          ONLY: qs_vxc_create
    USE qs_vxc_atom,                     ONLY: calculate_vxc_atom
    USE task_list_types,                 ONLY: task_list_type
+   USE util,                            ONLY: sort
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -298,32 +309,23 @@ CONTAINS
       CHARACTER(len=*), PARAMETER :: routineN = 'admm_mo_calc_rho_aux_kp'
 
       CHARACTER(LEN=default_string_length)               :: basis_type
-      INTEGER                                            :: handle, igroup, ik, ikp, img, indx, &
-                                                            ispin, kplocal, kpmax, nao_aux_fit, &
-                                                            nao_orb, natom, nkp, nkp_groups, nmo, &
-                                                            nspins
+      INTEGER                                            :: handle, ik, ikp, img, irow, ispin, &
+                                                            kplocal, nao_aux_fit, nao_orb, natom, &
+                                                            nmo, nspins
       INTEGER, DIMENSION(2)                              :: kp_range
-      INTEGER, DIMENSION(:, :), POINTER                  :: kp_dist
-      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
-      LOGICAL                                            :: gapw, my_kpgrp, pmat_from_native, &
-                                                            pmat_from_rs, use_real_wfn
+      LOGICAL                                            :: gapw, pmat_from_native, pmat_from_rs, use_real_wfn
       REAL(dp)                                           :: maxval_mos, nelec_aux(2), nelec_orb(2), &
                                                             tmp
       REAL(KIND=dp), DIMENSION(:), POINTER               :: occ_num, occ_num_aux, tot_rho_r_aux
-      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: xkp
       TYPE(admm_type), POINTER                           :: admm_env
-      TYPE(copy_info_type), ALLOCATABLE, DIMENSION(:, :) :: info
       TYPE(cp_cfm_type)                                  :: cpmatrix, cwork_aux_aux, cwork_aux_orb
       TYPE(cp_fm_struct_type), POINTER                   :: struct_aux_aux, struct_aux_orb, &
                                                             struct_orb_orb
-      TYPE(cp_fm_type)                                   :: fmdummy, work_aux_orb, work_orb_orb, &
-                                                            work_orb_orb2
+      TYPE(cp_fm_type)                                   :: work_aux_orb, work_orb_orb, work_orb_orb2
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_aux_fit
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: rho_ao
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_s, matrix_s_aux_fit, rho_ao_aux, &
-                                                            rho_ao_orb
-      TYPE(dbcsr_type)                                   :: pmatrix_tmp
-      TYPE(dbcsr_type), ALLOCATABLE, DIMENSION(:)        :: pmatrix
+                                                            rho_ao_orb, rho_ao_orb_ws
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_env_type), POINTER                     :: kp
       TYPE(kpoint_type), POINTER                         :: kpoints
@@ -336,6 +338,7 @@ CONTAINS
       TYPE(qs_ks_env_type), POINTER                      :: ks_env
       TYPE(qs_rho_type), POINTER                         :: rho_aux_fit, rho_orb
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
+      TYPE(rskp_prepared_transform_type)                 :: transform
       TYPE(task_list_type), POINTER                      :: task_list
 
       CALL timeset(routineN, handle)
@@ -368,21 +371,7 @@ CONTAINS
                       tot_rho_r=tot_rho_r_aux)
 
       CALL qs_rho_get(rho_orb, rho_ao_kp=rho_ao_orb)
-      CALL get_kpoint_info(kpoints, nkp=nkp, xkp=xkp, use_real_wfn=use_real_wfn, kp_range=kp_range, &
-                           nkp_groups=nkp_groups, kp_dist=kp_dist, &
-                           cell_to_index=cell_to_index, sab_nl=sab_kp)
-
-      ! the temporary DBCSR matrices for the rskp_transform we have to manually allocate
-      ! index 1 => real, index 2 => imaginary
-      ALLOCATE (pmatrix(2))
-      CALL dbcsr_create(pmatrix(1), template=matrix_s(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_symmetric)
-      CALL dbcsr_create(pmatrix(2), template=matrix_s(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_antisymmetric)
-      CALL dbcsr_create(pmatrix_tmp, template=matrix_s(1, 1)%matrix, &
-                        matrix_type=dbcsr_type_no_symmetry)
-      CALL cp_dbcsr_alloc_block_from_nbl(pmatrix(1), sab_kp)
-      CALL cp_dbcsr_alloc_block_from_nbl(pmatrix(2), sab_kp)
+      CALL get_kpoint_info(kpoints, use_real_wfn=use_real_wfn, kp_range=kp_range, sab_nl=sab_kp)
 
       nao_aux_fit = admm_env%nao_aux_fit
       nao_orb = admm_env%nao_orb
@@ -416,7 +405,6 @@ CONTAINS
 
       para_env => kpoints%blacs_env_all%para_env
       kplocal = kp_range(2) - kp_range(1) + 1
-      kpmax = MAXVAL(kp_dist(2, :) - kp_dist(1, :) + 1)
 
       !We querry the maximum absolute value of the KP MOs to see if they are populated at all. If not, we
       !need to get the KP Pmat from the RS ones (happens at first SCF step, for example)
@@ -436,6 +424,7 @@ CONTAINS
 
       pmat_from_rs = .FALSE.
       IF (maxval_mos < EPSILON(0.0_dp)) pmat_from_rs = .TRUE.
+
       ! The accepted native density survives restarts and density mixing, whereas
       ! the current MO coefficients need not represent that same state.
       pmat_from_native = admm_env%upf_aux_metric%ready .AND. ALLOCATED(kpoints%native_density)
@@ -443,72 +432,40 @@ CONTAINS
 
       !TODO: issue a warning when doing ADMM with ATOMIC guess. If small number of K-points => leads to bad things
 
-      ALLOCATE (info(nkp*nspins, 2))
-      !Start communication: only P matrix, and only if required
-      indx = 0
       IF (pmat_from_rs) THEN
-         DO ikp = 1, kpmax
+         ! A restarted P(R) comes from k-points and repeats itself in every Born-von Karman supercell
+         NULLIFY (rho_ao_orb_ws)
+         CALL dbcsr_allocate_matrix_set(rho_ao_orb_ws, nspins, SIZE(rho_ao_orb, 2))
+         DO img = 1, SIZE(rho_ao_orb, 2)
             DO ispin = 1, nspins
-               DO igroup = 1, nkp_groups
-                  ! number of current kpoint
-                  ik = kp_dist(1, igroup) + ikp - 1
-                  IF (ik > kp_dist(2, igroup)) CYCLE
-                  my_kpgrp = (ik >= kpoints%kp_range(1) .AND. ik <= kpoints%kp_range(2))
-                  indx = indx + 1
-
-                  ! FT of matrices P if required, then transfer to FM type
-                  IF (use_real_wfn) THEN
-                     CALL dbcsr_set(pmatrix(1), 0.0_dp)
-                     CALL rskp_transform(rmatrix=pmatrix(1), rsmat=rho_ao_orb, ispin=ispin, &
-                                         xkp=xkp(1:3, ik), cell_to_index=cell_to_index, sab_nl=sab_kp)
-                     CALL dbcsr_desymmetrize(pmatrix(1), pmatrix_tmp)
-                     CALL copy_dbcsr_to_fm(pmatrix_tmp, admm_env%work_orb_orb)
-                  ELSE
-                     CALL dbcsr_set(pmatrix(1), 0.0_dp)
-                     CALL dbcsr_set(pmatrix(2), 0.0_dp)
-                     CALL rskp_transform(rmatrix=pmatrix(1), cmatrix=pmatrix(2), rsmat=rho_ao_orb, ispin=ispin, &
-                                         xkp=xkp(1:3, ik), cell_to_index=cell_to_index, sab_nl=sab_kp)
-                     CALL dbcsr_desymmetrize(pmatrix(1), pmatrix_tmp)
-                     CALL copy_dbcsr_to_fm(pmatrix_tmp, admm_env%work_orb_orb)
-                     CALL dbcsr_desymmetrize(pmatrix(2), pmatrix_tmp)
-                     CALL copy_dbcsr_to_fm(pmatrix_tmp, admm_env%work_orb_orb2)
-                  END IF
-
-                  IF (my_kpgrp) THEN
-                     CALL cp_fm_start_copy_general(admm_env%work_orb_orb, work_orb_orb, para_env, info(indx, 1))
-                     IF (.NOT. use_real_wfn) THEN
-                        CALL cp_fm_start_copy_general(admm_env%work_orb_orb2, work_orb_orb2, para_env, info(indx, 2))
-                     END IF
-                  ELSE
-                     CALL cp_fm_start_copy_general(admm_env%work_orb_orb, fmdummy, para_env, info(indx, 1))
-                     IF (.NOT. use_real_wfn) THEN
-                        CALL cp_fm_start_copy_general(admm_env%work_orb_orb2, fmdummy, para_env, info(indx, 2))
-                     END IF
-                  END IF !my_kpgrp
-               END DO
+               ALLOCATE (rho_ao_orb_ws(ispin, img)%matrix)
+               CALL dbcsr_create(rho_ao_orb_ws(ispin, img)%matrix, template=rho_ao_orb(ispin, img)%matrix)
+               CALL dbcsr_copy(rho_ao_orb_ws(ispin, img)%matrix, rho_ao_orb(ispin, img)%matrix)
             END DO
          END DO
+         CALL scale_images_by_bvk_wigner_seitz_weight(rho_ao_orb_ws, sab_kp, kpoints)
+         CALL rskp_transform_prepare(transform, rho_ao_orb_ws, [(irow, irow=1, nspins)], sab_kp, &
+                                     kpoints%cell_to_index, work_orb_orb%matrix_struct, &
+                                     kpoints%blacs_env_all%para_env, kpoints%para_env_kp, &
+                                     kpoints%para_env_inter_kp, kpoints%rskp_transform, kpoints%xkp, &
+                                     kpoints%nkp_grid, kpoints%kp_dist)
+         CALL dbcsr_deallocate_matrix_set(rho_ao_orb_ws)
       END IF !pmat_from_rs
 
-      indx = 0
-      DO ikp = 1, kpmax
+      DO ik = 1, SIZE(kpoints%xkp, 2)
          DO ispin = 1, nspins
-            DO igroup = 1, nkp_groups
-               ! number of current kpoint
-               ik = kp_dist(1, igroup) + ikp - 1
-               IF (ik > kp_dist(2, igroup)) CYCLE
-               my_kpgrp = (ik >= kpoints%kp_range(1) .AND. ik <= kpoints%kp_range(2))
-               indx = indx + 1
-               IF (my_kpgrp .AND. pmat_from_rs) THEN
-                  CALL cp_fm_finish_copy_general(work_orb_orb, info(indx, 1))
-                  IF (.NOT. use_real_wfn) THEN
-                     CALL cp_fm_finish_copy_general(work_orb_orb2, info(indx, 2))
-                     CALL cp_fm_to_cfm(work_orb_orb, work_orb_orb2, cpmatrix)
-                  END IF
+            ikp = ik - kp_range(1) + 1
+            IF (pmat_from_rs) THEN
+               IF (use_real_wfn) THEN
+                  CALL rskp_transform_evaluate(transform, ispin, ik, kpoints%xkp, &
+                                               fm_re=work_orb_orb)
+               ELSE
+                  CALL rskp_transform_evaluate(transform, ispin, ik, kpoints%xkp, &
+                                               fm_re=work_orb_orb, fm_im=work_orb_orb2)
+                  IF (ikp >= 1 .AND. ikp <= kplocal) CALL cp_fm_to_cfm(work_orb_orb, work_orb_orb2, cpmatrix)
                END IF
-            END DO
-
-            IF (ikp > kplocal) CYCLE
+            END IF
+            IF (ikp < 1 .OR. ikp > kplocal) CYCLE
             IF (use_real_wfn) THEN
 
                nmo = admm_env%nmo(ispin)
@@ -582,18 +539,9 @@ CONTAINS
                                     admm_env%scf_work_aux_fit, for_aux_fit=.TRUE., &
                                     overlap_rs=matrix_s_aux_fit)
 
-      !Clean-up communication
       IF (pmat_from_rs) THEN
-         DO indx = 1, SIZE(info, 1)
-            CALL cp_fm_cleanup_copy_general(info(indx, 1))
-            IF (.NOT. use_real_wfn) CALL cp_fm_cleanup_copy_general(info(indx, 2))
-         END DO
+         CALL rskp_transform_release(transform)
       END IF
-
-      DEALLOCATE (info)
-      CALL dbcsr_release(pmatrix(1))
-      CALL dbcsr_release(pmatrix(2))
-      CALL dbcsr_release(pmatrix_tmp)
 
       CALL cp_fm_release(work_orb_orb)
       CALL cp_fm_release(work_orb_orb2)
@@ -701,6 +649,116 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE admm_mo_calc_rho_aux_kp
+
+! **************************************************************************************************
+!> \brief Multiplies the image blocks of real-space matrices by their Wigner-Seitz weights in the
+!>        Born-von Karman supercell of the k-point mesh. The cells R of one atom pair fall into the
+!>        classes R mod N_k of the mesh N_k. A cell whose atom-pair vector is one of the m shortest
+!>        of its class gets the weight 1/m, all other cells get the weight zero.
+!>        A matrix X(R) = sum_k w_k X(k) exp(-ikR) repeats itself in every supercell, so on a
+!>        neighbor list larger than the supercell, sum_R X(R) exp(ikR) counts each class several
+!>        times. After the weighting, sum_R X(R) exp(ikR) = X(k) holds on the mesh.
+!> \param matrices real-space matrices (spin, image) with the blocks of sab_nl
+!> \param sab_nl symmetric neighbor list of the matrices
+!> \param kpoints k-point environment with the mesh and the image indices
+! **************************************************************************************************
+   SUBROUTINE scale_images_by_bvk_wigner_seitz_weight(matrices, sab_nl, kpoints)
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrices
+      TYPE(neighbor_list_set_p_type), DIMENSION(:), &
+         POINTER                                         :: sab_nl
+      TYPE(kpoint_type), POINTER                         :: kpoints
+
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'scale_images_by_bvk_wigner_seitz_weight'
+      REAL(KIND=dp), PARAMETER                           :: eps_distance = 1.0E-6_dp
+
+      CHARACTER(LEN=default_string_length)               :: kp_scheme
+      INTEGER                                            :: first, handle, iatom, ientry, img, &
+                                                            ispin, jatom, last, natom, nentry, &
+                                                            nshortest
+      INTEGER(KIND=int_8)                                :: nclass
+      INTEGER(KIND=int_8), ALLOCATABLE, DIMENSION(:)     :: class_key
+      INTEGER, ALLOCATABLE, DIMENSION(:)                 :: order
+      INTEGER, ALLOCATABLE, DIMENSION(:, :)              :: entry_block
+      INTEGER, DIMENSION(3)                              :: cell, cell_class, nkp_grid
+      INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index
+      LOGICAL                                            :: found
+      REAL(KIND=dp)                                      :: shortest
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: distance, weight
+      REAL(KIND=dp), DIMENSION(3)                        :: rab
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: block
+      TYPE(neighbor_list_iterator_p_type), &
+         DIMENSION(:), POINTER                           :: nl_iterator
+
+      CALL timeset(routineN, handle)
+
+      CALL get_kpoint_info(kpoints, kp_scheme=kp_scheme, nkp_grid=nkp_grid, cell_to_index=cell_to_index)
+      IF (TRIM(kp_scheme) == "GAMMA") nkp_grid(:) = 1
+      CPASSERT(ALL(nkp_grid >= 1))
+      nclass = INT(nkp_grid(1), int_8)*INT(nkp_grid(2), int_8)*INT(nkp_grid(3), int_8)
+
+      ! atom pairs (iatom, jatom), image and atom-pair distance of all local list entries
+      nentry = 0
+      natom = 0
+      CALL neighbor_list_iterator_create(nl_iterator, sab_nl)
+      DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+         CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom)
+         nentry = nentry + 1
+         natom = MAX(natom, iatom, jatom)
+      END DO
+      CALL neighbor_list_iterator_release(nl_iterator)
+
+      ALLOCATE (entry_block(3, nentry), distance(nentry), class_key(nentry), order(nentry), weight(nentry))
+      ientry = 0
+      CALL neighbor_list_iterator_create(nl_iterator, sab_nl)
+      DO WHILE (neighbor_list_iterate(nl_iterator) == 0)
+         CALL get_iterator_info(nl_iterator, iatom=iatom, jatom=jatom, cell=cell, r=rab)
+         ientry = ientry + 1
+         ! symmetric storage: the block of the pair (iatom, jatom) has row MIN and column MAX
+         entry_block(:, ientry) = [MIN(iatom, jatom), MAX(iatom, jatom), cell_to_index(cell(1), cell(2), cell(3))]
+         distance(ientry) = NORM2(rab)
+         cell_class(:) = MODULO(cell(:), nkp_grid(:))
+         class_key(ientry) = (INT(iatom - 1, int_8)*INT(natom, int_8) + INT(jatom - 1, int_8))*nclass + &
+                             INT(cell_class(1), int_8) + INT(nkp_grid(1), int_8)* &
+                             (INT(cell_class(2), int_8) + INT(nkp_grid(2), int_8)*INT(cell_class(3), int_8))
+      END DO
+      CALL neighbor_list_iterator_release(nl_iterator)
+
+      ! all cells of one atom pair and class are neighbors after sorting by the class key
+      IF (nentry > 0) CALL sort(class_key, nentry, order)
+      first = 1
+      DO WHILE (first <= nentry)
+         last = first
+         DO WHILE (last < nentry)
+            IF (class_key(last + 1) /= class_key(first)) EXIT
+            last = last + 1
+         END DO
+         shortest = MINVAL(distance(order(first:last)))
+         nshortest = COUNT(distance(order(first:last)) < shortest + eps_distance)
+         DO ientry = first, last
+            IF (distance(order(ientry)) < shortest + eps_distance) THEN
+               weight(order(ientry)) = 1.0_dp/REAL(nshortest, dp)
+            ELSE
+               weight(order(ientry)) = 0.0_dp
+            END IF
+         END DO
+         first = last + 1
+      END DO
+
+      DO ientry = 1, nentry
+         IF (weight(ientry) == 1.0_dp) CYCLE
+         img = entry_block(3, ientry)
+         DO ispin = 1, SIZE(matrices, 1)
+            CALL dbcsr_get_block_p(matrices(ispin, img)%matrix, entry_block(1, ientry), &
+                                   entry_block(2, ientry), block, found)
+            IF (found) block(:, :) = weight(ientry)*block(:, :)
+         END DO
+      END DO
+
+      DEALLOCATE (entry_block, distance, class_key, order, weight)
+
+      CALL timestop(handle)
+
+   END SUBROUTINE scale_images_by_bvk_wigner_seitz_weight
 
 ! **************************************************************************************************
 !> \brief Adds the GAPW exchange contribution to the aux_fit ks matrices
@@ -2303,6 +2361,7 @@ CONTAINS
       CALL kpoint_density_transform(kpoints, matrix_k_tilde, .FALSE., &
                                     matrix_k_tilde(1, 1)%matrix, sab_kp, &
                                     fmwork, for_aux_fit=.FALSE., pmat_ext=fm_ks, overlap_rs=matrix_s)
+      CALL scale_images_by_bvk_wigner_seitz_weight(matrix_k_tilde, sab_kp, kpoints)
       CALL cp_fm_release(fmwork(1))
       CALL cp_fm_release(fmwork(2))
 

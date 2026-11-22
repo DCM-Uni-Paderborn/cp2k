@@ -5,7 +5,7 @@
 /*  SPDX-License-Identifier: BSD-3-Clause                                     */
 /*----------------------------------------------------------------------------*/
 
-#include <assert.h>
+#include "../base/cp_assert.h"
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -65,7 +65,7 @@ void grid_create_task_list_ex(
   if (*task_list_out == NULL) {
     task_list = malloc(sizeof(grid_task_list_internal));
     // not a proper handling of errors. assert is a debug tool
-    assert(task_list != NULL);
+    cp_assert(task_list != NULL);
     memset(task_list, 0, sizeof(grid_task_list_internal));
     *task_list_out = task_list;
 
@@ -101,7 +101,7 @@ void grid_create_task_list_ex(
 
   // Store npts_local for bounds checking and validation.
   task_list->nlevels = nlevels;
-  assert(task_list->npts_local != NULL);
+  cp_assert(task_list->npts_local != NULL);
   memcpy(task_list->npts_local, npts_local, size);
 
   // Always create reference backend because it might be needed for validation.
@@ -216,11 +216,11 @@ void grid_collocate_task_list(const grid_task_list *ptr,
   }
 
   // Bounds check.
-  assert(task_list->nlevels == nlevels);
+  cp_assert(task_list->nlevels == nlevels);
   for (int ilevel = 0; ilevel < nlevels; ilevel++) {
-    assert(task_list->npts_local[ilevel][0] == npts_local[ilevel][0]);
-    assert(task_list->npts_local[ilevel][1] == npts_local[ilevel][1]);
-    assert(task_list->npts_local[ilevel][2] == npts_local[ilevel][2]);
+    cp_assert(task_list->npts_local[ilevel][0] == npts_local[ilevel][0]);
+    cp_assert(task_list->npts_local[ilevel][1] == npts_local[ilevel][1]);
+    cp_assert(task_list->npts_local[ilevel][2] == npts_local[ilevel][2]);
   }
 
   switch (task_list->backend) {
@@ -338,15 +338,15 @@ void grid_integrate_task_list(const grid_task_list *ptr, const bool compute_tau,
   }
 
   // Bounds check.
-  assert(task_list->nlevels == nlevels);
+  cp_assert(task_list->nlevels == nlevels);
   for (int ilevel = 0; ilevel < nlevels; ilevel++) {
-    assert(task_list->npts_local[ilevel][0] == npts_local[ilevel][0]);
-    assert(task_list->npts_local[ilevel][1] == npts_local[ilevel][1]);
-    assert(task_list->npts_local[ilevel][2] == npts_local[ilevel][2]);
+    cp_assert(task_list->npts_local[ilevel][0] == npts_local[ilevel][0]);
+    cp_assert(task_list->npts_local[ilevel][1] == npts_local[ilevel][1]);
+    cp_assert(task_list->npts_local[ilevel][2] == npts_local[ilevel][2]);
   }
 
-  assert(forces == NULL || pab_blocks != NULL);
-  assert(virial == NULL || pab_blocks != NULL);
+  cp_assert(forces == NULL || pab_blocks != NULL);
+  cp_assert(virial == NULL || pab_blocks != NULL);
 
   switch (task_list->backend) {
 #if (defined(__OFFLOAD_CUDA) || defined(__OFFLOAD_HIP)) &&                     \
