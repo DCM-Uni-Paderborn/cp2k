@@ -2265,6 +2265,10 @@ CONTAINS
             rhs(:, 1) = -values(chart%rows(:r))/chart%scales(chart%rows(:r))
             CALL solve_constraint_system(matrix, rhs, solved)
             IF (.NOT. solved) EXIT
+            ! Stop once all targets fit their windows and a Newton step is at
+            ! the resolution of the normalized orbital coefficients.
+            IF (ALL(ABS(values) <= chart%tolerances) .AND. &
+                ALL(ABS(rhs(:, 1)) <= EPSILON(0.0_dp)*MAX(1.0_dp, ABS(coordinate(chart%dependent))))) EXIT
             fraction = 1.0_dp
             DO k = 1, 24
                candidate(:) = coordinate

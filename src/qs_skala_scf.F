@@ -126,7 +126,7 @@ MODULE qs_skala_scf
    REAL(dp), PARAMETER :: native_boundary_tolerance = 1.0e-17_dp
    ! The signed kinetic density can cancel to adjacent floating-point values
    ! when the smooth and augmentation contributions are added on the grid.
-   REAL(dp), PARAMETER :: kinetic_boundary_tolerance = 0.125_dp*EPSILON(0.0_dp)
+   REAL(dp), PARAMETER :: kinetic_boundary_tolerance = 16.0_dp*EPSILON(0.0_dp)
    PUBLIC :: qs_skala_scf_create_symmetric
    PUBLIC :: qs_skala_scf_retained_symmetry
    PUBLIC :: qs_skala_scf_type, qs_skala_scf_create, qs_skala_scf_release, qs_skala_scf_size
