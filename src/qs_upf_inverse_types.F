@@ -88,6 +88,10 @@ MODULE qs_upf_inverse_types
 
    TYPE qs_upf_inverse_grid_type
       TYPE(qs_upf_inverse_type) :: ao
+      ! Signed samples of the compact orbital reconstruction. Original UPF augmentation stays on ao%points.
+      INTEGER, ALLOCATABLE :: patch_center(:), patch_index(:, :, :), patch_offset(:, :), row_center(:)
+      REAL(dp), ALLOCATABLE :: orbital_points(:, :), orbital_weights(:), metric_weights(:)
+      REAL(dp), ALLOCATABLE :: stencil(:, :, :, :), dstencil(:, :, :, :)
       REAL(dp), ALLOCATABLE :: gamma_fields(:, :, :) ! Soft values followed by the three Cartesian gradients.
       INTEGER :: bounds(2, 3) = 0, bounds_local(2, 3) = 0, npts(3) = 0, mode = PW_MODE_LOCAL
       REAL(dp) :: dh(3, 3) = 0.0_dp, dvol = 0.0_dp

@@ -385,7 +385,8 @@ CONTAINS
                                              use_atomic, direct, store_fields=.FALSE., basis_type=role)
          ELSE
             CALL qs_upf_inverse_grid_prepare(ks_env, grid, images, [0.0_dp, 0.0_dp, 0.0_dp], state%frame, info, &
-                                             use_atomic, direct, basis_type=role, center_rotations=center_rotations)
+                                             use_atomic, direct, basis_type=role, center_rotations=center_rotations, &
+                                             refine=.NOT. (control%qs_control%gapw .OR. control%qs_control%gapw_xc))
          END IF
          IF (info == 0) CALL qs_upf_inverse_augmentation_prepare(ks_env, state%frame%ao, state%augmentation)
       END IF

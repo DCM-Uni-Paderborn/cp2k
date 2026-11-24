@@ -55,6 +55,8 @@ MODULE qs_upf_inverse_grid
    IMPLICIT NONE
    PRIVATE
 
+   INTEGER, PARAMETER :: subdivisions = 2, interpolation_order = 8
+
    PUBLIC :: qs_upf_inverse_grid_type, qs_upf_inverse_grid_prepare, qs_upf_inverse_grid_release
    PUBLIC :: qs_upf_inverse_grid_collocate, qs_upf_inverse_grid_integrate
    PUBLIC :: qs_upf_inverse_grid_metric
@@ -84,9 +86,10 @@ CONTAINS
 !> \param store_fields Override the bounded default cache for dense reference or streamed evaluation.
 !> \param basis_type Native basis role, ORB by default.
 !> \param center_rotations Fixed reference group for the full GAPW atom integrals.
+!> \param refine Use moving atomic quadrature for the compact orbital terms at Gamma.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_prepare(ks_env, grid, images, reduced_k, frame, info, atom_local, direct, store_fields, &
-                                          basis_type, center_rotations)
+                                          basis_type, center_rotations, refine)
       TYPE(qs_ks_env_type), INTENT(IN)                   :: ks_env
       TYPE(pw_grid_type), INTENT(IN)                     :: grid
       INTEGER, INTENT(IN)                                :: images(:, :)
@@ -96,6 +99,8 @@ CONTAINS
       LOGICAL, INTENT(IN), OPTIONAL                      :: atom_local, direct, store_fields
       CHARACTER(LEN=*), INTENT(IN), OPTIONAL             :: basis_type
       REAL(dp), INTENT(IN), OPTIONAL                     :: center_rotations(:, :, :)
+
+      LOGICAL, INTENT(IN), OPTIONAL                      :: refine
 
       INTEGER                                            :: ix, iy, iz, n, point
       REAL(dp), ALLOCATABLE                              :: points(:, :), weights(:)
@@ -131,10 +136,274 @@ CONTAINS
       END DO
       CALL qs_upf_inverse_from_ks(ks_env, points, weights, images, reduced_k, comm, frame%ao, info, atom_local, direct, &
                                   store_fields, basis_type, center_rotations)
-      IF (info == 0 .AND. .NOT. PRESENT(store_fields)) CALL cache_gamma_fields(frame)
+      IF (info /= 0) RETURN
+      IF (PRESENT(refine)) THEN
+         IF (refine .AND. .NOT. frame%ao%direct .AND. ALL(frame%ao%periodicity == 1)) THEN
+            CALL reconstruction_quadrature(frame, points, weights)
+            CALL MOVE_ALLOC(points, frame%orbital_points)
+            CALL MOVE_ALLOC(weights, frame%orbital_weights)
+            ALLOCATE (frame%row_center(SIZE(frame%orbital_weights)))
+            frame%row_center(:n) = 0
+            point = SIZE(frame%patch_center)
+            frame%row_center(n + 1:n + point) = frame%patch_center
+            frame%row_center(n + point + 1:) = -frame%patch_center
+         END IF
+      END IF
+      IF (.NOT. PRESENT(store_fields)) CALL cache_gamma_fields(frame)
    END SUBROUTINE qs_upf_inverse_grid_prepare
 
+!> \brief Build atom-centered midpoint samples and their local GPW interpolation stencils.
+!> \param frame Prepared inverse frame that owns the interpolation stencils.
+!> \param points Native grid followed by two copies of each atom-centered sample.
+!> \param weights Signed integration weights for the orbital products.
+   SUBROUTINE reconstruction_quadrature(frame, points, weights)
+      TYPE(qs_upf_inverse_grid_type), INTENT(INOUT)      :: frame
+      REAL(dp), ALLOCATABLE, INTENT(INOUT)               :: points(:, :), weights(:)
+
+      INTEGER :: axis, base(3), box(3), center, count, extent(3), &
+         grid_indices(interpolation_order, 3), i, info, j, kind, n, nc, owner(3), pass, q(3), &
+         step(3), x, y, z
+      REAL(dp)                                           :: coord(3), fraction, inverse_dh(3, 3), &
+                                                            offset(3), origin(3), radius, width(3)
+      REAL(dp), ALLOCATABLE                              :: refined(:, :)
+
+      nc = SIZE(frame%ao%center_atoms)
+      n = SIZE(weights)
+      inverse_dh = frame%dh
+      CALL invmat(inverse_dh, info)
+      CPASSERT(info == 0)
+      width = SQRT(SUM(inverse_dh**2, DIM=2))
+      extent = subdivisions*frame%npts
+      ALLOCATE (frame%stencil(interpolation_order, subdivisions, 3, nc), &
+                frame%dstencil(interpolation_order, subdivisions, 3, nc))
+      DO pass = 1, 2
+         count = 0
+         DO center = 1, nc
+            kind = frame%ao%center_kinds(center)
+            radius = frame%ao%delta_cache(kind)%radius
+            IF (radius <= 0.0_dp) CYCLE
+            origin = MATMUL(inverse_dh, frame%ao%positions(:, frame%ao%center_atoms(center)))
+            box = CEILING(radius*width*subdivisions + 0.5_dp)
+            IF (pass == 1) THEN
+               DO axis = 1, 3
+                  DO j = 1, subdivisions
+                     fraction = MODULO(origin(axis) + (j - 0.5_dp)/subdivisions, 1.0_dp)
+                     CALL cardinal_stencil(fraction, frame%stencil(:, j, axis, center), frame%dstencil(:, j, axis, center))
+                  END DO
+               END DO
+            END IF
+            DO z = -box(3), box(3)
+               DO y = -box(2), box(2)
+                  DO x = -box(1), box(1)
+                     q = [x, y, z]
+                     offset = (REAL(q, dp) + 0.5_dp)/subdivisions
+                     IF (SUM(MATMUL(frame%dh, offset)**2) >= radius**2) CYCLE
+                     IF (ANY(2*box + 1 > extent)) THEN
+                        IF (previous_image(q, box, extent, frame%dh, radius)) CYCLE
+                     END IF
+                     coord = origin + offset
+                     step = MODULO(q, subdivisions) + 1
+                     ! Use the same fractional argument as the stencil, also at a grid plane.
+                     base = FLOOR(origin + (REAL(step, dp) - 0.5_dp)/subdivisions) + (q - (step - 1))/subdivisions
+                     DO axis = 1, 3
+                        DO j = 1, interpolation_order
+                           i = MODULO(base(axis) + j - interpolation_order/2, frame%npts(axis)) + frame%bounds(1, axis)
+                           IF (i < frame%bounds_local(1, axis) .OR. i > frame%bounds_local(2, axis)) i = HUGE(0)
+                           grid_indices(j, axis) = i
+                        END DO
+                     END DO
+                     IF (ANY(ALL(grid_indices == HUGE(0), DIM=1))) CYCLE
+                     count = count + 1
+                     IF (pass == 1) CYCLE
+                     frame%patch_index(:, :, count) = grid_indices
+                     frame%patch_offset(:, count) = step
+                     frame%patch_center(count) = center
+                     refined(:, n + count) = MATMUL(frame%dh, MODULO(coord, REAL(frame%npts, dp)))
+                     ! A unique coarse node owns each metric contribution across MPI quadrature halos.
+                     owner = MODULO(base, frame%npts) + frame%bounds(1, :)
+                     IF (ALL(owner >= frame%bounds_local(1, :)) .AND. ALL(owner <= frame%bounds_local(2, :))) THEN
+                        frame%metric_weights(n + count) = frame%dvol/REAL(subdivisions**3, dp)
+                     END IF
+                  END DO
+               END DO
+            END DO
+         END DO
+         IF (pass == 1) THEN
+            ALLOCATE (frame%patch_index(interpolation_order, 3, count), frame%patch_offset(3, count), frame%patch_center(count), &
+                      refined(3, n + 2*count), frame%metric_weights(n + 2*count))
+            refined(:, :n) = points
+            frame%metric_weights = 0.0_dp
+         END IF
+      END DO
+      refined(:, n + count + 1:) = refined(:, n + 1:n + count)
+      CALL MOVE_ALLOC(refined, points)
+      DEALLOCATE (weights)
+      ALLOCATE (weights(n + 2*count))
+      weights(:n) = frame%dvol
+      weights(n + 1:n + count) = frame%dvol/REAL(subdivisions**3, dp)
+      weights(n + count + 1:) = -weights(n + 1:n + count)
+      frame%metric_weights(:n) = weights(:n)
+      frame%metric_weights(n + count + 1:) = -frame%metric_weights(n + 1:n + count)
+   END SUBROUTINE reconstruction_quadrature
+
+!> \brief Keep each periodic fine node once when a reconstruction sphere intersects its own images.
+!> \param q Fine-grid offset within the bounding box of the sphere.
+!> \param box Maximum offsets in each direction.
+!> \param extent Fine-grid periods.
+!> \param dh Coarse-grid basis vectors.
+!> \param radius Support of the radial reconstruction.
+!> \return True if an earlier image contains the same quadrature point.
 ! **************************************************************************************************
+   LOGICAL FUNCTION previous_image(q, box, extent, dh, radius) RESULT(duplicate)
+      INTEGER, INTENT(IN)                                :: q(3), box(3), extent(3)
+      REAL(dp), INTENT(IN)                               :: dh(3, 3), radius
+
+      INTEGER                                            :: first(3), last(3), q2(3), x, y, z
+
+      duplicate = .FALSE.
+      first = -((box + q)/extent)
+      last = (box - q)/extent
+      DO z = first(3), MIN(0, last(3))
+         DO y = first(2), last(2)
+            DO x = first(1), last(1)
+               IF (z == 0 .AND. (y > 0 .OR. (y == 0 .AND. x >= 0))) CYCLE
+               q2 = q + extent*[x, y, z]
+               IF (SUM(MATMUL(dh, (REAL(q2, dp) + 0.5_dp)/subdivisions)**2) < radius**2) THEN
+                  duplicate = .TRUE.
+                  RETURN
+               END IF
+            END DO
+         END DO
+      END DO
+   END FUNCTION previous_image
+
+! **************************************************************************************************
+!> \brief Interpolate the resolved density spectrum with a moment-corrected cardinal B-spline.
+!>        Values and two derivatives agree as a moving atom crosses a lattice plane.
+!> \param t Fractional position between neighboring grid nodes.
+!> \param weights Interpolation weights on the eight nearest nodes.
+!> \param derivatives Derivative of the weights with respect to t.
+! **************************************************************************************************
+   SUBROUTINE cardinal_stencil(t, weights, derivatives)
+      REAL(dp), INTENT(IN)                               :: t
+      REAL(dp), INTENT(OUT) :: weights(interpolation_order), derivatives(interpolation_order)
+
+      REAL(dp), PARAMETER :: second_moment = REAL(interpolation_order, dp)/24.0_dp
+
+      INTEGER                                            :: cell, degree, j
+      REAL(dp) :: b(-interpolation_order:3, 0:interpolation_order - 1), curvature, third
+
+      ! Cardinal B-splines with their second moment removed. Low spatial frequencies
+      ! are reproduced through cubic order while unresolved frequencies are attenuated.
+      degree = interpolation_order - 1
+      b = 0.0_dp
+      b(0, 0) = 1.0_dp
+      DO j = 1, degree
+         DO cell = -j, 0
+            b(cell, j) = ((t - cell)*b(cell, j - 1) + (cell + j + 1 - t)*b(cell + 1, j - 1))/j
+         END DO
+      END DO
+      DO j = 1, interpolation_order
+         cell = j - interpolation_order
+         curvature = b(cell, degree - 2) - 2*b(cell + 1, degree - 2) + b(cell + 2, degree - 2)
+         third = b(cell, degree - 3) - 3*b(cell + 1, degree - 3) + 3*b(cell + 2, degree - 3) - b(cell + 3, degree - 3)
+         weights(j) = b(cell, degree) - second_moment*curvature
+         derivatives(j) = b(cell, degree - 1) - b(cell + 1, degree - 1) - second_moment*third
+      END DO
+   END SUBROUTINE cardinal_stencil
+
+
+! **************************************************************************************************
+!> \brief Select the orbital quadrature, retaining the native samples for original UPF terms.
+!> \param frame Prepared inverse frame.
+!> \param points Orbital sampling coordinates.
+!> \param weights Weights for contractions with interpolated potentials.
+!> \param metric_weights Weights with unique ownership across overlapping MPI halos.
+   SUBROUTINE orbital_samples(frame, points, weights, metric_weights)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN), TARGET :: frame
+      REAL(dp), INTENT(OUT), POINTER                     :: points(:, :), weights(:), &
+                                                            metric_weights(:)
+
+      points => frame%ao%points
+      weights => frame%ao%weights
+      metric_weights => frame%ao%weights
+      IF (ALLOCATED(frame%orbital_points)) THEN
+         points => frame%orbital_points
+         weights => frame%orbital_weights
+         metric_weights => frame%metric_weights
+      END IF
+   END SUBROUTINE orbital_samples
+
+!> \brief Evaluate the same orbital partition for values, gradients and geometry derivatives.
+!> \param frame Prepared inverse frame.
+!> \param lo First sampling row.
+!> \param hi Last sampling row.
+!> \param soft Soft orbital samples in the chosen partition.
+!> \param gradient Spatial gradients of the partitioned soft orbitals.
+!> \param soft_response Joint derivative of the orbital samples.
+!> \param gradient_response Joint derivative of their spatial gradients.
+!> \param point_response Motion of the selected sampling points.
+!> \param atom_response Atomic displacements.
+!> \param cell_response Cell deformation.
+!> \param reduced_k_response Change in the reduced Bloch vector.
+!> \param coefficients_response Derivative of the original inverse coefficients.
+   SUBROUTINE evaluate_rows(frame, lo, hi, soft, gradient, soft_response, gradient_response, &
+                            point_response, atom_response, cell_response, reduced_k_response, coefficients_response)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      INTEGER, INTENT(IN)                                :: lo, hi
+      COMPLEX(dp), INTENT(OUT)                           :: soft(:, :)
+      COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gradient(:, :, :), soft_response(:, :), &
+                                                            gradient_response(:, :, :)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: point_response(:, :), &
+                                                            atom_response(:, :), &
+                                                            cell_response(3, 3), &
+                                                            reduced_k_response(3)
+      COMPLEX(dp), INTENT(IN), OPTIONAL                  :: coefficients_response(:, :)
+
+      IF (ALLOCATED(frame%orbital_points)) THEN
+         CALL qs_upf_inverse_evaluate(frame%ao, frame%orbital_points(:, lo:hi), soft, gradient, soft_response, &
+                                      gradient_response, point_response, atom_response, cell_response, reduced_k_response, &
+                                      coefficients_response, row_center=frame%row_center(lo:hi))
+      ELSE
+         CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft, gradient, soft_response, &
+                                      gradient_response, point_response, atom_response, cell_response, reduced_k_response, &
+                                      coefficients_response)
+      END IF
+   END SUBROUTINE evaluate_rows
+
+!> \brief Move each fine lattice with its atom relative to the strained native grid.
+!> \param frame Prepared orbital quadrature.
+!> \param strain Cartesian strain of the cell.
+!> \param atom_response Atomic displacements.
+!> \param motion Motion relative to the strained native grid in mesh coordinates.
+!> \param dpoints Affine point displacements, updated to follow the atoms on the fine lattices.
+   SUBROUTINE orbital_motion(frame, strain, atom_response, motion, dpoints)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      REAL(dp), INTENT(IN)                               :: strain(3, 3), atom_response(:, :)
+      REAL(dp), ALLOCATABLE, INTENT(OUT)                 :: motion(:, :)
+      REAL(dp), INTENT(INOUT)                            :: dpoints(:, :)
+
+      INTEGER                                            :: atom, center, info, n, np, p
+      REAL(dp)                                           :: inverse_dh(3, 3), relative(3)
+
+      inverse_dh = frame%dh
+      CALL invmat(inverse_dh, info)
+      CPASSERT(info == 0)
+      ALLOCATE (motion(3, SIZE(frame%ao%center_atoms)))
+      DO center = 1, SIZE(frame%ao%center_atoms)
+         atom = frame%ao%center_atoms(center)
+         relative = atom_response(:, atom) - MATMUL(strain, frame%ao%positions(:, atom))
+         motion(:, center) = MATMUL(inverse_dh, relative)
+      END DO
+      n = SIZE(frame%ao%weights)
+      np = SIZE(frame%patch_center)
+      DO p = 1, np
+         center = frame%patch_center(p)
+         dpoints(:, n + p) = dpoints(:, n + p) + MATMUL(frame%dh, motion(:, center))
+         dpoints(:, n + np + p) = dpoints(:, n + p)
+      END DO
+   END SUBROUTINE orbital_motion
+
 !> \brief Keep the real soft fields for repeated electronic operations on a Gamma grid.
 !>        The full complex cache may exceed its budget even when these fields fit on their own.
 !> \param frame Prepared grid and inverse coefficients at the current geometry.
@@ -145,9 +414,10 @@ CONTAINS
       COMPLEX(dp), ALLOCATABLE                           :: gradient(:, :, :), soft(:, :)
       INTEGER                                            :: block, first, last, m, nao, npoint, status
 
-      IF (frame%ao%fields_stored .OR. ANY(frame%ao%reduced_k /= 0.0_dp)) RETURN
+      IF ((frame%ao%fields_stored .AND. .NOT. ALLOCATED(frame%orbital_points)) .OR. ANY(frame%ao%reduced_k /= 0.0_dp)) RETURN
       nao = SIZE(frame%ao%coefficients, 2)
       npoint = SIZE(frame%ao%weights)
+      IF (ALLOCATED(frame%orbital_weights)) npoint = SIZE(frame%orbital_weights)
       IF (npoint == 0 .OR. 32_int_8*nao*npoint > max_point_field_bytes) RETURN
       block = MIN(npoint, qs_upf_inverse_block_size(frame%ao))
       ALLOCATE (soft(block, nao), gradient(block, nao, 3), STAT=status)
@@ -157,7 +427,7 @@ CONTAINS
       DO first = 1, npoint, block
          last = MIN(npoint, first + block - 1)
          m = last - first + 1
-         CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, first:last), soft(:m, :), gradient(:m, :, :))
+         CALL evaluate_rows(frame, first, last, soft(:m, :), gradient(:m, :, :))
          IF (ANY(AIMAG(soft(:m, :)) /= 0.0_dp) .OR. ANY(AIMAG(gradient(:m, :, :)) /= 0.0_dp)) THEN
             DEALLOCATE (frame%gamma_fields)
             RETURN
@@ -223,7 +493,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_collocate_dense(frame, p, density, gradient, tau, &
                                                   projector_density, augmentation, fourier_charge, kinetic, orbital_fields)
-      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN), TARGET :: frame
       COMPLEX(dp), INTENT(IN)                            :: p(:, :)
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: density, tau
       TYPE(pw_r3d_rs_type), INTENT(INOUT), OPTIONAL      :: gradient(3)
@@ -240,6 +510,11 @@ CONTAINS
       LOGICAL                                            :: use_fourier, use_orbitals
       REAL(dp), ALLOCATABLE                              :: dn(:, :), rho(:), t(:), t_augmentation(:)
 
+      REAL(dp), POINTER :: points(:, :), weights(:), metric_weights(:)
+      INTEGER :: nc
+
+      CALL orbital_samples(frame, points, weights, metric_weights)
+      nc = SIZE(frame%ao%weights)
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       use_fourier = .FALSE.
       IF (PRESENT(fourier_charge)) use_fourier = fourier_charge
@@ -249,7 +524,7 @@ CONTAINS
          CPASSERT(PRESENT(augmentation))
       END IF
       CPASSERT(ALL(SHAPE(p) == SIZE(frame%ao%soft, 2)))
-      n = SIZE(frame%ao%weights)
+      n = SIZE(weights)
       nao = SIZE(frame%ao%coefficients, 2)
       block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (rho(n), t(n))
@@ -275,7 +550,11 @@ CONTAINS
          ALLOCATE (projected(nproj, nproj))
          CALL upf_inverse_projector_density(frame%ao%coefficients, p, projected, frame%ao%point_comm)
          IF (PRESENT(augmentation) .AND. .NOT. use_fourier) THEN
-            CALL qs_upf_inverse_augmentation_collocate(frame%ao, augmentation, projected, rho, dn)
+            IF (ALLOCATED(dn)) THEN
+               CALL qs_upf_inverse_augmentation_collocate(frame%ao, augmentation, projected, rho(:nc), dn(:nc, :))
+            ELSE
+               CALL qs_upf_inverse_augmentation_collocate(frame%ao, augmentation, projected, rho(:nc))
+            END IF
          END IF
          IF (PRESENT(projector_density)) THEN
             CPASSERT(ALL(SHAPE(projector_density) == [nproj, nproj]))
@@ -283,9 +562,9 @@ CONTAINS
          END IF
       END IF
       IF (PRESENT(kinetic)) THEN
-         ALLOCATE (t_augmentation(n))
+         ALLOCATE (t_augmentation(nc))
          CALL qs_upf_inverse_kinetic_collocate(frame%ao, kinetic, frame%ao%points, p, t_augmentation)
-         t(:) = t + t_augmentation
+         t(:nc) = t(:nc) + t_augmentation
       END IF
       CALL unpack_grid(frame, rho, density)
       CALL unpack_grid(frame, t, tau)
@@ -352,7 +631,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_grid_integrate_dense(frame, vdensity, vgradient, vtau, h, &
                                                   projector_operator, augmentation, fourier_charge, kinetic, orbital_fields)
-      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN), TARGET :: frame
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: vdensity, vgradient(3), vtau
       COMPLEX(dp), ALLOCATABLE, INTENT(OUT)              :: h(:, :)
       COMPLEX(dp), INTENT(IN), OPTIONAL                  :: projector_operator(:, :)
@@ -368,6 +647,11 @@ CONTAINS
       LOGICAL                                            :: use_fourier, use_gradients, use_orbitals
       REAL(dp), ALLOCATABLE                              :: dg(:, :), dn(:), dt(:)
 
+      REAL(dp), POINTER :: points(:, :), weights(:), metric_weights(:)
+      INTEGER :: nc
+
+      CALL orbital_samples(frame, points, weights, metric_weights)
+      nc = SIZE(frame%ao%weights)
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
@@ -376,7 +660,7 @@ CONTAINS
       IF (use_fourier) THEN
          CPASSERT(PRESENT(augmentation))
       END IF
-      n = SIZE(frame%ao%weights)
+      n = SIZE(weights)
       nao = SIZE(frame%ao%soft, 2)
       block = qs_upf_inverse_block_size(frame%ao)
       ALLOCATE (dn(n), dg(n, 3), dt(n), h(nao, nao), residual(nao, nao))
@@ -396,17 +680,17 @@ CONTAINS
             IF (use_gradients) THEN
                CALL point_fields(frame, lo, hi, soft(:m, :), sg(:m, :, :))
                CALL upf_inverse_semilocal_pair(soft(:m, :), soft(:m, :), sg(:m, :, :), sg(:m, :, :), &
-                                               frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
+                                               weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), residual)
             ELSE
                CALL point_fields(frame, lo, hi, soft(:m, :))
-               CALL upf_inverse_pair(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi)*dn(lo:hi), residual)
+               CALL upf_inverse_pair(soft(:m, :), soft(:m, :), weights(lo:hi)*dn(lo:hi), residual)
             END IF
             h(:, :) = h + residual
          END DO
       END IF
       CALL frame%ao%point_comm%sum(h)
       IF (PRESENT(kinetic)) THEN
-         CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
+         CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt(:nc), &
                                               residual, frame%ao%point_comm)
          h(:, :) = h + residual
       END IF
@@ -416,7 +700,7 @@ CONTAINS
          IF (use_fourier) THEN
             CALL qs_upf_inverse_augmentation_fourier_integrate(frame%ao, augmentation, vdensity, vgradient, projected)
          ELSE
-            CALL qs_upf_inverse_augmentation_integrate(frame%ao, augmentation, dn, dg, projected)
+            CALL qs_upf_inverse_augmentation_integrate(frame%ao, augmentation, dn(:nc), dg(:nc, :), projected)
          END IF
          CALL upf_inverse_projector_pair(frame%ao%coefficients, projected, frame%ao%coefficients, &
                                          residual, frame%ao%point_comm)
@@ -601,11 +885,22 @@ CONTAINS
       LOGICAL                                            :: use_orbitals
       TYPE(qs_upf_inverse_grid_type), POINTER            :: right
 
+      REAL(dp), POINTER :: points(:, :), weights(:), metric_weights(:)
+      REAL(dp), ALLOCATABLE :: dpoints(:, :), dweights(:), motion(:, :)
+      REAL(dp) :: inverse_cell(3, 3), strain(3, 3)
+      INTEGER :: info
+
+      CALL orbital_samples(frame, points, weights, metric_weights)
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       right => frame
       IF (PRESENT(right_frame)) THEN
          right => right_frame
+         CPASSERT(ALLOCATED(frame%row_center) .EQV. ALLOCATED(right%row_center))
+         IF (ALLOCATED(frame%row_center)) THEN
+            CPASSERT(SIZE(frame%row_center) == SIZE(right%row_center))
+            CPASSERT(ALL(frame%row_center == right%row_center))
+         END IF
          comparison = frame%ao%point_comm%compare(right%ao%point_comm)
          CPASSERT(comparison == mp_comm_ident .OR. comparison == mp_comm_congruent)
          CPASSERT(ALL(SHAPE(frame%ao%points) == SHAPE(right%ao%points)))
@@ -655,13 +950,27 @@ CONTAINS
          IF (PRESENT(right_frame)) THEN
             ALLOCATE (right_soft(block, nr), right_gradient(block, nr, 3))
          END IF
-         IF (PRESENT(response)) ALLOCATE (ds(block, nao), dr(block, nr))
-         DO lo = 1, SIZE(frame%ao%weights), block
-            hi = MIN(SIZE(frame%ao%weights), lo + block - 1)
+         IF (PRESENT(response)) THEN
+            ALLOCATE (ds(block, nao), dr(block, nr))
+            IF (ALLOCATED(frame%orbital_points)) THEN
+               inverse_cell = frame%ao%cell
+               CALL invmat(inverse_cell, info)
+               CPASSERT(info == 0)
+               strain = MATMUL(cell_response, inverse_cell)
+               ALLOCATE (dpoints, SOURCE=MATMUL(strain, points))
+               ALLOCATE (dweights, SOURCE=(strain(1, 1) + strain(2, 2) + strain(3, 3))*metric_weights)
+               CALL orbital_motion(frame, strain, atom_response, motion, dpoints)
+            ELSE
+               ALLOCATE (dpoints, SOURCE=point_response)
+               ALLOCATE (dweights, SOURCE=weights_response)
+            END IF
+         END IF
+         DO lo = 1, SIZE(weights), block
+            hi = MIN(SIZE(weights), lo + block - 1)
             m = hi - lo + 1
             IF (PRESENT(response)) THEN
-               CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
-                                            soft_response=ds(:m, :), point_response=point_response(:, lo:hi), &
+               CALL evaluate_rows(frame, lo, hi, soft(:m, :), gradient(:m, :, :), &
+                                            soft_response=ds(:m, :), point_response=dpoints(:, lo:hi), &
                                             atom_response=atom_response, cell_response=cell_response, &
                                             reduced_k_response=reduced_k_response, coefficients_response=dw)
             ELSE
@@ -669,9 +978,9 @@ CONTAINS
             END IF
             IF (PRESENT(right_frame)) THEN
                IF (PRESENT(response)) THEN
-                  CALL qs_upf_inverse_evaluate(right%ao, right%ao%points(:, lo:hi), right_soft(:m, :), &
+                  CALL evaluate_rows(right, lo, hi, right_soft(:m, :), &
                                                right_gradient(:m, :, :), soft_response=dr(:m, :), &
-                                               point_response=point_response(:, lo:hi), atom_response=atom_response, &
+                                               point_response=dpoints(:, lo:hi), atom_response=atom_response, &
                                                cell_response=cell_response, reduced_k_response=reduced_k_response, &
                                                coefficients_response=right_coefficients_response)
                ELSE
@@ -681,11 +990,11 @@ CONTAINS
             ELSE IF (PRESENT(response)) THEN
                dr(:m, :) = ds(:m, :)
             END IF
-            CALL upf_inverse_pair(soft(:m, :), right_values(:m, :), frame%ao%weights(lo:hi), partial)
+            CALL upf_inverse_pair(soft(:m, :), right_values(:m, :), metric_weights(lo:hi), partial)
             metric(:, :) = metric + partial
             IF (PRESENT(response)) THEN
-               CALL upf_inverse_pair_response(soft(:m, :), right_values(:m, :), frame%ao%weights(lo:hi), &
-                                              ds(:m, :), dr(:m, :), weights_response(lo:hi), partial)
+               CALL upf_inverse_pair_response(soft(:m, :), right_values(:m, :), metric_weights(lo:hi), &
+                                              ds(:m, :), dr(:m, :), dweights(lo:hi), partial)
                response(:, :) = response + partial
             END IF
          END DO
@@ -742,7 +1051,7 @@ CONTAINS
                                            vgradient_response, vtau_response, operator_response, metric_response, &
                                            projector_operator, kinetic, orbital_fields, &
                                            known_coefficients_response, saved_coefficients_response, compute_metric, charge)
-      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN), TARGET :: frame
       TYPE(qs_upf_inverse_augmentation_type), &
          INTENT(INOUT)                                   :: augmentation
       COMPLEX(dp), INTENT(IN)                            :: projector_metric(:, :)
@@ -782,13 +1091,19 @@ CONTAINS
       TYPE(qs_upf_inverse_grid_charge_type), POINTER     :: charge_terms
       TYPE(qs_upf_inverse_grid_charge_type), TARGET      :: owned_charge
 
+      REAL(dp), POINTER :: points(:, :), weights(:), metric_weights(:)
+      INTEGER :: nc
+      REAL(dp), ALLOCATABLE :: motion(:, :)
+
+      CALL orbital_samples(frame, points, weights, metric_weights)
+      nc = SIZE(frame%ao%weights)
       CALL timeset(routineN, timing_handle)
       use_orbitals = .TRUE.
       IF (PRESENT(orbital_fields)) use_orbitals = orbital_fields
       use_metric = .TRUE.
       IF (PRESENT(compute_metric)) use_metric = compute_metric
       CPASSERT(frame%ao%atom_local .OR. frame%ao%inverse%ready)
-      n = SIZE(frame%ao%weights)
+      n = SIZE(weights)
       nao = SIZE(frame%ao%soft, 2)
       nproj = SIZE(frame%ao%coefficients, 1)
       CPASSERT(ALL(SHAPE(projector_metric) == [nproj, nproj]))
@@ -801,16 +1116,16 @@ CONTAINS
       CPASSERT(info == 0)
       strain = MATMUL(cell_response, cell_inverse)
       volume_response = strain(1, 1) + strain(2, 2) + strain(3, 3)
-      points_response(:, :) = MATMUL(strain, frame%ao%points)
-      weights_response(:) = volume_response*frame%ao%weights
+      points_response(:, :) = MATMUL(strain, points)
+      weights_response(:) = volume_response*weights
       IF (PRESENT(known_coefficients_response)) THEN
          CPASSERT(ALL(SHAPE(known_coefficients_response) == [nproj, nao]))
          dw => known_coefficients_response
       ELSE
          ALLOCATE (owned_dw(nproj, nao))
          dw => owned_dw
-         CALL qs_upf_inverse_response(frame%ao, points_response, atom_response, cell_response, reduced_k_response, &
-                                      weights_response, dw)
+         CALL qs_upf_inverse_response(frame%ao, points_response(:, :nc), atom_response, cell_response, reduced_k_response, &
+                                      weights_response(:nc), dw)
       END IF
       CALL pack_grid(frame, vdensity, dn)
       CALL pack_grid(frame, vtau, dt)
@@ -820,6 +1135,16 @@ CONTAINS
          CALL pack_grid(frame, vgradient(axis), dg(:, axis))
          CALL pack_grid(frame, vgradient_response(axis), dvg(:, axis))
       END DO
+      IF (ALLOCATED(frame%orbital_points)) THEN
+         CALL orbital_motion(frame, strain, atom_response, motion, points_response)
+         IF (ANY(motion /= 0.0_dp)) THEN
+            CALL transfer_patch(frame, vdensity, gathered=dvn, motion=motion)
+            CALL transfer_patch(frame, vtau, gathered=dvt, motion=motion)
+            DO axis = 1, 3
+               CALL transfer_patch(frame, vgradient(axis), gathered=dvg(:, axis), motion=motion)
+            END DO
+         END IF
+      END IF
       operator_response = CMPLX(0.0_dp, 0.0_dp, dp)
       IF (use_orbitals) THEN
          use_gradients = ANY(dg /= 0.0_dp) .OR. ANY(dt /= 0.0_dp) .OR. &
@@ -848,38 +1173,39 @@ CONTAINS
                      END DO
                   END DO
                ELSE
-                  CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), &
+                  CALL evaluate_rows(frame, lo, hi, soft(:m, :), &
                                                soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
                                                atom_response=atom_response, cell_response=cell_response, &
                                                reduced_k_response=reduced_k_response, coefficients_response=dw)
                END IF
                ! Differentiate the product of the quadrature measure and the scalar potential.
-               CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi)*dn(lo:hi), &
+               CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), weights(lo:hi)*dn(lo:hi), &
                                               soft_response(:m, :), soft_response(:m, :), &
-                                              weights_response(lo:hi)*dn(lo:hi) + frame%ao%weights(lo:hi)*dvn(lo:hi), partial)
+                                              weights_response(lo:hi)*dn(lo:hi) + weights(lo:hi)*dvn(lo:hi), partial)
             ELSE
                IF (ANY(dg(lo:hi, :) /= 0.0_dp) .OR. ANY(dt(lo:hi) /= 0.0_dp)) THEN
-                  CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                  CALL evaluate_rows(frame, lo, hi, soft(:m, :), gradient(:m, :, :), &
                                                soft_response(:m, :), gradient_response(:m, :, :), points_response(:, lo:hi), &
                                                atom_response, cell_response, reduced_k_response, dw)
                ELSE
                   ! Gradient responses enter only through the unperturbed gradient and tau potentials.
                   gradient_response(:m, :, :) = CMPLX(0.0_dp, 0.0_dp, dp)
-                  CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, lo:hi), soft(:m, :), gradient(:m, :, :), &
+                  CALL evaluate_rows(frame, lo, hi, soft(:m, :), gradient(:m, :, :), &
                                                soft_response=soft_response(:m, :), point_response=points_response(:, lo:hi), &
                                                atom_response=atom_response, cell_response=cell_response, &
                                                reduced_k_response=reduced_k_response, coefficients_response=dw)
                END IF
                CALL upf_inverse_semilocal_response(soft(:m, :), soft(:m, :), gradient(:m, :, :), gradient(:m, :, :), &
-                                                   frame%ao%weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
+                                                   weights(lo:hi), dn(lo:hi), dg(lo:hi, :), dt(lo:hi), &
                                                    soft_response(:m, :), soft_response(:m, :), &
                                                    gradient_response(:m, :, :), gradient_response(:m, :, :), &
                                                    weights_response(lo:hi), dvn(lo:hi), dvg(lo:hi, :), dvt(lo:hi), partial)
             END IF
             operator_response(:, :) = operator_response + partial
             IF (use_metric) THEN
-               CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), frame%ao%weights(lo:hi), &
-                                              soft_response(:m, :), soft_response(:m, :), weights_response(lo:hi), partial)
+               CALL upf_inverse_pair_response(soft(:m, :), soft(:m, :), metric_weights(lo:hi), &
+                                              soft_response(:m, :), soft_response(:m, :), &
+                                              volume_response*metric_weights(lo:hi), partial)
                metric_response(:, :) = metric_response + partial
             END IF
          END DO
@@ -888,10 +1214,10 @@ CONTAINS
       IF (use_metric) CALL frame%ao%point_comm%sum(metric_response)
       IF (PRESENT(kinetic)) THEN
          ALLOCATE (kinetic_operator(nao, nao), kinetic_response(nao, nao))
-         CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt, &
+         CALL qs_upf_inverse_kinetic_operator(frame%ao, kinetic, frame%ao%points, frame%ao%weights, dt(:nc), &
                                               kinetic_operator, frame%ao%point_comm, &
-                                              kinetic_response, points_response, atom_response, cell_response, &
-                                              dw, weights_response, dvt)
+                                              kinetic_response, points_response(:, :nc), atom_response, cell_response, &
+                                              dw, weights_response(:nc), dvt(:nc))
          operator_response(:, :) = operator_response + kinetic_response
       END IF
       charge_terms => owned_charge
@@ -944,14 +1270,14 @@ CONTAINS
       COMPLEX(dp), INTENT(OUT)                           :: soft(:, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: gradient(:, :, :)
 
-      IF (frame%ao%fields_stored) THEN
+      IF (frame%ao%fields_stored .AND. .NOT. ALLOCATED(frame%orbital_points)) THEN
          soft(:, :) = frame%ao%soft(first:last, :)
          IF (PRESENT(gradient)) gradient(:, :, :) = frame%ao%soft_gradient(first:last, :, :)
       ELSE IF (ALLOCATED(frame%gamma_fields)) THEN
          soft(:, :) = frame%gamma_fields(first:last, :, 1)
          IF (PRESENT(gradient)) gradient(:, :, :) = frame%gamma_fields(first:last, :, 2:4)
       ELSE
-         CALL qs_upf_inverse_evaluate(frame%ao, frame%ao%points(:, first:last), soft, gradient)
+         CALL evaluate_rows(frame, first, last, soft, gradient)
       END IF
    END SUBROUTINE point_fields
 
@@ -1123,9 +1449,13 @@ CONTAINS
       TYPE(pw_r3d_rs_type), INTENT(IN)                   :: field
       REAL(dp), INTENT(OUT)                              :: points(:)
 
+      INTEGER                                            :: n
+
       CALL check_grid(frame, field)
-      CPASSERT(SIZE(points) == SIZE(field%array))
-      points = RESHAPE(field%array, [SIZE(points)])
+      n = SIZE(field%array)
+      points(:n) = RESHAPE(field%array, [n])
+      points(n + 1:) = 0.0_dp
+      IF (SIZE(points) > n) CALL transfer_patch(frame, field, gathered=points)
    END SUBROUTINE pack_grid
 
 ! **************************************************************************************************
@@ -1139,10 +1469,84 @@ CONTAINS
       REAL(dp), INTENT(IN)                               :: points(:)
       TYPE(pw_r3d_rs_type), INTENT(INOUT)                :: field
 
+      INTEGER                                            :: n
+
       CALL check_grid(frame, field)
-      CPASSERT(SIZE(points) == SIZE(field%array))
-      field%array = RESHAPE(points, SHAPE(field%array))
+      n = SIZE(field%array)
+      field%array = RESHAPE(points(:n), SHAPE(field%array))
+      IF (SIZE(points) > n) CALL transfer_patch(frame, field, scattered=points)
    END SUBROUTINE unpack_grid
+
+!> \brief Interpolate a grid field onto atomic samples or deposit their weighted transpose.
+!> \param frame Atomic quadrature and interpolation stencils.
+!> \param field Native grid field read during interpolation or incremented during deposition.
+!> \param gathered Interpolated potential or its response at the fine samples.
+!> \param scattered Density samples deposited by the weighted transpose.
+!> \param motion Optional motion of the interpolation stencils in mesh coordinates.
+   SUBROUTINE transfer_patch(frame, field, gathered, scattered, motion)
+      TYPE(qs_upf_inverse_grid_type), INTENT(IN)         :: frame
+      TYPE(pw_r3d_rs_type), INTENT(IN)                   :: field
+      REAL(dp), INTENT(INOUT), OPTIONAL                  :: gathered(:)
+      REAL(dp), INTENT(IN), OPTIONAL                     :: scattered(:), motion(:, :)
+
+      INTEGER                                            :: a, axis, b, c, center, i, j, k, n, np, &
+                                                            offset, p
+      REAL(dp)                                           :: dw(interpolation_order, 3), v, &
+                                                            w(interpolation_order, 3), &
+                                                            wx(interpolation_order), yz
+
+      CPASSERT(PRESENT(gathered) .NEQV. PRESENT(scattered))
+      IF (PRESENT(gathered)) THEN
+         IF (ALL(field%array == 0.0_dp)) RETURN
+      END IF
+      n = SIZE(frame%ao%weights)
+      np = SIZE(frame%patch_center)
+      DO p = 1, np
+         center = frame%patch_center(p)
+         IF (PRESENT(motion)) THEN
+            IF (ALL(motion(:, center) == 0.0_dp)) CYCLE
+         END IF
+         v = 0.0_dp
+         IF (PRESENT(scattered)) THEN
+            v = (scattered(n + p) - scattered(n + np + p))/REAL(subdivisions**3, dp)
+            IF (v == 0.0_dp) CYCLE
+         END IF
+         DO axis = 1, 3
+            offset = frame%patch_offset(axis, p)
+            w(:, axis) = frame%stencil(:, offset, axis, center)
+            IF (PRESENT(motion)) dw(:, axis) = frame%dstencil(:, offset, axis, center)*motion(axis, center)
+         END DO
+         DO k = 1, interpolation_order
+            c = frame%patch_index(k, 3, p)
+            IF (c == HUGE(0)) CYCLE
+            DO j = 1, interpolation_order
+               b = frame%patch_index(j, 2, p)
+               IF (b == HUGE(0)) CYCLE
+               yz = w(j, 2)*w(k, 3)
+               IF (PRESENT(motion)) THEN
+                  wx = dw(:, 1)*yz + w(:, 1)*(dw(j, 2)*w(k, 3) + w(j, 2)*dw(k, 3))
+               ELSE
+                  wx = w(:, 1)*yz
+               END IF
+               IF (PRESENT(scattered)) THEN
+                  DO i = 1, interpolation_order
+                     a = frame%patch_index(i, 1, p)
+                     IF (a /= HUGE(0)) field%array(a, b, c) = field%array(a, b, c) + v*wx(i)
+                  END DO
+               ELSE
+                  DO i = 1, interpolation_order
+                     a = frame%patch_index(i, 1, p)
+                     IF (a /= HUGE(0)) v = v + field%array(a, b, c)*wx(i)
+                  END DO
+               END IF
+            END DO
+         END DO
+         IF (PRESENT(gathered)) THEN
+            gathered(n + p) = gathered(n + p) + v
+            gathered(n + np + p) = gathered(n + np + p) + v
+         END IF
+      END DO
+   END SUBROUTINE transfer_patch
 
 ! **************************************************************************************************
 !> \brief Release owned inverse fields before their borrowed KS basis owner is destroyed.

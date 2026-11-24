@@ -1052,11 +1052,12 @@ CONTAINS
 !> \param gaussian_gradient_response Optional Gaussian-gradient response, requiring gradient_response.
 !> \param laplacian Optional spatial Laplacian of the inverse-transformed basis.
 !> \param laplacian_response Optional joint geometry and Bloch response of that Laplacian.
+!> \param row_center Signed reconstruction center for each quadrature row, zero on the native grid.
 ! **************************************************************************************************
    SUBROUTINE qs_upf_inverse_evaluate(frame, points, soft, gradient, soft_response, gradient_response, &
                                       point_response, atom_response, cell_response, reduced_k_response, &
                                       coefficients_response, gaussian, gaussian_gradient, &
-                                      gaussian_response, gaussian_gradient_response, laplacian, laplacian_response)
+                                      gaussian_response, gaussian_gradient_response, laplacian, laplacian_response, row_center)
       TYPE(qs_upf_inverse_type), INTENT(IN)              :: frame
       REAL(dp), INTENT(IN)                               :: points(:, :)
       COMPLEX(dp), INTENT(OUT)                           :: soft(:, :)
@@ -1071,6 +1072,10 @@ CONTAINS
          gaussian_response(:, :), gaussian_gradient_response(:, :, :)
       COMPLEX(dp), INTENT(OUT), OPTIONAL                 :: laplacian(:, :), laplacian_response(:, :)
 
+      INTEGER, INTENT(IN), OPTIONAL                      :: row_center(:)
+      INTEGER                                            :: i
+      REAL(dp)                                           :: factor
+
       COMPLEX(dp), ALLOCATABLE                           :: chi(:, :), dchi(:, :), ddelta(:, :), &
                                                             delta(:, :), dgc(:, :, :), &
                                                             dgd(:, :, :)
@@ -1080,7 +1085,7 @@ CONTAINS
                                                             field_laplacian_response(:, :)
       INTEGER                                            :: atom, axis, center, first, ikind, last, &
                                                             nao, npoint, nproj
-      LOGICAL                                            :: calculate_gradient, calculate_response
+      LOGICAL                                            :: calculate_gradient, calculate_response, gaussian_only
 
       CPASSERT(frame%atom_local .OR. frame%inverse%ready)
       CPASSERT(SIZE(points, 1) == 3)
@@ -1167,8 +1172,10 @@ CONTAINS
          CPASSERT(ALL(SHAPE(gaussian_gradient_response) == [npoint, nao, 3]))
          gaussian_gradient_response = dgc
       END IF
-      IF (frame%direct) THEN
-         ! The direct representation has identically zero reference-wave differences.
+      gaussian_only = frame%direct
+      IF (PRESENT(row_center)) gaussian_only = gaussian_only .OR. ALL(row_center == 0)
+      IF (gaussian_only) THEN
+         ! Direct orbitals and the native-grid part of the signed quadrature are pure Gaussians.
          ! The projectors still enter the operator and charge through their separate contractions.
          soft = chi
          IF (PRESENT(gradient)) gradient = gc
@@ -1212,6 +1219,21 @@ CONTAINS
             CALL upf_radial_fields_periodic(frame%delta_cache(ikind), points, frame%positions(:, atom), &
                                             frame%cell, frame%images, frame%reduced_k, delta(:, first:last), field_gradient, &
                                             laplacian=field_laplacian)
+         END IF
+         IF (PRESENT(row_center)) THEN
+            ! A positive row includes the center and half of every other center.
+            ! Its negative partner contains only the halves from the other centers.
+            DO i = 1, npoint
+               IF (row_center(i) == center) CYCLE
+               factor = 0.5_dp
+               IF (row_center(i) == 0 .OR. row_center(i) == -center) factor = 0.0_dp
+               delta(i, first:last) = factor*delta(i, first:last)
+               IF (ALLOCATED(gd)) gd(i, first:last, :) = factor*gd(i, first:last, :)
+               IF (ALLOCATED(ddelta)) ddelta(i, first:last) = factor*ddelta(i, first:last)
+               IF (ALLOCATED(dgd)) dgd(i, first:last, :) = factor*dgd(i, first:last, :)
+               IF (ALLOCATED(ld)) ld(i, first:last) = factor*ld(i, first:last)
+               IF (ALLOCATED(dld)) dld(i, first:last) = factor*dld(i, first:last)
+            END DO
          END IF
       END DO
       CALL upf_inverse_basis(chi, delta, frame%coefficients, soft)
