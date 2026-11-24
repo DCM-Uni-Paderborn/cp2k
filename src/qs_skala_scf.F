@@ -3362,7 +3362,7 @@ CONTAINS
          IF (.NOT. ASSOCIATED(functional)) EXIT
          CALL section_vals_val_get(functional, "_SECTION_PARAMETERS_", l_val=active)
          IF (.NOT. active) CYCLE
-         IF (functional%section%name /= "GAUXC") RETURN
+         IF (functional%section%name /= "SKALA_NATIVE" .AND. functional%section%name /= "GAUXC") RETURN
          nactive = nactive + 1
       END DO
       skala_only = nactive == 1

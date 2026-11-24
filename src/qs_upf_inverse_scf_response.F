@@ -129,7 +129,8 @@ CONTAINS
             component => section_vals_get_subs_vals2(functional, i_section=i)
             IF (.NOT. ASSOCIATED(component)) EXIT
             CALL section_vals_val_get(component, "_SECTION_PARAMETERS_", l_val=active)
-            IF (active .AND. component%section%name /= "GAUXC") RETURN
+            IF (.NOT. active) CYCLE
+            IF (component%section%name /= "SKALA_NATIVE" .AND. component%section%name /= "GAUXC") RETURN
          END DO
          CALL group%set_handle(para_env%get_handle())
          ALLOCATE (floors, SOURCE=native_skala_spin_floors(xc, group))
