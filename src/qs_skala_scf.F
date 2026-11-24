@@ -2724,9 +2724,9 @@ CONTAINS
 
       INTEGER, PARAMETER                                :: maximum_candidates = 8
       REAL(dp), PARAMETER                               :: density_window = 4.0_dp*native_boundary_tolerance
-      ! Rebuilding the signed kinetic density from saved orbitals can shift a
-      ! cancellation through zero by a few floating-point roundoff units.
-      REAL(dp), PARAMETER                               :: kinetic_window = MAX(density_window, 16.0_dp*EPSILON(0.0_dp))
+      ! Allow for roundoff when rebuilding a kinetic-density zero from saved
+      ! orbitals. Restoration below still enforces the physical tolerance.
+      REAL(dp), PARAMETER                               :: kinetic_window = 4.0_dp*kinetic_boundary_tolerance
       INTEGER                                            :: count, descriptor, domain, level, limit, &
                                                             m, nlevels, offset, row, spin
       INTEGER                                            :: keys(6, maximum_candidates)
